@@ -1,39 +1,36 @@
 """Shared lark_oapi plumbing for the feishu_doc / feishu_drive tool modules.
 
-Holds the per-thread client handle, the cheap availability probe, and the generic
+Holds the client handle of the comment being answered, the cheap availability probe, and the generic
 ``BaseRequest`` builder + response unpacking (same pattern as feishu_comment.py).
 No ``registry.register`` here on purpose: tool discovery must not import this module.
 """
 
+import contextvars
 import json
-import threading
 
 from tools.feishu_client import build_client_from_env
 
-# The lark client is injected per-thread by the feishu_comment event handler right
-# before it runs the agent, so concurrent comment events never see each other's client.
-_local = threading.local()
-
-
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
+# The lark client of the comment being answered: feishu_comment sets it around the agent run.
+# A context variable, because each tool call runs on a worker thread that gets a copy of the
+# agent's context (tools/thread_context.py) and none of its thread-locals. Concurrent comment
+# events each run in their own context, so they never see each other's client.
+current_client: contextvars.ContextVar = contextvars.ContextVar("feishu_lark_client", default=None)
 
 
 def get_client():
-    """Return the lark client for the current thread, or build one from env creds.
+    """Return the lark client of the comment being answered, or build one from env creds.
 
     When a comment-context client has been injected, that wins. Otherwise fall back to
     the gateway app credentials (``FEISHU_APP_ID``/``FEISHU_APP_SECRET`` or
     ``LARK_APP_ID``/``LARK_APP_SECRET``) so the doc/drive tools still work in ordinary
     chat sessions where no comment client exists.
     """
-    client = getattr(_local, "client", None)
+    client = current_client.get()
     if client is not None:
         return client
     client = build_client_from_env()
     if client is not None:
-        _local.client = client
+        current_client.set(client)
     return client
 
 

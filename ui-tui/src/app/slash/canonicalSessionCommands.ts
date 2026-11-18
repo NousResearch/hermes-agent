@@ -3,9 +3,11 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
-import type { SessionStats } from '@hermes/shared/gateway-events'
+import type { SessionAccountUsage, SessionStats } from '@hermes/shared/gateway-events'
+import type { RollbackListResponse } from '@hermes/shared/gateway-types'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
+import { CANONICAL_REASONING_EFFORTS } from '@hermes/shared/slash-input'
 
-import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
@@ -17,12 +19,14 @@ import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
-/** A human-authored user turn (`agent/context_compressor.py::split_user_originated_turn`): no
- * display-only kind other than a typed /steer, and not a compaction handoff carrier. */
-const isUserTurn = (row: Record<string, unknown>) =>
+/** A human-authored live user turn (`agent/context_compressor.py::split_user_originated_turn`): no
+ * display-only kind other than a typed /steer, not a compaction handoff carrier, and not a row a
+ * compression archived (history the snapshot shows, never a turn to rewind to). */
+export const isUserTurn = (row: Record<string, unknown>) =>
   row.role === 'user' &&
   (!row.display_kind || row.display_kind === 'steer') &&
   Number.isSafeInteger(row.row_id) &&
+  !row.archived &&
   !(typeof row.content === 'string' && COMPACTION_MARKERS.some(marker => row.content!.toString().includes(marker)))
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */
@@ -34,9 +38,9 @@ export function lastTurnRewind(snapshot: MutationSnapshot): null | { target_mess
 
 const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 
-/** Lossless /retry text (agent/context_compressor_retry.py::retryable_user_text): '' when the turn has
+/** Lossless /retry text (session_rules/turns.py::retryable_user_text): '' when the turn has
  * no text, null when it carries media, unknown or annotated parts (no replay protocol: fail closed). */
-function retryText(content: unknown): null | string {
+export function retryText(content: unknown): null | string {
   let text = ''
 
   for (const part of typeof content === 'string' ? [content] : Array.isArray(content) ? content : [null]) {
@@ -162,9 +166,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
 
       if (intent === 'undo') {
-        return ctx.transcript.sys(
+        ctx.transcript.sys(
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
+
+        return showUndoRollbackHint(ctx, sid, result.target_message as undefined | { id?: unknown; timestamp?: unknown })
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -172,7 +178,51 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 
       return text ? ctx.transcript.send(text) : ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
     })
-    .catch(ctx.guardedErr)
+    .catch(error => {
+      const busy = rewindBusyText(error, intent)
+
+      if (!busy) {
+        return ctx.guardedErr(error)
+      }
+
+      if (!ctx.stale()) {
+        ctx.transcript.sys(busy)
+      }
+    })
+}
+
+/** `/undo`'s line naming the files the undone turns changed (and pointing at `/rollback`); silent when none. */
+function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, target?: { id?: unknown; timestamp?: unknown }) {
+  if (typeof target?.timestamp !== 'number') {
+    return
+  }
+
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  const undoMessageId = typeof target.id === 'number' ? { undo_message_id: target.id } : {}
+
+  void ctx.gateway
+    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: target.timestamp, ...undoMessageId })
+    .then(r => {
+      if (r?.undo_hint?.text && !ctx.stale()) {
+        ctx.transcript.sys(r.undo_hint.text)
+      }
+    })
+    .catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
+}
+
+/** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */
+export function rewindBusyText(error: unknown, intent: 'retry' | 'rewind' | 'undo'): null | string {
+  if (!(error instanceof JsonRpcGatewayError)) {
+    return null
+  }
+
+  const data = asRpcResult(error.data)
+
+  if (data?.reason !== 'session_busy') {
+    return null
+  }
+
+  return t(data.field === 'compression' ? 'slashCmd.core.busy.compressing' : 'slashCmd.core.busy.replying', intent)
 }
 
 interface CommittedResult {
@@ -184,16 +234,23 @@ interface CommittedResult {
   total_tokens?: number
 }
 
+const NO_ROUTE: SessionAccountUsage = { lines: [], nous_lines: [], nous_route: false }
+
 /** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
  * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
- * and rendered exactly as main's sidecar `/usage` did (Usage panel, or "no API calls yet", then the
- * plan CTA). */
+ * and rendered as the classic CLI's `/usage` is (Usage panel, or "no API calls yet", then the provider
+ * plan limits and the Nous section from `session.account_usage`, then the plan CTA on a Nous route). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
+  // A failed read says nothing about the route, so it shows no plan bars and no Nous CTA.
+  const limits = ctx.gateway.gw
+    .request<SessionAccountUsage>('session.account_usage', { session_id: sid })
+    .catch((): SessionAccountUsage => NO_ROUTE)
+
   void ctx.gateway.gw
     .request('session.stats', { session_id: sid })
-    .then(raw => {
+    .then(async raw => {
       if (ctx.stale()) {
         return
       }
@@ -202,14 +259,25 @@ export function canonicalUsage(ctx: SlashRunCtx) {
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
-        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      } else {
+        patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+      }
 
+      const account = await limits
+
+      if (ctx.stale()) {
         return
       }
 
-      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
-      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      // The route's provider limits, then the Nous section (signed in only; its own heading off a Nous route).
+      for (const line of [...(account.lines ?? []), ...(account.nous_lines ?? [])]) {
+        ctx.transcript.sys(line)
+      }
+
+      if (account.nous_route) {
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+      }
     })
     .catch(ctx.guardedErr)
 }

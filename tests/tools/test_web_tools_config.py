@@ -192,7 +192,7 @@ class TestFirecrawlClientConfig:
         assert captured["headers"] == {"Content-Type": "application/json"}
         assert "Authorization" not in captured["headers"]
 
-    def test_extract_through_keyless_client_forwards_server_timeout(self, monkeypatch):
+    def test_extract_through_keyless_client_forwards_server_timeout(self, monkeypatch, public_dns):
         """_scrape_one passes the SDK's ``timeout`` kwarg; the keyless client must accept and forward it."""
         import asyncio
 

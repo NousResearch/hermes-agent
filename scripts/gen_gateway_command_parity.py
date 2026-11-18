@@ -13,6 +13,7 @@ on drift.
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 from pathlib import Path
@@ -30,15 +31,17 @@ NOT_A_LOCAL_READ = {
     "agents": "gateway-wide: lists every chat's running agents and the process's async jobs",
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
-    "debug": "uploads logs to a public paste",
-    "save": "writes an export file on the gateway host",
+    "debug": "`/debug upload` uploads a summary to a public paste (bare `/debug` is the privacy notice)",
+    "save": "the gateway handler writes its file on the gateway host; Desktop saves `session.export` text "
+            "through its own dialog",
     "rollback": "restores filesystem checkpoints",
     "resume": "switches the messaging chat's session; local clients resume by id",
 }
 # The read-only argument forms of a read whose other subcommands write.
 READ_FORMS = {"usage": "bare only (`reset` refused)", "memory": "bare / `pending`",
               "skills": "bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused",
-              "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics"}
+              "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics",
+              "cron": "bare / `list`; add/edit/pause/resume/run/remove control, from the classic CLI's own command socket only"}
 
 
 def _served_methods():
@@ -62,8 +65,7 @@ def gateway_cell(name):
 
 # Reads a TUI session gets as main's TUI sidecar rendered them (gateway/session_tui_reads.py).
 TUI_READS = {"status": "TUI session: main's `Hermes TUI Status`",
-             "context": "TUI session: main's live /context with the category table",
-             "cron": "TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs"}
+             "context": "TUI session: main's live /context with the category table"}
 
 
 def port_note(cmd):
@@ -77,7 +79,7 @@ def _base_note(cmd):
         return "per-session setting (gateway handler)"
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
-    if cmd.gateway_only:
+    if cmd.gateway_only and classic_cell(cmd).startswith("messaging-only"):
         return "messaging-only"
     if cmd.cli_only:
         return "client-local (cli_only)"
@@ -148,7 +150,8 @@ def ink_cell(cmd, gateway, ink, served):
 def _sidecar_live_session_methods():
     """Sidecar RPCs that resolve their ``session_id`` in the sidecar's own session map
     (``@_rpc(..., live_session=True)``), which never holds a shared-gateway session."""
-    text = "".join(p.read_text(encoding="utf-8-sig") for p in sorted((ROOT / "tui_gateway").glob("*.py")))
+    from hermes_agent.compat.paths import current_path
+    text = "".join(p.read_text(encoding="utf-8-sig") for p in sorted((ROOT / current_path("tui_gateway")).glob("*.py")))
     return set(re.findall(r'_rpc\(\s*"([\w.]+)"[^)]*\blive_session=True', text))
 
 
@@ -156,7 +159,10 @@ def _rpc_cell(methods, served):
     """An RPC the authority does not serve: session-namespace verbs answer -32601 (the client's
     "out of sync" error); any other method reaches the legacy sidecar (``tui_gateway/ws.py``),
     where a live-session handler answers 4001 for every shared-gateway session."""
-    from tui_gateway.ws_legacy_fallback import _SESSION_FALLBACK_ALLOWED, _SESSION_NAMESPACES
+    from hermes_agent.compat.paths import current_module
+    fallback = importlib.import_module(current_module("tui_gateway.ws_legacy_fallback"))
+    _SESSION_FALLBACK_ALLOWED = fallback._SESSION_FALLBACK_ALLOWED
+    _SESSION_NAMESPACES = fallback._SESSION_NAMESPACES
     broken = sorted(m for m in methods - served
                     if m.startswith(_SESSION_NAMESPACES) and m not in _SESSION_FALLBACK_ALLOWED)
     if broken:

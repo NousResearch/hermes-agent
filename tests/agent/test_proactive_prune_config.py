@@ -14,8 +14,8 @@ import contextlib
 import io
 from pathlib import Path
 
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _config(**prune_keys) -> dict:
@@ -41,7 +41,7 @@ def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(**prune_keys))
 
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(**prune_keys))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     with contextlib.redirect_stdout(io.StringIO()):
         agent = AIAgent(
             base_url="https://chatgpt.com/backend-api/codex",
@@ -52,7 +52,7 @@ def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
             disabled_toolsets=[],
             quiet_mode=True,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id="proactive-prune-config-test",
         )
     return agent

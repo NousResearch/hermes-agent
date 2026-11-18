@@ -21,11 +21,12 @@ __all__ = [
 def _providers_for_env_var(env_var: str) -> list[str]:
     """Provider ids whose registered api_key_env_vars include ``env_var``."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.auth_plugin_providers import canonical_registry_rows
+        rows = canonical_registry_rows()
     except Exception:
         return []
     hits: list[str] = []
-    for pid, cfg in PROVIDER_REGISTRY.items():
+    for pid, cfg in rows:
         try:
             if env_var in (cfg.api_key_env_vars or ()):
                 hits.append(pid)
@@ -86,12 +87,13 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> list[st
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
     """
+    from hermes_cli.config_backend import config_exists
     if not old_value:
         return []
     from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return []
     try:
         user_config = read_user_config_raw(config_path)

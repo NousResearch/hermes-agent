@@ -1,6 +1,6 @@
 """How a gateway turn's reply reaches the editor: ``messageId`` grouping, exactly-once final text, tool and
 permission bubbles closed as the in-process agent closed them. Mixed into ``GatewayACPAgent``, whose state
-(``_conn``, ``_streamed``, ``_segments``, ``_tool_args``, ``_message_ids``) it reads and updates."""
+(``_conn``, ``_streamed``, ``_segments``, ``_tool_args``, ``_message_ids``, ``_cut``) it reads and updates."""
 from __future__ import annotations
 
 import logging
@@ -104,13 +104,22 @@ class GatewayReplyMixin:
         text = _text(payload)
         streamed = self._streamed.pop(aid, "")
         shown = self._segments.pop(aid, [])
+        cut = self._cut.pop(aid, None)
         # Local interrupt status is metadata; ACP carries it in stop_reason.
         if not text or (payload.get("outcome") == "cancelled"
                         and text.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)):
             return ""
-        if payload.get("response_reused") is True and (streamed or shown):
-            # The owner names the final as the reply already painted (never inferred from text).
+        segments = {s.strip() for s in shown}
+        if payload.get("response_reused") is True and (
+                text.strip() in segments | {streamed.strip()} if cut is not None or payload.get("receipt")
+                else (streamed or shown)):
+            # The owner names the final as a reply already painted (never inferred from text); after a
+            # replay gap or from a receipt, only when this editor showed all of it.
             return ""
+        if cut is not None:  # a replay gap stopped its live text: the rest once, or marked in full
+            from hermes_cli.gateway_replay_gap import owed_reply
+            # An interim after the gap closed the cut segment and may already have shown the whole reply.
+            return "" if not cut and text.strip() in segments else owed_reply(cut, text)
         if text.startswith(streamed):
             remainder = text[len(streamed):]
             # An unstreamed final the owner already published as an interim segment.

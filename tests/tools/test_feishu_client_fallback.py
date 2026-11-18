@@ -1,6 +1,6 @@
 """Tests for Feishu tool client fallback outside comment contexts.
 
-The thread-local client handle and ``get_client``/``set_client`` live in the shared
+The client handle (a context variable) and ``get_client`` live in the shared
 ``tools.feishu_lark`` module; ``feishu_doc_tool``/``feishu_drive_tool`` re-export the
 same function objects. These tests verify the environment-credential fallback that lets
 the doc/drive tools work in ordinary chat sessions where no comment-context client was
@@ -68,13 +68,12 @@ def _install_fake_lark(monkeypatch, built_client="env-client"):
     return builder, built_client
 
 
-def _clear_thread_client():
-    if hasattr(feishu_lark._local, "client"):
-        delattr(feishu_lark._local, "client")
+def _clear_client():
+    feishu_lark.current_client.set(None)
 
 
 def test_doc_tool_builds_client_from_feishu_env_when_no_comment_client(monkeypatch):
-    _clear_thread_client()
+    _clear_client()
     builder, built_client = _install_fake_lark(monkeypatch, built_client="doc-client")
     monkeypatch.setenv("FEISHU_APP_ID", "app-id")
     monkeypatch.setenv("FEISHU_APP_SECRET", "app-secret")
@@ -91,7 +90,7 @@ def test_doc_tool_builds_client_from_feishu_env_when_no_comment_client(monkeypat
 
 
 def test_drive_tool_builds_client_from_lark_env_when_no_comment_client(monkeypatch):
-    _clear_thread_client()
+    _clear_client()
     builder, built_client = _install_fake_lark(monkeypatch, built_client="drive-client")
     monkeypatch.delenv("FEISHU_APP_ID", raising=False)
     monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
@@ -111,17 +110,17 @@ def test_existing_comment_client_takes_precedence_over_env(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_ID", "app-id")
     monkeypatch.setenv("FEISHU_APP_SECRET", "app-secret")
 
-    feishu_doc_tool.set_client("comment-client")
+    feishu_lark.current_client.set("comment-client")
 
     try:
         assert feishu_doc_tool.get_client() == "comment-client"
         assert builder.calls == []
     finally:
-        _clear_thread_client()
+        _clear_client()
 
 
 def test_partial_feishu_credentials_do_not_mix_with_lark_secret(monkeypatch):
-    _clear_thread_client()
+    _clear_client()
     _install_fake_lark(monkeypatch)
     monkeypatch.setenv("FEISHU_APP_ID", "feishu-id")
     monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
@@ -132,7 +131,7 @@ def test_partial_feishu_credentials_do_not_mix_with_lark_secret(monkeypatch):
 
 
 def test_no_env_credentials_keeps_client_unavailable(monkeypatch):
-    _clear_thread_client()
+    _clear_client()
     monkeypatch.delenv("FEISHU_APP_ID", raising=False)
     monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
     monkeypatch.delenv("LARK_APP_ID", raising=False)

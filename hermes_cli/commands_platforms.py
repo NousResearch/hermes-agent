@@ -186,8 +186,8 @@ def _prioritize_telegram_menu_candidates(
 def _iter_gateway_skills(platform: str):
     """Yield ``(cmd_key, info, rel_parts)`` for skills eligible as gateway slash commands.
 
-    Scan roots: ``SKILLS_DIR`` plus ``skills.external_dirs`` / trusted project skills dirs;
-    anything elsewhere or under ``SKILLS_DIR/.hub`` is skipped, as are skills disabled for
+    Scan roots: the active profile's skills dir plus ``skills.external_dirs`` / trusted project
+    skills dirs; anything elsewhere or under that dir's ``.hub`` is skipped, as are skills disabled for
     *platform*. Paths are resolved on both sides (symlinked roots still match) and matched per
     path component (``/my-skills`` never admits ``/my-skills-extra``). ``rel_parts`` is the skill
     dir relative to its root (``("creative", "ascii-art")``). Alphabetical so first-wins
@@ -198,14 +198,15 @@ def _iter_gateway_skills(platform: str):
     from agent.skill_commands import get_skill_commands
     from agent.skill_utils import (
         get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
-    from tools.skills_tool import SKILLS_DIR
+    from tools.skills_tool import _skills_dir
 
+    skills_dir = _skills_dir()
     try:
         disabled = get_disabled_skill_names(platform=platform)
     except Exception:
         disabled = set()
-    hub_dir = (SKILLS_DIR / ".hub").resolve()
-    roots = [SKILLS_DIR.resolve()]
+    hub_dir = (skills_dir / ".hub").resolve()
+    roots = [skills_dir.resolve()]
     for getter in (get_external_skills_dirs, get_project_skills_dirs):
         try:
             for d in getter():
@@ -228,6 +229,18 @@ def _iter_gateway_skills(platform: str):
         if root is None or info.get("name", "") in disabled:
             continue
         yield cmd_key, info, sp.parent.relative_to(root).parts
+
+
+def _gateway_bundles() -> list[tuple[str, dict]]:
+    """Sorted ``(cmd_key, info)`` skill bundles for a platform catalog; a bundle directory that cannot
+    be scanned (e.g. a hand-edited non-UTF-8 file) is logged and lists none, so it never hides the
+    menu's other commands."""
+    from agent.skill_bundles import get_skill_bundles
+    try:
+        return sorted(get_skill_bundles().items())
+    except Exception:
+        logger.warning("Skill bundles could not be scanned; omitting them from the command catalog", exc_info=True)
+        return []
 
 
 def _collect_gateway_skill_entries(
@@ -268,15 +281,26 @@ def _collect_gateway_skill_entries(
 
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
+
+    from agent.skill_commands import resolve_slash_key
+    bundles = dict(_gateway_bundles())
+    # A bundle whose menu name was shortened/renamed (32-char clamp) cannot dispatch: the platform
+    # sends the displayed name and bundle lookup resolves full slugs only. Advertise only names that
+    # resolve back to their own bundle.
+    bundle_entries = [e for e in _entries(
+        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key) for cmd_key, info in bundles.items())
+        if resolve_slash_key(e[0], bundles) == e[2]]
+    reserved_names.update(n for n, *_rest in bundle_entries)
     skill_entries = _entries(
         (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
         for cmd_key, info, _rel in _iter_gateway_skills(platform))
 
+    dynamic_entries = bundle_entries + skill_entries
     if max_slots is None:
-        return plugin_entries + skill_entries, 0
+        return plugin_entries + dynamic_entries, 0
     remaining = max(0, max_slots - len(plugin_entries))
-    hidden_count = max(0, len(skill_entries) - remaining)
-    return (plugin_entries + skill_entries[:remaining])[:max_slots], hidden_count
+    hidden_count = max(0, len(dynamic_entries) - remaining)
+    return (plugin_entries + dynamic_entries[:remaining])[:max_slots], hidden_count
 
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
@@ -328,9 +352,11 @@ def discord_skill_commands_by_category(
     # reserved-command collision from two skills colliding on the clamp (the rename-worthy case).
     names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
+    bundle_items = [(cmd_key, info, ()) for cmd_key, info in _gateway_bundles()]
     try:
-        for cmd_key, info, rel_parts in _iter_gateway_skills("discord"):
-            # First (alphabetical) skill wins; the loser is dropped from the picker — warn loudly.
+        for cmd_key, info, rel_parts in (*bundle_items, *_iter_gateway_skills("discord")):
+            # Bundles are listed first because gateway dispatch gives them precedence over skills
+            # with the same slug. The loser is dropped from the picker — warn loudly.
             discord_name = cmd_key.lstrip("/")[:32]
             prior = names_used.get(discord_name)
             if prior == "<reserved>":
@@ -384,6 +410,8 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
     "refine", "review", "pause", "whoami", "platform", "insights", "login",
+    # Recovery-only, after a restart lost a turn: `/hermes discard` reaches it.
+    "discard",
     # One-time answer to the low-disk prompt; `/hermes autoprune on` reaches it.
     "autoprune"})
 

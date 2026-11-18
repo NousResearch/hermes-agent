@@ -4,6 +4,7 @@ Source and supported launch settings are frozen per route, never process env.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from contextlib import contextmanager
@@ -12,7 +13,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +25,21 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Built outside ``_create_adapter``: without its runner a push wake skips the authority FIFO
+        # and falls to a message handler this adapter never has (``deliver_wake``).
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 
+    @staticmethod
+    def _source_key(source):
+        # A conversation its chat moved past keeps the chat's id, which every other one of that chat
+        # shares: its own key names it (gateway/session_detached.py).
+        from gateway.session_detached import detached_route_of
+        return detached_route_of(source) or source.chat_id
+
     def authorize_source(self, source):
-        saved = self.sources.get(source.chat_id)
+        saved = self.sources.get(self._source_key(source))
         if saved is None:
             return False
         original, identity = saved
@@ -39,7 +51,24 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return source.platform, source.chat_id, source.user_id, source.profile, source.chat_type
 
     def register_source(self, source):
-        self.sources[source.chat_id] = source, self._identity(source)
+        self.sources[self._source_key(source)] = source, self._identity(source)
+
+    def kept_source(self, source):
+        """The object this route was admitted with when *source* is that same source: a closed
+        conversation retired from memory comes back with it, so the results its background work
+        still holds pass ``authorize_source`` (an identity check)."""
+        saved = self.sources.get(self._source_key(source))
+        return saved[0] if saved is not None and saved[0].to_dict() == source.to_dict() else source
+
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -105,17 +134,27 @@ class LocalSessionAdapter(BasePlatformAdapter):
         with live.event_stream.lock:
             if any('session:respond' in member.capabilities for member in live.subscribers.values()):
                 return None
-        from hermes_state_runtime import list_session_admissions
-        started = next((row for row in list_session_admissions(self.authority.db, session_id=chat_id)
-                        if row['status'] == 'started'), None)
-        if started is not None and 'local_automation_v1' in started['payload']:
+        started = next((row for row in authority_persistence(self.authority).admissions.list(session_id=chat_id)
+                        if row.status == 'started'), None)
+        if started is not None and 'local_automation_v1' in started.payload:
             return 'Clarification is unavailable: no viewer can answer this chat'
         return None
 
 
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.forget(live.source, live.route)
+
+
 def authorize_local_source(runner, source):
-    """None for legacy/nonlocal routes; registered local adapters fail closed."""
-    if source.platform != Platform.LOCAL:
+    """None for legacy/nonlocal routes and history mounts; registered local adapters fail closed."""
+    if source is None or source.platform != Platform.LOCAL:
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
@@ -141,8 +180,8 @@ def _bypass_policy(params, *, private_secrets, client_local=False):
     from gateway.session_policy import build_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     if not params.get('model'):
-        raise RuntimeStoreError('invalid_params', field='model',
-                                detail='a bypass launch has no profile to inherit a model from')
+        raise AuthorityRefusal('invalid_params', field='model',
+                               detail='a bypass launch has no profile to inherit a model from')
     defaults = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(defaults.get('model'), dict):  # code default is the empty string
         defaults['model'] = {}
@@ -202,27 +241,81 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
                          client_local=False):
     """Stage, commit and publish a local session inline (synchronous callers)."""
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
     staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
                                  trusted_secrets=trusted_secrets, skills_prompt=skills_prompt,
                                  client_local=client_local)
     if isinstance(staged, dict):
-        commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
+        commit_local_session(authority_persistence(authority), epoch=authority.epoch, receipt=staged)
         staged = restore_local_session(authority, staged['session_id'])
     return staged
 
 
+def commit_local_session(store, *, epoch, receipt, owner=None):
+    """Reserve the row, route and immutable policy of a staged creation *receipt* together on *store*, before
+    publication. A staged receipt's ``on_create`` (owner memory, never stored) reads before the write, is held
+    before the row is visible, so no reader lazy-loads around it, and stays only when this write created the
+    session: an exact retry, a refused or a losing attempt withdraws its own snapshot. *owner* is the owner rule a
+    legacy adoption's arm reads the old row by."""
+    from gateway.session_policy import created_surface
+    from persistence.authority.bindings import NewSessionBinding
+    on_create = getattr(receipt, 'on_create', None)
+    if on_create is not None:
+        on_create.read()  # its file read: in the caller's thread, outside the write transaction
+    binding = NewSessionBinding(
+        profile_id=receipt['profile_id'], principal_id=receipt['principal_id'], request_id=receipt['request_id'],
+        session_id=receipt['session_id'], route=receipt['route'], entry=receipt['entry'], policy=receipt['policy'],
+        created_source=created_surface(receipt['policy']['source']), legacy_session_id=receipt.get('legacy_session_id'),
+        lineage=tuple(receipt['lineage']) if 'lineage' in receipt else None)
+    if on_create is not None:
+        on_create.hold()
+    try:
+        reserved = store.bindings.reserve(epoch=epoch, binding=binding,
+                                          client_request=getattr(receipt, 'client_request', None), owner=owner)
+    except BaseException:
+        if on_create is not None:
+            on_create.withdraw()  # only this attempt's own snapshot, never another winner's
+        raise
+    if on_create is not None and reserved.created:
+        on_create.publish()
+    elif on_create is not None:
+        on_create.withdraw()
+
+
+def staged_creation_follows(authority, actor, request_id):
+    """Whether a retry of *request_id* may ask to follow the profile.
+
+    True when nothing is staged under that identity, or the staged request already follows.
+    False only when an older build committed the session without ``follow_profile_config`` and
+    stopped before its title. The next attempt reuses the identity, and a different request is
+    refused for good. The retry then carries the frozen request.
+    """
+    if not isinstance(request_id, str) or not request_id:
+        return True
+    from persistence.authority.bindings import local_session_id
+    store = authority_persistence(authority)
+    sid = local_session_id(authority.profile_id, actor.subject, request_id)
+    if store.sessions.get(sid) is None:
+        return True
+    try:
+        request = json.loads(store.bindings.receipt(sid).policy['request_json'])
+    except (KeyError, TypeError, ValueError, AuthorityRefusal):
+        return True
+    return isinstance(request, dict) and request.get('follow_profile_config') is True
+
+
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
-                        client_local=False):
+                        client_local=False, desktop_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
     receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop).
     ``client_local``: the gateway's own proof that the client is on this host (its connection redeemed a
-    ticket minted over the private control socket), never a value the client sends."""
+    ticket minted over the private control socket), never a value the client sends. ``desktop_local``:
+    that client is also the Desktop app (``process_identity.local_desktop_client``); a Desktop chat
+    records it so its turns run as work for the local Desktop (``session_policy.local_desktop_turn``)."""
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if 'session:create' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
-    from gateway.session_policy import build_policy, BYPASS_FIELDS
+        raise AuthorityRefusal('permission_denied')
+    from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
@@ -249,45 +342,54 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             policy = replace(policy, request_json=json.dumps(
                 {**json.loads(policy.request_json), 'model_requested': raw_model, 'route_derived': derived},
                 sort_keys=True))
+        marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
         if policy.model is None:
-            policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+            from hermes_cli.anon_auth import GUEST_MODEL
+            policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
+            if policy.model == GUEST_MODEL:
+                # Follows its profile, so the provider the user connects later replaces the trial model.
+                marks[FOLLOW_ADOPTED] = True
+        if marks:
+            import json
+            policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
     request_id = params.get('request_id', uuid.uuid4().hex)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
-        raise RuntimeStoreError('invalid_params', field='request_id',
-                                detail='must be a non-empty string of at most 256 characters')
+        raise AuthorityRefusal('invalid_params', field='request_id',
+                               detail='must be a non-empty string of at most 256 characters')
     from dataclasses import asdict
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity, restore_local_session
+    from persistence.authority.bindings import local_session_id
+    from gateway.session_local_recovery import restore_local_session
     authority._require_admission_open()
-    sid = local_identity(authority.profile_id, actor.subject, request_id)
+    sid = local_session_id(authority.profile_id, actor.subject, request_id)
     from gateway.session_policy import bind_launch_key, restore_policy, launch_key
-    if authority.db.get_session(sid) is not None:
-        from hermes_state_local import local_receipt
-        saved = local_receipt(authority.db, sid)
-        original = restore_policy(saved['policy'])
-        from hermes_state_local import same_create_retry
-        if not same_create_retry(saved['policy'], policy.request_json, params):
-            raise RuntimeStoreError('invalid_params', field='request_id',
-                                    detail='a resumed request_id must carry the same frozen request')
+    store = authority_persistence(authority)
+    if store.sessions.get(sid) is not None:
+        saved = store.bindings.receipt(sid)
+        original = restore_policy(saved.policy)
+        from session_rules.local_create import same_create_retry
+        if not same_create_retry(saved.policy, policy.request_json, params):
+            raise AuthorityRefusal('invalid_params', field='request_id',
+                                   detail='a resumed request_id must carry the same frozen request')
         import hmac
         import json
         if 'model_requested' in json.loads(original.request_json):
             # An owner-resolved alias: its key came from the profile (a `.env` rotation is not a changed
             # request) and the client sent none, so one it sends now is a different request.
             if client_key is not None:
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
         elif original.credential_ref is not None or params.get('api_key') is not None:
             key = launch_key(authority, original)
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
         return restore_local_session(authority, sid)
     from gateway.session_policy import launch_skills
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
         # skipped it must not mint a session silently missing its preload.
-        raise RuntimeStoreError('invalid_params', field='skills',
-                                detail='the caller must render -s skills before minting the session')
+        raise AuthorityRefusal('invalid_params', field='skills',
+                               detail='the caller must render -s skills before minting the session')
     policy = replace(policy, skills_prompt=skills_prompt)
     if warning := project_plugins_warning(policy):
         logger.warning('session %s: %s', sid, warning)
@@ -313,14 +415,14 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     return staged
 
 
-def publish_local_policy(authority, session_id):
-    from hermes_state_local import local_receipt
+def publish_local_policy(authority, session_id, *, evict=True):
     from gateway.session_policy import restore_policy
     live = authority.sessions[session_id]
     from gateway.session_local_recovery import local_adapter_map
     adapter = local_adapter_map(authority)[Platform.LOCAL]
-    adapter.policies[live.source.chat_id] = restore_policy(local_receipt(authority.db, session_id)['policy'])
-    authority.runner._evict_cached_agent(live.route)
+    adapter.policies[live.source.chat_id] = restore_policy(authority_persistence(authority).bindings.receipt(session_id).policy)
+    if evict:
+        authority.runner._evict_cached_agent(live.route)
 
 
 def _lazy_model(authority, policy):
@@ -341,10 +443,8 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
     pending until ``reasoning_effort`` arrives."""
-    from agent.fast_mode import STATIC_TIERS, parse_service_tier
-    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from agent.fast_mode import parse_service_tier
     from agent.voice_turn_route import session_runtime_view
-    from hermes_cli.models import resolve_fast_mode_overrides
     if agent is None and policy is None:
         return {}
     view = session_runtime_view(agent) if agent is not None else None
@@ -358,13 +458,21 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
             else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
     provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
     base_url = getattr(view, 'base_url', None) if view is not None else route.get('base_url')
+    return effort_fields(config, tier, model, provider, base_url, getattr(view, 'api_mode', None))
+
+
+def effort_fields(config, tier, model, provider, base_url, api_mode=None):
+    """Session-info ``reasoning_effort`` / ``_wire`` / ``service_tier`` / ``fast`` for one resolved route."""
+    from agent.fast_mode import STATIC_TIERS
+    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from hermes_cli.models import resolve_fast_mode_overrides
+    tier = tier or ''
     effort = ''
     if isinstance(config, dict):
         effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
     wire = ''
     if effort and effort != 'none':
-        wire = str(clamp_effort(effort, route_supported_efforts(
-            provider, model, getattr(view, 'api_mode', None))) or '')
+        wire = str(clamp_effort(effort, route_supported_efforts(provider, model, api_mode, base_url)) or '')
     try:
         fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
             model, provider=provider or None, base_url=base_url or None, tier=tier) is not None
@@ -379,23 +487,38 @@ def local_session_info(authority, ref):
     from gateway.session_authorities import served_profile_name
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
-    info = {'source': policy.source if policy else live.source.platform.value,
+    if live.source is None:  # a history mount: what its stored row says
+        source = authority_persistence(authority).sessions.get(ref.session_id).source
+    else:
+        source = policy.source if policy else live.source.platform.value
+    info = {'source': source,
             'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),
-            **({'cwd': policy.cwd} if policy else {})}
+            **({'cwd': policy.cwd} if policy else {}),
+            # An ACP session's edit approval policy: every attached surface reads the same one.
+            **({'edit_approval_policy': policy.edit_approval_policy} if policy and policy.source == 'acp' else {})}
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
+    if agent is None and policy is None and live.source is not None and live.source.platform != Platform.LOCAL:
+        # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
+        # included), so a viewer's model and reasoning pill never wait on a field that never comes.
+        from gateway.session_messaging_picks import messaging_route_info
+        info.update(messaging_route_info(authority.runner, live))
+    else:
+        info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+        from gateway.session_client import policy_client
+        if (client := policy_client(policy)) is not None:  # only a client that named itself
+            info['client'] = client
         from agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
@@ -407,16 +530,17 @@ def local_session_info(authority, ref):
 
 def _classic_cli_fields(authority, ref, live, agent, policy):
     """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
-    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
-    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    stored title, archived flag, and times, the session's yolo, api_mode, the loaded tool count and a
+    masked credential hint (never the key). Lazy sessions report what is known without building an
+    agent. ``archived`` is a JSON boolean (``bool(row.get("archived"))``), never SQLite ``1``:
+    Desktop's hidden Bot Chat probe uses ``archived === true``."""
     import contextlib
-    stored_id = ref.session_id
+    stored_id, store = ref.session_id, authority_persistence(authority)
     with contextlib.suppress(Exception):
-        from hermes_state_local import local_receipt
-        stored_id = local_receipt(authority.db, ref.session_id)['entry']['session_id'] or stored_id
-    row = {}
+        stored_id = store.bindings.receipt(ref.session_id).entry['session_id'] or stored_id
+    row = None
     with contextlib.suppress(Exception):
-        row = authority.db.get_session(stored_id) or {}
+        row = store.sessions.get(stored_id)
     yolo = bool(policy is not None and getattr(policy, 'yolo', False))
     with contextlib.suppress(Exception):
         from tools.approval import is_session_yolo_enabled
@@ -430,8 +554,9 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
         from agent.redact import mask_secret
         hint = mask_secret(str(agent.api_key))
     tools = getattr(agent, 'tools', None) if agent is not None else None
-    started = row.get('started_at')
-    return {'title': row.get('title'), 'started_at': started,
-            'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+    started = row.started_at if row is not None else None
+    return {'title': row.title if row is not None else None, 'started_at': started,
+            'last_active_at': (row.last_activity_at if row is not None else None) or started, 'yolo': yolo,
+            'archived': bool(row.archived) if row is not None else False,
             'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
             'credential_hint': hint}

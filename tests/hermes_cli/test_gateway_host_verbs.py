@@ -211,7 +211,7 @@ def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monk
     assert len(spawned) == 1
     cmd, kwargs = spawned[0]
     assert cmd[-3:] == ["gateway", "run", "--replace"]
-    assert "--profile" not in cmd
+    assert cmd[-5:-3] == ["--profile", "default"] and "leinad" not in cmd
     env = kwargs["env"]
     assert Path(env["HERMES_HOME"]) == root
     assert env.get("DISCORD_BOT_TOKEN") == "root-discord"
@@ -274,7 +274,7 @@ def test_named_profile_restart_all_reaches_the_all_aware_branch(monkeypatch):
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer",
                         lambda **k: pytest.fail("the generic guard pre-empted the --all branch"))
     called: list[bool] = []
-    monkeypatch.setattr(gw, "_restart_all", lambda system: called.append(True))
+    monkeypatch.setattr(gw, "_restart_all", lambda system, detach=False: called.append(True))
 
     gw._cmd_restart(SimpleNamespace(system=False, all=True, force=False))
 

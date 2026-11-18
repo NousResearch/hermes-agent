@@ -108,10 +108,11 @@ def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
 
 
 def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:
+    from agent.conversation_compression import compaction_status_kind
     from gateway.warning_notifications import is_warning_status
     if not _agent_presentation_enabled(sid, diagnostic=is_warning_status(kind, text if text is not None else kind)):
         return
-    _status_update(sid, str(kind), None if text is None else str(text))
+    _status_update(sid, compaction_status_kind(kind, text), None if text is None else str(text))
 
 
 def _agent_thinking_update(sid: str, text: str) -> None:
@@ -335,8 +336,11 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+def _cfg_max_turns(cfg: dict, default: int | None = None) -> int:
+    """Foreground agents use the shared default; background tasks pass their separate 25-turn budget."""
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get, resolve_turn_limit as _resolve_turn_limit
+    if default is None:
+        default = _resolve_turn_limit(cfg_get(DEFAULT_CONFIG, "agent", "max_turns"))
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
     if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
         return _resolve_turn_limit(env_val, default=default)
@@ -431,21 +435,17 @@ def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
 
 @contextlib.contextmanager
 def _side_agent_session_db(parent_db):
-    """A side agent's OWN registry reference on the parent's store for the duration of its turn.
+    """A side agent's OWN reference on the parent's store for the duration of its turn.
     Handing the parent's object across is not enough: the parent releases its reference from
-    ``AIAgent.close()`` / a session reset, and when it was the last holder the registry tears the
-    connection down under the still-running background turn (the delegated-child path acquires
+    ``AIAgent.close()`` / a session reset, and when it was the last holder the store closes
+    under the still-running background turn (the delegated-child path opens its own reference
     the same way, ``tools/delegate_tool._open_child_session_db``). Released on exit."""
-    path = getattr(parent_db, "db_path", None)
-    if parent_db is None or path is None:
+    if not _is_handle(parent_db):
         yield parent_db
         return
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(path)
-    try:
+    from persistence_assembly import open_persistence
+    with open_persistence(parent_db.scope, eager=True) as db:
         yield db
-    finally:
-        release_or_close(db)
 
 
 def _preview_restart_history(messages: list[dict] | None, max_messages: int = 24,
@@ -539,7 +539,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     """
     old_agent = session.get("agent")
     profile_home = session.get("profile_home")
-    session_db = getattr(old_agent, "_session_db", None)
+    session_db, persistence = getattr(old_agent, "_session_db", None), getattr(old_agent, "persistence", None)
     # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
     # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
     opened = session_db is None and bool(profile_home)
@@ -549,6 +549,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+            persistence = _persistence_beside(session_db)
         # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
         # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
         # reversion from the per-turn sync.
@@ -558,11 +559,12 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
                            ("create_service_tier_override", "service_tier_override")):
             if kwarg not in kwargs and session.get(pin) is not None:
                 kwargs[kwarg] = session[pin]
-        agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
+        agent = _make_agent(sid, session["session_key"], session_db=session_db, persistence=persistence, **kwargs)
     except BaseException:
         if opened and session_db is not None:
             with contextlib.suppress(Exception):
                 session_db.close()
+            _release_persistence(persistence)
         raise
     finally:
         if scopes is not None:
@@ -574,6 +576,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         # already closed the agent it saw, so one installed now is never closed (#49852).
         closed_midbuild = bool(session.get("_closing"))
         if not closed_midbuild:
+            # The replacement inherits the raw spawning ids: processes started before a compression rotation keep
+            # their old owner, and the reapers' notify keepalive (and close's kill set) match on it.
+            if inherited := set(getattr(old_agent, "_process_owner_task_ids", ())):
+                agent._process_owner_task_ids = {*inherited, *getattr(agent, "_process_owner_task_ids", ())}
             session.update(agent=agent, config_model_seen=config_model_seen)
             owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
             if owned and _transfer_db_to_agent(agent, session_db):
@@ -582,6 +588,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
             elif opened:
                 with contextlib.suppress(Exception):
                     session_db.close()
+                _release_persistence(persistence)
     if closed_midbuild:
         with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
             if hasattr(agent, "close"):
@@ -589,6 +596,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         if opened:
             with contextlib.suppress(Exception):
                 session_db.close()
+            _release_persistence(persistence)
         raise RuntimeError("session was closed while its agent was being rebuilt")
     return agent
 

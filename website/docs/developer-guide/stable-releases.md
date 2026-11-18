@@ -354,6 +354,16 @@ The protected publication controller verifies that exact annotated tag object
 before it flips the GitHub prerelease from draft to public, reads both states back,
 and only then advances the R2 head.
 
+Pull requests and pushes to `main` run no E2E suite. After each successful
+`Canary Release`, `Canary E2E` (`canary-e2e.yml`) runs a claim's E2E calls (full
+CI with `release: true`, install/update E2E, Windows live E2E) on the commit that
+canary tagged, so an E2E regression shows up within a day of landing rather than
+at the next claim. A commit an automatic run already passed is not run again
+(a canary with no new commits resumes its last tag). It only reports: the
+canary does not wait for it, and
+`install-e2e-red.yml` keeps one `install-e2e-red` issue open while the latest run
+is red.
+
 ## Canary and one-off desktop identities
 
 `release.py --canary` builds the separate canary application. Its package

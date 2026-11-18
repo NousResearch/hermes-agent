@@ -265,9 +265,14 @@ def _provider_for_home(home: Path) -> str:
 
 def _assemble(provider: str, stores: Mapping[str, Path], *, read_only: bool = False,
               read_patience_s: Optional[float] = None) -> Any:
-    """The one provider branch: ``provider``'s backend factory (``plugins.persistence``) over ``stores``."""
-    from plugins.persistence import backend_factory
+    """The one provider branch: the built-in SQLite backend, constructed here because this module owns the storage
+    layer, or a plugin provider's backend factory (``plugins.persistence``), over ``stores``."""
+    from plugins.persistence import BUILTIN_PROVIDER, backend_factory
 
+    if provider == BUILTIN_PROVIDER:
+        from persistence.sqlite import SQLiteBackend
+
+        return SQLiteBackend(stores, read_only=read_only, read_patience_s=read_patience_s)
     return backend_factory(provider)(stores, read_only=read_only, read_patience_s=read_patience_s)
 
 

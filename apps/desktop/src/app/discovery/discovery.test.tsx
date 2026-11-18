@@ -6,6 +6,7 @@ import { $apiRequestScope } from '@/api/client'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
 import { $guidanceLedger } from '@/store/guidance-ledger'
+import { $newVersionReady } from '@/store/new-version'
 import { $traySeen } from '@/store/notification-tray'
 import { $renameSplash } from '@/store/rename-splash'
 import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session'
@@ -47,6 +48,7 @@ beforeEach(() => {
   $guidanceLedger.set({})
   $traySeen.set([])
   $renameSplash.set(null)
+  $newVersionReady.set(false)
   $cronJobs.set([])
   $sessions.set([])
   $sessionsLoadError.set(false)
@@ -149,6 +151,16 @@ describe('the notifications tray', () => {
     fireEvent.click(within(entry).getByRole('button', { name: copy.renameItem.action }))
     expect($renameSplash.get()).toBe('reopened')
     expect(splash()).not.toBeNull()
+  })
+
+  it('announces a newer deployed build with a way to load it now', () => {
+    renderShell()
+    act(() => $newVersionReady.set(true))
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.title }))
+
+    const entry = within(screen.getByRole('dialog', { name: copy.tray.title })).getByRole('article')
+    expect(within(entry).getByText(copy.newVersion.title)).toBeTruthy()
+    expect(within(entry).getByRole('button', { name: copy.newVersion.refresh })).toBeTruthy()
   })
 
   it('lists nothing for a new install and says so', () => {

@@ -139,3 +139,15 @@ def test_a_search_can_name_the_readers_word_for_you(gateway):
     assert call(gateway.owner, "groups.attachment.list", room_id="room", query="Vous")["result"]["items"] == []
     assert reason(call(gateway.owner, "groups.attachment.list", room_id="room", query="x",
                        you_label="x" * 65)) == "invalid_params"
+
+
+def test_catalog_checks_the_authority_epoch_in_its_read_snapshot(gateway, monkeypatch):
+    share(gateway, 1, b"published by the owner")
+    original = HostedRoomAttachmentStore.list_published
+
+    def after_restart(store, **params):
+        gateway.authority.persistence.runtime.begin_epoch(instance_id="replacement")
+        return original(store, **params)
+
+    monkeypatch.setattr(HostedRoomAttachmentStore, "list_published", after_restart)
+    assert "error" in call(gateway.owner, "groups.attachment.list", room_id="room")

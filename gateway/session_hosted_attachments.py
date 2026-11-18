@@ -10,7 +10,8 @@ from gateway.hosted_room_attachments import (
     AttachmentIntegrityError, AttachmentNotFoundError, HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES,
 )
 from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
-from gateway.session_persistence import authority_persistence
+from gateway.session_persistence import authority_persistence, owner_rule
+from persistence.gateway.hosted_rooms import HostedOwnerClaim
 from persistence.core.errors import AuthorityRefusal
 
 
@@ -46,8 +47,13 @@ def upload(service, actor, params):
     return store_upload(service, _authorize(service, actor, params, 'session:submit'), params)
 
 
+def _owner_claim(service, actor):
+    return HostedOwnerClaim(epoch=service.authority.epoch, actor=actor.subject, rule=owner_rule())
+
+
 def download(service, actor, params):
-    return read_download(service, _authorize(service, actor, params, 'session:read'), params)
+    return read_download(service, _authorize(service, actor, params, 'session:read'), params,
+                         owner=_owner_claim(service, actor))
 
 
 def store_upload(service, room_id, params):
@@ -65,7 +71,7 @@ def store_upload(service, room_id, params):
             name=params.get('name'), mime=params.get('mime'), data=data)
 
 
-def read_download(service, room_id, params):
+def read_download(service, room_id, params, *, owner=None):
     """One committed file for a live room viewer (both routes)."""
     if not params.get('event_id'):
         raise AuthorityRefusal('invalid_params')
@@ -77,7 +83,7 @@ def read_download(service, room_id, params):
             saved = store.read_viewer(**scope)
         except (AttachmentNotFoundError, AttachmentIntegrityError):
             from persistence.gateway.hosted_rooms import PublishedFileUnavailableError
-            if store.published_reference(**scope):
+            if store.published_reference(**scope, owner=owner):
                 raise PublishedFileUnavailableError('This version can no longer be downloaded.') from None
             raise
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
@@ -85,15 +91,15 @@ def read_download(service, room_id, params):
 
 def list_files(service, actor, params):
     """``groups.attachment.list``: one page of a room's published file versions."""
-    return read_catalog(service, _authorize(service, actor, params, 'session:read'), params)
+    return read_catalog(service, _authorize(service, actor, params, 'session:read'), params, owner=_owner_claim(service, actor))
 
 
-def read_catalog(service, room_id, params):
+def read_catalog(service, room_id, params, *, owner=None):
     """Published file metadata for an authorized viewer on either route."""
     gateway_id, epoch = service._owned_authority(room_id)
     with _room_attachments(service) as store:
         return store.list_published(
-            room_id=room_id, authority_gateway_id=gateway_id, authority_epoch=epoch,
+            owner=owner, room_id=room_id, authority_gateway_id=gateway_id, authority_epoch=epoch,
             **{key: params[key] for key in ('cursor', 'limit', 'query', 'producer_member_id', 'you_label')
                if key in params})
 

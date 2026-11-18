@@ -14,6 +14,7 @@ from persistence.gateway.hosted_rooms import AttachmentError
 from session_rules import hosted_attachment_catalog as catalog
 from session_rules.hosted_attachments import _BLOB_ID_RE
 from ._hosted_rooms_common import table_exists
+from .hosted_rooms import _claim_owner_locked
 from .hosted_room_attachments import _read_committed_row, _require_viewer_room
 
 SNAPSHOT_SECONDS = 2.0
@@ -116,7 +117,14 @@ def _file_events(conn, *, room_id, snapshot, position):
 
 
 def list_published(
-    files, placement, *, room_id, authority_gateway_id, authority_epoch, **filters
+    files,
+    placement,
+    *,
+    room_id,
+    authority_gateway_id,
+    authority_epoch,
+    owner=None,
+    **filters,
 ):
     scope = dict(
         room_id=room_id,
@@ -124,6 +132,10 @@ def list_published(
         authority_epoch=authority_epoch,
     )
     with closing(_snapshot(files.path(placement))) as conn:
+        if owner is not None:
+            _claim_owner_locked(
+                conn, owner.epoch, room_id, owner.actor, owner.rule, create=False
+            )
         _require_viewer_room(conn, **scope)
         room = conn.execute(
             "SELECT next_seq, members_json FROM hosted_rooms WHERE room_id=?",
@@ -153,8 +165,13 @@ def published_reference(
     attachment_id,
     authority_gateway_id,
     authority_epoch,
+    owner=None,
 ):
     with closing(_snapshot(files.path(placement))) as conn:
+        if owner is not None:
+            _claim_owner_locked(
+                conn, owner.epoch, room_id, owner.actor, owner.rule, create=False
+            )
         _require_viewer_room(
             conn,
             room_id=room_id,

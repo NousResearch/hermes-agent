@@ -216,7 +216,9 @@ class InMemoryHostedRoomAttachmentRepository:
         return bool(blob and rules.BLOB_ID_RE.fullmatch(blob_id) and blob["sha256"] == row["sha256"]
                     and blob["size"] == row["size"] and blob_id in files and len(files[blob_id]) == row["size"])
 
-    def list_published(self, *, placement, room_id, authority_gateway_id, authority_epoch, **filters):
+    def list_published(self, *, placement, room_id, authority_gateway_id, authority_epoch, owner=None, **filters):
+        if owner is not None:
+            self._store.hosted_rooms.claim_owner(epoch=owner.epoch, room_id=room_id, actor=owner.actor, owner=owner.rule)
         tables = read_tables(self._store, placement)
         scope = dict(room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
         require_viewer_room(tables, **scope)
@@ -229,7 +231,9 @@ class InMemoryHostedRoomAttachmentRepository:
         availability = partial(self._availability, tables, blob_files(self._store, placement), room_id)
         return catalog.list_published(tables["hosted_rooms"][room_id], events, availability, **scope, **filters)
 
-    def published_reference(self, *, placement, room_id, event_id, attachment_id, authority_gateway_id, authority_epoch):
+    def published_reference(self, *, placement, room_id, event_id, attachment_id, authority_gateway_id, authority_epoch, owner=None):
+        if owner is not None:
+            self._store.hosted_rooms.claim_owner(epoch=owner.epoch, room_id=room_id, actor=owner.actor, owner=owner.rule)
         tables = read_tables(self._store, placement)
         require_viewer_room(tables, room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
         availability = partial(self._availability, tables, blob_files(self._store, placement), room_id, event_id=event_id)

@@ -452,12 +452,6 @@ export function ModelPicker({
       return
     }
 
-    if (ch === 'q' && !filter) {
-      onCancel()
-
-      return
-    }
-
     const count = stage === 'provider' ? filteredProviderRows.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx

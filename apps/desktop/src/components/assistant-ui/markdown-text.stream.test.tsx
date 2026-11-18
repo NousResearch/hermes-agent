@@ -55,6 +55,7 @@ vi.mock('@/lib/remark-soft-breaks', async importActual => {
 })
 
 import { I18nProvider } from '@/i18n'
+import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import type * as MarkdownPreprocess from '@/lib/markdown-preprocess'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import type * as RemarkSoftBreaks from '@/lib/remark-soft-breaks'
@@ -236,4 +237,45 @@ describe('MarkdownTextContent streaming render path', () => {
     expect([...container.querySelectorAll('[data-slot="code-card"]')]).toEqual(cards)
     expect(cards.at(-1)?.querySelector('[data-testid="shiki-container"]')?.textContent).toContain('const tail = true')
   })
+
+  it.each([false, true])('retains a settled renderer parse when another reply grows from it (streamed: %s)', async streamed => {
+    const text = `Renderer retention ${streamed}.\n\n${'A complete paragraph.\n\n'.repeat(120)}Shared ending.`
+    const { container, rerender } = render(<MarkdownTextContent isRunning={streamed} text={text} />)
+    await settled(container, text)
+    const first = parseMarkdownIntoBlocksCached(text)
+
+    rerender(<MarkdownTextContent isRunning={false} text={text} />)
+    await pause()
+
+    const longer = `${text}\n\nAnother reply continues here.`
+    const other = render(<MarkdownTextContent isRunning text={longer} />)
+    await settled(other.container, longer)
+
+    expect(parseMarkdownIntoBlocksCached(text)).toBe(first)
+    expect(container.textContent).toContain('Shared ending.')
+  })
+
+  it.each(['previewOnly', 'disableArtifacts', 'scratchpad'] as const)(
+    'keeps substantial HTML as a source card through settlement in %s mode',
+    async option => {
+      const source =
+        '<!doctype html><html><body><h1>Example</h1>' +
+        '<p>A paragraph with enough text to offer as an artifact.</p>'.repeat(8) +
+        '</body></html>'
+      const text = `\`\`\`html\n${source}\n\`\`\``
+      const content = (isRunning: boolean) => (
+        <MarkdownTextContent isRunning={isRunning} text={text} {...{ [option]: true }} />
+      )
+      const { container, rerender } = render(content(true))
+
+      await waitFor(() => expect(container.querySelector('[data-slot="code-card"]')?.textContent).toContain(source))
+      expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()
+
+      rerender(content(false))
+
+      await waitFor(() => expect(container.querySelector('[data-testid="shiki-container"]')?.textContent).toContain(source))
+      expect(container.querySelector('[data-slot="code-card"]')).not.toBeNull()
+      expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()
+    }
+  )
 })

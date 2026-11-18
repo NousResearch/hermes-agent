@@ -603,6 +603,8 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 // once and every code subtree remounts. Only the consumers below re-render.
 const MarkdownStreamingContext = createContext(false)
 
+const parseSettledMarkdownIntoBlocksCached = (markdown: string) => parseMarkdownIntoBlocksCached(markdown, false)
+
 /**
  * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
  * exactly one `::name{...}` directive claimed by a plugin renders as that
@@ -889,7 +891,9 @@ function MarkdownTextSurface({
             // parseIncompleteMarkdown stays false to avoid a second full-text
             // remend pass.
             parseIncompleteMarkdown={false}
-            parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
+            parseMarkdownIntoBlocksFn={
+              isStreaming ? parseMarkdownIntoBlocksCached : parseSettledMarkdownIntoBlocksCached
+            }
             plugins={plugins}
             preprocess={preprocessWithTailRepair}
             remarkPlugins={REMARK_PLUGINS}

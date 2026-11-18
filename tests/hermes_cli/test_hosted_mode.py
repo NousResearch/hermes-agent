@@ -83,33 +83,47 @@ def register(ctx):
 # The same plugin, without the hosted declaration.
 PLAIN_SANDBOX_PLUGIN = SANDBOX_PLUGIN.replace("    serves_hosted_scopes = True\n", "")
 
-STORAGE_PLUGIN = '''
-from hermes_state_port import SessionStorageProvider
+# A persistence provider plugin (``plugins/persistence``): ``register(ctx)`` hands the registry a
+# backend factory. ``isolating`` picks how the backend answers the hosted boot's isolation check.
+_PERSISTENCE_PLUGIN = '''
+from types import SimpleNamespace
 
 
-class Provider(SessionStorageProvider):
-    @property
-    def name(self):
-        return "stub-storage"
-
-    def open(self, db=None):
+class Backend:
+    def __init__(self, stores, read_only, read_patience_s):
+        self.stores = dict(stores)
+        self.capabilities = SimpleNamespace(scope_pinning=True, physical_admin=False)
+{isolating}
+    def open(self, scope):
         raise NotImplementedError
 
-    def assert_isolating(self):
-        return
+    def close(self):
+        pass
 
 
 def register(ctx):
-    ctx.register_session_storage(Provider())
+    ctx.register_persistence_backend(
+        lambda stores, *, read_only, read_patience_s: Backend(stores, read_only, read_patience_s))
 '''
 
-NON_ISOLATING_STORAGE_PLUGIN = STORAGE_PLUGIN.replace(
-    "    def assert_isolating(self):\n        return\n",
-    "    def assert_isolating(self):\n"
-    "        raise RuntimeError(\"the storage role bypasses row security\")\n",
-)
+_ISOLATING = {
+    "pass": "    def assert_isolating(self):\n        return None\n",
+    "raise": "    def assert_isolating(self):\n"
+             "        raise RuntimeError(\"the storage role bypasses row security\")\n",
+    "absent": "",
+}
 
-HOSTED = {"enabled": True, "identity_verifier": "stub-verifier", "session_storage": "stub-storage"}
+
+def persistence_plugin_source(isolating: str = "pass") -> str:
+    """A tiny persistence provider whose backend declares scope pinning; ``isolating`` is ``pass``
+    (its ``assert_isolating`` passes), ``raise`` (it raises) or ``absent`` (it has none)."""
+    return _PERSISTENCE_PLUGIN.format(isolating=_ISOLATING[isolating])
+
+
+STORAGE_PLUGIN = persistence_plugin_source("pass")
+STORAGE_PROVIDER = "stub_storage"
+
+HOSTED = {"enabled": True, "identity_verifier": "stub-verifier"}
 
 def _write_config(settings: dict) -> None:
     """The home's config.yaml, through the repo's own YAML writer."""
@@ -146,9 +160,10 @@ def _curated(plugin: Path, *, tier: str = "verified") -> None:
 
 def _clean_hosted_config() -> dict:
     """The config of a deployment that passes every check: a sandbox plugin backend, no direct
-    platform, the two required backend names, and no MCP server."""
+    platform, the identity verifier, an isolating persistence provider, and no MCP server."""
     return {
         "hosted": dict(HOSTED),
+        "persistence": {"provider": STORAGE_PROVIDER},
         "terminal": {"backend": "stub-sandbox"},
         "plugins": {"enabled": ["stub-sandbox"]},
     }
@@ -175,14 +190,19 @@ def hosted_start(monkeypatch):
 @pytest.fixture
 def empty_bundled(monkeypatch, tmp_path):
     """No bundled plugins: the checks judge the home's own plugins, not the repo's tree. The
-    session-storage kind's bundled directory moves beside it — a hosted boot resolves named
-    providers only from the bundled tree, so the storage stubs install there."""
-    from plugins import session_storage
+    persistence providers' bundled directory moves beside it — a hosted process loads a provider
+    only from what the image ships, so the storage stubs install there."""
+    import plugins.persistence as persistence_registry
 
     bundled = tmp_path / "bundled"
-    (bundled / "session_storage").mkdir(parents=True)
+    (bundled / "persistence").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
-    monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
+    monkeypatch.setattr(persistence_registry, "_PERSISTENCE_PLUGINS_DIR", bundled / "persistence")
+    before = set(sys.modules)
+    yield
+    for name in set(sys.modules) - before:
+        if name.startswith("plugins.persistence."):
+            sys.modules.pop(name, None)
 
 
 def _no_gateway_config():
@@ -250,11 +270,11 @@ def _bundled_plugin(name: str, body: str) -> Path:
 
 
 def _bundled_provider(name: str, body: str) -> Path:
-    """A named session-storage provider installed in the kind's BUNDLED directory — where a
-    hosted boot resolves its providers from (the deployment home's own dirs are refused)."""
-    from plugins import session_storage
+    """A persistence provider installed in the providers' BUNDLED directory — where a hosted
+    process loads them from (the deployment home's own plugin dirs are never consulted)."""
+    import plugins.persistence as persistence_registry
 
-    provider = session_storage._PLUGINS_DIR / name
+    provider = persistence_registry._PERSISTENCE_PLUGINS_DIR / name
     provider.mkdir(parents=True, exist_ok=True)
     (provider / "__init__.py").write_text(textwrap.dedent(body), encoding="utf-8")
     return provider
@@ -266,7 +286,7 @@ def _clean_boot(**kwargs):
     discovered for real, and the boot call sees a clean environment."""
     _write_config(_clean_hosted_config())
     _bundled_plugin("stub-sandbox", SANDBOX_PLUGIN)
-    _bundled_provider("stub-storage", STORAGE_PLUGIN)
+    _bundled_provider(STORAGE_PROVIDER, STORAGE_PLUGIN)
     boot(env={"PATH": "/usr/bin", "HOME": "/home/op", "LC_ALL": "C"}, **kwargs)
 
 
@@ -447,37 +467,94 @@ def test_after_the_boot_records_its_config_no_hosted_read_touches_the_files(clea
 # A named provider that exists only in the deployment home's writable dirs
 
 
-def test_a_user_dir_session_storage_provider_is_refused_before_import(clean_hosted):
-    """A named backend that exists only as a manifest-less directory in the home's plugin dirs
-    (the shape the shared named-provider loaders import directly): in a hosted process it is
-    refused BEFORE import, with the reason, and its code never runs."""
-    probe = get_hermes_home() / "plugins" / "userdir-storage"
+def test_a_home_dir_persistence_provider_is_never_a_provider(clean_hosted):
+    """A persistence provider that exists only in the deployment home's plugin dirs is no provider
+    at all: the registry never consults user dirs, so a hosted boot naming it refuses, with the
+    reason, and its module-level code never runs."""
+    probe = get_hermes_home() / "plugins" / "persistence" / "homeprobe"
     probe.mkdir(parents=True)
-    (probe / "__init__.py").write_text(textwrap.dedent('''
-        from pathlib import Path
-
-        from hermes_state_port import SessionStorageProvider
-
-        Path(__file__).with_name("imported").write_text("ran")
-
-
-        class Probe(SessionStorageProvider):
-            @property
-            def name(self):
-                return "userdir-storage"
-
-            def open(self, db=None):
-                raise NotImplementedError
-
-            def assert_isolating(self):
-                return
-    '''), encoding="utf-8")
-    config = _clean_hosted_config()
-    config["hosted"] = dict(HOSTED, session_storage="userdir-storage")
+    (probe / "__init__.py").write_text(
+        'from pathlib import Path\nPath(__file__).with_name("imported").write_text("ran")\n'
+        + persistence_plugin_source("pass"), encoding="utf-8")
+    config = _clean_hosted_config() | {"persistence": {"provider": "homeprobe"}}
     _write_config(config)
-    with pytest.raises(HostedBootRefused, match="userdir-storage"):
+    with pytest.raises(HostedBootRefused, match="unknown persistence provider 'homeprobe'"):
         boot(config=config, env={"PATH": "/usr/bin"})
     assert not (probe / "imported").exists()  # its code never ran
+
+
+def _home_module(name: str) -> tuple[Path, Path]:
+    """A provider module in the deployment home, importable (its directory on ``sys.path``, as a
+    ``.pth`` file or an editable install record would put it). Returns its marker and its dir."""
+    src = get_hermes_home() / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    marker = src / f"{name}.imported"
+    (src / f"{name}.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+        + persistence_plugin_source("pass"), encoding="utf-8")
+    return marker, src
+
+
+def test_an_entry_point_persistence_provider_from_the_home_is_refused_before_import(clean_hosted, monkeypatch):
+    """An installed distribution's ``hermes_agent.persistence`` entry point whose module resolves
+    into the deployment home: the registry refuses it BEFORE it loads the entry point, naming the
+    hosted code rule, so its code never runs. Its metadata is not provenance; the file its module
+    resolves to is."""
+    import plugins.persistence as persistence_registry
+
+    marker, src = _home_module("rv_home_storage")
+    monkeypatch.syspath_prepend(str(src))
+    importlib.invalidate_caches()
+    loads = []
+
+    class _EntryPoint:
+        name, value = "homeentry", "rv_home_storage:register"
+
+        def load(self):
+            loads.append(self.name)
+            return importlib.import_module(self.module)
+
+    monkeypatch.setattr(persistence_registry, "_entry_points",
+                        lambda name=None: [_EntryPoint()] if name in (None, "homeentry") else [])
+    try:
+        config = _clean_hosted_config() | {"persistence": {"provider": "homeentry"}}
+        _write_config(config)
+        with pytest.raises(HostedBootRefused, match="persistence provider 'homeentry' refused:.*deployment image"):
+            boot(config=config, env={"PATH": "/usr/bin"})
+        with pytest.raises(ValueError, match="refused:.*deployment image"):
+            persistence_registry.backend_factory("homeentry")
+        assert loads == []  # the entry point was never loaded
+        assert not marker.exists()  # and its module never ran
+    finally:
+        sys.modules.pop("rv_home_storage", None)
+        importlib.invalidate_caches()
+
+
+def test_a_symlink_in_the_bundled_persistence_dir_is_refused_before_import(clean_hosted, monkeypatch):
+    """A symlink planted in the bundled persistence dir whose realpath leaves the image (into the
+    home) is not a bundled provider: the registry refuses it BEFORE its loader runs."""
+    import plugins.persistence as persistence_registry
+
+    target = get_hermes_home() / "plugins" / "planted"
+    target.mkdir(parents=True)
+    (target / "__init__.py").write_text(
+        'from pathlib import Path\nPath(__file__).with_name("imported").write_text("ran")\n'
+        + persistence_plugin_source("pass"), encoding="utf-8")
+    (persistence_registry._PERSISTENCE_PLUGINS_DIR / "planted").symlink_to(target, target_is_directory=True)
+    loads = []
+    monkeypatch.setattr(persistence_registry, "_load_bundled",
+                        lambda name, plugin_dir: loads.append(name))
+    with pytest.raises(ValueError, match="persistence provider 'planted' refused:.*deployment image"):
+        persistence_registry.backend_factory("planted")
+    assert loads == []
+    assert not (target / "imported").exists()
+
+
+def test_a_bundled_persistence_provider_still_loads_in_a_hosted_process(clean_hosted):
+    """The image side of the same rule: a provider in the bundled persistence dir loads."""
+    import plugins.persistence as persistence_registry
+
+    assert callable(persistence_registry.backend_factory(STORAGE_PROVIDER))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -592,30 +669,51 @@ def test_no_identity_verifier_refuses_hosted_boot(clean_hosted):
         boot(config=config, env={"PATH": "/usr/bin"})
 
 
-def test_no_session_storage_name_refuses_hosted_boot(clean_hosted):
+def test_the_builtin_sqlite_refuses_hosted_boot(clean_hosted):
+    """No persistence section means the built-in SQLite, a local single-tenant store: refused."""
     config = _clean_hosted_config()
-    config["hosted"] = dict(HOSTED, session_storage="")
+    del config["persistence"]
     _write_config(config)
-    with pytest.raises(HostedBootRefused, match="session_storage"):
+    with pytest.raises(HostedBootRefused, match="built-in sqlite"):
         boot(config=config, env={"PATH": "/usr/bin"})
 
 
-def test_a_missing_session_storage_provider_refuses_hosted_boot(clean_hosted):
-    config = _clean_hosted_config()
-    config["hosted"] = dict(HOSTED, session_storage="not-installed")
+def test_an_explicit_sqlite_provider_refuses_hosted_boot(clean_hosted):
+    config = _clean_hosted_config() | {"persistence": {"provider": "sqlite"}}
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="does not isolate tenants in storage.*built-in sqlite"):
+        boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_a_missing_persistence_provider_refuses_hosted_boot(clean_hosted):
+    config = _clean_hosted_config() | {"persistence": {"provider": "not-installed"}}
     _write_config(config)
     with pytest.raises(HostedBootRefused, match="not-installed"):
         boot(config=config, env={"PATH": "/usr/bin"})
 
 
-def test_a_session_storage_role_that_bypasses_isolation_refuses_hosted_boot(clean_hosted):
-    _bundled_provider("leaky-storage", NON_ISOLATING_STORAGE_PLUGIN.replace(
-        '"stub-storage"', '"leaky-storage"'))  # a second provider, so no cached module answers
-    config = _clean_hosted_config()
-    config["hosted"] = dict(HOSTED, session_storage="leaky-storage")
+def test_a_provider_without_assert_isolating_refuses_hosted_boot(clean_hosted):
+    _bundled_provider("unasserted_storage", persistence_plugin_source("absent"))
+    config = _clean_hosted_config() | {"persistence": {"provider": "unasserted_storage"}}
+    _write_config(config)
+    with pytest.raises(HostedBootRefused, match="no callable assert_isolating"):
+        boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_a_storage_role_that_bypasses_isolation_refuses_hosted_boot(clean_hosted):
+    _bundled_provider("leaky_storage", persistence_plugin_source("raise"))
+    config = _clean_hosted_config() | {"persistence": {"provider": "leaky_storage"}}
     _write_config(config)
     with pytest.raises(HostedBootRefused, match="bypasses row security"):
         boot(config=config, env={"PATH": "/usr/bin"})
+
+
+def test_an_isolating_provider_lets_hosted_boot_proceed(clean_hosted):
+    """The positive control for the four refusals above: the same deployment on an isolating
+    provider boots (``clean_hosted`` already booted it once; a second boot proceeds too)."""
+    config = _clean_hosted_config()
+    _write_config(config)
+    assert boot(config=config, env={"PATH": "/usr/bin"}) is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -707,7 +805,9 @@ def test_the_host_model_key_never_reaches_tenant_visible_output(clean_hosted, ca
             with caplog.at_level(logging.DEBUG):
                 prompt = build_system_prompt(_make_agent())
                 tool_result = _dispatch_stub_tool(monkeypatch)
-            stored = _stored_rows()
+        # Outside the hosted scope: under it the storage interface refuses to name a home (only the
+        # bound scope's pinned store opens, and the stub provider stores nothing).
+        stored = _stored_rows()
 
     corpus = {"prompt": prompt, "tool result": tool_result, "log lines": caplog.text,
               "stored rows": stored}
@@ -738,15 +838,21 @@ def _dispatch_stub_tool(monkeypatch) -> str:
 
 
 def _stored_rows() -> str:
-    """The session rows a hosted turn leaves in the test home's store, read back as text: a real
-    write and a real read through the session database, not a canned string."""
-    from hermes_state import SessionDB
+    """Session rows written and read back as text through the storage interface: a real write and
+    a real read, not a canned string. The store is a SQLite one beside the test home (the home's
+    own config names the hosted stub provider, which stores nothing)."""
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(get_hermes_home() / "state.db")
+    import dataclasses
+
+    store = open_persistence(profile_scope(home=get_hermes_home() / "canary-store"))
     try:
-        db.ensure_session("session-1", source="canary")
-        db.append_message("session-1", "user", content="tenant-data hello")
-        db.append_message("session-1", "assistant", content="tenant-data reply")
-        return json.dumps(db.get_messages("session-1"), default=str)
+        store.sessions.create(NewSession(session_id="session-1", source="canary"))
+        store.messages.append("session-1", NewMessage.from_live({"role": "user", "content": "tenant-data hello"}))
+        store.messages.append("session-1", NewMessage.from_live({"role": "assistant", "content": "tenant-data reply"}))
+        return json.dumps([dataclasses.asdict(row) if dataclasses.is_dataclass(row) else repr(row)
+                           for row in store.messages.read_transcript("session-1")], default=str)
     finally:
-        db.close()
+        store.close()

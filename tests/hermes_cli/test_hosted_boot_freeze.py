@@ -21,7 +21,7 @@ import hermes_cli.plugins as plugins_mod
 import registry_freeze
 from hermes_constants import get_hermes_home
 from tests.hermes_cli.test_hosted_mode import (
-    SANDBOX_PLUGIN, STORAGE_PLUGIN, _clean_hosted_config, _write_config,
+    SANDBOX_PLUGIN, STORAGE_PLUGIN, STORAGE_PROVIDER, _clean_hosted_config, _write_config,
 )
 
 
@@ -48,19 +48,19 @@ def verdict(monkeypatch):
 def clean_hosted(verdict, monkeypatch, tmp_path, start_command_flag):
     """The deployment of the passing-boot test, with its own empty bundled tree: both stubs are
     baked into it (a hosted boot loads in-process only what the image ships; the storage stub
-    installs in the session-storage kind's bundled dir)."""
-    from plugins import session_storage
+    installs in the persistence providers' bundled dir)."""
+    import plugins.persistence as persistence_registry
 
     bundled = tmp_path / "bundled"
-    (bundled / "session_storage").mkdir(parents=True)
+    (bundled / "persistence").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
-    monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
+    monkeypatch.setattr(persistence_registry, "_PERSISTENCE_PLUGINS_DIR", bundled / "persistence")
     _write_config(_clean_hosted_config())
     sandbox = bundled / "stub-sandbox"
     sandbox.mkdir(parents=True)
     (sandbox / "__init__.py").write_text(SANDBOX_PLUGIN, encoding="utf-8")
     (sandbox / "plugin.yaml").write_text("name: stub-sandbox\nversion: '1.0'\n", encoding="utf-8")
-    storage = session_storage._PLUGINS_DIR / "stub-storage"
+    storage = persistence_registry._PERSISTENCE_PLUGINS_DIR / STORAGE_PROVIDER
     storage.mkdir(parents=True)
     (storage / "__init__.py").write_text(STORAGE_PLUGIN, encoding="utf-8")
 

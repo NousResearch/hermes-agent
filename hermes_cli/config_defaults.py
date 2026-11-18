@@ -69,12 +69,11 @@ DEFAULT_CONFIG = {
     # or MCP server). `hosted: true` is accepted as shorthand for `hosted: {enabled: true}`.
     "hosted": {
         "enabled": False,
-        # Plugin names of the backends a hosted boot requires; boot refuses while either is
-        # missing. The identity verifier admits each inbound frame from the connector's signed
-        # claim (hosted.identity_verifier); the session storage provider isolates tenants in
-        # storage and must pass its own isolation assertion (hosted.session_storage).
+        # The identity verifier a hosted boot requires (boot refuses while it is missing): it
+        # admits each inbound frame from the connector's signed claim. Storage isolation is
+        # persistence.provider's: a hosted boot refuses the built-in sqlite and any provider whose
+        # assert_isolating() does not pass (persistence_assembly.require_hosted_persistence).
         "identity_verifier": "",
-        "session_storage": "",
     },
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int

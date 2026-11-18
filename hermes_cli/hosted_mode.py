@@ -306,38 +306,35 @@ def _refuse_uncurated_inprocess_code(config: Mapping[str, Any]) -> None:
 
 def _require_hosted_backends(config: Mapping[str, Any]) -> None:
     """Refuse a missing required backend: the identity verifier that admits an inbound frame, and
-    the session storage provider that isolates tenants in storage (including its own isolation
-    assertion)."""
-    from hermes_state_port import resolve_session_storage
-
+    the persistence provider that isolates tenants in storage. The storage half is
+    ``persistence_assembly.require_hosted_persistence()``: it assembles the configured
+    ``persistence.provider`` and refuses the built-in SQLite (a local single-tenant store), a
+    provider that does not declare scope pinning or has no callable ``assert_isolating``, and one
+    whose ``assert_isolating`` raises."""
     verifier = str(_hosted_setting(config, "identity_verifier") or "").strip()
     if not verifier:
         _refuse(
             "no identity verifier is configured (hosted.identity_verifier)",
             "Every inbound frame must be admitted by a verifier that checks the connector's signed "
             "claim; install the deployment's verifier plugin and name it there")
-    storage = str(_hosted_setting(config, "session_storage") or "").strip()
-    if not storage:
-        _refuse(
-            "no session storage provider is configured (hosted.session_storage)",
-            "Hosted sessions live behind a storage provider that isolates tenants; install the "
-            "deployment's provider plugin and name it there")
+    from persistence import IsolationUnsupported
+    from persistence_assembly import require_hosted_persistence
+
     try:
-        provider = resolve_session_storage(storage)
-    except LookupError as exc:
+        require_hosted_persistence()
+    except IsolationUnsupported as exc:
         _refuse(
-            f"the configured session storage provider is missing: {exc}",
-            "Install the deployment's session storage provider plugin so the name in "
-            "hosted.session_storage resolves; storage never falls back to another store")
-    try:
-        provider.assert_isolating()
-    except Exception as exc:  # health: allow BLE001 -- a backend's isolation assertion names its own
-        # failure mode (a role's grants, a server error); the boot reports it verbatim instead of
-        # enumerating backends' exceptions here
+            f"the persistence provider does not isolate tenants in storage: {exc}",
+            "Hosted sessions live behind a persistence provider that pins every store to its "
+            "tenant and proves it (assert_isolating); set persistence.provider to the "
+            "deployment's isolating provider. The storage role must not be able to read or write "
+            "another tenant's rows (a role that bypasses row security fails this)")
+    except Exception as exc:  # health: allow BLE001 -- an unknown, ambiguous or failing provider (or a backend that cannot assemble) proves no isolation; the boot reports it verbatim
         _refuse(
-            f"the session storage provider {storage!r} does not isolate tenants in storage: {exc}",
-            "The storage role must not be able to read or write another tenant's rows (a role that "
-            "bypasses row security fails this); use the provider's isolating role")
+            f"the configured persistence provider cannot be used: {exc}",
+            "Ship the deployment's persistence provider in the image (bundled, or an installed "
+            "package's entry point) and name it in persistence.provider; storage never falls "
+            "back to another store")
 
 
 def _prune_sys_path_outside_image() -> None:

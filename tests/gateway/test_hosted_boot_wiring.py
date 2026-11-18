@@ -28,11 +28,10 @@ def _startup(monkeypatch, tmp_path):
         def __init__(self, config):
             from gateway.session import SessionStore
             from hermes_constants import get_hermes_home
-            from hermes_state import SessionDB
+            from persistence_assembly import open_persistence, profile_scope
 
             self.session_store = SessionStore(get_hermes_home() / "sessions", config)
-            self._session_db = SessionDB(get_hermes_home() / "state.db")
-            self.session_store._db = self._session_db
+            self._session_db = self.persistence = open_persistence(profile_scope())
             self._draining = False
             self._running = False
             self._closed = False
@@ -55,7 +54,7 @@ def _startup(monkeypatch, tmp_path):
             if not self._closed:
                 self._closed = True
                 self.session_store.close_all_db_handles()
-                self._session_db.close()
+                self.persistence.close()
 
     monkeypatch.setattr(run_mod, "_host_attach_or_none", AsyncMock(return_value=None))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -123,6 +122,48 @@ async def test_a_hosted_refusal_stops_the_boot_before_anything_serves(_startup, 
     with pytest.raises(SystemExit) as exit_info:
         await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
     assert exit_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    assert _startup == []  # no runner, no adapters, nothing served
+
+
+def _hosted_boot_reaching_storage(monkeypatch, persistence):
+    """A hosted deployment whose every other boot condition passes, so the boot's verdict is the
+    storage check's: the import-free preflight and the loaded-code checks are the subject of
+    their own tests, so they are no-ops here; ``_require_hosted_backends`` and the real
+    ``persistence_assembly.require_hosted_persistence`` it calls are not."""
+    import hermes_yaml as yaml
+
+    from hermes_cli import hosted_mode
+    from hermes_constants import get_hermes_home
+
+    config = {"hosted": {"enabled": True, "identity_verifier": "stub-verifier"}}
+    if persistence is not None:
+        config["persistence"] = persistence
+    get_hermes_home().mkdir(parents=True, exist_ok=True)
+    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(hosted_mode, "_VERDICT", {"hosted": True, "config": config, "plugins_permitted": True})
+    monkeypatch.setattr(hosted_mode, "hosted_boot_preflight", lambda **kwargs: None)
+    monkeypatch.setattr(hosted_mode, "_refuse_direct_platform_adapters", lambda gateway_config: None)
+    monkeypatch.setattr(hosted_mode, "_refuse_non_sandbox_terminal", lambda config: None)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
+    monkeypatch.setattr(hosted_mode, "finish_hosted_boot", lambda: None)
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_boot_on_the_builtin_sqlite_refuses_to_start(_startup, monkeypatch, capsys):
+    """The storage check is wired into the real boot: a hosted deployment whose
+    ``persistence.provider`` is the built-in SQLite (here: no persistence section at all) refuses
+    to start — the fatal-config exit, the refusal reported on the boot's own channel naming the
+    storage condition, and nothing started."""
+    from gateway.config import GatewayConfig
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+    _hosted_boot_reaching_storage(monkeypatch, persistence=None)
+    with pytest.raises(SystemExit) as exit_info:
+        await run_bootstrap.start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+    assert exit_info.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    out = capsys.readouterr().out
+    assert "Hosted boot refused: the persistence provider does not isolate tenants in storage" in out
+    assert "built-in sqlite" in out
     assert _startup == []  # no runner, no adapters, nothing served
 
 

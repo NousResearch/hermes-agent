@@ -9,7 +9,10 @@
 A name that resolves nowhere, resolves more than once, or fails to load (import, ``register`` or a missing
 registration) raises ``ValueError`` naming the provider; nothing falls back to SQLite. User plugin directories
 (``$HERMES_HOME/plugins``, ``./.hermes/plugins``) are never consulted: in-process storage code is not user-pluggable,
-like config backends (``plugins/config_backends``). ``persistence_assembly`` is the only caller.
+like config backends (``plugins/config_backends``). In a hosted process the hosted code rule applies before import:
+a provider whose code resolves outside the deployment image (an entry point whose module lives in the home, a
+symlink planted in the bundled tree) is refused with the reason (``_hosted_refusal``). ``persistence_assembly`` is the
+only caller.
 """
 
 from __future__ import annotations
@@ -93,6 +96,25 @@ def _load_bundled(name: str, plugin_dir: Path) -> Any:
     return module
 
 
+def _hosted_refusal(name: str, plugin_dir: Optional[Path]) -> str:
+    """Why provider ``name`` may not be imported in this process (``""`` when it may), decided before any of its code
+    runs. A hosted process loads in-process code only from what its deployment image ships: the one shared predicate
+    (``hermes_cli.hosted_code_fence.hosted_code_refusal``) judges a bundled directory by its realpath (a symlink
+    planted in the bundled tree that leaves it is refused) and an entry point by the file its module resolves to (never
+    its distribution's metadata, which a ``.pth`` or an editable record can aim into the home). The process-wide code
+    fence the hosted boot installs refuses the import itself whatever this check misses; this check gives the refusal
+    its reason. A local install answers ``""`` for everything."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    if plugin_dir is not None:
+        refusal = hosted_code_refusal(plugin_dir)
+    else:
+        eps = _entry_points(name)
+        # The module an entry point imports is its value's ``module`` part (``module:attr``).
+        refusal = hosted_code_refusal(None, module=eps[0].value.partition(":")[0].strip()) if eps else ""
+    return f"persistence provider {name!r} refused: {refusal}" if refusal else ""
+
+
 def backend_factory(name: str) -> BackendFactory:
     """The backend factory of the provider ``name``; ``ValueError`` naming it when it is unknown, provided twice, or
     fails to load."""
@@ -100,6 +122,10 @@ def backend_factory(name: str) -> BackendFactory:
     if name == BUILTIN_PROVIDER:
         return _sqlite_factory
     plugin_dir = _bundled_dir(name)
+    refusal = _hosted_refusal(name, plugin_dir)
+    if refusal:
+        logger.error("%s", refusal)
+        raise ValueError(refusal)
     try:
         plugin = _load_bundled(name, plugin_dir) if plugin_dir else _entry_points(name)[0].load()
         register = getattr(plugin, "register", None)

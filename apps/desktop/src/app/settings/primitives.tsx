@@ -18,7 +18,7 @@ export const SettingsBreadcrumbContext = createContext(false)
 // surface (e.g. the boot-failure recovery card owns its own padding).
 export function SettingsContent({ children, bare = false }: { children: ReactNode; bare?: boolean }) {
   return (
-    <section className="min-h-0 overflow-hidden">
+    <section className="min-h-0 overflow-hidden" data-slot={bare ? undefined : 'settings-content'}>
       <div className={cn('h-full min-h-0 overflow-y-auto', bare ? 'px-5 pb-6' : cn('pb-20', PAGE_INSET_X))}>
         {children}
       </div>
@@ -176,7 +176,15 @@ export function ListRow({
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className={cn('@container', className)} data-tour={dataTour} id={id}>
+    <div
+      className={cn('@container', className)}
+      // One setting, for the Advanced disclosure's count (settings-card.tsx).
+      data-setting=""
+      data-slot="settings-row"
+      data-tour={dataTour}
+      data-wide={wide || undefined}
+      id={id}
+    >
       <div className={cn('grid gap-3 py-3', !wide && [LIST_ROW_COLUMNS, '@2xl:items-center'])}>
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">

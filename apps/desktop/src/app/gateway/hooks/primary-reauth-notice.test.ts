@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $notifications, clearNotifications } from '@/store/notifications'
 
@@ -41,12 +42,15 @@ it('hands a foreground sign-in to the boot overlay with the error current at the
   expect(state.failDesktopBoot).toHaveBeenCalledWith('latest error')
 })
 
-it('offers Gateways settings to a parked background primary, whatever the error', () => {
+it('offers machine settings to a parked background primary, whatever the error', () => {
   state.active = false
 
   for (const detail of [WEBAPP_LAUNCH_REQUIRED, 'Your remote gateway session has expired.']) {
     notifyPrimaryReauth(detail, () => detail)
   }
 
-  expect(errorToasts().map(toast => toast.action?.label)).toEqual(['Open Gateways', 'Open Gateways'])
+  expect(errorToasts().map(toast => toast.action?.label)).toEqual([
+    en.notifications.actions.openGateways,
+    en.notifications.actions.openGateways
+  ])
 })

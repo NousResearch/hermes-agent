@@ -4,9 +4,12 @@ const LEGACY_VISIBLE_KEY = 'hermes.desktop.statusbarVisible'
 
 const loadStore = () => import('./statusbar-prefs')
 
+const SHELL_KEY = 'hermes.desktop.agentShell.v1'
+
 describe('statusbar whole-bar visibility', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    window.localStorage.setItem(SHELL_KEY, 'false')
     vi.resetModules()
   })
 
@@ -28,6 +31,15 @@ describe('statusbar whole-bar visibility', () => {
     const reloaded = await loadStore()
 
     expect(reloaded.$statusbarVisible.get()).toBe(false)
+  })
+
+  it('keeps the Simple-mode policy: the bar rests hidden unless the free tier Sign in needs it', async () => {
+    const store = await loadStore()
+    const mode = await import('./interface-mode')
+    mode.setInterfaceMode('simple')
+    expect(store.$statusbarShown.get()).toBe(false)
+    mode.setModeContext({ freeTierSignInOpen: true })
+    expect(store.$statusbarShown.get()).toBe(true)
   })
 })
 

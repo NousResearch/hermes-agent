@@ -1,0 +1,585 @@
+/* Shared primitives in the redesign (pages.md §4 "Shared button and control scale"): buttons, text
+   fields, select triggers, segmented controls, switches, checkboxes, chips and kbd keys. Components
+   stay single-sourced in components/ui; this file only restyles them under the root gate. Controls
+   in pages and floating surfaces take the Figma 36px page scale; chrome elsewhere keeps its density. Tokens: tokens/color.css (fills, strokes), tokens/shape.css
+   (radii, the focus ring). */
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+/* Matched by Button's own data-size/data-variant: wrapped in a Tip, menu or popover trigger, Radix
+   overwrites its data-slot, so data-slot='button' would miss half of them. */
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant]:not([data-variant='grip']) {
+  border-radius: var(--portal-control-radius);
+}
+
+/* Flattened with :where() so a context restyles only through the tokens above, never by
+   out-specifying this. The Tailwind ring the primitives carry is retired here: it would draw a
+   second, differently-coloured ring around the outline. */
+:root[data-shell='portal']
+  :where(:is(button, a)[data-size][data-variant], [data-slot='switch'], [data-slot='checkbox']):focus-visible {
+  --tw-ring-shadow: 0 0 #0000;
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ) {
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ):hover {
+  background-color: var(--portal-control-fill-hover);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ):active {
+  background-color: var(--portal-control-fill-pressed);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  )[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 22%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+/* Disabled is 40% for every control (DESIGN.md, "States are derived"), not the primitive's 50%: at
+   50% a brand-filled primary such as a dialog's "Create group (1)" still read as live. */
+:root[data-shell='portal'] button[data-size][data-variant]:disabled {
+  opacity: 0.4;
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:hover {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 86%, var(--ui-base));
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:active {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 80%, var(--portal-raw-black));
+}
+
+/* Destructive. The confirm of a destructive dialog (878:7066 "Delete 2 items", 878:8958) is a solid
+   #A22A20 slab with white ink (7.3:1); inline and secondary destructive actions ("Delete agent" 895:*,
+   the History selection bar's Delete, row "Remove") take destructiveOutline: the danger tint, stroke
+   and ink (tokens/color.css). */
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive'] {
+  background-color: var(--portal-control-danger-fill);
+  box-shadow: none;
+  color: var(--portal-control-on-danger);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:hover {
+  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 88%, var(--portal-raw-pure-white));
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:active {
+  background-color: color-mix(in srgb, var(--portal-control-danger-fill) 82%, var(--portal-raw-black));
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructive']:focus-visible {
+  /* The shared ring, offset one step further so it never merges with the red fill. */
+  --portal-focus-ring-offset: calc(var(--portal-focus-ring-outset) + 1px);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline'] {
+  background-color: var(--portal-surface-danger);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-danger);
+  color: var(--portal-text-danger);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:hover {
+  background-color: var(--portal-surface-danger-hover);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:active {
+  background-color: var(--portal-surface-danger-pressed);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']:focus-visible {
+  --portal-focus-ring-color: var(--portal-text-danger);
+}
+
+/* Page and dialog scale: 36px boxes with 14px Medium labels (pages.md §4). */
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):not(
+    [data-slot='page-toolbar'] *
+  ):not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
+  min-height: 2.25rem;
+  padding-block: 0;
+  padding-inline: 1rem;
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):has(> svg, > .codicon):not(
+    [data-slot='page-toolbar'] *
+  ):not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
+  padding-inline: 0.75rem 1rem;
+  gap: 0.5rem;
+}
+
+/* Dialog and drawer actions (1038:7792): every button in the footer, Cancel included, takes the
+   footer's action height so the row reads as one line. */
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  :is([data-slot='dialog-footer'], .agent-history-preview-actions)
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong']
+  ) {
+  min-height: var(--portal-dialog-action-height);
+}
+
+/* One dialog anatomy (DESIGN.md: "a bordered Cancel beside the solid action"): a footer's quiet
+   action is bordered whichever variant its dialog asked for, so New agent and Rename chat (ghost)
+   match Delete agent (outline). */
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  [data-slot='dialog-footer']
+  :is(button, a)[data-size][data-variant][data-variant='ghost'] {
+  padding-inline: 1rem;
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  [data-slot='dialog-footer']
+  :is(button, a)[data-size][data-variant][data-variant='ghost']:hover {
+  background-color: var(--portal-control-fill-hover);
+}
+
+/* A list card's row action ("Change plan" 856:1835, "Manage"/"Reconnect" 895:17703), an empty
+   page's call to action ("Start a chat" 877:4300) and the Capabilities owner bar's button beside its
+   36px select are the same 36px button: shared components ask for a compact size, which the
+   redesign's 64px rows and page frame outgrow. */
+:root[data-shell='portal']
+  [data-page-surface]
+  :is(
+    .global-settings-card,
+    .global-settings-disclosure-body,
+    .agent-settings-card,
+    [data-slot='empty-state-action'],
+    [data-slot='capability-scope']
+  )
+  :is(button, a)[data-size][data-variant]:is([data-size='sm'], [data-size='xs']):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong'],
+    [data-variant='ghost']
+  ) {
+  min-height: 2.25rem;
+  gap: 0.5rem;
+  padding-block: 0;
+  padding-inline: 1rem;
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  :is(
+    .global-settings-card,
+    .global-settings-disclosure-body,
+    .agent-settings-card,
+    [data-slot='empty-state-action'],
+    [data-slot='capability-scope']
+  )
+  :is(button, a)[data-size][data-variant]:is([data-size='sm'], [data-size='xs']):has(> svg, > .codicon):not(
+    [data-variant='link'],
+    [data-variant='text'],
+    [data-variant='textStrong'],
+    [data-variant='ghost']
+  ) {
+  padding-inline: 0.75rem 1rem;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant][data-size='icon'] {
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant][data-size='icon']:hover {
+  background-color: var(--portal-control-fill-hover);
+}
+
+/* ── Text fields and select triggers ──────────────────────────────────────── */
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']) {
+  border-color: var(--portal-field-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group']) {
+  min-height: 2.25rem;
+  padding-inline: 0.75rem;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input'], [data-slot='input-group'], [data-slot='textarea'])::placeholder {
+  color: var(--ui-text-quaternary);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']):hover {
+  border-color: var(--portal-raw-ink-22);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(
+    [data-slot='input']:not([class~='border-0']),
+    [data-slot='input-group'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger']
+  ):is(:focus-visible, :focus-within, [data-state='open']) {
+  border-color: var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger'] {
+  min-height: 2.25rem;
+  gap: 0.625rem;
+  padding-inline: 1rem 0.75rem;
+  border-color: var(--portal-select-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-select-fill);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger']:hover {
+  border-color: var(--portal-raw-ink-40);
+}
+
+/* ── Segmented control (856:3444) ─────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] {
+  min-height: 2.25rem;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-field-stroke);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button {
+  min-height: 1.75rem;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-chip);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='segmented-control']
+  > button:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button[aria-pressed='true'] {
+  background-color: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']:not(.dark)
+  [data-page-surface]
+  [data-slot='segmented-control']
+  > button[aria-pressed='true'] {
+  background-color: var(--portal-surface-brand-selected);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Profile scope chips ("Applies to"): the segmented control's selection on separate keys, since a
+   roster of profiles wraps where one segmented strip cannot. ───────────────── */
+
+:root[data-shell='portal'] [data-slot='scope-chip'] {
+  min-height: 1.75rem;
+  padding: 0 0.75rem;
+  border-color: var(--portal-control-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip']:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill-hover);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip'][aria-pressed='true'] {
+  border-color: transparent;
+  background-color: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']:not(.dark) [data-slot='scope-chip'][aria-pressed='true'] {
+  background-color: var(--portal-surface-brand-selected);
+}
+
+:root[data-shell='portal'] [data-slot='scope-chip']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Switch (856:3465): 36×20 brand track, 16px light knob ────────────────── */
+
+:root[data-shell='portal'] [data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked'] {
+  background: var(--portal-raw-ink-14);
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-base) 20%, transparent);
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='checked']:not(:disabled) {
+  background: var(--portal-brand-fill);
+}
+
+:root[data-shell='portal'] [data-slot='switch-thumb'] {
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-slot='switch-thumb'][data-state='checked'] {
+  background: var(--portal-on-brand);
+}
+
+/* ── Checkbox (878:5039): 16px, r3, 28% stroke; checked = brand fill ──────── */
+
+:root[data-shell='portal'] :is([data-slot='checkbox'], [data-slot='checkbox-mark']) {
+  border-color: var(--portal-select-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-raw-ink-2);
+  box-shadow: none;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='checkbox'], [data-slot='checkbox-mark']):is([data-state='checked'], [data-state='indeterminate']) {
+  border-color: var(--portal-brand-fill);
+  background-color: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] [data-slot='checkbox']:hover:not(:disabled, [data-state='checked']) {
+  border-color: color-mix(in srgb, var(--ui-base) 45%, transparent);
+}
+
+/* ── Badges and kbd keys ──────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='badge'] {
+  border-radius: var(--portal-radius-chip);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], .hermes-floating-surface, [data-slot='dialog-content'])
+  [data-slot='kbd'] {
+  border-color: var(--portal-control-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-raw-ink-4);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+}
+
+/* A settings row's picker button (language, model) is a select in the design (856:3456). */
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='settings-row']
+  :is(button, a)[data-size][data-variant][data-variant='outline'][aria-haspopup='dialog'] {
+  min-height: 2.25rem;
+  gap: 0.625rem;
+  padding-inline: 1rem 0.75rem;
+  background-color: var(--portal-select-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-select-stroke);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* Boxed search (877:5952): a 36px text field, not a pill. */
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box'] {
+  /* Callers size the classic pill (Capabilities' h-10); the page field is always 36px. */
+  height: auto;
+  min-height: 2.25rem;
+  padding-block: 0;
+  padding-inline: 0.75rem;
+  border-color: var(--portal-field-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']:hover {
+  border-color: var(--portal-raw-ink-22);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']:focus-within {
+  border-color: var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']
+  input {
+  font-size: var(--portal-type-body-size);
+}
+
+/* ── Touch (DESIGN.md › Responsive) ───────────────────────────────────────────
+   A coarse pointer on the browser host, at any width: every control takes the 44px target. Buttons,
+   select triggers and tabs grow to it; switches and checkboxes keep their visual and extend their hit
+   area past it (an inset ::after), so a row's layout holds. Native Desktop keeps its pointer rhythm. */
+@media (hover: none), (pointer: coarse) {
+  /* The id step: the page and dialog scales above are built from long attribute chains, and the
+     touch target must win over all of them, in the app and in body-portalled dialogs alike. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(#root, body > :not(#root))
+    :is(
+      :is(button, a)[data-size][data-variant]:not([data-variant='link'], [data-variant='grip']),
+      [data-slot='select-trigger'],
+      [role='tab']
+    ) {
+    min-height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(button, a)[data-size^='icon'][data-variant]:not([data-variant='grip']) {
+    min-width: var(--portal-touch-target);
+  }
+
+  /* Pages carry many bespoke buttons (tabs, segments, filters, table titles, header plates): on touch
+     every button in a page, a workspace page or the conversation header is at least the target tall. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    :is([data-page-surface], [data-zone-page], [data-slot='portal-conversation-header'])
+    button:not([data-slot='switch'], [data-slot='checkbox']) {
+    min-height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-slot='portal-conversation-header'] button {
+    min-width: var(--portal-touch-target);
+  }
+
+  /* Controls whose visual is smaller than the target on either axis: a tool run's summary row, the
+     sidebar's agent rows and machine status chip, the catalog carousel's dots. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(
+      [data-slot='switch'],
+      [data-slot='checkbox'],
+      [data-slot='disclosure-row-toggle'],
+      .portal-agent-chat,
+      .portal-machine-status,
+      .catalog-featured-dot
+    ) {
+    position: relative;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(
+      [data-slot='switch'],
+      [data-slot='checkbox'],
+      [data-slot='disclosure-row-toggle'],
+      .portal-agent-chat,
+      .portal-machine-status,
+      .catalog-featured-dot
+    )::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc((100% - var(--portal-touch-target)) / 2));
+  }
+
+  /* The status chip clips its label, which would clip its hit area too: the label truncates itself. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-machine-status {
+    overflow: visible;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-machine-status > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* iOS Safari zooms into any focused field under 16px and stays zoomed. styles.css floors classic's
+     fields; the redesign's own field sizes (13–14px) out-specify that floor, so it is re-asserted here
+     above them: the id step outranks any class-built field rule, in the app and in body-portalled
+     dialogs alike. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(#root, body > :not(#root))
+    :is(input, textarea, select) {
+    font-size: max(var(--portal-type-field-touch-min), 1em);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] #root [data-slot='composer-rich-input'] {
+    font-size: max(var(--portal-type-field-touch-min), var(--conversation-text-font-size));
+  }
+}
+
+/* ── Status dots ──
+   One status family in the redesign (tokens/color.css: online, pending, error): every StatusDot reads
+   it, whatever classic tint its caller passed, so "connected" is the same green on the sidebar chip,
+   the gateway popover and every page. */
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='good'] {
+  background-color: var(--portal-status-online);
+}
+
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='warn'] {
+  background-color: var(--portal-status-pending);
+}
+
+:root[data-shell='portal'] [data-slot='status-dot'][data-tone='bad'] {
+  background-color: var(--portal-status-error-ink);
+}

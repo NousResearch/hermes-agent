@@ -1,4 +1,5 @@
 import { cleanup, render } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -86,7 +87,11 @@ describe('the main placement floor in the renderer', () => {
     $layoutTree.set(tree)
     $hiddenTreePanes.set(new Set(['workspace', 'session-tile:a', 'terminal']))
 
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const main = zoneWrapper('grp-main')
 
@@ -102,7 +107,11 @@ describe('vertical sash vs leading-pane scrollbar (#99867)', () => {
     const tree = split('row', [group(['sessions'], { id: 'grp-sessions' }), group(['workspace'], { id: 'grp-main' })])
 
     $layoutTree.set(tree)
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const sashes = document.querySelectorAll('[data-sash-overlap="trailing"]')
 

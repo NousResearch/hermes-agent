@@ -14,8 +14,10 @@ import { usePanelTitlebar } from './panel-titlebar'
 
 const observers = new Set<ControlledResizeObserver>()
 
+/** Like the real observer, a new observation is delivered once after the next layout. */
 class ControlledResizeObserver {
   readonly targets = new Set<Element>()
+  readonly unreported = new Set<Element>()
 
   constructor(readonly callback: ResizeObserverCallback) {
     observers.add(this)
@@ -23,6 +25,7 @@ class ControlledResizeObserver {
 
   observe(target: Element) {
     this.targets.add(target)
+    this.unreported.add(target)
   }
 
   unobserve(target: Element) {
@@ -31,6 +34,22 @@ class ControlledResizeObserver {
 
   disconnect() {
     this.targets.clear()
+    this.unreported.clear()
+  }
+}
+
+/** The frame's layout: every observation made since the last one reports its first size. */
+function layout() {
+  for (const observer of observers) {
+    const targets = [...observer.unreported]
+    observer.unreported.clear()
+
+    if (targets.length) {
+      observer.callback(
+        targets.map(target => ({ target }) as ResizeObserverEntry),
+        observer as unknown as ResizeObserver
+      )
+    }
   }
 }
 
@@ -125,7 +144,10 @@ afterEach(() => {
 const reservation = (side: 'left' | 'right') =>
   screen.getByTestId('panel').style.getPropertyValue(`--panel-titlebar-${side}`)
 
-const chromeChanged = () => window.dispatchEvent(new Event(TITLEBAR_CHROME_CHANGED_EVENT))
+const chromeChanged = () => {
+  window.dispatchEvent(new Event(TITLEBAR_CHROME_CHANGED_EVENT))
+  layout()
+}
 
 describe('titlebar reservation lifecycle', () => {
   it('rebinds to replacement nodes and tracks a longer board name under StrictMode', () => {
@@ -202,16 +224,20 @@ describe('titlebar reservation lifecycle', () => {
 
     chipWidth = 200
     fireEvent.click(screen.getByText('Kanban'))
+    act(layout)
     expect(screen.getByText('Openplanet').closest('[data-titlebar-cluster="left"]')).not.toBeNull()
     expect(globalThis.document.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
     expect(reservation('left')).toBe('310px')
 
     fireEvent.click(screen.getByText('Settings'))
-    expect(globalThis.document.querySelector('[data-titlebar-cluster]')).toBeNull()
+    act(layout)
+    // The redesign parks the clusters (hidden, still mounted) on an overlay destination.
+    expect(globalThis.document.querySelector('[data-titlebar-cluster]:not([hidden])')).toBeNull()
     expect(reservation('left')).toBe('310px')
 
     chipWidth = 90
     fireEvent.click(screen.getByText('Chat'))
+    act(layout)
     expect(reservation('left')).toBe('200px')
     expect(screen.queryByText('Openplanet')).toBeNull()
   })

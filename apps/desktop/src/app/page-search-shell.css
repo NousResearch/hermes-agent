@@ -1,0 +1,55 @@
+/* Keep list/detail controls usable when window chrome and the page header take most of the height. */
+@media (max-height: 600px) {
+  [data-page-surface]:has(.master-detail) {
+    overflow-y: auto;
+  }
+
+  [data-page-surface] > .page-search-body:has(.master-detail) {
+    min-height: 24rem;
+    flex-shrink: 0;
+  }
+}
+
+/* Redesigned page frame (Capabilities 919:9281): the shared page column (portal-pages.css) around the
+   one page header (redesign/page-header.tsx). Only the redesign renders these classes. */
+/* An empty page's card sits at the top of the page column (877:3596), not floating mid-canvas. */
+.page-search-empty {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
+}
+
+/* A master-detail page (Messaging) keeps its list and detail in the same column as its heading. */
+.page-redesigned > .page-search-body:has(.master-detail) {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding-inline: var(--page-content-inset);
+}
+
+.page-header {
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding: calc(var(--titlebar-height) + var(--portal-page-top)) var(--page-content-inset) 0;
+}
+
+/* A header search (Messaging) keeps its field width at the H1 row's end. */
+.page-header-search {
+  width: 24rem;
+  max-width: 100%;
+}
+
+/* A header action (Library's refresh): the band's 30px chrome button. */
+.portal-page-header-actions .page-header-chrome-button {
+  width: var(--portal-chrome-button-size);
+  height: var(--portal-chrome-button-size);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-chrome);
+}
+
+.portal-page-header-actions .page-header-chrome-button:hover {
+  background: var(--portal-surface-chrome-hover);
+}
+

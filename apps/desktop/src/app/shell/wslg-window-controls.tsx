@@ -3,7 +3,7 @@ import type { CSSProperties, PointerEvent } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 
-import { TITLEBAR_HEIGHT } from './titlebar'
+import { useTitlebarHeight } from './use-touch-titlebar'
 
 interface WslgWindowControlsProps {
   isFullscreen: boolean
@@ -12,7 +12,7 @@ interface WslgWindowControlsProps {
 
 // Full-height caption buttons sized to match the native Windows cluster
 // (~46px wide × full titlebar height). `h-full` fills the cluster box, whose
-// height is pinned to TITLEBAR_HEIGHT below — NOT var(--titlebar-height), which
+// height is pinned to the window's band below — NOT var(--titlebar-height), which
 // the contrib shell zeroes for content subtrees (controller.tsx), collapsing
 // the buttons if inherited.
 const buttonClass =
@@ -28,6 +28,7 @@ const stopTitlebarDrag = (event: PointerEvent<HTMLButtonElement>) => event.stopP
 
 export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowControlsProps) {
   const controls = window.hermesDesktop?.windowControls
+  const titlebarHeight = useTitlebarHeight()
 
   if (!controls || isFullscreen) {
     return null
@@ -43,8 +44,8 @@ export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowCont
       aria-label="Window controls"
       className="fixed right-0 top-0 z-80 flex items-stretch overflow-hidden bg-(--ui-chat-surface-background) text-[10px]"
       // Pin the real titlebar height: the shared --titlebar-height var is
-      // contextually zeroed inside the contrib shell, so read the constant.
-      style={{ height: `${TITLEBAR_HEIGHT}px` } as CSSProperties}
+      // contextually zeroed inside the contrib shell, so read the band itself.
+      style={{ height: `${titlebarHeight}px` } as CSSProperties}
     >
       <button
         aria-label="Minimize window"

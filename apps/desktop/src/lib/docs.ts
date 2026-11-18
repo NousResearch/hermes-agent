@@ -5,3 +5,6 @@
  * at the same place.
  */
 export const DESKTOP_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/user-guide/desktop'
+
+/** The docs home, for a general "Documentation" link. */
+export const DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/'

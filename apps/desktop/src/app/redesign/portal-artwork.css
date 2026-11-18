@@ -1,0 +1,231 @@
+/* The rotating artwork (Prod - Desktop › Brand 16291:10506, frame 16292:10764: one row per artwork).
+   artwork.ts picks one per launch and names it on <html data-artwork-dark/-light>; everything here
+   is keyed on those, so only the launch's image is ever fetched and a theme switch is a class flip.
+
+   Figma lays the art on the window's Background frame (1270×870 inside the 5px "Blue Screen" bezel)
+   and veils it with the panels above (portal-shell.css, tokens/color.css). The art is one layer stack,
+   --artwork-paint, that every painter repeats on its own box with `background-attachment: fixed`:
+   the canvas (rails, titlebar band, page bands) bare, the stage, page bodies, page navs and the
+   docked composer's floor under their veil. Each painter is opaque, so nested surfaces and covers
+   never compound the veil, and every copy lands on the same window pixels.
+
+   Geometry is Figma's, in frame pixels, with the frame's centre on the window's and one frame pixel
+   to one window pixel in Figma's 1280×880 window (the frame sits 5px inside it, as in Figma). Other
+   windows scale it to cover that window as `background-size: cover` would: a wider window crops the
+   top and bottom, a taller one the sides, a larger one scales it all up. A wide window shifts the
+   figure artworks right by Figma's docked-sidebar amount (03 · Workspace/Session). */
+:root[data-shell='portal'] {
+  --artwork-unit: max(calc(100vw / 1280), calc(100vh / 880));
+  --artwork-docked: 0;
+  --artwork-sidebar-docked: 0;
+  --artwork-shift: 0;
+  --artwork-over: linear-gradient(transparent);
+  --artwork-over-blend: normal;
+  --artwork-image-blend: normal;
+  --artwork-repeat: no-repeat;
+  --artwork-paint:
+    var(--artwork-over),
+    var(--artwork-image)
+      calc(50vw + (var(--artwork-x) + var(--artwork-shift) * var(--artwork-docked) - 635) * var(--artwork-unit))
+      calc(50vh + (var(--artwork-y) - 435) * var(--artwork-unit)) / calc(var(--artwork-w) * var(--artwork-unit))
+      calc(var(--artwork-h) * var(--artwork-unit)) var(--artwork-repeat) fixed,
+    linear-gradient(var(--portal-surface-canvas), var(--portal-surface-canvas));
+  /* The ground is the stack's own last layer, not the painter's background-color: Window Glass
+     clears the shell's colour (styles.css), and an artwork blended against nothing paints its
+     blend colour over the whole canvas (light Ascend turned solid blue). */
+  --artwork-blend: var(--artwork-over-blend), var(--artwork-image-blend), normal;
+  /* The veil a stage painter lays over the art: a conversation's unless its zone holds a new chat. */
+  --artwork-veil: var(--portal-surface-stage-veil-conversation);
+  /* Figma's NOISE on the panels: the sidebar kind's in both themes, the stage's in light only. */
+  --artwork-panel-noise: url('../../assets/portal-noise-dark.svg') 0 0 / 128px repeat;
+  --artwork-stage-noise: linear-gradient(transparent);
+}
+
+:root[data-shell='portal']:not(.dark) {
+  --artwork-panel-noise: url('../../assets/portal-noise-light.svg') 0 0 / 128px repeat;
+  --artwork-stage-noise: url('../../assets/portal-noise-light-stage.svg') 0 0 / 128px repeat;
+}
+
+/* Wide (breakpoints.ts): the figure sits where Figma puts it beside a docked sidebar
+   (03 · Workspace/Session) on EVERY screen, panel or not. Following the panel moved the picture
+   150px each time a page with a nav followed one without, or the sidebar folded. Only the veil
+   still follows the chat sidebar. */
+@media (min-width: 1024px) {
+  :root[data-shell='portal'] {
+    --artwork-docked: 1;
+  }
+
+  :root[data-shell='portal']:has([data-tree-group][data-zone-pane='sessions'][data-window-start]):not(
+      :has([data-route-covered])
+    ) {
+    --artwork-sidebar-docked: 1;
+  }
+}
+
+/* ── The artworks ─────────────────────────────────────────────────────────────────────────── */
+
+/* Vanilla (16292:11290): the engraved wing's hatch in white at .10 × .98, a 1113.51px square at
+   (78.25, -121.76). The ghost carries it at full strength; a canvas veil sets its .098. */
+:root.dark[data-shell='portal'][data-artwork-dark='vanilla'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-vanilla);
+  --artwork-image: url('../../assets/portal-wing-ghost.svg');
+  --artwork-over: linear-gradient(color-mix(in srgb, var(--portal-surface-canvas) 90.2%, transparent));
+  --artwork-x: 78.25;
+  --artwork-y: -121.76;
+  --artwork-w: 1113.51;
+  --artwork-h: 1113.51;
+}
+
+/* Wing (Group 2 16292:14353): the RGB wing (portal-wing.svg: blue .8 and its color-dodge fringes),
+   its 1209-unit square drawn 1548.18px at (-169.09, -307.08). */
+:root.dark[data-shell='portal'][data-artwork-dark='wing'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-wing);
+  --artwork-image: url('../../assets/portal-wing.svg');
+  --artwork-x: -169.09;
+  --artwork-y: -307.08;
+  --artwork-w: 1548.18;
+  --artwork-h: 1548.18;
+}
+
+/* Angel (09_angel-machine_s4 16292:17621): a 1832.72px square at (-281.36, -477.55), opacity .7
+   (a canvas veil at .3); docked it moves to x -114.93. The file is Figma's original cropped to the
+   frame in both placements plus 60px of bleed on every side, so no window ever reaches its edge. */
+:root.dark[data-shell='portal'][data-artwork-dark='angel'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-angel.avif');
+  --artwork-over: linear-gradient(color-mix(in srgb, var(--portal-surface-canvas) 30%, transparent));
+  --artwork-x: -226.77;
+  --artwork-y: -60.53;
+  --artwork-w: 1557.1;
+  --artwork-h: 990.63;
+  --artwork-shift: 166.43;
+}
+
+/* Ascend (03_av-large-03-matrix-sky_s3 16292:20805): a 1306.54px square at (0, -159.54), its full
+   width but for its first 16px (a grey scan edge) with 60px of bleed above and below the frame;
+   docked it moves to x 151.73. Figma's square then leaves the frame's first 152px bare; the
+   photo's two sides are the same dark grain (both average 10,10,21 with an sd of 10), so it repeats
+   across instead and the window never shows an edge. */
+:root.dark[data-shell='portal'][data-artwork-dark='ascend'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-photo);
+  --artwork-image: url('../../assets/artwork-ascend.avif');
+  --artwork-x: 10.21;
+  --artwork-y: -60.02;
+  --artwork-w: 1296.33;
+  --artwork-h: 990.11;
+  --artwork-shift: 151.73;
+  --artwork-repeat: repeat-x;
+}
+
+/* Karborn (16292:36263): Figma's render of the cropped engraving with its exposure and highlight
+   filters at .2, lightened onto the blue ground; screen adds it the same way on so dark a ground.
+   Figma renders only the frame's height of it, and the window reaches 5px past the frame, so it
+   overscans by 6px top and bottom (a 1.4% stretch of a faint engraving) rather than ever leave a
+   band of bare ground; its sides are black and meet the ground unseen. */
+:root.dark[data-shell='portal'][data-artwork-dark='karborn'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-karborn);
+  --artwork-image: url('../../assets/artwork-karborn.avif');
+  --artwork-image-blend: screen;
+  --artwork-x: 45.02;
+  --artwork-y: -6;
+  --artwork-w: 1179.95;
+  --artwork-h: 882;
+}
+
+/* Light Vanilla (Light/Wing 16292:23804): the same hatch in black .98 at .05 on #f2f2f2 (the
+   02–06 screens; 01 draws it at half that). The white ghost differenced from the ground draws it
+   near-black; a canvas veil sets its .049. */
+:root[data-shell='portal']:not(.dark)[data-artwork-light='vanilla'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-light);
+  --artwork-image: url('../../assets/portal-wing-ghost.svg');
+  --artwork-image-blend: difference;
+  --artwork-over: linear-gradient(color-mix(in srgb, var(--portal-surface-canvas) 95.1%, transparent));
+  --artwork-x: 78.25;
+  --artwork-y: -121.76;
+  --artwork-w: 1113.51;
+  --artwork-h: 1113.51;
+}
+
+/* Light Ascend (16292:27188): Ascend's photo, desaturated and its contrast lowered 8%, differenced
+   from #f2f2f2 and lightened with the brand blue (filter 16292:26685): a blue figure on white. A
+   grey layer in saturation mode desaturates what lies under it, so dark and light share one image;
+   8% of mid grey over the difference is the same as 8% less contrast before it. */
+:root[data-shell='portal']:not(.dark)[data-artwork-light='ascend'] {
+  --portal-surface-canvas: var(--portal-artwork-ground-light);
+  --artwork-image: url('../../assets/artwork-ascend.avif');
+  --artwork-image-blend: difference;
+  --artwork-over:
+    linear-gradient(var(--portal-raw-blue)), linear-gradient(var(--portal-raw-gray)),
+    linear-gradient(color-mix(in srgb, var(--portal-raw-gray) 8%, transparent));
+  --artwork-over-blend: lighten, saturation, normal;
+  /* Beside the chat sidebar Figma thickens the new chat's stage to white .90 (03 and 04,
+     16292:27689 / 16292:28028) so the figure stays quiet behind the composer; pages keep .80. */
+  /* token-exempt: one artwork's own veil, Figma's per-screen value */
+  --portal-surface-stage-veil: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) calc(80% + 10% * var(--artwork-sidebar-docked)),
+    transparent
+  );
+  --artwork-x: 10.21;
+  --artwork-y: -60.02;
+  --artwork-w: 1296.33;
+  --artwork-h: 990.11;
+  --artwork-shift: 151.73;
+  --artwork-repeat: repeat-x;
+}
+
+/* ── Painters ─────────────────────────────────────────────────────────────────────────────── */
+
+/* The canvas: the shell root spans the window and never scrolls. The art is a picture on its own
+   ground, so under Glass the canvas stays that picture; the native material does not show through. A route overlay page covers the chat, so it
+   and its band repaint the canvas; a workspace page's band is the zone's own, transparent onto it. */
+:root[data-shell='portal'] [data-contrib-shell],
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface],
+:root[data-shell='portal'] [data-slot='page-toolbar'] {
+  background: var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: var(--artwork-blend);
+}
+
+/* A new chat's stage and a page body take the lighter veil (02 · Composer, 06 · Settings/Account). */
+:root[data-shell='portal'] [data-tree-group][data-window-top]:is([data-zone-page], :has([data-chat-landing='true'])),
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] {
+  --artwork-veil: var(--portal-surface-stage-veil);
+}
+
+/* The stage panel of every window-top zone but the sidebar's kind (portal-shell.css), a page body,
+   and the docked composer's floor. */
+:root[data-shell='portal']
+  [data-tree-group][data-window-top]:not(
+    [data-zone-pane='sessions'],
+    [data-zone-pane='files'],
+    [data-zone-pane='review'],
+    [data-zone-pane='chat-items']
+  )
+  > [data-panel-header]::before,
+:root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
+:root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
+  background: var(--artwork-stage-noise), linear-gradient(var(--artwork-veil)), var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: normal, normal, var(--artwork-blend);
+}
+
+/* A page's nav panel (Settings 16292:19818) and the side tool panes (Files, Review, Items: the sidebar's
+   kind, Brand rev 491:40755) are the sidebar's veil over the full-strength art. */
+:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel),
+:root[data-shell='portal']
+  [data-tree-group][data-window-top]:is(
+    [data-zone-pane='files'],
+    [data-zone-pane='review'],
+    [data-zone-pane='chat-items']
+  )
+  > [data-panel-header]::before {
+  background: var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: normal, normal, var(--artwork-blend);
+}
+
+/* The stage's own layers leave the panel's paint showing. */
+:root[data-shell='portal'] [data-tree-group][data-window-top] :is([data-chat-surface], [data-slot='composer-bounds']) {
+  background-color: transparent;
+}

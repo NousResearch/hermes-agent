@@ -3,8 +3,10 @@ import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { ChevronRight } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PAGE_INSET_X } from '../layout-constants'
+import { PageHeader } from '../redesign/page-header'
 
 import type { OverlayNavGroup, OverlayNavLink } from './overlay-split-layout'
 
@@ -24,6 +26,19 @@ export function OverlayBreadcrumbHeader({
   rootLabel,
   trailing
 }: OverlayBreadcrumbHeaderProps) {
+  // The redesign's page column already shows the open path (sub-pages expand under their
+  // destination), so every page keeps its H1 at the same height instead of dropping it under a
+  // trail on sub-pages only.
+  if (usePortalShell()) {
+    return (
+      <PageHeader
+        actions={trailing}
+        data-slot="page-heading"
+        title={grandchild?.label ?? child?.label ?? group.label}
+      />
+    )
+  }
+
   return (
     <div className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', PAGE_INSET_X)}>
       <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">

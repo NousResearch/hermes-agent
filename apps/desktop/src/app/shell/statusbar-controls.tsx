@@ -42,6 +42,9 @@ function renderMenuContent(content: NonNullable<StatusbarItem['menuContent']>, c
   return <StatusbarMenuCloseContext.Provider value={close}>{content}</StatusbarMenuCloseContext.Provider>
 }
 
+/** What an opted-in readout shows until its first value arrives. */
+export const STATUSBAR_WAITING = '—'
+
 export interface StatusbarMenuItem {
   id: string
   icon?: ReactNode
@@ -99,14 +102,27 @@ export type SetStatusbarItemGroup = (id: string, items: readonly StatusbarItem[]
 interface StatusbarControlsProps extends ComponentProps<'footer'> {
   leftItems?: readonly StatusbarItem[]
   items?: readonly StatusbarItem[]
+  sidebar?: boolean
 }
 
-export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
+export function StatusbarControls({ className, leftItems = [], items = [], sidebar = false, ...props }: StatusbarControlsProps) {
   const navigate = useNavigate()
   const hiddenIds = useStore($statusbarHiddenIds)
 
   const visible = (item: StatusbarItem) =>
     !item.hidden && (item.lockedVisible || !item.toggleLabel || !hiddenIds.includes(item.id))
+
+  if (sidebar) {
+    return (
+      <div className="flex max-h-[min(32rem,60dvh)] flex-col gap-1 overflow-y-auto" data-slot="sidebar-status">
+        {[...leftItems, ...items].filter(item => !item.hidden).map((item, index) => (
+          <div className="flex min-h-8 shrink-0 [&>button]:min-h-8 [&>button]:w-full [&>button]:rounded-md [&>button]:text-xs [&>button>span.truncate]:flex-1 [&>div>span.truncate]:flex-1 [&>a]:min-h-8 [&>a]:w-full" key={`${item.id}:${index}`}>
+            <StatusbarItemView item={sidebarStatusItem(item)} navigate={navigate} />
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <ContextMenu>
@@ -138,6 +154,22 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       <StatusbarVisibilityMenu hiddenIds={hiddenIds} items={items} leftItems={leftItems} />
     </ContextMenu>
   )
+}
+
+/** Expand compact readouts into labelled rows without changing their actions. */
+function sidebarStatusItem(item: StatusbarItem): StatusbarItem {
+  const name = item.toggleLabel ?? item.title
+
+  return {
+    ...item,
+    className: cn(item.className, '!w-full !justify-start !px-2'),
+    label: name ? (
+      <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+        <span className="truncate">{name}</span>
+        {item.label && item.label !== name && <span className="truncate text-(--ui-text-tertiary)">{item.label}</span>}
+      </span>
+    ) : item.label
+  }
 }
 
 /** Right-click the bar to choose what it shows. Lists every item that named
@@ -229,7 +261,7 @@ function StatusbarHideHint() {
  *  re-rendered every other item in the bar — measured at 1,446 wasted renders
  *  of 2,174 during a five-tab streaming run. `navigate` is stable for the
  *  router's lifetime, so item identity is the only real input. */
-const StatusbarItemView = memo(function StatusbarItemView({
+export const StatusbarItemView = memo(function StatusbarItemView({
   item,
   navigate
 }: {

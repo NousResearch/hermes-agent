@@ -105,7 +105,7 @@ the skill directory. Author JSON specs with `write_file`; read results with
 | Create from JSON spec | `docx_create.py` | `pptx_create.py` | `xlsx_create.py`, `csv_to_xlsx.py` |
 | Read back | `docx_read.py --text/--structure` | `pptx_read.py --outline` | `xlsx_read.py --sheets/--json` |
 | Edit | `docx_edit.py` | `pptx_edit.py` | `xlsx_edit.py`, `xlsx_restructure.py` |
-| Fill a template | `docx_template.py` | `pptx_from_template.py` | — |
+| Fill a template | `docx_template.py` | `pptx_from_template.py` | - |
 | Review / check | `docx_revisions.py`, `docx_comments.py`, `docx_validate.py` | `pptx_render.py` (slide PNGs) | `xlsx_recalc.py`, `xlsx_to_csv.py` |
 
 The per-format reference has the full flag table.

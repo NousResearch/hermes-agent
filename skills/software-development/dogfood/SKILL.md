@@ -25,9 +25,9 @@ This skill guides you through systematic exploratory QA testing of web applicati
 ## Inputs
 
 The user provides:
-1. **Target URL** — the entry point for testing
-2. **Scope** — what areas/features to focus on (or "full site" for comprehensive testing)
-3. **Output directory** (optional) — where to save screenshots and the report (default: `./dogfood-output`)
+1. **Target URL**: the entry point for testing
+2. **Scope**: what areas/features to focus on (or "full site" for comprehensive testing)
+3. **Output directory** (optional): where to save screenshots and the report (default: `./dogfood-output`)
 
 ## Workflow
 
@@ -70,7 +70,7 @@ Batch each step's actions into one `browser_exec` call. For each page or feature
    ```
    Re-register the hook at the start of any later call that navigates. Silent JS errors are high-value findings.
 
-2. **Read the page structure** — list visible interactive elements with their viewport centres (use `cdp('Accessibility.getFullAXTree')` and filter in Python when you need roles/names):
+2. **Read the page structure**: list visible interactive elements with their viewport centres (use `cdp('Accessibility.getFullAXTree')` and filter in Python when you need roles/names):
    ```python
    # List interactive elements
    print(js("""(() => [...document.querySelectorAll('a,button,input,select,textarea,[role=button]')]
@@ -99,7 +99,7 @@ Batch each step's actions into one `browser_exec` call. For each page or feature
 
 For every issue found:
 
-1. **Take a screenshot** showing the issue: `capture_screenshot()` prints the saved path. Copy it to `{output_dir}/screenshots/` under a descriptive name (e.g. `issue-03-broken-login.png`) — you will reference it in the report.
+1. **Take a screenshot** showing the issue: `capture_screenshot()` prints the saved path. Copy it to `{output_dir}/screenshots/` under a descriptive name (e.g. `issue-03-broken-login.png`): you will reference it in the report.
 
 2. **Record the details**:
    - URL where the issue occurs
@@ -116,7 +116,7 @@ For every issue found:
 ### Phase 4: Categorize
 
 1. Review all collected issues.
-2. De-duplicate — merge issues that are the same bug manifesting in different places.
+2. De-duplicate: merge issues that are the same bug manifesting in different places.
 3. Assign final severity and category to each issue.
 4. Sort by severity (Critical first, then High, Medium, Low).
 5. Count issues by severity and category for the executive summary.
@@ -137,7 +137,7 @@ The report must include:
    - Screenshot references (use `MEDIA:<screenshot_path>` for inline images)
    - Console errors if relevant
 3. **Summary table** of all issues
-4. **Testing notes** — what was tested, what was not, any blockers
+4. **Testing notes**: what was tested, what was not, any blockers
 
 Save the report to `{output_dir}/report.md`.
 
@@ -161,11 +161,11 @@ All browser actions are `browser_exec` calls; these are the helpers and idioms u
 ## Tips
 
 - **Always read `window.__qa_errors` after navigating and after significant interactions.** Silent JS errors are among the most valuable findings.
-- **Batch each sub-procedure into one `browser_exec` call** (navigate, wait, extract, act, check errors) — fewer round-trips, and the hook stays in place.
+- **Batch each sub-procedure into one `browser_exec` call** (navigate, wait, extract, act, check errors): fewer round-trips, and the hook stays in place.
 - **Take a `capture_screenshot()`** when you need to reason about element positions or when DOM extraction is ambiguous; `click_at_xy` takes the centres from the element listing.
-- **Test with both valid and invalid inputs** — form validation bugs are common.
-- **Scroll through long pages** — content below the fold may have rendering issues.
-- **Test navigation flows** — click through multi-step processes end-to-end.
+- **Test with both valid and invalid inputs**: form validation bugs are common.
+- **Scroll through long pages**: content below the fold may have rendering issues.
+- **Test navigation flows**: click through multi-step processes end-to-end.
 - **Check responsive behavior** by noting any layout issues visible in screenshots.
 - **Don't forget edge cases**: empty states, very long text, special characters, rapid clicking.
 - When reporting screenshots to the user, include `MEDIA:<screenshot_path>` so they can see the evidence inline.

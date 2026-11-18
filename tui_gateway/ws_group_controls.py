@@ -60,7 +60,7 @@ class GroupControlLanes:
 
         try:
             while frames and not self.client_gone.is_set() and not self.send_failed.done():
-                await self.dispatch(frames[0])
+                await self.dispatch(frames[0], queued_profile=key[0])
                 frames.popleft()
                 self.room.release()
         except _SendFailed:

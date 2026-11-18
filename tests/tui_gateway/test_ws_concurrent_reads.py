@@ -44,7 +44,7 @@ class Socket:
 def rig(monkeypatch):
     gates, log = {}, []
 
-    async def dispatch(authority, req, method, transport):
+    async def dispatch(authority, req, method, transport, *, queued_profile=None):
         log.append(f"start:{req['id']}")
         try:
             gate = gates.get(method)

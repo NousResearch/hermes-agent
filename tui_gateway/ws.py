@@ -390,7 +390,8 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
     return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
 
 
-async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
+async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport,
+                            **routing: str) -> Any:
     """One request through the authority when attached, else the legacy dispatcher. A request from the
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
@@ -403,7 +404,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)
-        resp = await authority_connection.dispatch(req)
+        resp = await authority_connection.dispatch(req, **routing)
         actor = authority_connection.actor
         if (_is_unknown_method(resp) and req_method in server._methods
                 and legacy_fallback_allowed(actor, req_method)):
@@ -485,7 +486,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         client_gone.set()
         held_dropped.update(key for key, started in held_waiting.items() if not started.is_set())
 
-    async def _dispatch_one(req: Any) -> None:
+    async def _dispatch_one(req: Any, **routing: str) -> None:
         """Dispatch one request and write its inline reply."""
         nonlocal dispatch_crashes
         req_id = req.get("id") if isinstance(req, dict) else None
@@ -494,7 +495,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # writes the response itself via transport.write (a separate thread, so that is the safe
         # path). Inline handlers return the response dict, written here from the loop.
         try:
-            resp = await _dispatch_request(authority_connection, req, req_method, transport)
+            resp = await _dispatch_request(authority_connection, req, req_method, transport, **routing)
         # health: allow BLE001 -- dispatch boundary: logs the traceback (_log.exception) and answers -32603
         except Exception:
             dispatch_crashes += 1

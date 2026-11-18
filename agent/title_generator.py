@@ -355,14 +355,14 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
     return message[:message_budget] + _PASTE_PREVIEW_LABEL + preview[:preview_budget]
 
 
-def is_titleable_user_message(user_message: str) -> bool:
+def is_titleable_user_message(user_message: str, title_preview: str | None = None) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
             and bool(_summarize_user_message(user_message).strip())
             # An attachment-only opener (manual attach, no paste preview) is a
             # file drop, not a request: deriving its "title" from the message
             # names the session after the truncated file path (#92068).
-            and not _attachment_only_opener(user_message))
+            and (bool(title_preview and title_preview.strip()) or not _attachment_only_opener(user_message)))
 
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
@@ -779,7 +779,7 @@ def apply_instant_title(
     if not session_db or not session_id:
         return None
     try:
-        title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
+        title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message, title_preview) else None
         persisted = _persist_session_title(
             session_db, session_id, title, source="derived", dedupe=False, persistence=persistence,
         ) if title else None
@@ -860,7 +860,9 @@ def _is_real_user_turn(message: Any) -> bool:
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
     content = message.get("content")
-    return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content))
+    metadata = message.get("display_metadata")
+    preview = metadata.get("title_preview") if isinstance(metadata, dict) else None
+    return is_titleable_user_message(content if isinstance(content, str) else flatten_message_text(content), preview)
 
 
 def _session_is_untitled(session_db, session_id: str, *, persistence=None) -> bool:
@@ -936,7 +938,7 @@ def maybe_auto_title(
             if persisted:
                 _notify_title(title_callback, persisted, "llm", "Kanban task title")
         return None
-    if not is_titleable_user_message(user_message):
+    if not is_titleable_user_message(user_message, title_preview):
         return None
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")

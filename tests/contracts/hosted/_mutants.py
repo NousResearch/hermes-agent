@@ -317,6 +317,51 @@ def _sqlite_serves_hosted_activity() -> ContextManager[Any]:
     return _sqlite(refuse_hosted_activity=lambda: None)
 
 
+@contextmanager
+def _sqlite_with(target: Callable[[], Any], **replacements: Any) -> Iterator[Any]:
+    """The contract suites' SQLite backend with attributes of ``target()`` (a class of the SQLite backend, imported
+    when the mutant opens) replaced while it is open."""
+    with mock.patch.multiple(target(), **replacements), _sqlite() as backend:
+        yield backend
+
+
+def _sqlite_store_class() -> type:
+    from persistence.sqlite._backend import SQLiteStore
+
+    return SQLiteStore
+
+
+def _sqlite_health_class() -> type:
+    from persistence.sqlite.services import SQLiteStorageHealth
+
+    return SQLiteStorageHealth
+
+
+def _sqlite_hosted_files_class() -> type:
+    from persistence.sqlite.gateway._hosted_store import HostedFiles
+
+    return HostedFiles
+
+
+def _sqlite_own_connections_serve_hosted_activity() -> ContextManager[Any]:
+    return _sqlite_with(_sqlite_store_class, require_open=lambda self: self._backend._require_open())
+
+
+def _sqlite_health_serves_hosted_activity() -> ContextManager[Any]:
+    from persistence.sqlite._state.health import STORAGE_CORRUPT, storage_state
+    from persistence.sqlite.services import probe_state_db
+
+    from persistence import StorageState
+
+    return _sqlite_with(
+        _sqlite_health_class, probe=lambda self: probe_state_db(self._path),
+        storage_state=lambda self: StorageState.CORRUPT if storage_state(self._path) == STORAGE_CORRUPT else StorageState.OK)
+
+
+def _sqlite_shared_write_unfenced() -> ContextManager[Any]:
+    return _sqlite_with(_sqlite_hosted_files_class, _claimed_turn_holder=lambda self: None)
+
+
 def _sqlite_store_key_ignored() -> ContextManager[Any]:
     return _sqlite(turn_fence_for=lambda holder: _fence_of_any_store(""))
 
@@ -388,6 +433,16 @@ MUTANTS: dict[str, Mutant] = {mutant.name: mutant for mutant in (
     Mutant("sqlite_serves_hosted_activity", "sqlite", "the refusal of every read and write while a hosted scope is bound",
            _sqlite_serves_hosted_activity,
            (Killer(activity.test_a_local_store_serves_no_hosted_activity),)),
+    Mutant("sqlite_own_connections_serve_hosted_activity", "sqlite",
+           "the refusal of a verb that opens its own connection (the 'shared' hosted-room file) while a hosted scope is bound",
+           _sqlite_own_connections_serve_hosted_activity,
+           (Killer(activity.test_a_local_stores_kept_shared_hosted_rooms_serve_no_hosted_activity),)),
+    Mutant("sqlite_health_serves_hosted_activity", "sqlite", "the refusal of the health service while a hosted scope is bound",
+           _sqlite_health_serves_hosted_activity,
+           (Killer(activity.test_a_local_stores_kept_health_serves_no_hosted_activity),)),
+    Mutant("sqlite_shared_write_unfenced", "sqlite", "the claimed-turn fence on a write to the 'shared' hosted-room placement",
+           _sqlite_shared_write_unfenced,
+           (Killer(activity.test_a_superseded_turns_shared_placement_write_publishes_nothing),)),
     Mutant("shared_placement_unpinned", "in_memory", "the pin choosing the 'shared' hosted-room placement",
            lambda: _opened(_SharedPlacementUnpinned),
            (Killer(activity.test_pinned_shared_rooms_are_never_visible_across_pins),)),

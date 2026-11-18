@@ -717,6 +717,87 @@ class TestBrowserVaultTools:
         assert out["success"] is False
         assert sessions and all(s == "S1" for s in sessions)
 
+    class _RecordingSup:
+        """A JS-path supervisor (no ``insert_text``) that refuses a pinned session it no longer holds,
+        as the real ``evaluate_runtime`` does, and records the session of every script it is sent."""
+
+        def __init__(self, controls, sid="S1"):
+            self.sid, self.controls, self.sent = sid, controls, []
+
+        def current_page_session(self):
+            return self.sid
+
+        def focus_page(self, origin, accept=None):
+            return {"ok": True, "url": origin + "/login"}
+
+        def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+            self.sent.append((expression, session_id))
+            if self.sid is None or (session_id is not None and session_id != self.sid):
+                return {"ok": False, "error": "the page session changed since it was validated"}
+            if "location.href" in expression:
+                return {"ok": True, "result": "https://example.com/login"}
+            if "unstamped" in expression:
+                return {"ok": True, "result": json.dumps({"unstamped": True})}
+            if "reverted" in expression:
+                return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
+            if "filled" in expression:
+                return {"ok": True, "result": json.dumps({"filled": expression.count('"index"')})}
+            return {"ok": True, "result": json.dumps(self.controls)}
+
+    def _supervised(self, store, sup):
+        from tools import browser_vault_tool
+
+        return (patch("agent.vault_store.get_vault_store", return_value=store),
+                patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup),
+                patch.object(browser_vault_tool, "_page_backend", return_value=None),
+                patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False))
+
+    def test_inspection_and_cleanup_go_to_the_pinned_session_too(self, store):
+        """Not only the secret-bearing scripts: the inspection that picks the fields and the unstamp
+        that clears them run on the session the fill pinned, never on whatever is current."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is True
+        inspection = [sid for expr, sid in sup.sent if "data-hermes-vault-slot\", nonce" in expr]
+        unstamp = [sid for expr, sid in sup.sent if "unstamped" in expr]
+        assert inspection == ["S1"] and unstamp == ["S1"]
+
+    def test_a_read_back_on_another_origin_stops_at_once(self):
+        """The read-back carries the values: once the page has left the bound origin, it is not
+        polled again until the ceiling, and the result names the cause."""
+        from tools import browser_vault_tool
+
+        sent = []
+
+        def page(_task_id, expression):
+            sent.append(expression)
+            return {"success": True, "result": json.dumps({"refused": "origin_changed", "found": "https://evil.test"})}
+
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True}), \
+             patch.object(browser_vault_tool.time, "sleep"):
+            out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
+        assert out["success"] is False and out["error_type"] == "origin_changed"
+        assert "https://evil.test" in out["error"] and len(sent) == 1
+
+    def test_a_focus_check_on_another_origin_is_origin_changed_not_focus_lost(self, store):
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[{"refused": "origin_changed", "found": "https://evil.test"}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "origin_changed"
+        assert "https://evil.test" in out["error"] and sup.typed == []
+
     def test_a_value_reverted_after_the_first_good_read_is_not_a_fill(self, store):
         """The read-back is a claim the page KEPT the value: a framework that accepts it for one
         frame and reverts it on the next commit must fail the fill, not pass on the first sample."""
@@ -1364,6 +1445,36 @@ class TestTwoFactor:
         assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
         assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
         assert declined["error_type"] == "code_declined"
+
+    def test_the_code_goes_to_the_session_its_field_was_found_on(self, store):
+        """enter_code pins the page session like a password fill: when another tool moves the
+        supervisor between the inspection and the write, the code is not typed into the new page."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls)
+        inspect = sup.evaluate_runtime
+
+        def retarget_after_inspection(expression, **kw):
+            out = inspect(expression, **kw)
+            if "data-hermes-vault-slot\", nonce" in expression:
+                sup.sid = "S2"  # e.g. focus_page from a concurrent browser call
+            return out
+
+        sup.evaluate_runtime = retarget_after_inspection
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False
+        writes = [sid for expr, sid in sup.sent if "246810" in expr]
+        assert writes == ["S1"]
 
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never

@@ -185,6 +185,7 @@ class TestReadBack:
         ("tel", "+48 600 100 200", "48600100200"),
         ("cc-exp", "12/03", "1/203"),                              # same digits, other month and year
         ("cc-exp", "07/29", "07/2029"),
+        ("cc-exp", "07/29", "0730"),                               # separator dropped, another year
         ("tel", "user@example.com", ""),                           # not a number: exact only
         ("current-password", "12 34", "1234"),                     # passwords stay exact
         ("username", "a-b", "ab"),

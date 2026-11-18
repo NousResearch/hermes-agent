@@ -1,5 +1,6 @@
 import codecs
 import os
+import time
 
 import pytest
 
@@ -832,3 +833,42 @@ def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_p
     load_hermes_dotenv(load_external_secrets=False)
 
     assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")
+
+
+def test_tz_env_applies_to_process_timezone(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(time, "tzset", lambda: calls.append(os.environ.get("TZ")), raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("TZ") == "Asia/Shanghai"
+    assert calls == ["Asia/Shanghai"]
+
+
+def test_managed_tz_env_overrides_user_tz_before_tzset(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("TZ=UTC\n", encoding="utf-8")
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / ".env").write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.setattr(time, "tzset", lambda: calls.append(os.environ.get("TZ")), raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("TZ") == "Asia/Shanghai"
+    assert calls == ["Asia/Shanghai"]

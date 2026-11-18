@@ -33,7 +33,9 @@ import json
 import secrets
 import logging
 import time
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, Optional
 
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
 
@@ -71,6 +73,12 @@ _FILL_VERIFY_CEILING_S = 0.5
 # a framework can show the value for a frame and revert it on its next commit.
 _FILL_VERIFY_STABLE_S = 0.2
 
+# The CDP page session the running fill validated. Every script of that fill goes to it: the
+# inspection, the write, each focus check, the read-back that carries the expected values, and the
+# cleanup. The supervisor refuses once it has moved to another session (focus_page, a reconnect), so
+# no script of the fill runs on a page the fill never inspected. None = no fill is running.
+_fill_session: ContextVar[Optional[str]] = ContextVar("vault_fill_session", default=None)
+
 # Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
 # one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
 # characters. Only used after a bulk insert read back as a mismatch.
@@ -103,6 +111,21 @@ def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> 
     return {"success": True, "result": result}
 
 
+@contextmanager
+def _pinned_page_session(task_id: str) -> Iterator[None]:
+    """Pin every eval inside this block to the page session the supervisor is on now.
+
+    Entered once a fill has its bound origin (``_bound_page_origin`` may focus another tab first).
+    A plugin page backend owns its page and has no CDP session, so there is nothing to pin.
+    """
+    supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
+    token = _fill_session.set(supervisor.current_page_session() if supervisor is not None else None)
+    try:
+        yield
+    finally:
+        _fill_session.reset(token)
+
+
 def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads): on the plugin browser
     holding the task's page, else over the task's CDP supervisor. Without either the call reports it."""
@@ -113,7 +136,7 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     if supervisor is None:
         return {"success": False, "error": "no supervised browser session for this task; open the page with "
                                            "browser_exec first"}
-    sup = supervisor.evaluate_runtime(expression)
+    sup = supervisor.evaluate_runtime(expression, session_id=_fill_session.get())
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {"success": False, "error": str(sup.get("error") or "evaluate failed")}
@@ -187,7 +210,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     if page is not None:
         return _page_eval(page, task_id, expression, secret=True)
     try:
-        sup = supervisor.evaluate_runtime(expression)
+        sup = supervisor.evaluate_runtime(expression, session_id=_fill_session.get())
     except Exception as exc:  # health: allow BLE001 -- its text can quote the expression, i.e. the secret
         logger.debug("vault fill: secret-bearing evaluate raised %s", type(exc).__name__)
         return {"success": False, "error_type": "eval_failed",
@@ -422,10 +445,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation. A saved login's code is only minted on its saved origin(s)."""
-    from agent.redact import register_vault_redaction_value
-    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
-    from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
-
     effective_task_id = task_id or "default"
     backend, meta = _saved_login(handle)
     if meta is not None:
@@ -441,8 +460,17 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         origin = _current_page_origin(effective_task_id)
         if not origin:
             return json.dumps({"success": False, "error": "No page with a code field is open."})
-    site = origin.split("://", 1)[-1]
+    with _pinned_page_session(effective_task_id):
+        return _enter_code_on_page(backend, handle, meta, origin, effective_task_id)
 
+
+def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effective_task_id: str) -> str:
+    """Inspect the page for its code field and write the code (minted, else asked of the user)."""
+    from agent.redact import register_vault_redaction_value
+    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
+
+    site = origin.split("://", 1)[-1]
     nonce = secrets.token_hex(8)
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
@@ -531,7 +559,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    with backend.fill_context():
+    with backend.fill_context(), _pinned_page_session(effective_task_id):
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
@@ -630,10 +658,10 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
             parsed = _parse_json_result(parsed)
         return parsed
 
-    # Every keystroke goes to the page session this fill validates. If another tool moves the
-    # supervisor to a different page session (focus_page, a reconnect), the next keystroke is
-    # refused rather than typed into a page the focus check never looked at.
-    pinned = supervisor.current_page_session()
+    # Every keystroke goes to the page session this fill validated, the one its focus checks ran on.
+    # If another tool moves the supervisor to a different page session (focus_page, a reconnect), the
+    # next keystroke is refused rather than typed into a page the focus check never looked at.
+    pinned = _fill_session.get()
     if not pinned:
         return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
 
@@ -673,7 +701,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         Returns ``None`` when the field holds exactly the value we typed, or a finished refusal.
         """
         def _verify() -> Any:
-            return _script(build_fill_verify_js([f], nonce=nonce, unstamp=False))
+            return _script(build_fill_verify_js([f], nonce=nonce, expected_origin=page_origin, unstamp=False))
 
         def _holds(checked: Any) -> bool:
             return (isinstance(checked, dict)
@@ -681,9 +709,14 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                     and not int(checked.get("reverted", 0) or 0))
 
         def _assert_focus(*, refocus: bool = True) -> Optional[dict[str, Any]]:
-            focus = _script(build_focus_js([f], nonce, refocus=refocus))
+            focus = _script(build_focus_js([f], nonce, expected_origin=page_origin, refocus=refocus))
             if isinstance(focus, dict) and focus.get("focused") == f["index"]:
                 return None
+            if isinstance(focus, dict) and focus.get("refused") == "origin_changed":
+                return _abort("origin_changed",
+                              f"Refused: the page navigated away from the bound origin ({page_origin}) "
+                              f"while the value was being typed (now on {focus.get('found') or 'unknown'}). "
+                              "Nothing further was typed.")
             tag = focus.get("tag") if isinstance(focus, dict) else None
             found = focus.get("found") if isinstance(focus, dict) else None
             return _abort("focus_lost",
@@ -707,7 +740,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # the way a person does, then read it back again.
         # Focus is asserted before EVERY key: a page can move it after the first one, and the rest
         # of the value would land in whatever took it. Only the first key may (re)focus the field.
-        _script(build_clear_js([f], nonce))
+        _script(build_clear_js([f], nonce, expected_origin=page_origin))
         for position, char in enumerate(str(f["value"])):
             aborted = _assert_focus(refocus=position == 0) or _insert(char)
             if aborted:
@@ -782,7 +815,7 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
     return {"success": True}
 
 
-def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[str, Any]:
+def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origin: str) -> dict[str, Any]:
     """Poll the filled controls until the page has kept every value for ``_FILL_VERIFY_STABLE_S``.
 
     A miss resets the window; a fill that has not landed in full by ``_FILL_VERIFY_CEILING_S`` is
@@ -791,7 +824,8 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[st
     The fill's own count is a claim about the write; this is the claim about the page. A controlled
     input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field loses its stamp.
     Polling rather than sleeping once: a mask reformat or a late revert writes twice, and the second
-    write is the one that matters. Counts only — no value leaves the page.
+    write is the one that matters. Counts only — no value leaves the page. Each poll re-asserts
+    ``page_origin`` in the page: a login that submits on input can land on the next page mid-poll.
     """
     from agent.vault_login_classifier import build_fill_verify_js, build_unstamp_js
 
@@ -802,10 +836,15 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[st
     reverted = 0
     while True:
         time.sleep(_FILL_VERIFY_INTERVAL_S)
-        verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, unstamp=False))
-        verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
+        verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, expected_origin=page_origin,
+                                                               unstamp=False))
+        verified = _parse_json_result(verify.get("result")) if verify.get("success") else None
         if isinstance(verified, str):
             verified = _parse_json_result(verified)
+        if isinstance(verified, dict) and verified.get("refused") == "origin_changed":
+            return {"success": False, "error_type": "origin_changed", "filled_fields": 0,
+                    "error": (f"The page left the bound origin ({page_origin}) before the fill could be read "
+                              f"back (now on {verified.get('found') or 'unknown'}); treating it as failed.")}
         if not isinstance(verified, dict):
             _eval_js(task_id, build_unstamp_js())
             return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
@@ -922,7 +961,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         if not written.get("success"):
             return json.dumps(written)
 
-    checked = _read_back(effective_task_id, fills, nonce)
+    checked = _read_back(effective_task_id, fills, nonce, page_origin)
     if not checked.get("success"):
         return json.dumps(checked)
     landed = int(checked["landed"])

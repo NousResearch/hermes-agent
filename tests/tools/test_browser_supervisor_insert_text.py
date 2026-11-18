@@ -1,4 +1,5 @@
-"""``CDPSupervisor.insert_text`` types only into the page session the caller validated.
+"""``CDPSupervisor.insert_text`` and a pinned ``evaluate_runtime`` reach only the page session the
+caller validated.
 
 A real ``CDPSupervisor`` talks to a local WebSocket server that speaks just enough CDP: one http
 page target, and a fresh session id per ``Target.attachToTarget`` (as Chrome hands out). The test
@@ -19,6 +20,7 @@ from tools.browser_supervisor import _SupervisorRegistry
 class _FakeCDP:
     def __init__(self) -> None:
         self.inserts: list[tuple[str, str | None]] = []  # (text, sessionId)
+        self.evaluates: list[tuple[str, str | None]] = []  # (expression, sessionId)
         self.attaches = 0
         self.url = ""
         self.loop = asyncio.new_event_loop()
@@ -37,18 +39,28 @@ class _FakeCDP:
 
         self.loop.run_until_complete(main())
 
+    def _targets(self, msg: dict) -> dict:
+        return {"targetInfos": [{"targetId": "T1", "type": "page", "url": "https://example.com/login"}]}
+
+    def _attach(self, msg: dict) -> dict:
+        self.attaches += 1
+        return {"sessionId": f"S{self.attaches}"}
+
+    def _insert(self, msg: dict) -> dict:
+        self.inserts.append((msg["params"]["text"], msg.get("sessionId")))
+        return {}
+
+    def _evaluate(self, msg: dict) -> dict:
+        self.evaluates.append((msg["params"]["expression"], msg.get("sessionId")))
+        return {"result": {"type": "string", "value": "ok"}}
+
     async def _handle(self, ws) -> None:
+        handlers = {"Target.getTargets": self._targets, "Target.attachToTarget": self._attach,
+                    "Input.insertText": self._insert, "Runtime.evaluate": self._evaluate}
         async for raw in ws:
             msg = json.loads(raw)
-            method = msg["method"]
-            result: dict = {}
-            if method == "Target.getTargets":
-                result = {"targetInfos": [{"targetId": "T1", "type": "page", "url": "https://example.com/login"}]}
-            elif method == "Target.attachToTarget":
-                self.attaches += 1
-                result = {"sessionId": f"S{self.attaches}"}
-            elif method == "Input.insertText":
-                self.inserts.append((msg["params"]["text"], msg.get("sessionId")))
+            handler = handlers.get(msg["method"])
+            result = handler(msg) if handler else {}
             await ws.send(json.dumps({"id": msg["id"], "result": result}))
 
 
@@ -81,3 +93,18 @@ def test_insert_refuses_once_the_supervisor_moved_to_another_session(supervisor)
     out = sup.insert_text("s3cret", session_id=pinned)
     assert out["ok"] is False
     assert cdp.inserts == []
+
+
+def test_a_pinned_evaluate_refuses_once_the_supervisor_moved(supervisor):
+    """The vault's read-back carries the expected values: pinned to the session the fill validated,
+    it runs there or nowhere. Unpinned, it follows the supervisor (the browser_exec contract)."""
+    sup, cdp = supervisor
+    pinned = sup.current_page_session()
+    assert sup.evaluate_runtime("check('s3cret')", session_id=pinned)["ok"] is True
+    assert sup.focus_page("https://example.com")["ok"] is True
+    moved = sup.current_page_session()
+
+    assert sup.evaluate_runtime("check('s3cret')", session_id=pinned)["ok"] is False
+    assert sup.evaluate_runtime("1 + 1")["ok"] is True
+    assert [sid for expr, sid in cdp.evaluates if "s3cret" in expr] == [pinned]
+    assert cdp.evaluates[-1] == ("1 + 1", moved)

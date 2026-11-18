@@ -13,13 +13,14 @@ import subprocess
 
 import pytest
 
-from agent.vault_login_classifier import build_fill_js, build_fill_verify_js, build_focus_js
+from agent.vault_login_classifier import build_clear_js, build_fill_js, build_fill_verify_js, build_focus_js
 
 NODE = shutil.which("node")
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 NONCE = "n1"
+ORIGIN = "https://example.com"  # the synthetic page's origin
 
 # A DOM just large enough for the vault scripts: elements with attributes, open shadow roots,
 # querySelectorAll for "*" and the stamp attribute, focus with shadow-host retargeting, <select>.
@@ -104,7 +105,7 @@ class TestFocusAssertion:
           const host = shadowHost(document);
           const pw = stamp(add(host.shadowRoot, "input", { type: "password" }), 1);
         """
-        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE)
+        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js) == {"focused": 1}
 
     def test_focus_moved_to_another_shadow_input_is_refused(self):
@@ -115,7 +116,7 @@ class TestFocusAssertion:
           // The page steals focus whenever the target is focused.
           pw.focus = () => focusOn(other);
         """
-        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE)
+        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js)["refused"] == "focus_lost"
 
 
@@ -129,8 +130,8 @@ class TestFocusAssertion:
           other.focus();
         """
         fills = [{"index": 1, "token": "current-password"}]
-        assert _run(setup, build_focus_js(fills, nonce=NONCE, refocus=False))["refused"] == "focus_lost"
-        assert _run(setup, build_focus_js(fills, nonce=NONCE)) == {"focused": 1}
+        assert _run(setup, build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN, refocus=False))["refused"] == "focus_lost"
+        assert _run(setup, build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN)) == {"focused": 1}
 
 
 class TestReadBack:
@@ -140,7 +141,7 @@ class TestReadBack:
         setup = """
           stamp(select(document, [["US", "United States"], ["CA", "Canada"]], 1), 3);
         """
-        js = build_fill_verify_js([{"index": 3, "token": "country-name", "value": "US"}], nonce=NONCE)
+        js = build_fill_verify_js([{"index": 3, "token": "country-name", "value": "US"}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js) == {"landed": 0, "reverted": 1, "missing": []}
 
     @pytest.mark.parametrize(("value", "selected"), [
@@ -151,7 +152,7 @@ class TestReadBack:
         setup = f"""
           stamp(select(document, [["US", "United States"], ["7", "7"]], {selected}), 3);
         """
-        js = build_fill_verify_js([{"index": 3, "token": "country-name", "value": value}], nonce=NONCE)
+        js = build_fill_verify_js([{"index": 3, "token": "country-name", "value": value}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js) == {"landed": 1, "reverted": 0, "missing": []}
 
     def test_the_writer_and_the_read_back_agree_on_a_select(self):
@@ -161,7 +162,7 @@ class TestReadBack:
         """
         fills = [{"index": 3, "token": "cc-exp-month", "value": "july"}]
         expr = ("(() => { " + build_fill_js(fills, expected_origin="https://example.com", nonce=NONCE)
-                + "; return " + build_fill_verify_js(fills, nonce=NONCE) + "; })()")
+                + "; return " + build_fill_verify_js(fills, nonce=NONCE, expected_origin=ORIGIN) + "; })()")
         assert _run(setup, expr) == {"landed": 1, "reverted": 0, "missing": []}
 
     @pytest.mark.parametrize(("token", "value", "shown"), [
@@ -171,7 +172,7 @@ class TestReadBack:
     ])
     def test_a_mask_that_only_reformats_digits_is_landed(self, token, value, shown):
         setup = f'stamp(add(document, "input", {{ type: "text", value: {json.dumps(shown)} }}), 0);'
-        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE)
+        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js)["landed"] == 1
 
     @pytest.mark.parametrize(("token", "value", "shown"), [
@@ -183,5 +184,73 @@ class TestReadBack:
     ])
     def test_anything_beyond_formatting_digits_is_reverted(self, token, value, shown):
         setup = f'stamp(add(document, "input", {{ type: "{"password" if token == "current-password" else "text"}", value: {json.dumps(shown)} }}), 0);'
-        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE)
+        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js)["reverted"] == 1
+
+
+_SENTINEL = "PW-SENTINEL-42"
+
+# Pages that try to read a script's values with nothing but their own JavaScript: a replaced global
+# that records its arguments, and one that walks ``caller`` up to the evaluated function and reads
+# its source (in sloppy mode that is the whole script, literal values included).
+_SPY_PAGES = {
+    "argument-spy": """
+      globalThis.__seen = [];
+      const RealString = String;
+      globalThis.String = function (v) { __seen.push(RealString(v)); return RealString(v); };
+    """,
+    "caller-walk": """
+      globalThis.__seen = [];
+      const realStringify = JSON.stringify;
+      JSON.stringify = function spy(v) {
+        if (spy.caller) __seen.push(Function.prototype.toString.call(spy.caller));
+        return realStringify(v);
+      };
+    """,
+}
+
+
+def _secret_scripts():
+    fills = [{"index": 1, "token": "current-password", "value": _SENTINEL}]
+    return {
+        "fill": build_fill_js(fills, expected_origin=ORIGIN, nonce=NONCE),
+        "read-back": build_fill_verify_js(fills, nonce=NONCE, expected_origin=ORIGIN),
+    }
+
+
+class TestOriginGuard:
+    @pytest.mark.parametrize("page", sorted(_SPY_PAGES))
+    @pytest.mark.parametrize("script", ["fill", "read-back"])
+    def test_a_page_on_another_origin_never_sees_the_values(self, script, page):
+        """The read-back carries every expected value, the password included, just like the fill. Run
+        on a page that navigated to another origin (a login that redirects on input, a retargeted tab),
+        it must refuse before the values reach anything the page can hook."""
+        setup = _SPY_PAGES[page] + """
+          globalThis.window.location.origin = "https://other.test";
+          stamp(add(document, "input", { type: "password", value: "" }), 1);
+        """
+        expr = ("(() => { const r = " + _secret_scripts()[script] + "; return [r, __seen.some((s) => s.includes('" + _SENTINEL + "'))].join('|'); })()")
+        code = _FAKE_DOM.replace("__NONCE__", NONCE) + setup + "\nprocess.stdout.write(String(" + expr + "));"
+        out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True, timeout=30).stdout
+        verdict, saw = out.rsplit("|", 1)
+        assert json.loads(verdict)["refused"] == "origin_changed"
+        assert saw == "false"
+
+    def test_the_same_page_still_reads_back(self):
+        setup = f'stamp(add(document, "input", {{ type: "password", value: "{_SENTINEL}" }}), 1);'
+        assert _run(setup, _secret_scripts()["read-back"]) == {"landed": 1, "reverted": 0, "missing": []}
+
+    @pytest.mark.parametrize("build", [
+        lambda fills: build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN),
+        lambda fills: build_clear_js(fills, nonce=NONCE, expected_origin=ORIGIN),
+    ], ids=["focus", "clear"])
+    def test_focus_and_clear_do_not_act_on_another_origin(self, build):
+        """The focus check decides where a trusted keystroke lands; neither it nor the clear may act
+        on a page that left the bound origin."""
+        setup = """
+          globalThis.window.location.origin = "https://other.test";
+          const pw = stamp(add(document, "input", { type: "password", value: "kept" }), 1);
+        """
+        out = _run(setup, build([{"index": 1, "token": "current-password"}]))
+        assert out["refused"] == "origin_changed"
+

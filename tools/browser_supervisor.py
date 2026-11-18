@@ -213,20 +213,28 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         session_id: Optional[str] = None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
-        semantics); non-serializable objects come back as a description string."""
+        semantics); non-serializable objects come back as a description string.
+
+        ``session_id`` pins the call to a page session the caller validated
+        (``current_page_session``), as ``insert_text`` does: it is refused once the supervisor
+        has moved to another session. None = the session the supervisor is on now."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id = self._active, self._page_session_id
+            active, current = self._active, self._page_session_id
         if not active:
             return _fail("supervisor is not active")
-        if not session_id:
+        if not current:
             return _fail("supervisor has no attached page session")
+        if session_id is not None and session_id != current:
+            return _fail("the page session changed since it was validated")
+        session_id = current
 
         def _run_eval(by_value: bool) -> dict[str, Any]:
             # userGesture: clipboard / fullscreen APIs need user activation.

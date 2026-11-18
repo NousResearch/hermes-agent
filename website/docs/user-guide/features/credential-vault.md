@@ -32,8 +32,8 @@ tells the agent to stop asking for this turn.
 From then on the agent lists your saved logins and fills the identifier and the
 password through Hermes, typed as trusted browser input so framework-controlled
 forms keep them. A fill counts only once the page has held every value for a
-moment; a page that reverts it, or moves focus while it is being typed, gets a
-refusal instead. The tool result it sees is
+moment; a page that reverts it, moves focus while it is being typed, or leaves
+the login's site before the fill is checked gets a refusal instead. The tool result it sees is
 `{filled_fields: 2, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 

@@ -461,7 +461,7 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
-            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
                 return {"success": True, "result": json.dumps({"ok": True})}          # in-page origin assert
             if 'refused: "focus_lost"' in expression:
                 return {"success": True, "result": json.dumps(focus_result)}          # focus assert
@@ -552,7 +552,8 @@ class TestBrowserVaultTools:
 
     def _per_key_harness(self, store, sup, *, focus_answers, verify_answers):
         """A one-password page whose bulk insert reads back wrong, so the fill retypes key by key.
-        ``focus_answers`` / ``verify_answers`` are consumed one per check (the last repeats)."""
+        ``focus_answers`` / ``verify_answers`` are consumed one per check (the last repeats); a callable
+        focus answer gets the supervisor and the focus script."""
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
@@ -568,11 +569,11 @@ class TestBrowserVaultTools:
             return answers.pop(0) if len(answers) > 1 else answers[0]
 
         def fake_eval_secret(task_id, expression):
-            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
                 return {"success": True, "result": json.dumps({"ok": True})}
             if 'refused: "focus_lost"' in expression:
                 answer = take(focus_answers)
-                return {"success": True, "result": json.dumps(answer(sup) if callable(answer) else answer)}
+                return {"success": True, "result": json.dumps(answer(sup, expression) if callable(answer) else answer)}
             if "reverted" in expression:
                 return {"success": True, "result": json.dumps(take(verify_answers))}
             if "cleared" in expression:
@@ -631,7 +632,7 @@ class TestBrowserVaultTools:
 
         sup = self._SessionSup()
 
-        def focused_then_retargeted(s):
+        def focused_then_retargeted(s, _expression):
             s.sid = "S2"  # e.g. focus_page from a concurrent browser call
             return {"focused": 1}
 
@@ -642,6 +643,47 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False
         assert [sid for _, sid in sup.typed if sid == "S2"] == []
+
+    def test_every_secret_script_is_pinned_to_the_session_the_fill_started_on(self, store):
+        """The read-back carries the expected values and runs while the page may move on: it, the
+        write and every focus/clear check go to the page session the fill validated, never to
+        whatever page the supervisor points at by then."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        sessions = []
+
+        class _Sup:  # the JS write path: no trusted typing
+            sid = "S1"
+
+            def current_page_session(self):
+                return self.sid
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login"}
+
+            def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+                if "location.href" in expression:
+                    return {"ok": True, "result": "https://example.com/login"}
+                if "s3cret-pw" not in expression:
+                    return {"ok": True, "result": json.dumps(controls)}
+                sessions.append(session_id)
+                if session_id is not None and session_id != self.sid:
+                    return {"ok": False, "error": "the page session changed since it was validated"}
+                if "reverted" in expression:
+                    return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
+                self.sid = "S2"  # another tool retargets the supervisor right after the write
+                return {"ok": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+             patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False
+        assert sessions and all(s == "S1" for s in sessions)
 
     def test_a_value_reverted_after_the_first_good_read_is_not_a_fill(self, store):
         """The read-back is a claim the page KEPT the value: a framework that accepts it for one
@@ -712,10 +754,13 @@ class TestBrowserVaultTools:
                      "label": "", "name": "pw", "type": "password"}]
 
         class _Sup:  # no insert_text: the JS write path
+            def current_page_session(self):
+                return "S1"
+
             def focus_page(self, origin, accept=None):
                 return {"ok": True, "url": "https://example.com/login"}
 
-            def evaluate_runtime(self, expression):
+            def evaluate_runtime(self, expression, *, session_id=None):
                 if "location.href" in expression:
                     return {"ok": True, "result": "https://example.com/login"}
                 if "s3cret-pw" not in expression:
@@ -791,7 +836,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps(controls)}
 
         def fake_eval_secret(task_id, expression):
-            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
                 return {"success": True, "result": json.dumps({"ok": True})}
             if 'refused: "focus_lost"' in expression:
                 match = re.search(r'"index":\s*(\d+)', expression)
@@ -846,7 +891,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps(controls)}
 
         def fake_eval_secret(task_id, expression):
-            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
                 return {"success": True, "result": json.dumps({"ok": True})}
             if 'refused: "focus_lost"' in expression:
                 return {"success": True, "result": json.dumps({"focused": 1})}

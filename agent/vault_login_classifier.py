@@ -305,9 +305,24 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
-            .replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+    return (_guarded(_FILL_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+
+
+# The opening of every script that carries a vault value or decides where one is typed. Strict mode
+# first: a sloppy-mode function is reachable from any page function it calls through ``caller``, and
+# its source text, literal values included, with it. Then the origin, before any value is referenced:
+# a page that navigated (a login that submits on input, a retargeted tab) gets a refusal and nothing
+# else. ``window.location`` is unforgeable, so the page cannot answer this check for another origin.
+_ORIGIN_GUARD_JS = """  "use strict";
+  if (window.location.origin !== __EXPECTED_ORIGIN__) {
+    return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
+  }"""
+
+
+def _guarded(template: str, expected_origin: str) -> str:
+    return template.replace("__ORIGIN_GUARD__", _ORIGIN_GUARD_JS.replace(
+        "__EXPECTED_ORIGIN__", json.dumps(expected_origin)))
 
 
 # How a requested value names a <select> option: by value or visible text, trimmed and
@@ -322,10 +337,7 @@ _OPTION_MATCH_JS = """  const norm = (t) => String(t || "").trim().toLowerCase()
 
 
 _FILL_JS_TEMPLATE = """(() => {
-  const expectedOrigin = __EXPECTED_ORIGIN__;
-  if (window.location.origin !== expectedOrigin) {
-    return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
-  }
+__ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   // Stamped controls may live inside a shadow root (see the inspection script's walk): collect the
@@ -365,8 +377,14 @@ __OPTION_MATCH__
 })()"""
 
 
-def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstamp: bool = True) -> str:
+def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_origin: str,
+                         unstamp: bool = True) -> str:
     """Build a JS expression that reads the filled controls back and removes the inspection stamps.
+
+    It carries every expected value (the password too), so it opens with the fill script's origin
+    guard: on a page that left ``expected_origin`` it returns ``{"refused": "origin_changed"}`` before
+    any value is referenced. On the bound origin the page already holds the value it was typed, so
+    comparing in the clear there exposes nothing new.
 
     The fill script's count is a claim about the write; this is the claim about the page. Called one
     turn of the event loop later, it catches a framework that reverted the value, a field that was
@@ -384,12 +402,13 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstam
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_VERIFY_JS_TEMPLATE.replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
+    return (_guarded(_VERIFY_JS_TEMPLATE, expected_origin).replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
             .replace("__UNSTAMP__", "true" if unstamp else "false"))
 
 
-def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, refocus: bool = True) -> str:
+def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_origin: str,
+                   refocus: bool = True) -> str:
     """Build a JS expression that focuses ONE stamped field and asserts it really holds focus.
 
     ``Input.insertText`` types into whatever element currently has focus, so the caller MUST
@@ -401,21 +420,23 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, refocus: boo
     Focus is read through open shadow roots (a focused input inside a component reports its HOST as
     ``document.activeElement``), the same roots the inspection and fill scripts reach.
     ``refocus=False`` only asserts: between the keys of one field the page must not have moved focus,
-    and pulling it back would hide that it did.
+    and pulling it back would hide that it did. The fill script's origin guard runs first: the next
+    keystroke goes wherever focus is, so focus is only vouched for on ``expected_origin``.
 
     Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
     Returns JSON: ``{"focused": <index>}`` or
     ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
-    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}``.
+    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}``.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
     )
-    return (_FOCUS_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+    return (_guarded(_FOCUS_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
             .replace("__REFOCUS__", "true" if refocus else "false"))
 
 
 _FOCUS_JS_TEMPLATE = """(() => {
+__ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   const f = fills[0];
@@ -467,6 +488,7 @@ def build_unstamp_js(nonce: str = "") -> str:
 
 
 _CLEAR_JS_TEMPLATE = """(() => {
+__ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   const roots = [];
@@ -491,21 +513,23 @@ _CLEAR_JS_TEMPLATE = """(() => {
 })()"""
 
 
-def build_clear_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+def build_clear_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_origin: str) -> str:
     """Build a JS expression that empties stamped text controls so they can be typed again.
 
     A trusted bulk insert can land the wrong value in a field with an input mask (a phone number,
     a date, a card): the mask drops or reformats characters as they stream in. The fill then reads
     a mismatch, clears the field and retypes it key by key. Clearing goes through the native value
     setter plus an ``input`` event carrying ``data: ""`` so a controlled input ends up consistent
-    with an empty field instead of holding a value its state does not know about.
+    with an empty field instead of holding a value its state does not know about. Like every
+    script of a fill it acts only on ``expected_origin``.
     """
     payload = json.dumps([{"index": f["index"]} for f in fills])
-    return (_CLEAR_JS_TEMPLATE.replace("__FILLS__", payload)
+    return (_guarded(_CLEAR_JS_TEMPLATE, expected_origin).replace("__FILLS__", payload)
             .replace("__NONCE__", json.dumps(nonce)))
 
 
 _VERIFY_JS_TEMPLATE = r"""(() => {
+__ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   const roots = [];

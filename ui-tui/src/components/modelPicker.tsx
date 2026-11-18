@@ -274,16 +274,22 @@ export function ModelPicker({
     onCancel()
   }
 
-  // On the list stages we capture printable keys (including 'q') into the
-  // filter, so the shared overlay q/Esc handler must yield to our own handler.
-  const listStage = stage === 'provider' || stage === 'model' || stage === 'reasoning'
-  useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
+  // Stages that capture text (list filters, API key entry) or own their Esc/q
+  // handling yield the shared overlay handler; only the disconnect confirmation
+  // still uses it, so 'q' is never a quit shortcut where it is also text (#157542).
+  useOverlayKeys({ disabled: stage !== 'disconnect', onBack: back, onClose: onCancel })
 
   // health: allow CC -- usage-window plans: the cursor starts on the current model inside its section; this key handler was over target on main
   useInput((ch, key) => {
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
+        return
+      }
+
+      if (key.escape) {
+        back()
+
         return
       }
 
@@ -444,15 +450,19 @@ export function ModelPicker({
       return
     }
 
-    // List-stage Esc/q handling (overlay keys are disabled while on a list
-    // stage so 'q' can be typed into the filter).
+    // List stages: Esc walks clear-filter → back → cancel, and 'q' is filter
+    // text like any other printable character (#157542) — except in the
+    // fallback states below, which render no filter line at all.
     if (key.escape) {
       back()
 
       return
     }
 
-    if (ch === 'q' && !filter) {
+    // Load failure / no providers: nothing to filter, so keep the original
+    // q-cancel and its Esc/q hint. While loading, q stays filter text so
+    // type-ahead survives the RPC.
+    if (ch === 'q' && !filter && !loading && (err || !providers.length)) {
       onCancel()
 
       return

@@ -170,13 +170,10 @@ Attachment size limit: **100 MB** (both directions).
 
 ### Voice Notes
 
-Audio is delivered as a native tap-to-play voice note: signal-cli's `send` RPC carries the `voiceNote` flag, and the audio is AAC in an `.m4a` container, which is the only combination the official Signal clients render inline.
+Hermes marks voice replies with signal-cli’s `voiceNote` flag. It sends M4A voice recordings directly and uses **ffmpeg** to convert formats such as Ogg/Opus to AAC in an M4A container for playback on iPhone. Raw AAC can be wrapped in M4A without re-encoding.
 
-Hermes' TTS output for Signal is Ogg/Opus, so `send_voice` transcodes with **ffmpeg** when the input is not already M4A/AAC. Whenever ffmpeg is unavailable, or the transcode fails or times out, the original file is sent as a plain audio attachment — a reply is never lost over the rendering.
+If conversion is unavailable, Hermes sends the original audio as a file. A standalone send containing both a voice note and another type of attachment also delivers the original files, because Signal applies the voice-note flag to the whole message.
 
-:::info
-A batch that mixes a voice note with another file (an image, say) is sent without `voiceNote`, because the flag is per-message and Signal would bubble every attachment in the batch.
-:::
 :::warning
 **Signal servers will rate-limit attachment uploads**, the adapter uses a scheduler for multiple image sending that batches images in groups of 32 and throttles uploads to match the Signal server policy.
 :::

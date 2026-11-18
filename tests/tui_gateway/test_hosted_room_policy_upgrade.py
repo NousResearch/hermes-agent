@@ -208,3 +208,14 @@ def test_older_checkpoint_either_has_the_route_or_replays_the_log(tmp_path, stor
             "SELECT event_json FROM hosted_room_policy_events ORDER BY seq")]
     # The released v5 reader replays versions below five and otherwise trusts its active rows.
     assert version < 5 or cached == ["source", "route"]
+
+
+def test_historical_reader_requires_a_durable_source_after_transcript_eviction(tmp_path, store):
+    bounded_historical_settlement(store)
+    append(store, "last", "message.user", {"text": "@reviewer Next question", "thread_id": "thread"})
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        conn.execute("DELETE FROM hosted_room_events WHERE event_id='source'")
+    snapshot = HostedRoomPolicyCheckpoint(store, placement="profile").snapshot(
+        room_id="upgrade-room", latest_seq=log(store)[-1]["seq"])
+    messages = list(snapshot.read_messages(thread_id="thread", watermark=0))
+    assert messages and all(event["kind"] == "message.user" for event in messages)

@@ -572,11 +572,11 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
         if event.kind == "turn.settled" and not event.payload["passed"]:
             message = messages_by_id.get(str(event.payload["message_event_id"]))
             if message is None or any(
-                message.payload.get(f) != event.payload.get(f) for f in ("task_id", "member_id", "thread_id")):
+                message.payload.get(f) != event.payload.get(f) for f in ("task_id", "member_id", "thread_id", "discussion_event_id")):
                 raise DiscussionValidationError("turn.settled references no matching member message")
-            discussion_seq = next((candidate.seq for candidate in events
-                                   if candidate.event_id == event.payload["discussion_event_id"]), None)
-            if discussion_seq is None:
+            if not any(candidate.kind == "message.user" and candidate.event_id == event.payload["discussion_event_id"]
+                       and candidate.payload["thread_id"] == key[0] and candidate.seq < message.seq < event.seq
+                       for candidate in events):
                 raise DiscussionValidationError("turn.settled references no matching user discussion")
             if not _crosses_unseen_message(events, thread_id=key[0], member_id=key[1], seen_through_seq=watermark,
                                           reply_seq=message.seq):

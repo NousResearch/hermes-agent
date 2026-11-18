@@ -335,15 +335,10 @@ def _fts_index_is_misaligned_source(cursor: sqlite3.Cursor) -> bool:
     return row is not None and "messages_fts_src" not in (row[0] or "")
 
 
-def _retired_tool_high_water_reinstated(cursor: sqlite3.Cursor) -> bool:
-    """True when a store already realigned to ``messages_fts_src`` carries the retired
-    ``fts_tool_full_content_high_water`` marker again. Only a release before FTS storage v3
-    writes it: reopening a realigned store, it stamps the marker at MAX(id) and reinstalls
-    id-gated triggers whose 'delete'/'update' send FULL content for tool rows at or below the
-    mark, while the v3 rebuild indexed those rows as the bounded prefix. Every such delete
-    leaves the token cut at the prefix boundary behind with no ``_docsize`` row, and bm25 then
-    fails on any query reaching it. The index must be rebuilt from the view again."""
-    return _meta_row(cursor, "fts_tool_full_content_high_water") is not None
+def _mark_fts_detached(holder: StoreHolder) -> None:
+    """This holder stops reading and syncing the derived FTS indexes; search answers by LIKE."""
+    holder._fts_stale = True
+    holder._fts_enabled = holder._trigram_available = False
 
 
 def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
@@ -402,19 +397,23 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     from the view, under the shared cross-process rebuild admission. Legacy inline DBs
     skip this entirely (their index is self-contained; they still take the DDL on the
     optimize path), and so does a definition no release of this code created (a newer
-    release's, after a downgrade). A realigned store an older release reopened (the retired
-    high-water marker is back) takes the same rebuild."""
+    release's, after a downgrade). A realigned store carrying the retired tool-row high-water
+    marker again takes the same rebuild (an empty one only swaps the shape)."""
     if legacy or not base_index_recognised(cursor):
         return
     stale_view = base_source_view_is_stale(cursor)
-    reopened_by_older_release = not stale_view and not _fts_index_is_misaligned_source(cursor)
-    if reopened_by_older_release and not _retired_tool_high_water_reinstated(cursor):
+    # Only a release before FTS storage v3 writes the retired marker. Reopening a realigned store, it
+    # reinstalls id-gated triggers whose 'delete' sends FULL content for tool rows the v3 rebuild
+    # indexed as a prefix, which can leave postings with no _docsize row; the index must be rebuilt.
+    marker_only = not stale_view and not _fts_index_is_misaligned_source(cursor)
+    if marker_only and _meta_row(cursor, "fts_tool_full_content_high_water") is None:
         return
 
     def populated() -> bool:
         return cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
     def do_align(*, has_messages: bool) -> None:
+        started = time.monotonic()
         for name in _FTS_BASE_TRIGGERS:
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute("DROP TABLE IF EXISTS messages_fts")
@@ -437,13 +436,11 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
                         cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
         cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
-        if reopened_by_older_release and has_messages:
-            # Logged once the rebuild has run (a deferred open logs the deferral instead). Each open of
-            # this store by a pre-v3 release re-stamps the marker, so a downgrade-and-back pays this again.
+        if marker_only and has_messages:
             logger.warning(
-                "A Hermes release older than FTS storage v%d had reopened %s and reinstated triggers that leave "
-                "index tokens behind on delete; rebuilt messages_fts from the aligned projection in %.1fs. "
-                "Downgrading is unsupported.", FTS_STORAGE_VERSION, holder.db_path, time.monotonic() - started)
+                "%s carried the tool-row high-water marker that only Hermes releases older than FTS storage v%d "
+                "write; rebuilt messages_fts from the aligned projection in %.1fs. Downgrading is unsupported.",
+                holder.db_path, FTS_STORAGE_VERSION, time.monotonic() - started)
 
     def align_locked(*, admitted: bool) -> bool:
         with cursor.connection:
@@ -454,7 +451,6 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
             do_align(has_messages=has_messages)
             return True
 
-    started = time.monotonic()
     # The unlocked check only routes to admission; the decision to skip a rebuild is always locked.
     if populated() or not align_locked(admitted=False):
         _run_admitted_startup_rebuild(holder, cursor, lambda: align_locked(admitted=True))
@@ -1462,8 +1458,7 @@ def _run_admitted_startup_rebuild(holder: StoreHolder, cursor, rebuild_fn) -> No
     )
     cursor.execute(_STALE_KEY_UPSERT_SQL, (FTS_STALE_KEY,))
     _drop_all_fts_triggers(holder, cursor)
-    holder._fts_stale = True
-    holder._fts_enabled = holder._trigram_available = False
+    _mark_fts_detached(holder)
 
 
 def _backfill_gateway_metadata_from_sessions_json(holder: StoreHolder, cursor: sqlite3.Cursor) -> None:
@@ -1661,9 +1656,7 @@ def _enter_fts_fail_open(
                 detach_exc,
             )
             return False
-    holder._fts_stale = True
-    holder._fts_enabled = False
-    holder._trigram_available = False
+    _mark_fts_detached(holder)
     logger.error(
         "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
         "retrying the canonical write. Search temporarily uses LIKE until "

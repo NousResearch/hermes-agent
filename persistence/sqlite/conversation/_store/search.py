@@ -11,7 +11,7 @@ from persistence.sqlite._state.common import fts_rebuild_admission
 from sqlite_support import routed_sessions_setting
 from storage_errors import is_fts_scoped_corruption_error, is_malformed_db_error
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite._schema import _enter_fts_fail_open, _present_fts_tables
+from persistence.sqlite._schema import _enter_fts_fail_open, _mark_fts_detached, _present_fts_tables
 from persistence.sqlite._schema_ddl import (
     FTS_STALE_KEY, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_EXCLUDED_SOURCES, fts_trigram_session_sql,
 )
@@ -504,24 +504,24 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:
     """``_enter_fts_fail_open`` for a search read. A read-only handle cannot write the stale
-    breadcrumb, so it stops using the indexes for its own lifetime and leaves the persistent
-    detach and the rebuild to the next writable open."""
+    breadcrumb: it stops using the indexes for its own lifetime only, and the damage stays
+    undetected on disk until a writable search reaches it (or ``optimize-storage`` rebuilds)."""
     if not holder.read_only:
         return _enter_fts_fail_open(holder, exc)
     if not holder._fts_enabled or not is_fts_scoped_corruption_error(exc):
         return False
-    logger.warning("FTS search on a read-only handle hit index damage (%s); answering from canonical rows "
-                   "until a writable open repairs the index.", exc)
-    holder._fts_stale = True
-    holder._fts_enabled = holder._trigram_available = False
+    logger.warning("FTS search on a read-only handle hit index damage (%s); this handle answers from canonical "
+                   "rows. A writable search detaches the index for repair, or run `hermes sessions optimize-storage`.",
+                   exc)
+    _mark_fts_detached(holder)
     return True
 
 
 def _match_rows(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, *, fail_open: Optional[str] = None,
                 operational_debug: Optional[str] = None, **kwargs) -> Optional[list[dict[str, Any]]]:
     """Run one MATCH against *table*; ``None`` when the query cannot execute (tokenizer /
-    syntax) or, with *fail_open*, after a corruption-class ``DatabaseError`` detached the derived
-    indexes (``_enter_fts_fail_open``): the caller then answers from canonical rows, and a live
+    syntax, or any other ``OperationalError``) and, with *fail_open*, after a corruption-class
+    ``DatabaseError`` detached the derived indexes; the caller decides the fallback. A live
     search never runs the unbounded rebuild. Other ``DatabaseError``s propagate."""
     try:
         return _fts_match_read(holder, table, match_query, order_by_sql, **kwargs)
@@ -604,8 +604,7 @@ def _refresh_fts_stale_state(holder: StoreHolder) -> None:
     except sqlite3.Error:
         return
     if stale is not None:
-        holder._fts_stale = True
-        holder._fts_enabled = holder._trigram_available = False
+        _mark_fts_detached(holder)
 
 
 def _finalize_search_matches(
@@ -662,6 +661,18 @@ def search_messages(
                         query[: 200])
 
 
+def _search_messages_stale(holder: StoreHolder, query: str, limit: int, offset: int, sort: Optional[str],
+                           filters: dict[str, Any], result_fields) -> list[dict[str, Any]]:
+    """The one canonical-row answer for a store whose FTS indexes are detached, on the triggering
+    request and every later one: exact terms, then any term on a miss (the FTS route's OR-relaxed
+    retry, which skips CJK queries the same way)."""
+    matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
+    relaxed = None if matches or _contains_cjk(query) else _or_relaxed_query(query)
+    if relaxed is not None:
+        matches = _search_messages_like_fallback(holder, relaxed, limit=limit, offset=offset, sort=sort, **filters)
+    return _finalize_search_matches(holder, matches, result_fields=result_fields)
+
+
 def _search_messages_impl(
     holder: StoreHolder, query: str, source_filter: list[str] | None = None, exclude_sources: list[str] | None = None,
     role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
@@ -691,8 +702,7 @@ def _search_messages_impl(
         return _finalize_search_matches(holder, matches, result_fields=result_fields)
     _refresh_fts_stale_state(holder)
     if holder._fts_stale:
-        matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
-        return _finalize_search_matches(holder, matches, result_fields=result_fields)
+        return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
     if not holder._fts_enabled:
         return []
 
@@ -719,8 +729,7 @@ def _search_messages_impl(
             # stale-open/repair paths retain rebuild ownership.
             if not _detach_fts_for_search(holder, exc):
                 raise
-            matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
-    detached_before_retries = holder._fts_stale
+            return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
 
     # Deferred-rebuild supplement: while the backfill is pending the FTS indexes miss
     # the (progress, high_water] gap; top up with a bounded LIKE scan so old messages
@@ -756,13 +765,9 @@ def _search_messages_impl(
             matches = _match_rows(holder, "messages_fts", relaxed, fail_open="OR-relaxed",
                                        operational_debug="OR-relaxed FTS retry failed; keeping empty result",
                                        **route) or matches
-    if not matches and holder._fts_stale and not detached_before_retries:
-        # A retry above hit index damage and detached the indexes: answer this request from canonical rows
-        # (exact terms, then any term, mirroring the FTS retries) instead of returning the empty miss.
-        for like_query in (query, _or_relaxed_query(query)):
-            if like_query is not None and not matches:
-                matches = _search_messages_like_fallback(
-                    holder, like_query, limit=limit, offset=offset, sort=sort, **filters)
+    if not matches and holder._fts_stale:
+        # A retry detached the indexes: answer as every later request on this store will.
+        return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
     return _finalize_search_matches(holder, matches, result_fields=result_fields)
 
 

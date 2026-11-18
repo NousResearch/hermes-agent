@@ -36,7 +36,7 @@ class LaunchdHost(FakeHost):
                             unit=_LABEL, scope=_DOMAIN, unit_path=str(self.plist), hermes_home=None,
                             this_home=True if self.old["active"] else None)]
 
-    def default_home(self):
+    def default_home(self, env=None):
         return True
 
     def process_env(self, pid):

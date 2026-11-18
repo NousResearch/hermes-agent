@@ -80,7 +80,8 @@ def _env_tokens(environment: str) -> dict[str, str]:
     return dict(t.split("=", 1) for t in tokens if "=" in t)
 
 
-_HOME_LINE = re.compile(r"^\s*(?:export\s+)?HERMES_HOME\s*=(.*)$")
+_HOME_KEYS = ("HERMES_HOME", "HOME", "HERMES_DATA_DIR_SUFFIX")  # the variables that decide a unit's home
+_HOME_LINE = re.compile(r"^\s*(export\s+)?(" + "|".join(_HOME_KEYS) + r")\s*=(.*)$")
 
 
 def _unit_file_syntax(path: str) -> Optional[str]:
@@ -93,8 +94,11 @@ def _unit_file_syntax(path: str) -> Optional[str]:
             return "continues a line with a backslash"
         for line in lines:
             match = _HOME_LINE.match(line)
-            if match and any(c in match.group(1) for c in "#\\\"'$"):
-                return "sets HERMES_HOME with quotes, a backslash, a $ or a # that systemd reads differently"
+            if match and match.group(1):  # systemd does not strip `export`: the variable is not set for it
+                return f"writes `export {match.group(2)}=`, which systemd does not read as that variable"
+            if match and any(c in match.group(3) for c in "#\\\"'$"):
+                return (f"sets {match.group(2)} with quotes, a backslash, a $ or a # that systemd reads "
+                        f"differently")
         return None
     return "cannot be read by this user"
 
@@ -148,16 +152,25 @@ class SystemHost:
         from hermes_cli.profiles import profile_is_standalone
         return ("own", None) if profile_is_standalone(self.home) else ("unknown", None)
 
-    def default_home(self) -> bool:
-        """Whether this home is the calling account's own default home: ``.hermes`` in its passwd home
-        directory, not whatever root this shell's HERMES_HOME names (a unit started by systemd does not
-        inherit this shell's environment)."""
-        from hermes_constants import _get_platform_default_hermes_home
-        native = _get_platform_default_hermes_home()
+    def default_home(self, env: Optional[dict] = None) -> Optional[bool]:
+        """Whether this home is the default home of a process with *env* running as the caller: the
+        platform default (``hermes_constants._platform_default_hermes_home``) of *env*'s own ``HOME`` and
+        ``HERMES_DATA_DIR_SUFFIX``, its ``HOME`` defaulting to the account's passwd home, never this
+        shell's HOME or HERMES_HOME root (a unit started by systemd does not inherit them). None when
+        *env*'s ``HOME`` is not a plain absolute path, so the default cannot be told."""
+        from hermes_constants import _get_platform_default_hermes_home, _platform_default_hermes_home
+        env = env or {}
+        account = None
         with contextlib.suppress(ImportError, KeyError):
             import pwd
-            native = Path(pwd.getpwnam(self.username()).pw_dir) / ".hermes"
-        return self.same_home(str(native))
+            account = Path(pwd.getpwnam(self.username()).pw_dir)
+        home = env.get("HOME")
+        if home is not None and (not home.startswith("/") or any(c in home for c in "$~")):
+            return None
+        if home is None and account is None:
+            return self.same_home(str(_get_platform_default_hermes_home()))
+        user_home = Path(home) if home else account
+        return self.same_home(str(_platform_default_hermes_home(env, lambda: user_home)))
 
     def unit_props(self, unit: str, scope: str) -> dict[str, str]:
         res = _systemctl(scope, ["show", unit, "--no-pager", *(f"--property={p}" for p in _SHOW_PROPS)])

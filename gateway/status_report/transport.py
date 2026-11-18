@@ -56,7 +56,7 @@ def post_report(target: ReportTarget, body: bytes, *, timeout: float, opener: An
     except urllib.error.HTTPError as exc:
         status, headers = exc.code, exc.headers
         exc.close()
-    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
+    except (http.client.HTTPException, OSError, ValueError) as exc:
         logger.debug("status report: no reply (%s)", type(exc).__name__)
         return Outcome("failed")
     if 200 <= status < 300:

@@ -925,7 +925,8 @@ class ResponsesApiTransport(ProviderTransport):
             alias_map = self._last_wire_aliases
             for tc in msg.tool_calls:
                 provider_data = {
-                    key: getattr(tc, key) for key in ("call_id", "response_item_id") if getattr(tc, key, None)
+                    key: value for key in ("call_id", "response_item_id", "_codex_output_index")
+                    if (value := getattr(tc, key, None)) is not None
                 }
                 has_fn = hasattr(tc, "function")
                 name = tc.function.name if has_fn else getattr(tc, "name", "")

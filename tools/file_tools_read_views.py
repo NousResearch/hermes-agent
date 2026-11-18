@@ -16,25 +16,29 @@ _GUTTER = re.compile(r"^\d+\|", re.MULTILINE)
 _KINDS = ((stat.S_ISDIR, "dir"), (stat.S_ISLNK, "link"), (stat.S_ISREG, "file"))
 
 
-def tail_request(offset) -> int | None:
-    """N when ``offset`` asks for the last N lines (a negative integer), else None."""
+def tail_request(offset, limit: int) -> tuple[int | None, int]:
+    """``(N, N)`` when ``offset`` asks for the last N lines (a negative integer), else ``(None, limit)``."""
     try:
         value = int(offset)
     except (TypeError, ValueError):
-        return None
-    return -value if value < 0 else None
+        return None, limit
+    return (-value, -value) if value < 0 else (None, limit)
 
 
-def tail_offset(file_ops, path: str, lines: int) -> int:
-    """First line of the last ``lines`` lines of ``path``. A failed probe (missing, binary) gives
-    line 1, so the real read reports the failure exactly as a plain read would."""
+def tail_offset(file_ops, path: str, lines: int | None, offset: int) -> int:
+    """First line of the last ``lines`` lines of ``path`` (``offset`` unchanged when not a tail
+    read). A failed probe (missing, binary) gives line 1, so the real read reports the failure
+    exactly as a plain read would."""
+    if lines is None:
+        return offset
     total = file_ops.read_file(path, 1, 1).total_lines or 0
     return max(1, total - lines + 1)
 
 
-def raw_page_text(content: str) -> str:
-    """A read page without its ``N|`` line-number gutter."""
-    return _GUTTER.sub("", content)
+def cell_read_fields(content: str, programmatic: bool) -> dict:
+    """Extra fields for a cell's read: ``text``, the page without its ``N|`` gutter, so code can
+    parse or rewrite it without stripping prefixes. The model's own reads get none."""
+    return {"text": _GUTTER.sub("", content)} if programmatic else {}
 
 
 def _entry(entry: os.DirEntry) -> dict | None:

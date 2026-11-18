@@ -1322,9 +1322,9 @@ DEFAULT_CONFIG = {
         # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
         "max_concurrent_children": 10,
         "prefix_stagger_seconds": 0,  # max s siblings wait for the 1st child's 1st chunk (not a stagger); 0 = off
-        # Background fan-outs return as ONE message when the whole call finishes. true = each task
-        # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
+        # Background fan-outs return as ONE message when done; true = each task/`group` returns as it finishes.
         "independent_completions": False,
+        "peer_messages": False,  # true = batch siblings get message_peer to share findings mid-run
         "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper

@@ -285,7 +285,7 @@ def test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner(
 
     db_path = tmp_path / "cli-unset-profile.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "default")
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     kb.init_db()
 
@@ -319,6 +319,44 @@ def test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner(
     asyncio.run(_run_one_notifier_tick(monkeypatch, owner_runner))
     assert [item["chat_id"] for item in owner_adapter.sent] == ["chat1"]
     assert tid in owner_adapter.sent[0]["text"]
+
+
+def test_notify_subscribe_named_profile_delivers_without_dispatcher_lock(
+    tmp_path, monkeypatch,
+):
+    """Named-profile ownership survives when another gateway owns the dispatcher."""
+    from hermes_cli import kanban as kc
+
+    db_path = tmp_path / "cli-unset-profile.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "writer")
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify me", assignee="worker")
+    finally:
+        conn.close()
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chat1"
+    )
+    assert "Subscribed" in out, out
+
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "writer"
+    runner._kanban_dispatcher_lock_handle = None
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert [item["chat_id"] for item in adapter.sent] == ["chat1"]
+    assert tid in adapter.sent[0]["text"]
 
 
 class FailingAdapter:

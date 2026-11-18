@@ -1179,6 +1179,11 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         if value
     }
     from hermes_cli.kanban_notify_thread import resolve_subscribe_thread
+    from hermes_cli.profiles import current_profile_name
+    profile = current_profile_name()
+    notifier_profile = args.notifier_profile
+    if notifier_profile is None and profile != "default":
+        notifier_profile = profile
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
@@ -1189,9 +1194,9 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
             chat_type=args.chat_type, thread_id=thread_id, user_id=user_id,
             user_id_alt=user_id_alt,
-            # The shell's profile need not own the gateway delivering this row.
-            # Leave it unowned unless the caller selects the serving profile.
-            notifier_profile=args.notifier_profile,
+            # A plain default-profile shell cannot name the serving gateway.
+            # Preserve named-profile ownership; explicit routing always wins.
+            notifier_profile=notifier_profile,
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )

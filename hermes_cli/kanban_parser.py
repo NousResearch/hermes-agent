@@ -400,7 +400,7 @@ _SPECS = [
         _arg("--guild-id",
              help="Discord guild ID, used for multiplex profile routing."),
         _arg("--notifier-profile",
-             help="Profile gateway that owns/delivers this subscription (default: active profile)"),
+             help="Serving profile that delivers this subscription (default: active named profile; a default-profile shell leaves it unowned for the dispatcher gateway)"),
         # choices: single source of truth shared with the DB/watcher enum.
         _arg("--delivery-mode", choices=kbn._NOTIFY_DELIVERY_MODES,
              help="How the kanban-notifier reacts to terminal events for this "

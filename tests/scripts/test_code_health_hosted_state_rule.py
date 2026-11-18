@@ -515,6 +515,45 @@ def test_the_storage_interface_and_main_hosted_modules_are_on_the_graph():
     assert not {"hermes_state", "hermes_state_registry"} & set(config.HOSTED_ENTRY)
 
 
+_STORE_CENSUS = """
+import json, sys
+from pathlib import Path
+from gateway.readiness import _probe_state_db
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
+
+home = Path(sys.argv[1])
+assert _probe_state_db(home)["status"] == "ok"
+store = open_persistence(profile_scope(home=home))
+store.sessions.create(NewSession(session_id="s1", source="cli"))
+store.messages.append("s1", NewMessage.from_live({"role": "user", "content": "x"}))
+store.messages.read_transcript("s1")
+store.close()
+print(json.dumps(sorted({m.__file__ for name, m in list(sys.modules.items())
+                         if name.startswith("persistence.sqlite") and getattr(m, "__file__", None)})))
+"""
+
+
+def test_the_storage_backend_a_serving_store_runs_is_on_the_graph(tmp_path):
+    """The readiness probe and a store's open, write and read run the SQLite backend: its facade
+    imports the package's modules dynamically and they import the rest inside functions, none of
+    which the import-statement walk sees. Every backend module a real (subprocess) open loads is on
+    the hosted graph, so new state in any of them is judged."""
+    import json
+    import os
+    import sys
+    from pathlib import Path
+
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home")}
+    probe = subprocess.run([sys.executable, "-c", _STORE_CENSUS, str(tmp_path / "store")], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=120, check=False)
+    assert probe.returncode == 0, probe.stderr
+    loaded = {str(Path(f).resolve().relative_to(REPO.resolve())) for f in json.loads(probe.stdout.splitlines()[-1])}
+    assert "persistence/sqlite/_backend.py" in loaded and "persistence/sqlite/services.py" in loaded
+    assert not loaded - reachable(REPO, None)
+
+
 _ENTRY = "import pkg.state\n"
 _OLD_STATE = "_OLD = {}\n"
 

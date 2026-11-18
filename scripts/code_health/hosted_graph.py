@@ -11,12 +11,15 @@ Import time is every statement a module body runs: through ``if``/``else``, ``tr
 tree (CLI setup wizards, installers) through code a hosted process never calls. A module the
 hosted process loads lazily is listed as a root instead.
 
-Two dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
+Three dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
 while it imports, which imports every built-in tool module that registers a tool at module
 level: when ``model_tools`` is in the graph, so is each module discovery would select in the
 measured tree (``hosted_graph_tools``), with the package ``__init__`` files importing it runs. And a forwarder declared at import time with
 ``agent.lazy_forward`` (``switch_model = forward("agent.agent_runtime_helpers", ...)`` in the
-``AIAgent`` class body) imports its module on every call, so the declaration is an edge.
+``AIAgent`` class body) imports its module on every call, so the declaration is an edge. A third:
+``persistence.sqlite``'s facade imports every public module under its package on first use (its
+``__getattr__``) and those import the private ones inside functions, so when the facade is in the
+graph, so is every module of the package.
 Plugins loaded by path (``plugins/*``, ``$HERMES_HOME/plugins``) are not Python imports and are
 not in the graph.
 """
@@ -33,6 +36,11 @@ from scripts.code_health import config, gitio
 from scripts.code_health.hosted_graph_tools import DISCOVERING_MODULE, discovered_tool_modules
 
 _LAZY_FORWARD = "agent.lazy_forward"
+# The built-in storage backend's facade (``persistence/sqlite/__init__.py``): its public names import the
+# package's modules dynamically (``_facade_modules``). A hosted process reaches it through
+# ``persistence_assembly`` and the readiness probe, so the modules it loads are on the hosted path.
+_SQLITE_PACKAGE = "persistence/sqlite/"
+_SQLITE_FACADE = _SQLITE_PACKAGE + "__init__.py"
 _FORWARDER_FACTORIES = {"forward", "forward_static", "lazy_attr"}
 
 
@@ -81,7 +89,7 @@ class _Graph:
     def walk(self, roots: tuple[str, ...]) -> frozenset[str]:
         seen: set[str] = set()
         frontier = list(self._found(n for r in roots for n in _prefixes(r)))
-        discovered = False
+        discovered = facade_loaded = False
         while frontier:
             batch = sorted(set(frontier) - seen)
             seen.update(batch)
@@ -92,7 +100,21 @@ class _Graph:
             if not discovered and DISCOVERING_MODULE in seen:
                 discovered = True
                 frontier += [f for f in self._discovered() if f not in seen]
+            if not facade_loaded and _SQLITE_FACADE in seen:
+                facade_loaded = True
+                frontier += [f for f in self._facade_modules() if f not in seen]
         return frozenset(seen)
+
+    def _facade_modules(self) -> list[str]:
+        """Every module of the ``persistence.sqlite`` package, with the packages on the way. Its facade's
+        first public-name use imports every public module under the package (``__getattr__`` walks it
+        with ``rglob``) and ``_backend``, and those import most private modules lazily, inside the
+        functions a serving store runs (a census of one local store's open, write, read and readiness
+        probe loaded 116 of them). The backend is one package with one owner, so all of it is judged
+        rather than a census that drifts as its functions move imports around."""
+        names = [path[:-3].replace("/", ".") for path in self.files
+                 if path.startswith(_SQLITE_PACKAGE) and path.endswith(".py")]
+        return sorted(set(self._found(n for m in names for n in _prefixes(m))))
 
     def _discovered(self) -> list[str]:
         """The built-in tool modules ``discover_builtin_tools()`` imports, in this tree, with every

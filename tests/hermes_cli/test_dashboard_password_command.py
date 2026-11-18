@@ -204,6 +204,20 @@ def test_password_rotation_preserves_the_username_from_this_homes_dotenv(tmp_pat
     assert "HERMES_DASHBOARD_BASIC_AUTH_USERNAME" not in (home / ".env").read_text()
 
 
+@pytest.mark.parametrize("template", ["${HERMES_DASHBOARD_BASIC_AUTH_USERNAME}",
+                                      "${env:HERMES_DASHBOARD_BASIC_AUTH_USERNAME}"])
+def test_a_username_template_on_an_override_it_removes_is_refused_before_any_write(tmp_path, template):
+    home, env = _home(tmp_path)
+    write_config(home, {"dashboard": {"basic_auth": {"username": template}}})
+    (home / ".env").write_text("HERMES_DASHBOARD_BASIC_AUTH_USERNAME=local-operator\n")
+    config_before, dotenv_before = (home / "config.yaml").read_bytes(), (home / ".env").read_bytes()
+    result = run_cli(env, "dashboard", "password", "--password-stdin", stdin="new-test-input\n")
+    assert result.returncode == 1, result.stdout
+    assert "Set dashboard.basic_auth.username to a literal first" in result.stdout
+    assert (home / "config.yaml").read_bytes() == config_before
+    assert (home / ".env").read_bytes() == dotenv_before
+
+
 def test_a_named_profile_gets_its_own_sign_in(tmp_path):
     _, env = _home(tmp_path)
     default_root = tmp_path / "user" / ".hermes"

@@ -1,7 +1,7 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from functools import cached_property
 import contextlib
 import json
@@ -1050,6 +1050,10 @@ def _stored_cwd_is_absolute(cwd: str) -> bool:
 
 
 _POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
+_REQUIRED_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy)
+                                    if field.default is MISSING and field.default_factory is MISSING)
+# The creation label a peer-refreshed ``local`` receipt came from, read back from the platform it kept.
+_LABEL_FOR_PLATFORM = {SURFACES[label]: label for label in STORED_AS_LOCAL}
 _ADOPTED_KEY_SETS: set = set()
 
 
@@ -1076,6 +1080,15 @@ def _adopt_stored_policy(data):
     return {key: value for key, value in data.items() if key in _POLICY_FIELDS}
 
 
+def _stored_policy(data):
+    """The receipt's policy object; a required field the receipt lacks is refused by name."""
+    stored = _adopt_stored_policy(data)
+    missing = sorted(_REQUIRED_POLICY_FIELDS - set(stored)) if isinstance(stored, dict) else ()
+    if missing:
+        raise _policy_refused(missing[0], 'the stored policy has no value for this required field')
+    return LocalSessionPolicy(**stored)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults.
 
@@ -1086,7 +1099,7 @@ def restore_policy(data):
     cwd spelled for the other OS, a key another build wrote) and nothing looser.
     """
     try:
-        policy = LocalSessionPolicy(**_adopt_stored_policy(data))
+        policy = _stored_policy(data)
         from gateway.session_a2a import is_forward_policy
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
         # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
@@ -1141,7 +1154,11 @@ def restore_policy(data):
         terminal = json.loads(policy.terminal_json)
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
             raise _policy_refused('terminal_json', 'TERMINAL_CWD does not match the stored cwd')
-        return replace(policy, toolsets=tuple(policy.toolsets))
+        # Consumers key on the creation label (``editor_scope`` installs the ACP edit approver only for
+        # ``acp``; local-interactive approval reads cli/tui/gui/acp), so a peer-refreshed ``local``
+        # receipt runs under the label its platform says it was created with.
+        source = _LABEL_FOR_PLATFORM[policy.platform] if policy.source == 'local' else policy.source
+        return replace(policy, source=source, toolsets=tuple(policy.toolsets))
     except AuthorityRefusal:
         # A refusal that already names its field keeps its own reason (it is a ValueError subclass,
         # so the blanket wrap below would otherwise flatten it back to the bare code).
@@ -1213,8 +1230,11 @@ def policy_for_source(runner, source):
 
 def workspace_ready(policy) -> bool:
     """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    turn runs in a missing directory."""
-    return Path(policy.cwd).is_dir()
+    turn runs in a missing directory. A cwd spelled for another OS restores (the receipt records where the
+    session was made) but is never ready here: on Windows ``/Users/x`` would resolve against the current
+    drive and bind a folder the session never named."""
+    cwd = Path(policy.cwd)
+    return cwd.is_absolute() and cwd.is_dir()
 
 
 def workspace_unavailable_result(policy) -> dict:

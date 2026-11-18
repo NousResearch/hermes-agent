@@ -33,8 +33,18 @@ def test_writer_shaped_receipts_restore(tmp_path, source, platform, model):
         if source == 'acp':
             relabelled['edit_approval_policy'] = 'workspace_session'
         restored = restore_policy(relabelled)
-        assert (restored.source, restored.platform, restored.model) == (label, platform, model)
+        # A ``local`` label runs as the surface it was created on: consumers key on that label.
+        assert (restored.source, restored.platform, restored.model) == (source, platform, model)
         assert restored.edit_approval_policy == relabelled['edit_approval_policy']
+
+
+def test_a_relabelled_acp_receipt_keeps_its_edit_approver(tmp_path):
+    """An ACP chat restored from a ``local`` receipt still asks before every edit (``editor_scope``)."""
+    from acp_adapter.edit_approval import _EDIT_APPROVAL_REQUESTER
+    from gateway.session_local_editor import editor_scope
+    stored = {**_receipt(tmp_path, 'acp'), 'source': 'local'}
+    with editor_scope(restore_policy(stored)):
+        assert _EDIT_APPROVAL_REQUESTER.get() is not None
 
 
 @pytest.mark.parametrize('corruption', [

@@ -22,6 +22,8 @@ from agent.model_metadata_cache import _write_context_cache, locked_context_cach
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from agent.process_transport import is_local_server as _is_local_server
+from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -31,6 +33,7 @@ from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +303,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
     "claude": 200000,  # catch-all for older Claude models
-    # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
-    # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
-    # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    # OpenAI direct-API windows (Codex OAuth has its own caps). 5.4-nano/-mini are 400k, not 1.05M;
+    # gpt-5.3-codex-spark is OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    "gpt-6.2-astra": 1050000, "gpt-6.2-sol": 1050000,
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
     "gpt-6.1-sol": 1050000, "gpt-6.1-terra": 1050000,  # Sol -pro too; both live on OpenRouter (Terra also Nous Portal, 2026-10-26)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
@@ -837,7 +840,7 @@ _PRICING_UNIT_DIVISORS = {
     "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
-_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write", "cache_write_1h")
 
 
 def _normalize_token_rates(pricing: dict[str, Any], unit: Any) -> dict[str, Any]:
@@ -876,7 +879,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
-    }
+        "cache_write_1h": ("cache_write_1h", "input_cache_write_1h"),}
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         pricing: dict[str, Any] = {}
@@ -1009,12 +1012,6 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
-    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
-    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1035,7 +1032,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        memo = _endpoint_disk_cache_get(normalized) if not local else None
+        memo = _endpoint_disk_cache_get(_endpoint_disk_slot(memo_key)) if not local else None
         if memo is not None:
             return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
@@ -1073,7 +1070,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 with contextlib.suppress(Exception):
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
-                _endpoint_disk_cache_put(normalized, cache)
+                _endpoint_disk_cache_put(_endpoint_disk_slot(memo_key), cache)
             return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
@@ -1657,7 +1654,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6.2-astra": 272_000, "gpt-6.2-sol": 500_000, "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -2056,7 +2053,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         return context_length
     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
     # can be larger and create a false-safe compression window.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if is_local_endpoint(base_url) else None
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 2b. Ollama native /api/show (GGUF-first for non-local). Non-Ollama servers 404/405 quickly.
@@ -2312,9 +2309,8 @@ def get_model_context_length(
                 logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport); falling through to hardcoded defaults", or_ctx, model)
             else:
                 return or_ctx
-    # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
-    # (131072) even when vLLM runs at a lower ``--max-model-len``.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if base_url and is_local_endpoint(base_url) else None
+    # 7. Local server before hardcoded defaults: vLLM's ``--max-model-len`` beats the ``llama`` 131072 row.
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
@@ -2476,9 +2472,6 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
 
 def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
-
-
-_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 
 
 def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:

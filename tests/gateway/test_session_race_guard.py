@@ -31,6 +31,12 @@ class _FakeAdapter:
     async def send(self, chat_id, text, **kwargs):
         pass
 
+    def _event_session_key(self, event):
+        return build_session_key(event.source)
+
+    def _discard_text_debounce(self, session_key):
+        pass  # a /stop or /new past slash access drops the adapter's held input
+
     async def interrupt_session_activity(self, session_key, chat_id):
         self.interrupted_sessions.append((session_key, chat_id))
         event = self._active_sessions.get(session_key)

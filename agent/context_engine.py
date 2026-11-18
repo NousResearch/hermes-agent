@@ -30,7 +30,18 @@ def sanitize_memory_context(memory_context: str) -> str:
     return elide_middle(sanitized, _MEMORY_CONTEXT_HEAD_CHARS, _MEMORY_CONTEXT_TAIL_CHARS)
 
 
-def automatic_compaction_status_message(engine: Any, *, phase: str, default_message: str, **context: Any) -> str | None:
+class CompactionProgressText(str):
+    """A status line its producer marks as compaction in progress (the lifecycle status kind stays).
+
+    Gateways re-tag only these as ``kind="compacting"``: a warning that merely mentions compression
+    is not progress, and an engine may reword the progress lines. Like ``DiagnosticText``, the mark
+    lives on the object, so classify before ``str()``/``strip()``/formatting drop it.
+    """
+
+
+def automatic_compaction_status_message(
+    engine: Any, *, phase: str, default_message: str, **context: Any
+) -> CompactionProgressText | None:
     """Host-visible status for an automatic compaction event; ``None`` = emit nothing.
 
     Engines suppress via ``emit_automatic_compaction_status = False`` or
@@ -42,7 +53,8 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     message = formatter(phase=phase, default_message=default_message, **context) if callable(formatter) else default_message
     if message is None:
         return None
-    return str(message).strip() or None
+    text = str(message).strip()
+    return CompactionProgressText(text) if text else None
 
 
 class ContextEngine(ABC):
@@ -108,12 +120,16 @@ class ContextEngine(ABC):
         """
 
     def prune_tool_results_only(
-        self, messages: list[dict[str, Any]], current_tokens: int | None = None,
+        self, messages: list[dict[str, Any]], current_tokens: int | None = None, *, cold_cache: bool = False,
+        turn_start: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministically trim old tool-result payloads without an LLM call.
 
         Runs on a low, cost-oriented trigger independent of ``should_compress`` so
         large-window engines reclaim re-sent tool output long before full compaction.
+        ``cold_cache`` says the provider prompt cache already expired, so a rewrite costs
+        no cache break; ``turn_start`` indexes the user row of the turn in progress, whose
+        results must stay whole. The host passes each only to engines whose signature accepts it.
         Returns ``(messages, n_pruned)``; the default no-op keeps older engines safe.
         """
         return messages, 0

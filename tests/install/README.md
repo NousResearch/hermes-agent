@@ -105,6 +105,12 @@ bytes through the public archive and installs the actual artifact before chat:
 | macOS arm64 and x64 | DMG, ZIP |
 | Windows arm64 and x64 | MSIX, universal MSIXBUNDLE |
 
+The macOS smoke verifies the app's code signature again after the chat: a file
+the running app writes into its own bundle (a pyc) breaks the seal, and
+Gatekeeper then holds the next update behind a prompt. It then runs one command
+the way the backend starts its detached actions (`python -I`, which ignores the
+bytecode cache prefix) and verifies the signature once more.
+
 The universal envelope runs on both Windows architectures, verifying native
 slice selection. Windows assembly/staging is separate from feed publication;
 both Windows smoke matrices must pass before publishing its canary feed.
@@ -160,9 +166,10 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 ## Triggers and cost
 
-The matrix runs on release builds only. It never runs on pull requests, pushes to main, or a schedule: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
+The matrix never runs on pull requests or pushes to main: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
 - A reusable workflow call from the stable release gate (`route=all`).
+- The same call from Canary E2E (`.github/workflows/canary-e2e.yml`) on each successful canary's commit. `install-e2e-red.yml` keeps one `install-e2e-red` issue in step with the latest of those runs.
 - Manual dispatch. You can select the route and the tag count:
 
 ```

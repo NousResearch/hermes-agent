@@ -215,10 +215,20 @@ jobs:
         id: buildx
         continue-on-error: true
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # PR builds only. Blacksmith commits a sticky disk from any job unless its branch
+          # protection is on, so a trusted build must not read a cache a PR can write; the
+          # empty key keeps main/release builds on the local fallback builder until it is.
+          cache-key: ${{ github.event_name == 'pull_request' && format('hermes-agent/pr-{0}-{1}', matrix.variant, matrix.arch) || '' }}
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # PR builds only. Blacksmith commits a sticky disk from any job unless its branch
+          # protection is on, so a trusted build must not read a cache a PR can write; the
+          # empty key keeps main/release builds on the local fallback builder until it is.
+          cache-key: ${{ github.event_name == 'pull_request' && format('hermes-agent/pr-{0}-{1}', matrix.variant, matrix.arch) || '' }}
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
@@ -444,10 +454,11 @@ jobs:
     # `needs` is the whole 4-leg matrix: only publish both :main variants
     # after every arch and variant publisher succeeds.
     if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
-    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
-    runs-on: ubuntu-latest
+    # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
+    # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
+    # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays
+    # it as a GET, and the commit 404s (v0.22.3 rc.1-rc.4).
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [mode, publish]
     timeout-minutes: 10
     environment: container-publish
@@ -469,16 +480,10 @@ jobs:
           pattern: digest-${{ matrix.variant }}-*
           merge-multiple: true
 
-      # Retry once on transient Docker Hub / buildkit pull failures.
-      # See build job for rationale; same pattern.
       - name: Set up Docker Buildx
-        id: buildx
-        continue-on-error: true
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Set up Docker Buildx (retry)
-        if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker  # no builder: imagetools then reads no registry config
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -632,10 +637,11 @@ jobs:
     name: Assemble versioned manifest and digest receipt
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode, release-publish]
-    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
-    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
-    runs-on: ubuntu-latest
+    # imagetools needs no BuildKit, but it reads the current builder's buildkitd.toml
+    # registry config. Not useblacksmith/setup-docker-builder: its no-cache-key fallback marks
+    # docker.io `http = true`, Docker Hub 301s the plain-HTTP manifest PUT to HTTPS, Go replays
+    # it as a GET, and the commit 404s (v0.22.3 rc.1-rc.4).
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       digest: ${{ steps.list.outputs.digest }}
     timeout-minutes: 15
@@ -655,13 +661,9 @@ jobs:
           pattern: docker-publish-digest-*-${{ inputs.tag }}
 
       - name: Set up Docker Buildx
-        id: buildx
-        continue-on-error: true
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Set up Docker Buildx (retry)
-        if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker  # no builder: imagetools then reads no registry config
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

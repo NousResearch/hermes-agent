@@ -93,6 +93,83 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+@pytest.mark.parametrize("endpoint", ["/api/files/upload", "/api/fs/write-text"])
+def test_atomic_write_failure_preserves_original(forced_files_client, monkeypatch, endpoint):
+    import utils.files
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    previous = target.read_bytes()
+    original_replace = utils.files.os.replace
+
+    def fail_target_replace(source, destination):
+        if str(destination) == str(target):
+            assert target.read_bytes() == previous
+            raise OSError("simulated write failure")
+        return original_replace(source, destination)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(utils.files.os, "replace", fail_target_replace)
+        payload = ({"path": str(target), "data_url": "data:text/plain;base64,bmV3"}
+                   if endpoint.endswith("upload") else {"path": str(target), "content": "new"})
+        response = client.post(endpoint, json=payload)
+    assert response.status_code == 500
+    assert target.read_bytes() == previous
+    assert set(target.parent.iterdir()) == {target}
+
+
+@pytest.mark.platforms("posix")
+def test_upload_overwrite_keeps_the_file_group(forced_files_client):
+    """The atomic replace swaps in a new inode; an overwritten file keeps its owner and group."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    other = next((g for g in os.getgroups() if g != target.stat().st_gid), None)
+    if other is None:
+        pytest.skip("needs a supplementary group to tell the groups apart")
+    os.chown(target, -1, other)
+
+    response = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,bmV3", "overwrite": True})
+
+    assert response.status_code == 200, response.text
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_gid == other
+
+
+def test_write_text_does_not_reuse_a_precreated_staging_name(forced_files_client):
+    """The staging file is created exclusively under an unpredictable name: a file another user
+    planted at the old ``.<name>.hermes-tmp-<pid>`` sibling is neither written through nor kept."""
+    import os
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    planted = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    planted.write_text("planted", encoding="utf-8")
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert target.read_text(encoding="utf-8") == "new"
+    assert planted.read_text(encoding="utf-8") == "planted"
+
+
+@pytest.mark.platforms("posix")
+def test_write_text_keeps_the_file_mode(forced_files_client):
+    """The staged temp starts at 0600; an existing file keeps its own bits across the replace."""
+    import stat
+
+    client, root = forced_files_client
+    target = _seed_file(client, root)
+    target.chmod(0o751)
+
+    response = client.post("/api/fs/write-text", json={"path": str(target), "content": "new"})
+
+    assert response.status_code == 200, response.text
+    assert stat.S_IMODE(target.stat().st_mode) == 0o751
+
+
 
 
 @pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
@@ -161,7 +238,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
     local_files_client, monkeypatch, route,
 ):
     from pathlib import Path
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     client, home = local_files_client
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -180,11 +258,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
         db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
         db_home.mkdir(parents=True, exist_ok=True)
         (db_home / "config.yaml").write_text("{}", encoding="utf-8")
-        db = SessionDB(db_path=db_home / "state.db")
-        try:
-            db.create_session(sid, source="gui", cwd=cwd)
-        finally:
-            db.close()
+        with open_persistence(profile_scope(home=db_home)) as db:
+            seed_session(db, sid, "gui", cwd=cwd)
     for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
         response = client.get(route, params={
             "path": path, "profile": "default", "session_id": "origin-session",
@@ -734,6 +809,44 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 
 
 
+def test_home_credential_stores_hidden_and_unreadable(local_files_client):
+    """#95311/#98161: the default managed root is $HOME, so the OS/CLI credential
+    stores file_safety guards (~/.netrc, ~/.npmrc, ~/.ssh/, ~/.config/gh/, ...)
+    must be neither listed nor readable through the Files API."""
+    client, home = local_files_client
+    (home / "notes.txt").write_text("safe")
+    stores = [
+        ".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC",
+        ".ssh/id_custom", ".aws/config", ".gnupg/private-keys-v1.d/k.key",
+        ".kube/config", ".docker/config.json", ".azure/msal_token_cache.json",
+        ".config/gh/hosts.yml", ".config/gcloud/credentials.db", ".Config/GH/hosts.yml",
+    ]
+    for rel in stores:
+        path = home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("secret")
+
+    names = [e["name"] for e in client.get("/api/files", params={"path": str(home)}).json()["entries"]]
+    assert "notes.txt" in names
+    for hidden in (".netrc", ".pgpass", ".npmrc", ".pypirc", ".NPMRC", ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"):
+        assert hidden not in names, hidden
+    config_names = [e["name"] for e in client.get("/api/files", params={"path": str(home / ".config")}).json()["entries"]]
+    assert "gh" not in config_names and "gcloud" not in config_names
+
+    for rel in stores:
+        resp = client.get("/api/files/read", params={"path": str(home / rel)})
+        assert resp.status_code == 403, (rel, resp.status_code)
+
+
+def test_credential_dir_sequence_needs_consecutive_components(local_files_client):
+    """``.config/gh`` is a two-component tree: an unrelated ``gh`` dir elsewhere stays browsable."""
+    client, home = local_files_client
+    (home / "projects" / "gh").mkdir(parents=True)
+    (home / "projects" / "gh" / "readme.md").write_text("ok")
+    resp = client.get("/api/files/read", params={"path": str(home / "projects" / "gh" / "readme.md")})
+    assert resp.status_code == 200
+
+
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and
@@ -750,6 +863,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "config.yaml",
         ".anthropic_oauth.json",
         "google_token.json",
+        "google_client_secret.json",
         "google_oauth_pending.json",
         "google_oauth.json",
         "webhook_subscriptions.json",
@@ -1023,3 +1137,83 @@ def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_cli
     assert secret.read_text() == "SECRET=1"
     assert store.read_text() == "model: safe\n"
     assert alias.is_symlink() and config.is_symlink()
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_name_mid_link_chain(forced_files_client):
+    """``alias.txt -> config.yaml -> settings-store``: neither the name sent nor the final target is a
+    credential name, but the write lands on what config.yaml points at, so the hop is checked too."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    (root / "config.yaml").symlink_to(store)
+    alias = root / "alias.txt"
+    alias.symlink_to("config.yaml")  # relative hop, resolved against the link's own directory
+
+    for target in (alias, "alias.txt"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink()
+
+    plain = root / "plain-alias.txt"  # an ordinary chain is still writable
+    plain.symlink_to(store)
+    assert _refused_writes(client, plain) == (200, 200)
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced_files_client):
+    """``alias2.txt -> d/srv.json`` with ``d -> mcp-tokens``: the hop's raw text names ``d``, not the
+    credential dir, so each hop is also checked with its parent directory canonicalized."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "token-store"
+    store.write_text("TOKEN=1\n")
+    (root / "mcp-tokens").mkdir()
+    (root / "mcp-tokens" / "srv.json").symlink_to("../token-store")
+    (root / "d").symlink_to("mcp-tokens", target_is_directory=True)
+    alias = root / "alias2.txt"
+    alias.symlink_to("d/srv.json")
+
+    for target in (alias, "alias2.txt", root / "d" / "srv.json", "d/srv.json"):
+        assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
+    assert store.read_text() == "TOKEN=1\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_a_link_chain_past_the_hop_bound(forced_files_client):
+    """A chain longer than the 40-hop bound cannot be fully checked, so it is refused; 41 links pins
+    the bound itself, not just "somewhere past 40"."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(41):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (403, 403)
+    assert store.read_text() == "safe\n"
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_files_client):
+    """A chain of exactly 40 links (the kernel's limit) is fully walked, so a plain target stays writable."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    store = root / "plain-store"
+    store.write_text("safe\n")
+    previous = store
+    for i in range(40):
+        link = root / f"hop{i}.txt"
+        link.symlink_to(previous.name)
+        previous = link
+
+    assert _refused_writes(client, previous) == (200, 200)

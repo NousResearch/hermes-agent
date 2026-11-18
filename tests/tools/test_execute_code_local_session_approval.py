@@ -96,7 +96,6 @@ def turn(monkeypatch, tmp_path):
         with A._lock:
             for key in (SESSION_KEY, SIDE_KEY):
                 A._session_approved.pop(key, None)
-                A._pending.pop(key, None)
             A._gateway_queues.pop(SESSION_KEY, None)
 
 
@@ -257,7 +256,6 @@ def test_no_notifier_refuses_terminal_inside_permitted_script(child_env, turn, c
     assert out == {"output": "", "exit_code": -1, "error": "", "status": "pending_approval", "approval_pending": True,
                    "command": command, "description": "recursive delete", "pattern_key": "recursive delete",
                    "smart_denied": False, "allow_permanent": True}
-    assert A._pending[key]["command"] == command
     assert prompts == [] and victim.is_dir()
 
 

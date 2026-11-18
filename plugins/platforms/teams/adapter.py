@@ -531,7 +531,12 @@ class TeamsAdapter(BasePlatformAdapter):
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
             message_id=msg_id)
-        media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
+        # The fetch spends the bot's token and disk on a sender-chosen file: only the gateway's explicit True
+        # permits it. The message still dispatches so the runner applies denial/pairing.
+        attachments = getattr(activity, "attachments", None) or []
+        if attachments and self._is_sender_authorized(source.user_id, source.chat_type, source.chat_id) is not True:
+            attachments = []
+        media: list = [m for m in [await self._cache_attachment(a) for a in attachments] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(

@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import original_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_MARKER = "<module>"
 _RESOLUTION_ALLOWLIST_PATH = REPO_ROOT / "tests/fixtures/resolution_allowlist.json"
@@ -228,7 +230,8 @@ def _source_files() -> list[Path]:
         for fname in filenames:
             if fname.endswith(".py"):
                 files.append(Path(dirpath) / fname)
-    return files
+    # A moved exempt tree (plugins/) is exempt where it lives now.
+    return [f for f in files if original_path(f.relative_to(REPO_ROOT).as_posix()).split("/", 1)[0] not in _EXEMPT_DIRS]
 
 
 @functools.cache
@@ -256,7 +259,7 @@ def _findings() -> list[tuple[str, str, int]]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = original_path(path.relative_to(REPO_ROOT).as_posix())
         for command, lineno in _iter_which_calls(tree):
             found.append((rel, command, lineno))
     return found
@@ -266,7 +269,7 @@ def _resolution_sites() -> set[tuple[str, str, str]]:
     """Return (path, symbol, kind) for the resolution sites under review."""
     sites: set[tuple[str, str, str]] = set()
     for path in _source_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = original_path(path.relative_to(REPO_ROOT).as_posix())
         if rel == "hermes_platform" or rel.startswith("hermes_platform/"):
             continue
         try:

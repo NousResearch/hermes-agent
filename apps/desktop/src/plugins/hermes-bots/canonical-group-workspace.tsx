@@ -581,9 +581,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         setNotice('stopped')
         void refreshAfterChange().catch(error => { if (alive.current) {setReadError(readFailure(error))} })
       }
-    } catch (e) {
-      if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
-      throw e
+    } catch (error) {
+      const refusal = error as { code?: number; data?: { reason?: string } } | null
+      const unavailable = refusal?.data?.reason === 'runtime_coordination_required' || refusal?.code === 4115
+      const message = unavailable ? labels.driverUnavailable : error instanceof Error ? error.message : String(error)
+      if (alive.current) {setError(message)}
+      throw new Error(message)
     } finally {
       stopPending.current = false
 

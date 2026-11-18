@@ -174,3 +174,13 @@ it('explains when the worker cannot run Retry', async () => {
   await screen.findByText(labels.driverUnavailable)
   expect(screen.queryByText(labels.retryStalled)).toBeNull()
 })
+
+it('explains a worker refusal inside the Stop confirmation', async () => {
+  await open('stalled', async () => {
+    throw Object.assign(new Error('runtime_coordination_required'), { data: { reason: 'runtime_coordination_required' } })
+  })
+  fireEvent.click(screen.getByRole('button', { name: labels.stopGroup }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: labels.stopGroup }))
+  await within(dialog).findByText(labels.driverUnavailable)
+})

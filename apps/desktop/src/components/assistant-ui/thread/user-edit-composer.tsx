@@ -17,6 +17,7 @@ import {
 
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
+import { resolveEnterIntent } from '@/app/chat/composer/enter-intent'
 import {
   ackComposerInsert,
   type ComposerInsertMode,
@@ -895,8 +896,18 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // Touch: ↵ is the phone's only line-break key, so it opens a line here too
     // instead of saving the edit mid-sentence (the main composer behaves the
-    // same). Saving is the explicit Save button.
-    if (event.key === 'Enter' && !event.shiftKey && touchPointer) {
+    // same). A shifted Return from a hardware keyboard or IME on that host is
+    // the same intent and must not fall through to the browser either.
+    // Saving is the explicit Save button.
+    const enterIntent = resolveEnterIntent({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      touch: touchPointer,
+    })
+
+    if (enterIntent === 'break') {
       event.preventDefault()
       insertComposerLineBreak(event.currentTarget)
       rememberInitialDraft()

@@ -63,6 +63,7 @@ import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
+import { resolveEnterIntent } from './enter-intent'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -1012,9 +1013,20 @@ export function ChatBar({
       return
     }
 
+    // Enter ownership is one decision, not three conditions: Cmd/Ctrl+Enter
+    // queues, a touch host always opens a line (plain or shifted Return), and a
+    // desktop Return sends.
+    const enterIntent = resolveEnterIntent({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      touch: touchPointer,
+    })
+
     // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
     // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    if (enterIntent === 'queue') {
       event.preventDefault()
 
       if (busy && !disabled) {
@@ -1034,12 +1046,13 @@ export function ChatBar({
     }
 
     // Touch surfaces have no Shift to pair with Enter, so a phone keyboard's
-    // only "line break" key is plain Enter. Chromium's own break for it is a
-    // block wrapper that normalizeComposerEditorDom strips as the phantom
-    // trailing line, so the key read as inert — insert the break ourselves in
-    // the shape the renderer emits ("\n" ⇒ <br>), which normalizes and
-    // round-trips through the draft. Cmd/Ctrl+Enter keeps queueing above.
-    if (event.key === 'Enter' && !event.shiftKey && touchPointer) {
+    // only "line break" key is plain Enter — and hardware keyboards and IMEs on
+    // the same host can deliver Shift+Enter, which must not fall through either.
+    // Chromium's own break for it is a block wrapper that
+    // normalizeComposerEditorDom strips as the phantom trailing line, so the key
+    // read as inert — insert the break ourselves in the shape the renderer emits
+    // ("\n" ⇒ <br>), which normalizes and round-trips through the draft.
+    if (enterIntent === 'break') {
       event.preventDefault()
 
       const editor = editorRef.current
@@ -1053,7 +1066,7 @@ export function ChatBar({
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey && !touchPointer) {
+    if (enterIntent === 'send') {
       event.preventDefault()
 
       // Decide from the DOM, not React state. `hasComposerPayload` is derived

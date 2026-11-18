@@ -43,6 +43,15 @@ agent_write_guard:
     - workspace/checkouts
     - workspace/metrics
 
+# ── browser ──────────────────────────────────────────────────────────────
+# The built-in browser_* tools (agent-browser + the VM's local Chromium). NOT
+# the Browser Use CLI, which is the default when browser.backend is unset: its
+# browser_exec runs arbitrary host Python, so model_tools withholds it from any
+# session without `terminal` — which this profile never has — leaving the bot
+# with no browser at all (seen 2026-11-18). Quoted: a bare YAML off is false.
+browser:
+  backend: "off"
+
 # ── tools ────────────────────────────────────────────────────────────────
 # Exactly the design's set ("The profile → Tools"). An explicit list shadows
 # every default, so anything not here does not exist for this bot. Never add

@@ -196,6 +196,8 @@ def collect_acceptance(contract: str, published_pr: str | None,
                 is_run = "conclusion" in check
                 outcome = check.get("conclusion") if is_run else check["state"]
                 classification = _classify(check, sha, outcome, is_run)
+                if classification == "failure" and is_run and _suite_cancelled(check, repo, profile_home):
+                    classification = "pending"
                 outcomes.append(classification)
                 receipt["checks"].append({"name": context, "id": check["id"],
                     "url": check.get("html_url") or check.get("target_url"),
@@ -233,6 +235,17 @@ def _newest_per_app(runs: list) -> list:
     for run in sorted(runs, key=lambda r: r["id"]):
         newest[(run.get("app") or {}).get("id")] = run
     return list(newest.values())
+
+
+def _suite_cancelled(run: dict, repo: str, profile_home: str | None) -> bool:
+    """A gate job (``needs:`` + ``if: always()``) fails when the run it waits on is cancelled.
+    Its suite then concludes ``cancelled``: the replacement run has not reported yet, so the
+    card waits (``pending``) instead of telling the worker to fix a failure that never ran.
+    Classification only; acceptance still needs a green newest run."""
+    suite_id = (run.get("check_suite") or {}).get("id")
+    if not suite_id:
+        return False
+    return _api(f"repos/{repo}/check-suites/{suite_id}", profile_home=profile_home).get("conclusion") == "cancelled"
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

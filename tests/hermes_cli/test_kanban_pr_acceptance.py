@@ -40,6 +40,8 @@ def github(tmp_path, monkeypatch):
                     state["race"]()
                 if state.get("head_change"):
                     state["head"] = "b" * 40
+            elif "/check-suites/" in self.path:
+                value = {"conclusion": state.get("suites", {}).get(self.path.rsplit("/", 1)[1], "failure")}
             elif "/statuses" in self.path:
                 value = [[]]
             elif "/pulls/" in self.path:
@@ -117,7 +119,7 @@ def test_newest_same_name_run_per_app_decides_acceptance(github):
         return {"id": run_id, "name": "required", "head_sha": "a" * 40, "app": {"id": app},
                 "status": status, "conclusion": conclusion, "started_at": started}
     old, new = "2026-11-10T21:00:00Z", "2026-11-10T21:05:00Z"
-    cases = [
+    cases: list = [
         ([run(41, "cancelled", old), run(42, "success", new)], True),
         ([run(42, "success", new), run(41, "cancelled", old)], True),
         # Cancelled while queued: its start stamp postdates the replacement that cancelled it.
@@ -127,15 +129,23 @@ def test_newest_same_name_run_per_app_decides_acceptance(github):
     ]
     # Unpinned context: newest is per app, so one app's newer success never hides another's failure.
     cases.append(([run(41, "failure", old, app=1), run(42, "success", new, app=2)], False))
+    # A gate job failing because its run was cancelled waits for the replacement run (pending),
+    # never asks the worker to fix a failure; a gate failing in a failed run stays a failure.
+    gate = {**run(42, "failure", new), "check_suite": {"id": 7}}
+    github["suites"] = {"7": "cancelled"}
+    cases.append(([gate], "pending"))
+    cases.append(([{**gate, "check_suite": {"id": 8}}], "failure"))
     with connect() as conn:
         for runs, accepted in cases:
             github["runs"] = runs
             github["required_app"] = None if len({r["app"]["id"] for r in runs}) > 1 else 1
             tid = kb.create_task(conn, title="rerun", completion_contract="acme/repo")
             assert kb.complete_task(conn, tid, result="done", metadata={
-                "published_pr": "https://github.com/acme/repo/pull/7"}) is accepted, runs
+                "published_pr": "https://github.com/acme/repo/pull/7"}) is (accepted is True), runs
             receipt = json.loads(conn.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+            if isinstance(accepted, str):
+                assert receipt["classification"] == accepted, runs
             expected = [41, 42] if github["required_app"] is None else [42]
             assert sorted(c["id"] for c in receipt["checks"]) == expected
         github.pop("required_app")

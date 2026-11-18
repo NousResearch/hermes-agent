@@ -312,6 +312,28 @@ describe('Md link labels', () => {
     expect(renderAnsi(React.createElement(Text, null, nested))).not.toContain('evil.example/phish')
   })
 
+  it('drops a raw OSC 8 link split across text nodes, nested <Text> and <Link> labels', () => {
+    const t = (...children: React.ReactNode[]) => React.createElement(Text, null, ...children)
+    const opener = `]8;;https://evil.example/x${BEL}docs.python.org`
+    const closer = `]8;;${BEL}`
+    const real = React.createElement(Link, { url: 'https://docs.example.com/real' }, `real${ESC}`)
+
+    const spoofs = {
+      siblings: t(ESC, opener, ESC, closer),
+      nested: t(ESC, t(opener), t(ESC), closer),
+      link: t(real, opener, ESC, closer)
+    }
+
+    for (const [shape, node] of Object.entries(spoofs)) {
+      const ansi = renderAnsi(node)
+
+      expect(ansi, shape).not.toContain('evil.example')
+      expect(renderPlain(node).join('\n'), shape).toContain('docs.python.org')
+    }
+
+    expect(renderAnsi(spoofs.link)).toContain(';https://docs.example.com/real')
+  })
+
   it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {
     const ansi = renderAnsi(md(`[x](https://example.com/x${BEL}${ESC}]2;TITLE${BEL})`))
 

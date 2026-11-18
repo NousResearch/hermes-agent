@@ -95,9 +95,10 @@ def main_endpoint_key_for(model_cfg: Any, base_url: str) -> str:
     Not ``resolve_runtime_provider`` itself: a probe must not count or rotate a pool row, mint a
     ``key_cmd`` token or install a plugin. So a pool yields the row its strategy would select
     (``choose``) without recording it, and a credential source (``key_cmd``) yields "": it owns its
-    endpoint, so no saved key goes beside it. Loading a pool can still persist the same idempotent
-    row seeding and origin binding the runtime does (config-seeded rows, an unbound manual row's
-    ``base_url``).
+    endpoint, so no saved key goes beside it. Loading a pool still makes the runtime's own
+    ``auth.json`` housekeeping writes: seeding config-backed rows, binding an unbound manual row's
+    ``base_url``, pruning a dead manual row older than 24h, and re-persisting a row that carries a
+    ``status_cleared_at`` reset marker (on every load, so not idempotent).
     """
     if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
         return ""

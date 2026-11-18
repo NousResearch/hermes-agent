@@ -29,22 +29,31 @@ def _spell_component(component: str) -> str:
 
 
 def _fold_matches(pattern, command: str, replace) -> str:
-    """``pattern.sub(replace, command)``, except a match that ends on the backslash of a ``\\ ``
-    (the last of an odd run; ``\\\\`` is one literal backslash, and a space after it splits words):
-    unquoted it continues the last name (``hermes\\ data\\ backup`` is a sibling of the home
-    ``hermes data``, ``config.yaml\\ `` is another file), quoted it is a literal name character.
-    Either way the command does not name what the fold would, so that rule needs no quote state.
+    """``pattern.sub(replace, command)``, except where a match ends on the backslash of a ``\\ ``
+    (the last of an odd run; ``\\\\`` is one literal backslash, and a space after it splits words).
+    That backslash belongs to the last name, which goes on past the match:
 
-    An escaped space INSIDE the home is always read as a space, quoted or not. Telling the two apart
+    - right after the home (the tail is only that backslash run): the home's own last name continues,
+      so ``hermes\\ data\\ backup`` is a sibling of the home ``hermes data``. It stays unfolded.
+      Quoted, the backslash is a literal name character and the name is no closer to the home, so
+      this rule needs no quote state.
+    - in a child name (``My\\ Documents``, ``.hermes/\\ x``, ``config.yaml${u:+\\ }``, ``config.yaml{,\\ }``):
+      the home is a real prefix. The match folds without its trailing backslash, so the rest of the word survives
+      after ``~/``, and an expansion that bash turns back into ``config.yaml`` still meets the patterns.
+
+    An escaped space INSIDE the home always folds, quoted or not. Telling the two apart
     takes a full shell parse (a quote in a comment, heredoc body or backtick flips every lexical quote
     model for the rest of the command), so the fold fails closed: a quoted ``'/home/John\\ Smith/...'``
     costs a prompt, a misread unquoted one would lose the gate on the approval policy file.
     """
     def fold(match: re.Match) -> str:
         text = match.group(0)
-        if command.startswith((" ", "\t"), match.end()) and (len(text) - len(text.rstrip("\\"))) % 2:
-            return text
-        return replace(match)
+        if not (command.startswith((" ", "\t"), match.end()) and (len(text) - len(text.rstrip("\\"))) % 2):
+            return replace(match)
+        if (match.groupdict().get("tail") or "").strip("\\"):
+            shorter = pattern.match(command, match.start(), match.end() - 1)
+            return replace(shorter) + command[shorter.end():match.end()]
+        return text
 
     return pattern.sub(fold, command)
 

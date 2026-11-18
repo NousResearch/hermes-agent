@@ -152,6 +152,42 @@ class TestEscapedSpaceFailsClosed:
         monkeypatch.setenv("HERMES_HOME", "/home/tester/.hermes")
         assert _is_dangerous("sed -i s/a/b/ /home/tester/.hermes/config.yaml\\\\ x") is True
 
+    def test_an_escaped_space_in_a_child_name_folds_the_home(self, monkeypatch):
+        # `My\ Documents` and `hermes\ data-backup` are children of the user home: it still folds,
+        # so an rm there is an ordinary home-relative delete, as on main, not a "delete in root path".
+        monkeypatch.setenv("HOME", "/home/tester")
+        for hermes_home in ("/home/tester/.hermes", "/home/tester/hermes data"):
+            monkeypatch.setenv("HERMES_HOME", hermes_home)
+            assert _is_dangerous(r"rm /home/tester/My\ Documents/a.txt") is False
+            assert _is_dangerous(r"rm -f /home/tester/old\ notes.txt") is False
+            assert _is_dangerous(r"rm /home/tester/hermes\ data-backup/state.db") is False
+
+    @pytest.mark.parametrize("suffix", [
+        r"${u:+\ }", r"${u#\ }", r"${u%%\ }", r"${u/x/\ }",
+        r"{,\ }", r"{\ ,}", r"{,}{,\ }", r"{,.x\ y}", r"{,/x\ }",
+    ])
+    @pytest.mark.parametrize("home, hermes_home, user_home", [
+        ("/home/John Smith", "/home/John Smith/hermes", r"/home/John\ Smith"),
+        ("/home/tester", "/home/tester/hermes data", "/home/tester"),
+    ])
+    @pytest.mark.parametrize("template", [
+        "sed -i s/a/b/ {hermes}/config.yaml{suffix}",
+        'sed -i s/a/b/ "{hermes}/config.yaml{suffix}"',
+        "cat /tmp/evil | tee {hermes}/config.yaml{suffix}",
+        "cat k | tee -a {home}/.ssh/authorized_keys{suffix}",
+        "cat k >> {home}/.ssh/authorized_keys{suffix}",
+        "echo x >> {home}/.bashrc{suffix}",
+    ])
+    def test_an_expansion_after_the_path_does_not_hide_it(
+            self, monkeypatch, suffix, home, hermes_home, user_home, template):
+        # Bash expands `${u:+\ }` (u unset) to nothing and `{,\ }` to the name plus a spaced
+        # sibling, so each command still writes the home file: the `\ ` sits inside the expansion,
+        # it does not continue the name.
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("HERMES_HOME", hermes_home)
+        hermes = user_home + hermes_home[len(home):].replace(" ", "\\ ")
+        assert _is_dangerous(template.format(hermes=hermes, home=user_home, suffix=suffix)) is True
+
     def test_an_unquoted_escaped_space_folds(self, spaced_user_home):
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml") is True
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes2/config.yaml") is False

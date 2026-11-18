@@ -13,7 +13,6 @@ from typing import Any, Callable, Mapping, Optional
 
 from agent.runtime_scope import bind_profile_scope
 from gateway.status import acquire_scoped_lock
-from gateway.status_lock_dir import ScopedLockDirUnusable
 from gateway.status_report.payload import ReportKind, build_report, read_status_source
 from gateway.status_report.target import ReportTarget, report_target_from_env
 from gateway.status_report.transport import Outcome, post_report
@@ -67,6 +66,7 @@ class StatusReporter:
         self._receiver_holds_off = False
         self._is_sender = False
         self._standing_by_for: Optional[str] = None
+        self._poll_failures: set[str] = set()
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
 
@@ -75,12 +75,25 @@ class StatusReporter:
         is noticed; whether one is due is decided on the wall clock."""
         try:
             while is_running():
-                await self.poll()
+                try:
+                    await self.poll()
+                except Exception as exc:  # health: allow BLE001 -- must outlive any failed poll; the type is logged
+                    self._poll_failed(exc)
                 await asyncio.sleep(tick)
         finally:
             if self._is_sender:
                 self._is_sender = False
                 release_scoped_lock(_LOCK_SCOPE, self._target.url)
+
+    def _poll_failed(self, exc: Exception) -> None:
+        """A poll that raised costs one interval, never the watcher: a supervised task that keeps
+        dying is given up on, and the gateway would then never report again. Said once per type of
+        error, by the type alone: an error's text can quote a path or the report URL."""
+        self._due_at = time.time() + _interval_s()
+        kind = type(exc).__name__
+        if kind not in self._poll_failures:
+            self._poll_failures.add(kind)
+            logger.warning("status report: no report this interval (%s)", kind)
 
     async def poll(self) -> None:
         """Send a beat if one is due."""
@@ -132,8 +145,9 @@ class StatusReporter:
         and so is a lock directory that was repaired."""
         try:
             acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
-        except ScopedLockDirUnusable:
-            # gateway.status has logged the directory and its repair.
+        except OSError:
+            # Permissions (gateway.status has logged the directory and its repair), a read-only or
+            # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
             self._stand_by(logging.WARNING, "the gateway lock directory is not usable")
             return False
         if acquired:

@@ -22,6 +22,36 @@ This doc contains two kinds of content, maintained differently:
 When a rule and the code disagree, fix whichever is wrong rather than forking a
 one-off at the call site.
 
+## Source of truth
+
+The web app and desktop design system is the code, in four places that must agree:
+
+- the tokens, `src/app/redesign/tokens/`;
+- the primitives, `src/components/ui/` (and the redesign's page frame: `PageHeader`,
+  `PageSidebarPanel`, the settings cards);
+- this document;
+- the **design system page** in the app (`#/design-system`, ⌘K "Design system"), which renders the
+  tokens and the primitives from that code, so it cannot drift from it.
+
+Figma (`EuTlgG8nMQo02z5RlImIu9`, see "Portal design language" below) gives direction: information
+architecture, layout, interaction and the overall visual language. It is not pixel-authoritative. When
+Figma and the implementation disagree, the implementation is what ships and what other surfaces
+should match, until someone deliberately changes a token or a primitive here. Known disagreements
+are listed, with the Figma value that should win, in "Still to unify"; the design system page shows
+that table rather than pretending to be complete.
+
+To change the design system, change the code: edit the token (see "How to change a token") or the
+primitive and its variants, update its entry in this document in the same change, and look at it on
+the design system page in dark, light and every accent. The token tables below and the page are
+generated from the same CSS, so neither needs a hand edit. `scripts/check` fails while the tables
+are stale or a redesign stylesheet restates a value a token owns, and the page's coverage tests fail
+when a file in `src/components/ui/` is neither shown nor listed as not shown with a reason.
+
+The Nous portal design system (https://portal.nousresearch.com/ds) is the brand's reference for the
+portal; this app's language shares its spirit (the navy family, one brand blue, a display face for
+names over a plain sans) but is the web app's own reference, with its own names and values. No
+token-for-token parity with the portal is claimed or checked.
+
 ## Principles
 
 1. **Flat, not boxed.** No card-in-card, no divider borders inside a panel.

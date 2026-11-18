@@ -18,6 +18,9 @@ OutcomeKind = Literal["stored", "throttled", "rejected", "failed", "refused"]
 _USER_AGENT = "hermes-gateway-status-report/1"
 _THROTTLED = frozenset({429, 503})
 _REJECTED = frozenset({401, 403})
+# ``int()`` raises on a digit string past the interpreter's limit (4300 by default), and a header
+# line can be far longer. Nine digits is already three decades of seconds.
+_RETRY_AFTER_MAX_DIGITS = 9
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,9 @@ def post_report(target: ReportTarget, body: bytes, *, timeout: float, opener: An
 
 
 def _retry_after_s(value: Optional[str]) -> Optional[float]:
-    """``Retry-After`` as a positive number of seconds. Its HTTP-date form, zero and anything else
-    are None: the sender then keeps its normal interval."""
+    """``Retry-After`` as a positive number of seconds. Its HTTP-date form, zero, a number too long
+    to be a wait and anything else are None: the sender then keeps its normal interval."""
     text = (value or "").strip()
-    return float(text) if text.isascii() and text.isdigit() and int(text) > 0 else None
+    if not (text.isascii() and text.isdigit()) or len(text) > _RETRY_AFTER_MAX_DIGITS:
+        return None
+    return float(text) if int(text) > 0 else None

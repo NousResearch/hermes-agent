@@ -403,3 +403,11 @@ def test_catalog_retains_a_published_commitment_with_a_legacy_expiry(tmp_path):
     assert (row["attachment_id"], row["event_id"]) == (item["attachment_id"], event)
     assert store.read_viewer(room_id=ROOM_ID, event_id=event, attachment_id=item["attachment_id"],
                              authority_gateway_id=AUTHORITY, authority_epoch=1).data == data
+
+
+def test_catalog_reads_a_legacy_table_without_a_viewer_grant(tmp_path):
+    db, store = _create_catalog(tmp_path)
+    share(db, store)
+    with sqlite3.connect(store_location(db.scope)) as conn:
+        conn.execute("ALTER TABLE hosted_room_attachments DROP COLUMN viewer_access")
+    assert _page(db)["items"] == []

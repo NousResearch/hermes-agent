@@ -1,8 +1,10 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { firstTimeCopy } from '@/app/discovery/first-time-copy'
 import { en } from '@/i18n/en'
 import { NEW_SESSION_DRAFT_KEY } from '@/store/composer'
+import { $guidanceLedger } from '@/store/guidance-ledger'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { useComposerPlaceholder } from './use-composer-placeholder'
@@ -18,14 +20,18 @@ interface Props {
 
 function renderPlaceholder(initialProps: Props = { scope: fresh, sessionId: null }) {
   return renderHook(
-    ({ scope, sessionId }: Props) => useComposerPlaceholder({ disabled: false, reconnecting: false, scope, sessionId }),
+    ({ scope, sessionId }: Props) =>
+      useComposerPlaceholder({ disabled: false, ideasBelow: false, reconnecting: false, scope, sessionId }),
     {
       initialProps
     }
   )
 }
 
-afterEach(() => $shellChoice.set(null))
+afterEach(() => {
+  $shellChoice.set(null)
+  $guidanceLedger.set({})
+})
 
 it('re-rolls to a follow-up as soon as the landing routes to an existing chat, before its runtime binds', () => {
   const { rerender, result } = renderPlaceholder()
@@ -81,6 +87,41 @@ describe('classic', () => {
 
     expect(followUps).toContain(result.current.placeholder)
     rerender({ scope: `${NEW_SESSION_DRAFT_KEY}:next`, sessionId: null })
+    expect(starters).toContain(result.current.placeholder)
+  })
+})
+
+describe('a newcomer’s new chat in the redesign', () => {
+  const copy = firstTimeCopy('en').landing
+
+  function renderNewcomer(ideasBelow: boolean, scope = fresh) {
+    $shellChoice.set(true)
+    $guidanceLedger.set({ renameSplash: 'not_applicable' })
+
+    return renderHook(() => useComposerPlaceholder({ disabled: false, ideasBelow, reconnecting: false, scope, sessionId: null }))
+  }
+
+  it('points at the ideas under it while they are there, and asks for a task once they are gone', () => {
+    const { result } = renderNewcomer(true)
+    expect(result.current.placeholder).toBe(copy.placeholderIdeas)
+
+    act(() => $guidanceLedger.set({ renameSplash: 'not_applicable', starterIdeas: 'hidden' }))
+    expect(result.current.placeholder).toBe(copy.placeholderRetired)
+  })
+
+  it('never points at ideas that are not under it', () => {
+    expect(renderNewcomer(false).result.current.placeholder).toBe(copy.placeholderRetired)
+  })
+
+  it('keeps an open conversation’s follow-up, and everyone else’s rotating starters', () => {
+    expect(followUps).toContain(renderNewcomer(true, 'stored-a').result.current.placeholder)
+
+    act(() => $guidanceLedger.set({ renameSplash: 'seen' }))
+
+    const { result } = renderHook(() =>
+      useComposerPlaceholder({ disabled: false, ideasBelow: true, reconnecting: false, scope: fresh, sessionId: null })
+    )
+
     expect(starters).toContain(result.current.placeholder)
   })
 })

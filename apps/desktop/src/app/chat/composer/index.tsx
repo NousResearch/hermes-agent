@@ -127,6 +127,7 @@ export function ChatBar({
   focusKey,
   freshDraftKey,
   gateway,
+  landing,
   maxRecordingSeconds = 120,
   profile,
   queueSessionKey,
@@ -416,6 +417,7 @@ export function ChatBar({
   // conversation change.
   const { placeholder, sessionCreated } = useComposerPlaceholder({
     disabled,
+    ideasBelow: Boolean(landing),
     reconnecting,
     scope: activeQueueSessionKey,
     sessionId
@@ -1284,6 +1286,7 @@ export function ChatBar({
               : undefined
           }
         >
+          {landing?.above}
           {/* Aligned to the composer SURFACE, which sits inside the composer's
               5px transparent grab margin — so both strips carry the same inset
               and share one left edge with it. */}
@@ -1507,6 +1510,7 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pt-1.5 empty:hidden')}>
             <ContribSlot area={COMPOSER_AREAS.underside} />
           </div>
+          {landing?.below}
         </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 

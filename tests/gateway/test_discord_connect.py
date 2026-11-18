@@ -940,3 +940,28 @@ async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
     assert await adapter.connect(is_reconnect=True) is True
     await adapter.disconnect()
     assert loop_free == [True]
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_repairs_user_install_only_command():
+    """A command stuck at user install (``[1]``) gets recreated with the app's guild install,
+    so other server members stop getting "Unknown Integration"."""
+    desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
+    adapter, fake_http = _sync_adapter(
+        [desired],
+        [_registry_entry(42, {**_ADMIN_COMMAND, "integration_types": [1], "contexts": None})],
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_leaves_repaired_command_unchanged():
+    desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
+    adapter, fake_http = _sync_adapter([desired], [_registry_entry(42, desired)])
+
+    assert await adapter._safe_sync_slash_commands() == _UNCHANGED_SUMMARY
+    _assert_no_mutations(fake_http)

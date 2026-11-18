@@ -214,6 +214,21 @@ class TestEndpointMetadataApiKey:
         get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url="http://192.0.2.99:1234/v1")
         assert fetched == [("http://192.0.2.99:1234/v1", "")]
 
+    def test_env_key_is_not_sent_to_a_differently_cased_path(self, fetched):
+        url = "http://192.0.2.10:1234/V1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, "")]
+
+    def test_env_key_is_sent_when_only_scheme_and_host_case_differ(self, fetched):
+        url = "HTTP://192.0.2.10:1234/v1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, self.ENV_KEY)]
+
+    def test_env_key_is_not_sent_to_another_port(self, fetched):
+        url = "http://192.0.2.10:9999/v1"
+        get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=url)
+        assert fetched == [(url, "")]
+
     def test_noauth_placeholder_is_not_sent(self, fetched, monkeypatch):
         monkeypatch.delenv("LM_API_KEY")
         get_pricing_entry("qwen/qwen3.6", provider="lmstudio", base_url=self.BASE_URL)

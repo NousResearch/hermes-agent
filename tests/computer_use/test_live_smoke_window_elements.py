@@ -8,11 +8,16 @@ import pytest
 from tests.computer_use import live_cua_0_9_smoke as smoke
 
 
-@pytest.mark.parametrize(("properties", "structured_format"), [
-    ({"tree_format": {"type": "string", "enum": ["markdown", "elements", "both"]}}, True),
-    ({}, False),
+_TYPE_BOTH = {"element_index": {"type": "integer"}, "element_token": {"type": "string"}}
+_TYPE_TOKEN_ONLY = {"element_token": {"type": "string"}}
+
+
+@pytest.mark.parametrize(("properties", "structured_format", "type_properties"), [
+    ({"tree_format": {"type": "string", "enum": ["markdown", "elements", "both"]}}, True, _TYPE_TOKEN_ONLY),
+    ({"tree_format": {"type": "string", "enum": ["markdown", "elements", "both"]}}, True, _TYPE_BOTH),
+    ({}, False, _TYPE_BOTH),
 ])
-def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured_format):
+def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured_format, type_properties):
     calls = []
     editor = {("element_index" if structured_format else "index"): 7,
               "element_token": "s1234abcd:7", "role": "AXTextArea", "value": ""}
@@ -22,8 +27,11 @@ def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured
             pass
 
         async def list_tools(self):
-            return SimpleNamespace(tools=[SimpleNamespace(name="get_window_state", inputSchema={
-                "type": "object", "properties": properties})])
+            return SimpleNamespace(tools=[
+                SimpleNamespace(name="get_window_state", inputSchema={"type": "object", "properties": properties}),
+                SimpleNamespace(name="type_text", inputSchema={
+                    "type": "object", "properties": type_properties, "additionalProperties": False}),
+            ])
 
         async def call_tool(self, name, args):
             calls.append((name, dict(args)))
@@ -32,7 +40,9 @@ def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured
                 assert args.get("tree_format") == ("elements" if structured_format else None)
                 data = {"elements": [dict(editor)]}
             if name == "type_text":
-                assert args["element_index"] == 7 and args["element_token"] == editor["element_token"]
+                assert set(args) - {"pid", "window_id", "text", "delivery_mode", "session"} <= set(type_properties)
+                assert args["element_token"] == editor["element_token"]
+                assert ("element_index" in args) == ("element_index" in type_properties)
                 editor["value"] = args["text"]
             if name == "launch_app":
                 data = {"pid": 101, "windows": [{"window_id": 202}]}

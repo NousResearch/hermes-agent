@@ -105,7 +105,7 @@ def _gws_is_empty(out: dict[str, Any]) -> bool:
     drivers put the payload in structuredContent with no markdown tree — that is NOT empty."""
     sc_ = out.get("structuredContent") or {}
     return not (out.get("images") or sc_.get("elements") or sc_.get("screenshot_png_b64")
-                or _tree_and_title(out)[0].strip())
+                or _parse_elements_from_tree(_tree_and_title(out)[0]))
 
 def _png_metrics(png_b64: str, width: int, height: int) -> tuple[int, int, int]:
     """``(png_bytes_len, width, height)``; the sniffed size wins when the bytes carry a readable PNG/JPEG header."""

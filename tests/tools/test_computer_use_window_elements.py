@@ -78,7 +78,11 @@ def test_mcp_and_cli_refetch_choose_the_same_view(monkeypatch, mode):
     backend = _backend(monkeypatch)
     backend._session._embedded_daemon = None
     requests, shot_files = [], []
-    monkeypatch.setattr(backend._session, "call_tool", lambda name, args: requests.append(dict(args)) or {})
+    # An elements-mode reply may retain the driver's explanatory text even when the payload is lost.
+    partial = _elements_result() if mode != "vision" else {}
+    partial.pop("structuredContent", None)
+    partial.pop("images", None)
+    monkeypatch.setattr(backend._session, "call_tool", lambda name, args: requests.append(dict(args)) or partial)
     monkeypatch.setattr("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd", lambda: "unused-driver")
 
     def cli_json(cmd, env, name, timeout):

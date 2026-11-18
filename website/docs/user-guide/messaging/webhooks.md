@@ -273,12 +273,29 @@ prompt: |
 ```
 
 An `Action required:` value such as `none` or `no action needed` is rejected.
-Any `[SILENT]` token in the response, or an interim-send metadata flag, suppresses
-urgent-only delivery. Suppressed responses return successful delivery admission
+The header and `Action required:` matching is case-insensitive and tolerates markdown
+emphasis (`**Action required:** …`); fenced code blocks are not scanned for the action
+line, so a quoted runbook snippet cannot decide urgency. Any `[SILENT]` token anywhere
+in the response, or an interim-send metadata flag, suppresses urgent-only delivery —
+as do the gateway's crash/reconnect redelivery banners, which are stripped before the
+gate runs so a recovered urgent alert still pages.
+Suppressed responses return successful delivery admission
 without contacting the target; their existing session transcripts remain intact.
 The gate checks current route configuration on every send, including late
-background follow-ups from sessions created before the policy was changed.
-Unknown policy names are configuration errors, not unrestricted delivery.
+background follow-ups from sessions created before the policy was changed; removing
+the key (or setting `all`) re-enables delivery immediately. Unknown policy values are
+configuration errors: a static route in `config.yaml` aborts startup, while an invalid
+entry in `webhook_subscriptions.json` is logged and the route skipped, like other
+malformed dynamic blocks.
+
+On `cron_job` routes `response_policy` is ignored — the job's own delivery settings
+apply (see [Event-Triggered Cron Jobs](#event-triggered-cron-jobs)).
+
+Because the escalation format is plain text, untrusted payload fields templated into
+the prompt (`{issue.body}`, `{pull_request.body}`) can prompt-inject it —
+[authenticated does not mean trusted](#authenticated-does-not-mean-trusted). Avoid
+combining public-source routes with `mirror_to_session: true`, which would write
+attacker-triggered escalations into your interactive chat history.
 
 This is an explicit output contract, not a semantic incident classifier: the
 prompt must still distinguish active emergencies from successful recovery.
@@ -522,7 +539,7 @@ The job reference is validated when you create the subscription, so typos surfac
 ### Notes
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
-- The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
+- The route-level `deliver`, `deliver_extra`, `skills`, and `response_policy` fields are ignored on `cron_job` routes — the job's own settings apply.
 - Paused/disabled jobs are not fired; the event is logged and dropped.
 - The POST returns `202 Accepted` immediately; the job runs in the background.
 

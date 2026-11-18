@@ -80,6 +80,13 @@ def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, 
         # A suppressed reply must not consume later urgent delivery.
         assert (await a.send(chat, URGENT)).success
         assert target.send.await_count == 1
+        # Removing the key re-enables delivery: current route config governs, and the
+        # per-session cache must NOT keep a stale urgent_only after a hot key removal.
+        target.send.reset_mock()
+        a._delivery_policies[chat] = "urgent_only"  # as admitted under urgent_only
+        _subscriptions(tmp_path, {"incident": _route()})
+        assert (await a.send(chat, "Routine close-out after policy removal")).success
+        assert target.send.await_count == 1
 
     asyncio.run(exercise())
 
@@ -153,3 +160,67 @@ def test_http_dispatch_preserves_policy_and_direct_alerts(tmp_path, monkeypatch,
             a._validate_route("invalid", _route(response_policy="urgent_ony"))
 
     asyncio.run(exercise())
+
+
+def test_policy_grammar_tolerances_and_hardening():
+    """Marker-wrapped, bolded, cased, fenced, and no-op variants of the contract."""
+    from gateway.platforms.webhook_response_policy import urgent_response_allowed as allow
+    assert allow(URGENT)
+    assert allow(URGENT.replace("Action required:", "**Action Required:**"))
+    assert allow(URGENT.replace("[NEEDS-APPROVAL]", "**[NEEDS-APPROVAL]**"))
+    assert allow("[NEEDS-APPROVAL] Disk full on db-01\n- action required: purge the WAL archive")
+    for noop in ("No action required.", "None needed", "not applicable", "`none`", "—"):
+        assert not allow(f"[NEEDS-APPROVAL] x\nAction required: {noop}")
+    # A fenced no-op must not veto the real action line below it...
+    assert allow("[NEEDS-APPROVAL] x\n```\nAction required: none\n```\nAction required: Rotate the leaked key now")
+    # ...and a fence cannot smuggle urgency in either.
+    assert not allow("[NEEDS-APPROVAL] x\n```\nAction required: rotate the key now\n```")
+
+
+def test_recovered_urgent_alert_still_pages_after_redelivery():
+    """Crash/reconnect redelivery banners are stripped before the gate, so a recovered
+    urgent alert is delivered while a recovered routine close-out stays suppressed."""
+    from gateway.delivery_ledger import RECOVERED_MARKER, FLOOD_MARKER
+    from gateway.platforms.webhook_response_policy import urgent_response_allowed
+    assert urgent_response_allowed(RECOVERED_MARKER + URGENT)
+    assert urgent_response_allowed(FLOOD_MARKER + URGENT)
+    assert not urgent_response_allowed(RECOVERED_MARKER + "Routine close-out, all green.")
+
+
+def test_failed_send_is_final(tmp_path, monkeypatch):
+    """A failed webhook delivery must not be retried through the plain-text fallback:
+    the fallback banner would push the escalation header off line 0 and let an
+    urgent_only route suppress the alert while the ledger marks it delivered."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    a, _ = _adapter()
+    assert a._send_retry_is_final(SendResult(success=False, error="target platform down"))
+
+
+def test_route_digest_binds_destination_not_policy(tmp_path, monkeypatch):
+    """Hot response_policy edits must not raise admission_conflict for sessions whose
+    destination did not change; other route mutations still conflict."""
+    from gateway.platforms.webhook_delivery import route_digest
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    a, _ = _adapter()
+    chat = _WebhookDeliveryIdentity.from_parts(None, "incident", "d-1").session_chat_id
+    base = {"secret": "s", "deliver": "log"}
+    a._routes = {"incident": dict(base)}
+    plain = route_digest(a, chat)
+    a._routes = {"incident": {**base, "response_policy": "urgent_only"}}
+    urgent = route_digest(a, chat)
+    a._routes = {"incident": {**base, "response_policy": "all"}}
+    all_policy = route_digest(a, chat)
+    assert plain == urgent == all_policy
+    a._routes = {"incident": {**base, "deliver": "telegram"}}
+    assert route_digest(a, chat) != plain
+
+
+def test_invalid_dynamic_policy_skips_route_not_gateway(tmp_path, monkeypatch):
+    """A typo'd response_policy in webhook_subscriptions.json is logged and skipped on
+    reload; it must not crash connect() on the next startup."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    a, _ = _adapter()
+    _subscriptions(tmp_path, {"bad": _route(response_policy="urgent_ony"), "good": _route()})
+    a._reload_dynamic_routes()
+    assert "bad" not in a._routes
+    assert "good" in a._routes

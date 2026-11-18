@@ -274,6 +274,10 @@ def _cmd_subscribe(args):
         "profile": profile,
         **_route_signature(args, existing, is_update),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    # Updates rebuild the record wholesale; keep a hand-configured response_policy instead of
+    # silently reverting an urgent_only route to unrestricted delivery.
+    if is_update and "response_policy" in existing:
+        route["response_policy"] = existing["response_policy"]
 
     if getattr(args, "deliver_only", False):
         if getattr(args, "cron_job", ""):

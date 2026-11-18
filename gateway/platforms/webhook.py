@@ -330,14 +330,16 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         # Replies from background gates reuse an older delivery_info entry. Read current
         # route policy on EVERY send so a hot policy change also covers those continuations.
-        self._reload_dynamic_routes()
+        self._reload_dynamic_routes(wipe_missing=False)
         # Canonical decoder: production chat ids are `webhook:v2:<token>`, so a raw
         # `split(":")` yields "v2" as the route and silently drops the policy gate.
         try:
-            route = self._routes.get(_WebhookDeliveryIdentity.route_from_chat_id(str(chat_id)), {})
+            route = self._routes.get(_WebhookDeliveryIdentity.route_from_chat_id(str(chat_id)))
         except (ValueError, TypeError, IndexError):
-            route = {}
-        policy = route.get("response_policy", self._delivery_policies.get(chat_id))
+            route = None
+        # Current route config governs; the per-session cache only covers a route that
+        # is gone entirely (deleted while the session lives), never a hot key removal.
+        policy = route.get("response_policy") if isinstance(route, dict) else self._delivery_policies.get(chat_id)
         try:
             validate_response_policy(policy)
         except ValueError as exc:
@@ -353,6 +355,14 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Destination unavailable for %s", chat_id, exc_info=True)
             return SendResult(success=False, error="Webhook destination unavailable or unauthorized")
         return await self._deliver_to(delivery, chat_id, content)
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """A failed webhook delivery is structural (target platform refused or is down): this
+        adapter forwards already-rendered text, so a plain-text fallback banner cannot fix it
+        — and prepending one would push the escalation header off line 0, letting an
+        ``urgent_only`` route suppress a failed urgent alert while the ledger marks it
+        delivered. Return the failure as-is; the delivery ledger retries it later."""
+        return True
 
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
@@ -461,17 +471,22 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
             validate_coalesce_config(name, route)
+            validate_response_policy(route.get("response_policy"))
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
             return False
         return True
 
-    def _reload_dynamic_routes(self) -> None:
+    def _reload_dynamic_routes(self, wipe_missing: bool = True) -> None:
         """Reload agent-created subscriptions when the file's stat identity changes.
 
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
+        ``wipe_missing=False`` (send path) keeps the last snapshot when the file is absent: under
+        ``multiplex_profiles`` a reply can execute inside the owning profile's home, where the
+        default gateway's subscriptions file does not exist — wiping there would drop every dynamic
+        route for the whole gateway mid-turn. Deletion is still picked up by the next POST.
         """
         from hermes_constants import get_hermes_home
         from utils import file_cache_version
@@ -479,7 +494,7 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
-            if self._dynamic_routes:
+            if wipe_missing and self._dynamic_routes:
                 self._dynamic_routes, self._routes = {}, dict(self._static_routes)
                 logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
             self._dynamic_routes_stat = None

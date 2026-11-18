@@ -16,7 +16,12 @@ def route_digest(adapter, chat_id):
     route = adapter._routes.get(route_name)
     if route is None:
         raise AuthorityRefusal('not_found')
-    return hashlib.sha256(json.dumps(route, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    # `response_policy` is excluded: it is an egress-admission toggle, not part of the
+    # destination the digest binds. Hashing it would turn every hot policy edit into an
+    # `admission_conflict` for replies of sessions admitted before the edit. Routes that
+    # never set the key keep their exact pre-existing digest.
+    material = {k: v for k, v in route.items() if k != 'response_policy'}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def validate_destination(delivery):

@@ -1166,3 +1166,30 @@ def test_an_unfinished_run_is_not_recovered_while_a_file_is_a_symlink(home, tmp_
 
     assert code == engine.EXIT_BLOCKED and "symbolic link" in capsys.readouterr().out
     assert host.calls == [] and (home / name).is_symlink() and engine.manifest_path(home).read_bytes() == journal
+
+
+# --------------------------------------------------------------------------- real-OS runs (macOS, Windows)
+
+
+def test_a_python_m_backend_whose_working_directory_cannot_be_read_is_never_retired(home, capsys, monkeypatch):
+    host = FakeHost(home, supervisor="manual")  # argv: /venv/bin/python -m hermes_cli.main dashboard ...
+    monkeypatch.setattr(host, "process_cwd", lambda pid: None)
+    before = _config_files(home)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_BLOCKED
+
+    assert "working directory could not be read" in capsys.readouterr().out
+    _nothing_applied(host, home, before)
+    assert host.old["active"] is True
+
+
+def test_a_hand_started_backend_is_restarted_in_its_recorded_working_directory(home):
+    host = FakeHost(home, supervisor="manual")
+    host.process_cwd = lambda pid: "/srv/hermes-agent"
+    started = []
+    host.old_start = lambda rec, env, argv=None: started.append(rec.get("cwd")) or host.old.update(active=True)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    assert engine.restore(host, yes=True) == engine.EXIT_OK
+
+    assert started == ["/srv/hermes-agent"]

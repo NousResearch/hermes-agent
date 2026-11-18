@@ -363,7 +363,8 @@ def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
             with contextlib.suppress(OSError):
                 Path(path).unlink(missing_ok=True)
         print(f"✗ Nothing changed: {missing} (pid {plan.rec.get('pid')}), so a rollback could not start it "
-              f"again as it ran. Check that this user can read /proc/{plan.rec.get('pid')}/environ, then re-run.")
+              f"again as it ran. Check that this user can read the environment and working directory of pid "
+              f"{plan.rec.get('pid')} (or start it with an absolute `hermes` command), then re-run.")
         if detached:
             record_refusal(host, mode="apply", reason=missing, exit_code=EXIT_BLOCKED)
         return EXIT_BLOCKED
@@ -452,8 +453,11 @@ def _snapshot_problem(m: dict) -> Optional[str]:
     caller's environment would lose the old backend's sign-in settings."""
     if (m.get("old_backend") or {}).get("supervisor") != "manual":
         return None
-    if _launcher_argv(m) is None:
+    if (argv := _launcher_argv(m)) is None:
         return "the old backend's recorded command line is missing or unreadable"
+    if "-m" in argv and not (m.get("old_backend") or {}).get("cwd"):
+        # `python -m hermes_cli.main` imports from its working directory: started elsewhere it cannot run.
+        return "the old backend runs `python -m ...` and its working directory could not be read"
     if not isinstance(_launcher_env(m), dict):
         return "the old backend's recorded environment is missing or unreadable"
     return None

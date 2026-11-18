@@ -260,3 +260,16 @@ def test_the_post_move_check_reads_the_gateways_status_without_a_proxy(tmp_path,
     assert got["gateway_state"] == "running" and seen == ["http://127.0.0.1:9119/api/status"]
     (handler,) = handlers
     assert isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}
+
+
+def test_the_working_directory_is_read_without_proc(tmp_path, monkeypatch):
+    """macOS and Windows have no /proc: psutil reads it there."""
+    import psutil
+
+    def no_proc(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(host_module.os, "readlink", no_proc)
+    monkeypatch.setattr(psutil.Process, "cwd", lambda self: "/Users/u/.hermes/hermes-agent")
+
+    assert SystemHost(tmp_path).process_cwd(os.getpid()) == "/Users/u/.hermes/hermes-agent"

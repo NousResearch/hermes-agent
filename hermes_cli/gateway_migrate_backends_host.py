@@ -321,8 +321,13 @@ class SystemHost:
         return _pid_environ(pid)
 
     def process_cwd(self, pid: int) -> Optional[str]:
+        """The working directory of *pid* (``/proc`` on Linux, psutil elsewhere: macOS, Windows), else None.
+        A hand-started ``python -m hermes_cli.main`` only finds its package from there."""
         with contextlib.suppress(OSError):
             return os.readlink(f"/proc/{pid}/cwd")
+        import psutil
+        with contextlib.suppress(psutil.Error, OSError):
+            return psutil.Process(pid).cwd() or None
         return None
 
     def same_network_namespace(self, pid: int, *, container: bool) -> bool:

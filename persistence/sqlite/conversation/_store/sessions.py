@@ -322,6 +322,22 @@ _INHERIT_PARENT_ROUTING_SQL = (
 )
 
 
+def _platform_default_roots() -> tuple[Path, ...]:
+    """The platform default root, as a fallback root for ``linked_profile_name``.
+
+    A scoped gateway runs with ``HERMES_HOME`` set to the linked home itself, which makes that
+    home its own root — so the ``profiles/<name>`` entry that names it lives under the platform
+    default root instead. Read HERE, in the file ``_HOME_READS`` already lists for
+    ``get_default_hermes_root`` with its reason (*the owner name the store stamps*); an
+    unresolvable default is no fallback rather than a failure.
+    """
+    from hermes_constants import get_default_hermes_root
+    try:
+        return (get_default_hermes_root(home="").resolve(),)
+    except (OSError, RuntimeError, ValueError):
+        return ()
+
+
 def _own_profile_name(holder: StoreHolder) -> Optional[str]:
     """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
     ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
@@ -331,7 +347,7 @@ def _own_profile_name(holder: StoreHolder) -> Optional[str]:
         from persistence.sqlite.conversation._store.linked_profile_homes import linked_profile_name
         root = get_default_hermes_root().resolve()
         parent = Path(holder.db_path).resolve().parent
-        linked = linked_profile_name(parent, root)
+        linked = linked_profile_name(parent, root, _platform_default_roots())
         if parent == root:
             return linked or "default"
         is_profile_dir = parent.parent == root / "profiles"

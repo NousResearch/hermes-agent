@@ -8,31 +8,35 @@ entry that resolves to the home. NULL over a fabricated owner.
 Ported here (from the branch's top-level ``hermes_state_sessions_linked_homes.py``) by the
 ``#153250`` rebase: ``be3d6affc8`` moved the session store under ``persistence/`` and its
 backend-import guard allows no file outside ``persistence/``.
+
+Its roots are HANDED IN, never read here. The guard permits a store in this package no
+process-home read of its own ("a store reads beside its own profile folder"), so the one
+file ``_HOME_READS`` already lists for ``get_default_hermes_root`` — ``_store/sessions.py``,
+whose reason is *the owner name the store stamps* — resolves both roots and passes them in.
+This module names no home reader at all, so the rebased branch passes the guard unchanged.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 
-def linked_profile_name(home: Path, root: Path) -> Optional[str]:
+def linked_profile_name(home: Path, root: Path, fallback_roots: Iterable[Path] = ()) -> Optional[str]:
     """Name of the ``profiles/<name>`` symlink entry that resolves to *home*, if any.
 
     A profile home that is a symlink outside its root's ``profiles/`` (an encrypted or
     off-disk home) resolves to a path without the ``<root>/profiles/<name>`` shape — and a
     scoped gateway runs with ``HERMES_HOME`` set to that home, which makes the home its own
     root. In both cases the registered name is the symlink entry's: find it by identity,
-    under the scoped root and the platform default root alike. NULL over a fabricated owner.
+    under *root* and under every root in *fallback_roots* — the platform default root, where
+    the entry lives once the scoped home has become its own root — alike. NULL over a
+    fabricated owner.
     """
-    from hermes_constants import get_default_hermes_root
     candidates = [root]
-    try:
-        platform_default = get_default_hermes_root(home="").resolve()
-    except (OSError, RuntimeError, ValueError):
-        platform_default = None
-    if platform_default is not None and platform_default not in candidates:
-        candidates.append(platform_default)
+    for fallback in fallback_roots:
+        if fallback is not None and fallback not in candidates:
+            candidates.append(fallback)
     for base in candidates:
         profiles = base / "profiles"
         if not profiles.is_dir():

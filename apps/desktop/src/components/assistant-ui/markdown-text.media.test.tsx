@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -50,6 +50,63 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+
+  it.each(['https://example.com/demo.png?size=2', REMOTE_IMAGE_PATH])(
+    'offers the browser only after Open image fails for a web link: %s',
+    async src => {
+      const openExternal = vi.fn()
+      const request = Promise.withResolvers<never>()
+      const saveGatewayFile = vi.fn(() => request.promise)
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { api, openExternal, saveGatewayFile }
+      })
+      const view = render(<MarkdownImage alt="Preview" src={src} />)
+      fireEvent.error(await screen.findByRole('img', { name: 'Preview' }))
+
+      expect(screen.queryByRole('link', { name: 'Open in browser' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Open image' }))
+      expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: src, profile: 'remote-work' }))
+      expect(openExternal).not.toHaveBeenCalled()
+      expect(screen.queryByRole('link', { name: 'Open in browser' })).toBeNull()
+      request.reject(new Error('Download failed'))
+
+      if (src === REMOTE_IMAGE_PATH) {
+        await screen.findByText(/from the gateway/)
+        expect(screen.queryByRole('link')).toBeNull()
+      } else {
+        const link = await screen.findByRole('link', { name: 'Open in browser' })
+        expect(screen.queryByText(/from the gateway/)).toBeNull()
+        expect(openExternal).not.toHaveBeenCalled()
+        fireEvent.click(link)
+        expect(openExternal).toHaveBeenCalledWith(src)
+
+        view.rerender(<MarkdownImage alt="Next preview" src="https://example.com/next.png" />)
+        fireEvent.error(await screen.findByRole('img', { name: 'Next preview' }))
+        expect(screen.queryByRole('link', { name: 'Open in browser' })).toBeNull()
+      }
+    }
+  )
+
+  it('does not offer the browser for an older failure after canceling a retry', async () => {
+    const first = Promise.withResolvers<never>()
+
+    const saveGatewayFile = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ canceled: true, saved: false })
+
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api, saveGatewayFile } })
+    render(<MarkdownImage alt="Preview" src="https://example.com/demo.png" />)
+    fireEvent.error(await screen.findByRole('img', { name: 'Preview' }))
+    const open = screen.getByRole('button', { name: 'Open image' })
+    fireEvent.click(open)
+    fireEvent.click(open)
+    await act(async () => {
+      first.reject(new Error('Download failed'))
+    })
+    expect(saveGatewayFile).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('keeps foreign-history images, file links and a real registered directive inert', async () => {

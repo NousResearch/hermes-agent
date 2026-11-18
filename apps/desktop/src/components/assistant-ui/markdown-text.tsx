@@ -17,6 +17,7 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
@@ -31,6 +32,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
+import { useI18n } from '@/i18n'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -131,13 +133,18 @@ function useOpenMediaFile(path: string) {
   const runtimeId = useStore(view.$runtimeId)
   const sessionId = storedId || runtimeId || ''
   const [openFailed, setOpenFailed] = useState(false)
+  const latestAttempt = useRef(0)
 
   const open = () => {
+    const attempt = ++latestAttempt.current
+    setOpenFailed(false)
+
     if (window.hermesDesktop && isRemoteGateway()) {
-      setOpenFailed(false)
-      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
-        setOpenFailed(true)
-      )
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() => {
+        if (attempt === latestAttempt.current) {
+          setOpenFailed(true)
+        }
+      })
     } else {
       openExternalLink(mediaExternalUrl(path))
     }
@@ -425,7 +432,7 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
     return <MediaAttachment path={rawSrc} />
   }
 
-  return <MarkdownImageContent {...props} />
+  return <MarkdownImageContent {...props} key={rawSrc} />
 }
 
 // A cold frame is ~4:3 because that is the envelope an image can occupy here
@@ -447,6 +454,7 @@ function MarkdownImageContent({
   ...props
 }: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
+  const { t } = useI18n()
   const image = useMediaImage(rawSrc, COLD_IMAGE_RATIO, validImageDimensions(width, height))
   const { open, openFailed } = useOpenMediaFile(rawSrc)
   const name = mediaName(rawSrc || String(alt || 'image'))
@@ -462,9 +470,19 @@ function MarkdownImageContent({
       <span className="my-2 block text-sm text-muted-foreground" data-slot="aui_markdown-image">
         Couldn&apos;t load {name}.{' '}
         <button className="ref font-medium text-foreground" onClick={open} type="button">
-          Open image
+          {t.desktop.openImage}
         </button>
-        {openFailed && <OpenMediaFailedNote name={name} />}
+        {openFailed &&
+          (/^https?:\/\//i.test(rawSrc) ? (
+            <span className="mt-1 block text-xs text-muted-foreground">
+              {t.externalOpenFailed.title}.{' '}
+              <ExternalLink className="font-medium text-foreground" href={rawSrc} native>
+                {t.preview.openInBrowser}
+              </ExternalLink>
+            </span>
+          ) : (
+            <OpenMediaFailedNote name={name} />
+          ))}
       </span>
     )
   }

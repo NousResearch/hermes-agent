@@ -154,6 +154,24 @@ def test_install_wraps_only_the_selected_proactor_and_only_once():
     assert second._proactor.accept is accept
 
 
+@pytest.mark.parametrize("shape", ["no_proactor", "no_accept", "non_callable_accept"])
+def test_install_leaves_an_unusable_private_hook_alone(shape):
+    loop = Mock(spec=BaseProactorEventLoop)
+    if shape == "no_accept":
+        loop._proactor = SimpleNamespace()
+    elif shape == "non_callable_accept":
+        loop._proactor = SimpleNamespace(accept=None)
+
+    install_proactor_accept_guard(loop)
+
+    if shape == "non_callable_accept":
+        assert loop._proactor.accept is None
+    elif shape == "no_accept":
+        assert not hasattr(loop._proactor, "accept")
+    else:
+        assert not hasattr(loop, "_proactor")
+
+
 def test_selector_install_leaves_a_callable_accept_alone(monkeypatch):
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
         loop = runner.get_loop()

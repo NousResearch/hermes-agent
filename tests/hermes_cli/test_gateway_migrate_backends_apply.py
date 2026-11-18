@@ -347,7 +347,9 @@ def test_a_profiles_steps_name_the_profile(tmp_path, monkeypatch, capsys):
     profile = tmp_path / ".hermes" / "profiles" / "work"
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(profile))
-    (profile / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    # A standalone profile has a gateway of its own; one served by the default gateway is blocked (below).
+    (profile / "config.yaml").write_text("model:\n  default: fake-model\ngateway:\n  standalone: true\n",
+                                         encoding="utf-8")
 
     engine.cmd_apply(FakeHost(profile, supervisor="systemd", scope="system"), _args(dry_run=True))
 
@@ -859,3 +861,19 @@ def test_a_by_hand_move_of_a_free_port_backend_prints_no_port(home, capsys):
 
     (entry,) = out["plan"]["unsupported"]
     assert code == engine.EXIT_UNSUPPORTED and not any("webapp.port: 0" in s or "port 0" in s for s in entry["steps"])
+
+
+@pytest.mark.parametrize("supervisor", ["systemd", "container"])
+def test_a_profile_served_by_the_default_gateway_is_not_planned(tmp_path, monkeypatch, capsys, supervisor):
+    """Its webapp.* settings do not control the shared Webapp, and `hermes -p work gateway install`
+    refuses to create a second gateway: no steps that point there."""
+    profile = tmp_path / ".hermes" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    (profile / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+
+    code, out = _plan(FakeHost(profile, supervisor=supervisor), capsys)
+
+    assert code == engine.EXIT_BLOCKED
+    assert any("served by the default profile's gateway" in b for b in out["plan"]["blockers"])
+    assert all(entry["steps"] == [] for entry in out["plan"]["unsupported"]) and out["plan"]["steps"] == []

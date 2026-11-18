@@ -626,6 +626,16 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
+    if (plan.unsupported or plan.candidates) and (profile := host.profile_on_shared_gateway()):
+        plan.blockers.append(
+            f"Profile {profile} has no gateway of its own: it is served by the default profile's gateway, whose "
+            f"Webapp settings are the default profile's, so this dry run does not plan the move. Stop the old "
+            f"backend through its supervisor and turn on the Webapp in the default profile "
+            f"(hermes -p default config set webapp.enabled true, with its webapp.host and webapp.port). "
+            f"Nothing changed.")
+        plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
+        plan.candidates = []
+        return plan
     if plan.unsupported:
         _manual_target(plan, host, keep_webapp)
         return plan

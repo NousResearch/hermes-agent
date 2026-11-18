@@ -277,6 +277,21 @@ def test_a_specific_binds_own_public_url_still_wins(monkeypatch, tmp_path):
                                "sign_in": True}
 
 
+def test_specific_bind_reports_an_own_client_still_registered_for_https(monkeypatch, tmp_path):
+    import json
+    from hermes_cli.webapp_access import sign_in_client
+
+    public = "https://proxy.example/work"
+    runner = _specific_webapp(monkeypatch, tmp_path, registered=public + "/auth/callback")
+    home = tmp_path / "home"
+    record = home / "webapp" / "sign-in-registration.json"
+    record.write_text(json.dumps(dict(json.loads(record.read_text()), own_client=True)))
+    assert sign_in_client(home) is not None
+    link = _launch(runner)
+    assert link["url"] == f"http://{BOUND}:9555/"
+    assert "webapp.public_url" in link.get("note", "")
+
+
 def test_hermes_webapp_prints_the_note_before_opening_the_address(monkeypatch, tmp_path, capsys):
     from hermes_cli import webapp_launcher as launcher
 

@@ -19,8 +19,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ERROR_NETNAME_DELETED (reset in the listen queue), WSAEFAULT (getpeername after AcceptEx).
-_DROPPED_PEER_WINERRORS = frozenset({64, 10014})
+# ERROR_NETNAME_DELETED, WSAECONNRESET, and WSAEFAULT from getpeername after AcceptEx.
+_DROPPED_PEER_WINERRORS = frozenset({64, 10054, 10014})
 
 
 def dropped_peer(exc: BaseException) -> bool:
@@ -38,9 +38,21 @@ class GuardedAccept:
         self._loop = loop
         self._accept = accept
 
+    def _issue_accept(self, listener):
+        try:
+            return self._accept(listener)
+        except OSError as exc:
+            # AcceptEx can report a peer reset before it returns a future. Only
+            # completion-time WSAEFAULT can come from getpeername, not submission.
+            if not dropped_peer(exc) or getattr(exc, "winerror", None) == 10014:
+                raise
+            failed = self._loop.create_future()
+            failed.set_exception(exc)
+            return failed
+
     def __call__(self, listener):
         outer = self._loop.create_future()
-        pending = self._accept(listener)
+        pending = self._issue_accept(listener)
 
         def settle(inner):
             nonlocal pending
@@ -62,7 +74,7 @@ class GuardedAccept:
                 return
             logger.warning("A client went away before the gateway accepted it (%s); still listening", exc)
             try:
-                pending = self._accept(listener)
+                pending = self._issue_accept(listener)
             except OSError as rearm_exc:
                 outer.set_exception(rearm_exc)
                 return

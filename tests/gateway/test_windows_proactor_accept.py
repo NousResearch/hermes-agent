@@ -128,6 +128,45 @@ def test_queued_completion_does_not_settle_a_cancelled_accept():
     asyncio.run(scenario())
 
 
+def test_peer_reset_while_issuing_an_accept_retries_on_the_loop():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        success = loop.create_future()
+        connection = (object(), ("127.0.0.1", 50000))
+        success.set_result(connection)
+        reset = _winerror(OSError, 10054)  # WSAECONNRESET need not be a ConnectionResetError.
+        accept = Mock(side_effect=[reset, _winerror(OSError, 64), success])
+        waiting = GuardedAccept(loop, accept)(object())
+        assert accept.call_count == 1  # Never spin inline, even on consecutive resets.
+        assert await asyncio.wait_for(waiting, 2) is connection
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_before_retry_does_not_issue_another_accept():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        accept = Mock(side_effect=_winerror(ConnectionResetError, 10054))
+        waiting = GuardedAccept(loop, accept)(object())
+        waiting.cancel()
+        await asyncio.sleep(0)
+        assert accept.call_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_fault_issuing_an_accept_is_not_a_peer_address_failure():
+    async def scenario():
+        failure = _winerror(OSError, 10014)
+        accept = Mock(side_effect=failure)
+        with pytest.raises(OSError) as raised:
+            GuardedAccept(asyncio.get_running_loop(), accept)(object())
+        assert raised.value is failure
+        assert accept.call_count == 1
+
+    asyncio.run(scenario())
+
+
 def test_synchronous_rearm_failure_reaches_the_waiting_accept():
     async def scenario():
         loop = asyncio.get_running_loop()

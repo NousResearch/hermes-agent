@@ -185,6 +185,7 @@ A local install leaves this off. `hosted.enabled: true` (or the shorthand `hoste
 hosted:
   enabled: true
   identity_verifier: <name>   # admits each inbound relay frame from the connector's signed claim
+  turn_claim_issuer: https://connector.example   # the reference verifier's one trust root for signing keys
 persistence:
   provider: <name>            # a provider whose assert_isolating() passes; the built-in sqlite is refused
 ```
@@ -195,7 +196,7 @@ A hosted boot refuses to serve, exiting with status 78 and a message that names 
 - the terminal backend is not a sandbox;
 - a direct platform adapter is configured;
 - a user-added plugin or MCP server would load in-process;
-- `hosted.identity_verifier` is missing;
+- `hosted.identity_verifier` is missing, or it is the reference turn-claim verifier and `hosted.turn_claim_issuer` is empty;
 - `persistence.provider` cannot prove tenant isolation.
 
 ## Environment Variable Substitution

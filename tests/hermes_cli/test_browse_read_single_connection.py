@@ -76,20 +76,23 @@ def _corrupt(home: Path) -> Path:
 
 
 @pytest.mark.parametrize("make, status", [(_lagging, None), (_corrupt, 503)])
-def test_browse_leaves_the_process_init_error_alone(tmp_path, make, status):
+def test_browse_leaves_the_process_init_error_alone(tmp_path, make, status, request):
     """A browse reports its own failure in its 503; the process's session-history notice stays the owner's."""
     import storage_user_copy
 
     home = tmp_path / "profiles" / "scribe"
     home.mkdir(parents=True)
     path = make(home)
-    storage_user_copy.set_last_init_error(None)
+    previous = storage_user_copy.get_last_init_error()
+    request.addfinalizer(lambda: storage_user_copy.set_last_init_error(previous))
+    owner_error = "owner open failed: database is locked"
+    storage_user_copy.set_last_init_error(owner_error)
     try:
         _open_session_db_at_path(path, read_only=True).close()
         assert status is None
     except HTTPException as exc:
         assert exc.status_code == status
-    assert storage_user_copy.get_last_init_error() is None
+    assert storage_user_copy.get_last_init_error() == owner_error
 
 
 def test_store_still_behind_after_the_catch_up_is_refused_by_name(tmp_path, monkeypatch):

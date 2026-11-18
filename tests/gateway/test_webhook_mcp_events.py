@@ -165,3 +165,34 @@ async def test_the_event_payload_reaches_the_prompt_whole(home):
     assert text in big and big.endswith("Explain it.")
     assert '"note": "{eventId}"' in big  # payload text is never read as a placeholder
     assert "truncated" in huge and len(huge) < 40_000
+
+
+def test_resubscribe_preserves_response_policy(tmp_path, monkeypatch):
+    """A resubscribe rebuilds the route record wholesale; a hand-configured
+    response_policy must survive it (same preserve rule as CLI/dashboard updates)
+    instead of silently reverting urgent_only to unrestricted delivery."""
+    import asyncio
+
+    from hermes_cli.webhook import _load_subscriptions, _mutate_subscriptions
+    from tools import mcp_tool_events as mte
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mte, "_callback_base", lambda: "https://gw.example")
+
+    async def fake_subscribe(session, route_name, route, url_base):
+        return {"url": f"{url_base}/webhooks/{route_name}"}
+
+    monkeypatch.setattr(mte, "_subscribe_route", fake_subscribe)
+    args = {"name": "feed.emission.created", "deliver": "log"}
+
+    assert "error" not in asyncio.run(mte._subscribe_event(object(), dict(args), "ambush"))
+    route_name = mte._route_name("ambush", args["name"], {})
+    _mutate_subscriptions(lambda subs: subs[route_name].update({"response_policy": "urgent_only"}))
+
+    # A second subscribe (e.g. an instructions update) rewrites the record.
+    assert "error" not in asyncio.run(
+        mte._subscribe_event(object(), dict(args, instructions="Summarize tersely"), "ambush"))
+
+    stored = _load_subscriptions()[route_name]
+    assert stored["response_policy"] == "urgent_only"
+    assert "Summarize tersely" in stored["prompt"]

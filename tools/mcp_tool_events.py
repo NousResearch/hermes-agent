@@ -368,6 +368,12 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
         route["signature"] = "generic"
     elif "signature" in existing:
         route["signature"] = existing["signature"]
+    # Same preserve rule as the CLI/dashboard writers: a hand-configured response_policy
+    # survives a resubscribe instead of silently reverting urgent_only to unrestricted
+    # delivery. Copied only when present, so a route that never had the key stays
+    # byte-identical.
+    if existing is not None and "response_policy" in existing:
+        route["response_policy"] = existing["response_policy"]
     if existing is None:
         await asyncio.to_thread(drop_state, route_name)  # a fresh subscription replays nothing stale
     # The route must exist before subscribing: the server verifies the callback with a signed challenge.

@@ -167,8 +167,11 @@ class SystemHost:
         (``tui_gateway.turn_marker``), stamped with its own pid and start time, so a marker whose
         writer is that process and still alive is a turn in flight. No sign-in, no socket."""
         from tui_gateway import turn_marker
-        entries = turn_marker._load(turn_marker._marker_path(self.home))
-        return sum(1 for e in entries.values()
+        from hermes_cli.profiles import profiles_to_serve
+        from hermes_constants import hermes_home_key
+        profiles = profiles_to_serve(True, include_standalone=True, include_parked=True)
+        homes = {hermes_home_key(self.home), *(hermes_home_key(h) for _, h in profiles)}
+        return sum(1 for h in homes for e in turn_marker._load(turn_marker._marker_path(h)).values()
                    if e.get("writer_pid") == pid and turn_marker.marker_writer_state(e) == "alive")
 
     # ------------------------------------------------------------------ config / env

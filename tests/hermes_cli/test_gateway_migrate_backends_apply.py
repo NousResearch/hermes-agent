@@ -624,3 +624,18 @@ def test_a_running_backend_whose_health_probe_fails_is_not_called_stopped(home, 
 
     out = capsys.readouterr().out
     assert "unknown (health probe failed)" in out and "backend not running" not in out
+
+
+def test_running_turns_count_markers_the_backend_wrote_in_any_profile(tmp_path, monkeypatch):
+    """`prompt_turn` writes the marker in the session's own home: a backend launched from the default
+    home that works in profiles/work has its turn marker there."""
+    from tui_gateway import turn_marker
+    root = tmp_path / "root"
+    work = root / "profiles" / "work"
+    work.mkdir(parents=True)
+    (work / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    turn_marker.record_turn_start(work, "session-1", "hello")
+
+    for home in (root, work):
+        assert SystemHost(home).running_turns(os.getpid(), None) == 1

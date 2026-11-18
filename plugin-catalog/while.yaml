@@ -1,7 +1,7 @@
 name: while
 title: while.sh
 repo: https://github.com/while-sh/while
-sha: df092f37b2f66067bc01540f4d8a159cdc7dfa97
+sha: 1e1dfe3dd190ab254147442cb547861504a76cb8
 description: >-
   while.sh hosts the tools people build with an AI agent, and they choose who to share them with:
   their team, a client or a supplier with a link and a password, or everyone. The agent deploys them
@@ -23,7 +23,9 @@ description: >-
   commit doesn't cover it. The repository's README also documents an optional install script
   (curl | sh) for other agents, and examples/ holds sample projects; the plugin runs neither. The
   bundled mcp.json works without an account; for the MCP tools of an account, enable OAuth with
-  `hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300`.
+  `hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300`, then add
+  `trust: untrusted` to the `mcp_servers.while` entry in `config.yaml`; the package itself declares the
+  server untrusted in plugin.json.
 maintainer: Nextmap
 tier: community
 category: tools
@@ -32,7 +34,7 @@ docs_url: https://while.sh/en/docs/get-started/connect-your-agent/
 version: "1.0.0"
 platforms: []
 known_issues:
-  - "Sign in once after installing: hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300"
+  - "Sign in once after installing: hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300, then add trust: untrusted to the mcp_servers.while entry in config.yaml"
 capabilities:
   provides_tools: []
   provides_hooks: []

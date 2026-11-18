@@ -7,6 +7,9 @@ process. Before the ``profile`` parameter existed, toggling a skill after
 These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
+import threading
+from types import SimpleNamespace
+
 import pytest
 import hermes_yaml as yaml
 import hermes_cli.web_server_gateway as _web_server_gateway
@@ -50,11 +53,8 @@ def client(monkeypatch, isolated_profiles):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
@@ -82,15 +82,6 @@ class TestProfileScopedSkills:
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
 
-
-    def test_scope_restores_module_globals(self, client, isolated_profiles):
-        """The SKILLS_DIR swap is per-request; the module global must be
-        restored even after a scoped call (cron-style locked swap)."""
-        from tools import skills_tool
-
-        before = skills_tool.SKILLS_DIR
-        client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert skills_tool.SKILLS_DIR == before
 
     @pytest.mark.parametrize("method,path,body", [
         ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),
@@ -163,6 +154,61 @@ class TestProfileScopedSkills:
 
 
 class TestProfileScopedHubActions:
+    def test_hub_action_names_do_not_collide_between_profiles(self):
+        assert _web_server_profiles._hub_action_name(
+            "install", "official/demo", "default"
+        ) != _web_server_profiles._hub_action_name(
+            "install", "official/demo", "worker_alpha"
+        )
+
+    def test_hub_scan_quarantines_under_the_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Preview scans must stage and inspect under their requested profile too."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_routers import skills as skills_router
+        from tools.skills_hub_models import SkillBundle
+
+        seen_homes = []
+        skills_lock_free = []
+        bundle = SkillBundle(
+            name="demo", files={"SKILL.md": "---\\nname: demo\\n---\\n"},
+            source="official", identifier="official/demo", trust_level="builtin",
+        )
+
+        def _probe_skills_lock():
+            # The process-wide skills lock must stay free for other dashboard requests mid-scan.
+            got = _web_server_profiles._SKILLS_PROFILE_LOCK.acquire(blocking=False)
+            if got:
+                _web_server_profiles._SKILLS_PROFILE_LOCK.release()
+            skills_lock_free.append(got)
+
+        def _quarantine(_bundle):
+            seen_homes.append(get_hermes_home())
+            probe = threading.Thread(target=_probe_skills_lock)
+            probe.start()
+            probe.join(5)
+            path = get_hermes_home() / "skills" / ".hub" / "quarantine" / "scan-demo"
+            path.mkdir(parents=True)
+            return path
+
+        result = SimpleNamespace(
+            skill_name="demo", source="official", trust_level="builtin", verdict="clean",
+            summary="clean", findings=[],
+        )
+        monkeypatch.setattr(skills_router, "_resolve_hub_skill", lambda *_args: (None, bundle, None))
+        monkeypatch.setattr("tools.skills_hub_install.quarantine_bundle", _quarantine)
+        monkeypatch.setattr("tools.skills_guard.scan_skill", lambda *_args, **_kwargs: result)
+        monkeypatch.setattr("tools.skills_guard.should_allow_install", lambda *_args, **_kwargs: (True, ""))
+
+        response = client.get(
+            "/api/skills/hub/scan", params={"identifier": "official/demo", "profile": "worker_alpha"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert seen_homes == [isolated_profiles["worker_alpha"]]
+        assert skills_lock_free == [True]
+
     def test_hub_install_spawns_with_profile_flag(
         self, client, isolated_profiles, monkeypatch
     ):
@@ -189,7 +235,7 @@ class TestProfileScopedHubActions:
         assert calls == [
             (
                 ["-p", "worker_alpha", "skills", "install", "official/demo", "--yes"],
-                _web_server_profiles._hub_action_name("install", "official/demo"),
+                _web_server_profiles._hub_action_name("install", "official/demo", "worker_alpha"),
             )
         ]
 

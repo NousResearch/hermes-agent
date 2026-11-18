@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from agent.redact import redact_for_egress as _redact_for_egress
+from agent.redact_phone_policy import redact_for_chat_egress as _redact_for_egress
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (

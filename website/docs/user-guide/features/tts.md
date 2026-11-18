@@ -341,7 +341,7 @@ tts:
 
 **Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
 
-**Subprocess environment:** command providers (TTS and STT) run with Hermes secrets scrubbed from the child environment — gateway bot tokens, LLM provider API keys, and internal relay credentials are removed; `PATH`, `HOME`, locale, and other normal variables are kept. If your command template needs its own API key from the environment (e.g. a `curl` one-liner), list the variable names under `env_passthrough` in the provider config:
+**Subprocess environment:** command providers (TTS and STT) run with Hermes secrets scrubbed from the child environment — gateway bot tokens, LLM provider API keys, and internal relay credentials are removed; `PATH`, `HOME`, locale, and other normal variables are kept. If your command template needs its own API key from the environment (e.g. a `curl` one-liner), list the variable names under `env_passthrough` in the provider config. Hermes-managed provider keys such as `OPENAI_API_KEY` are refused there (dropped with a log warning); give the command's key its own variable name:
 
 ```yaml
 tts:
@@ -388,7 +388,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 |------------------|------------------------------------------------------|
 | `{input_path}`   | Path to the temp UTF-8 text file Hermes wrote        |
 | `{text_path}`    | Alias for `{input_path}`                             |
-| `{output_path}`  | Path the command must write audio to                 |
+| `{output_path}`  | Path the command must write audio to (a Hermes-named temp file, moved to the requested location afterwards) |
 | `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
@@ -417,7 +417,7 @@ Use `{{` and `}}` for literal braces.
 
 #### Security
 
-Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
+Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values, never puts a caller-chosen output path into the command (the command writes a Hermes-named temp file), and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
 
 ### Python plugin providers
 

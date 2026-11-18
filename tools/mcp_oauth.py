@@ -2,13 +2,12 @@
 """MCP OAuth 2.1 client support: browser authorization-code flow with PKCE.
 
 The SDK's ``OAuthClientProvider`` does discovery, client identification, PKCE, exchange and
-refresh; this module supplies ``HermesTokenStorage`` (on-disk persistence), the localhost callback
-listener and ``build_oauth_auth()`` (legacy entry point). client_id is Hermes' Client ID Metadata
+refresh; this module supplies ``HermesTokenStorage`` (on-disk persistence) and the localhost callback
+listener. client_id is Hermes' Client ID Metadata
 Document URL (CIMD) when the server supports it, else RFC 7591 DCR. ``mcp_servers.<name>.oauth`` keys
 (all optional): client_id, client_secret, scope, redirect_port, redirect_uri (proxy callback),
 redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 
-from pm import install_hint
 import asyncio
 import contextlib
 import contextvars
@@ -48,7 +47,6 @@ from utils import atomic_json_write
 from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
-    from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken
 
 logger = logging.getLogger(__name__)
@@ -207,10 +205,6 @@ except ImportError:
 class OAuthNonInteractiveError(RuntimeError):
     """Raised when OAuth requires browser interaction in a non-interactive env."""
 
-
-# Port of the most recent callback-port resolution. Legacy global; per-flow closures are the
-# real mechanism (concurrent flows must not share it).
-_oauth_port: int | None = None
 
 # Interactivity gates for OAuth stdin prompts. ContextVars, NOT threading.local: background
 # discovery sets them on its own thread while connect+OAuth runs on the `mcp-event-loop` thread
@@ -814,12 +808,12 @@ def _announce_authorization_url(
 
 
 def _make_redirect_handler(port: int, redirect_uri: str | None = None, redirect_host: str | None = None):
-    """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
-    flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the
-    hint; ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
+    """Redirect handler closing over this flow's port (a closure keeps concurrent flows isolated).
+    ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the hint;
+    ``redirect_host`` is the loopback hostname the provider will actually redirect to (see
     :func:`_resolve_redirect_uri`).
 
-    Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
+    Using a closure instead of a module-level port avoids cross-server state pollution
     when multiple MCP servers run OAuth concurrently (fixes #44588).
     """
     async def _redirect_handler(authorization_url: str) -> None:
@@ -935,10 +929,9 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     document aborts at the authorization endpoint, so no redirect arrives and a bare "timed out" would
     hide the cause. Raises ``OAuthNonInteractiveError`` on timeout or when non-interactive.
 
-    Closing over the port (instead of reading the module-level ``_oauth_port``) keeps concurrent OAuth flows
-    isolated: flow A's waiter listens on flow A's port even when flow B's ``_configure_callback_port``
-    overwrites the legacy global afterwards (#34260, the callback-side sibling of the #44588
-    redirect-handler fix).
+    Closing over the port keeps concurrent OAuth flows isolated: flow A's waiter listens on flow A's port
+    even when flow B's ``_configure_callback_port`` runs afterwards (#34260, the callback-side sibling of
+    the #44588 redirect-handler fix).
     """
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
@@ -954,7 +947,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         # block for the full 300s timeout and — on the next connection retry — collide with the
         # still-bound/TIME_WAIT port, surfacing as ``OSError: [Errno 98] Address already in use``. Failing
         # fast keeps gateway startup independent of an unusable optional MCP server. This guard holds
-        # "regardless of whether a token file exists" — the point the build_oauth_auth token-file guard
+        # "regardless of whether a token file exists" — the point the provider-build token-file guard
         # cannot cover. See #57836.
         _raise_if_non_interactive(
             "OAuth callback requires an interactive session but none is available (non-interactive/background "
@@ -984,10 +977,6 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
         return _callback_outcome(result, cimd_url)
 
     return _wait
-
-
-# Legacy build_oauth_auth provider class, built lazily (SDK) and cached here.
-HermesOAuthClientProvider: Any = None
 
 
 def remove_oauth_tokens(server_name: str, *, hermes_home: str | Path | None = None) -> None:
@@ -1115,13 +1104,7 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
     dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
     ``oauth.redirect_port`` → cached registration port → fresh ephemeral port (the only parked one).
-    Also sets the legacy ``_oauth_port``.
-
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing calls to ``_wait_for_callback`` keep
-    working. The legacy global is the root cause of issue #5344 (port collision on concurrent OAuth flows);
-    replacing it with a ContextVar is out of scope for this consolidation PR.
     """
-    global _oauth_port
     dashboard_flow = get_dashboard_oauth_flow()
     # A pre-registered client with a pinned ``redirect_port`` (no DCR; the vendor matches the registered
     # loopback URI exactly) keeps its loopback listener even under the dashboard/Desktop flow: the
@@ -1151,7 +1134,6 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     # (#22161). Explicit and cached ports are fixed, known values and bind via the reuse_address path
     # instead.
     cfg["_resolved_port"] = port
-    _oauth_port = port
     return port
 
 
@@ -1305,29 +1287,3 @@ def humanize_oauth_registration_error(
         "browser flow can start. Options: set oauth.client_name to a name the provider allowlists, add a "
         "pre-registered client (oauth: {client_id: ..., client_secret: ...}), or use the provider's stdio / "
         "API-key / local server instead.")
-
-
-def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":
-    """``httpx.Auth`` OAuth handler for an MCP server; None if the SDK lacks OAuth. Legacy API — new code
-    uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
-    global HermesOAuthClientProvider
-    if not _OAUTH_AVAILABLE or _sdk_class("OAuthClientProvider") is None:
-        logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Run: "
-                       f"{install_hint('mcp')}", server_name)
-        return None
-    from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
-
-    cfg, storage = prepare_oauth_config(server_name, server_url, oauth_config)
-    if not _is_interactive() and not storage.has_cached_tokens():
-        raise OAuthNonInteractiveError(
-            f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. The OAuth flow "
-            f"requires browser authorization. Run `hermes mcp login {server_name}` interactively first to complete "
-            "initial authorization, then cached tokens will be reused.")
-    kwargs = build_provider_kwargs(cfg, storage, ssh_proxy_hint=True)
-    if HermesOAuthClientProvider is None:
-        from tools.mcp_oauth_provider import HermesProviderMixin
-
-        HermesOAuthClientProvider = type("HermesOAuthClientProvider", (HermesProviderMixin, _sdk_class("OAuthClientProvider")), {
-            "__doc__": "SDK provider plus Hermes' token-endpoint fixes (see ``HermesProviderMixin``).",
-            "__module__": __name__, "_hermes_logger": logger})
-    return HermesOAuthClientProvider(server_url=server_url, **kwargs)

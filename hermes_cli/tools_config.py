@@ -679,10 +679,10 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_na
 def _disabled_entry_tools(name: str) -> set[str]:
     """Tools one ``agent.disabled_toolsets`` entry removes at runtime: legacy names (``terminal_tools``)
     and the bundle/posture non-core delta included, which ``resolve_toolset`` alone gets wrong."""
-    from model_tools import _LEGACY_TOOLSET_MAP, _apply_toolset_selection
-    from toolsets import resolve_toolset
+    from model_tools import _apply_toolset_selection
 
-    universe = set(resolve_toolset(name)) | set(_LEGACY_TOOLSET_MAP.get(name, ()))
+    universe: set[str] = set()
+    _apply_toolset_selection(universe, [name], quiet_mode=True, disable=False)
     kept = set(universe)
     _apply_toolset_selection(kept, [name], quiet_mode=True, disable=True)
     return universe - kept

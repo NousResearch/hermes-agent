@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Keep ONE tracking issue in step with the scheduled install/update matrix.
+ * Keep ONE tracking issue in step with the latest automatic Canary E2E run.
  *
- * Run by .github/workflows/install-e2e-red.yml after every scheduled
- * "Install & Update E2E" run. A red run (any leg failed, was cancelled, or timed
- * out) opens the issue labelled `install-e2e-red`, or rewrites the body of the
- * one already open, so the issue always names the CURRENT red legs and the run
- * that produced them. A green run closes it with a pointer to that run. Never a
- * second issue and never a comment per red run: subscribers hear about the open
- * and the close, and the body is the live state in between.
+ * Run by .github/workflows/install-e2e-red.yml after every Canary E2E run a
+ * canary started. A red run (any job failed, was cancelled, or timed out) opens
+ * the issue labelled `install-e2e-red`, or rewrites the body of the one already
+ * open, so the issue always names the CURRENT red jobs and the run that produced
+ * them. A green run closes it with a pointer to that run. Never a second issue
+ * and never a comment per red run: subscribers hear about the open and the
+ * close, and the body is the live state in between.
  *
  *   node tests/install/e2e-assets/red-tracker.mjs --run-id <id> [--dry-run]
  *
@@ -27,17 +27,24 @@ const MAX_ROWS = 60;
  * Decide what the tracker does for one completed run. Pure, so the policy is
  * testable without GitHub.
  *
- * @param {{conclusion: string | null, html_url: string, head_sha: string, created_at: string}} run
+ * The run is named by its display title, which carries the commit under test
+ * (canary-e2e.yml's run-name). Its head_sha is main's tip when the
+ * workflow_run event fired, not that commit.
+ *
+ * @param {{display_title: string, conclusion: string | null, html_url: string, created_at: string}} run
  * @param {{name: string, conclusion: string | null, html_url: string, steps?: {name: string, conclusion: string | null}[]}[]} jobs
  * @param {{number: number} | null} openIssue
  * @returns {{action: 'open' | 'update' | 'close' | 'none', title?: string, body?: string}}
  */
 export function planTracker(run, jobs, openIssue) {
+  // A run a newer one replaced while it was still pending ends cancelled with
+  // no jobs: nothing ran, so it says nothing about the commit.
+  if (run.conclusion === 'cancelled' && jobs.length === 0) return { action: 'none' };
   const red = jobs.filter((j) => RED.has(String(j.conclusion)));
   const runRed = RED.has(String(run.conclusion)) || red.length > 0;
   if (!runRed) {
     if (run.conclusion === 'success' && openIssue) {
-      return { action: 'close', body: `The scheduled matrix is green again: ${run.html_url} (\`${run.head_sha.slice(0, 10)}\`). Closing; the next red run reopens a fresh tracker.` };
+      return { action: 'close', body: `**${run.display_title}** is green: ${run.html_url}. Closing; the next red run opens a fresh tracker.` };
     }
     return { action: 'none' };
   }
@@ -55,11 +62,11 @@ export function planTracker(run, jobs, openIssue) {
     classes.get(key)?.push(job);
   }
   const lines = [
-    `The scheduled **Install & Update E2E** run ${run.html_url} (\`${run.head_sha.slice(0, 10)}\`, ${run.created_at}) finished **${run.conclusion}** with ${red.length} red leg(s).`,
+    `**${run.display_title}** (${run.html_url}, started ${run.created_at}) finished **${run.conclusion}** with ${red.length} red job(s).`,
     '',
-    'This issue is rewritten in place by `.github/workflows/install-e2e-red.yml` after every scheduled run and closed by the first green one. Root-cause each class below; a historical-release limitation that cannot be fixed goes into `tests/install/e2e-assets/known-failures.json`.',
+    'This issue is rewritten in place by `.github/workflows/install-e2e-red.yml` after every Canary E2E run a canary starts, and closed by the first green one. Root-cause each class below; a historical-release limitation that cannot be fixed goes into `tests/install/e2e-assets/known-failures.json`.',
     '',
-    '### Red legs by failure class',
+    '### Red jobs by failure class',
   ];
   let rows = 0;
   for (const [key, members] of [...classes].sort((a, b) => b[1].length - a[1].length)) {
@@ -71,7 +78,7 @@ export function planTracker(run, jobs, openIssue) {
     }
   }
   if (red.length > rows) lines.push('', `…and ${red.length - rows} more; see the run's jobs list.`);
-  const title = `Install & Update E2E matrix is red (${red.length} leg${red.length === 1 ? '' : 's'})`;
+  const title = `${run.display_title} is red (${red.length} job${red.length === 1 ? '' : 's'})`;
   return { action: openIssue ? 'update' : 'open', title, body: lines.join('\n') };
 }
 
@@ -93,14 +100,14 @@ async function main() {
     .filter((/** @type {any} */ i) => !i.pull_request);
   const openIssue = open.length ? { number: open[0].number } : null;
   const plan = planTracker(run, jobs, openIssue);
-  console.log(`run ${runId}: conclusion=${run.conclusion} red-legs=${jobs.filter((j) => RED.has(String(j.conclusion))).length} open-tracker=${openIssue ? `#${openIssue.number}` : 'none'} -> ${plan.action}`);
+  console.log(`run ${runId}: conclusion=${run.conclusion} red-jobs=${jobs.filter((j) => RED.has(String(j.conclusion))).length} open-tracker=${openIssue ? `#${openIssue.number}` : 'none'} -> ${plan.action}`);
   if (values['dry-run'] || plan.action === 'none') {
     if (plan.body) console.log(`\n--- ${plan.title || 'comment'} ---\n${plan.body}`);
     return;
   }
   if (plan.action === 'open') {
     gh(['label', 'create', LABEL, '--repo', repo, '--force', '--color', 'B60205',
-      '--description', 'The scheduled install/update E2E matrix is red (managed by install-e2e-red.yml)']);
+      '--description', 'The latest automatic Canary E2E run is red (managed by install-e2e-red.yml)']);
     const url = gh(['issue', 'create', '--repo', repo, '--label', LABEL, '--title', String(plan.title), '--body', String(plan.body)]);
     console.log(`opened ${url.trim()}`);
   } else if (plan.action === 'update' && openIssue) {

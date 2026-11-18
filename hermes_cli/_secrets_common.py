@@ -8,17 +8,32 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 from rich.console import Console
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.table import Table
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def console_safe(text: str) -> str:
+    """Make externally-derived text safe for a markup console.
+
+    Strips terminal control characters (C0 other than tab/newline, DEL, C1) so
+    embedded ANSI/OSC sequences cannot reach the terminal, then escapes Rich
+    markup so ``[...]`` sequences print literally.
+    """
+    return _escape_markup(_CONTROL_CHARS_RE.sub("", text))
 
 
 def yn(b: bool) -> str:
@@ -88,7 +103,7 @@ def print_table(console: Console, columns: Sequence, rows: Iterable,
         table.add_row(*row)
     console.print(table)
     for w in warnings:
-        console.print(f"{indent}[yellow]warning:[/yellow] {w}")
+        console.print(f"{indent}[yellow]warning:[/yellow] {console_safe(w)}")
 
 
 def cli_version(binary: Path) -> str:

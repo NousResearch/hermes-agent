@@ -35,6 +35,7 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
+GPT62_MODEL_IDS: frozenset[str] = frozenset({"gpt-6.2-astra", "gpt-6.2-sol"})
 #: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
 GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 #: GPT-6.1 Sol takes Astra's ``low..max`` ladder (``none`` 400s, live 2026-09-29) without Astra's
@@ -104,7 +105,7 @@ def is_astra_model(model: Optional[str]) -> bool:
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
+    if is_astra_model(model) or bare in GPT62_MODEL_IDS or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
     return (
         CODEX_GPT56_EFFORTS

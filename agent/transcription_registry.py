@@ -13,17 +13,9 @@ import logging
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.transcription_provider import TranscriptionProvider
+from tools.transcription_common import BUILTIN_STT_PROVIDERS as _BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
-
-
-# Native built-in STT handlers. **Kept in sync with ``BUILTIN_STT_PROVIDERS`` in
-# :mod:`tools.transcription_tools`** (TestBuiltinSync fails on drift); importing it
-# directly would be a circular import.
-_BUILTIN_NAMES = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra",
-    "mittwald",
-})
 
 
 def _warn_builtin_collision(key: str) -> None:

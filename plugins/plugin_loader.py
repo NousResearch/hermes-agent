@@ -9,6 +9,7 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import logging
+import re
 import sys
 import threading
 import time
@@ -85,6 +86,24 @@ def user_plugins_dir() -> Optional[Path]:
         return d if d.is_dir() else None
     except Exception:
         return None
+
+
+# Names arrive from config.yaml (``memory.provider``, ``cron.provider``, ``context.engine``):
+# a single plain directory segment, never a path that escapes the plugin root.
+_PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def plugin_child_dir(root: Path, name: str) -> Optional[Path]:
+    """``root / name`` when *name* is a plain plugin directory name, else None (treated as not found)."""
+    return root / name if isinstance(name, str) and _PLUGIN_NAME_RE.fullmatch(name) else None
+
+
+def is_direct_child(path: Path, root: Path) -> bool:
+    """Whether *path* really sits directly under *root*, both as written and resolved. Resolved,
+    because ``Path.parents`` is lexical (``root / "../../x"`` lists *root* among its parents); as
+    written, because a user-dir symlink into *root* must not count as bundled (it would load
+    in-process past ``plugins.isolation: host``, and can be swapped between check and import)."""
+    return path.parent == root and path.resolve().parent == root.resolve()
 
 
 def iter_plugin_dirs(root: Path) -> list[Path]:

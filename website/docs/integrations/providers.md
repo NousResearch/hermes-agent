@@ -346,6 +346,40 @@ The API key is created per project in mStudio under **AI-Hosting**; it is not on
 
 The same key also serves the voice and embedding endpoints: `whisper-large-v3-turbo` and `cohere-transcribe-03-2026` for [speech-to-text](../user-guide/features/tts.md#speech-to-text) and `Qwen3-TTS-12Hz-1.7B-CustomVoice` for [text-to-speech](../user-guide/features/tts.md#text-to-speech). The hosted embedding (`Qwen3-Embedding-8B`), OCR (`GLM-OCR`) and reranker (`Qwen3-VL-Reranker-2B`) models are reachable with the same key but have no Hermes consumer — documents go through the vision models instead.
 
+### OpenAI GPT-6.2 Astra and Sol
+
+Select `gpt-6.2-astra` or `gpt-6.2-sol` with `hermes model` under **OpenAI API**
+(API key) or **OpenAI Codex** (ChatGPT subscription). Explicit model selections are unchanged.
+When no model is configured, OpenAI API defaults to `gpt-6.2-sol`. Codex can use the
+account's catalog when available, with `gpt-6-sol` as its curated offline fallback.
+The Codex picker shows GPT-6.2 when the account's catalog offers it.
+If your ChatGPT plan doesn't include GPT-6.2, select `gpt-6-sol` instead.
+
+If your plan includes GPT-6.2 but the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md)
+rejects it on an older binary, update the binary Hermes launches (including any explicit
+`model.codex_bin` path) to a compatible release, such as [0.169.1](https://github.com/openai/codex/releases/tag/rust-v0.169.1).
+Alternatively, use `/codex-runtime auto` and start a fresh session to use Hermes' native route.
+Neither option changes your plan's model access.
+
+Both models use Responses for tool calling, accept text and images, and support reasoning
+efforts `low`, `medium`, `high`, `xhigh`, and `max`. An explicit `none` or `minimal` effort
+is clamped to `low`; disabling reasoning omits the unsupported disable field.
+
+The direct API has a 1,050,000-token window, a 922,000-token input cap, and 128,000 maximum
+output tokens. Codex uses its account catalog's window instead, with offline defaults of
+272,000 for Astra and 500,000 for Sol from OpenAI's Codex catalog. Hermes does not invent
+`-900k` or `-pro` picker variants for either model.
+
+`/fast` supports both models. Fast supports US and EU processing; Ultrafast supports US
+processing only and remains account-gated on Codex. Direct API cost estimates use the served
+tier, including the Ultrafast launch discount through February 28, 2027, Pacific time.
+Codex usage stays subscription-included, not an API invoice.
+
+Sources: [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra),
+[Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[migration guide](https://developers.openai.com/api/docs/guides/latest-model), and
+[Codex catalog](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.

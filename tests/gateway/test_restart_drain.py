@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import sys
 import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -383,6 +384,26 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
 
 @pytest.mark.platforms("windows")
 @pytest.mark.asyncio
+async def test_windows_restart_respawn_is_bound_to_this_checkout(monkeypatch):
+    """The watcher's bootstrap drops PYTHONPATH, so a bare ``python -m hermes_cli.main`` respawn
+    from a PYTHONPATH-only checkout could not import Hermes (#152714)."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: [sys.executable, "-m", "hermes_cli.main"])
+    import hermes_cli._subprocess_compat as subprocess_compat
+    monkeypatch.setattr(subprocess_compat, "windows_detach_popen_kwargs", dict)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: popen_calls.append(cmd) or MagicMock())
+
+    await runner._launch_detached_restart_command()
+
+    from hermes_cli._launchers import runtime_command
+    from pathlib import Path
+    respawn = runtime_command(Path(gateway_run.__file__).resolve().parent.parent, python=sys.executable)
+    assert popen_calls[0][-len(respawn) - 2:] == [*respawn, "gateway", "restart"]
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the
     hidden-console detach kwargs — NOT swap in GUI-subsystem pythonw.exe,
@@ -424,6 +445,47 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
     assert cmd[0] == r"C:\venv\Scripts\python.exe"
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["creationflags"] == 0x08000200
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_posix_detached_restart_logs_helper_output_and_exit_status(monkeypatch, tmp_path):
+    """The detached restart helper runs after the gateway exits, so a failed
+    respawn used to vanish into /dev/null: the user was told the gateway is
+    restarting and it stayed down. Its stderr and exit status must land in
+    <HERMES_HOME>/logs/detached-restart.log (#152714)."""
+    import shlex
+
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    log_path = tmp_path / "logs" / "detached-restart.log"
+    assert log_path.parent.is_dir()
+    log_arg = shlex.quote(str(log_path))
+    assert "hermes gateway restart" in shell_cmd
+    assert f">> {log_arg} 2>&1" in shell_cmd
+    assert f'echo "detached restart exited with status $?" >> {log_arg}' in shell_cmd
+
+    # A log that cannot be opened must still run the helper: bash skips a command whose redirect fails.
+    monkeypatch.undo()  # the real Popen runs the probe
+    log_path.mkdir()  # a directory at the log path cannot be opened for append, even by root
+    probe = shell_cmd.replace("hermes gateway restart", "echo helper-ran")
+    out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)  # noqa: ASYNC221 -- the probe shell must finish before the assert
+    assert "helper-ran" in out.stdout
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

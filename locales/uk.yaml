@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "дані провайдера + оцінка нових повідомлень"
     source_line: "Джерело: {source}; кількість за категоріями — локальні оцінки."
     hint_all: "Використайте /context all, щоб побачити вартість кожної навички та набору інструментів."
+    cache_warm: "Кеш промпту: активний до {until} (залишилось {remaining}; {ttl}, {confidence})."
+    cache_expired: "Кеш промпту: сплив {ago} тому ({ttl}, {confidence}); наступне повідомлення заново обробить увесь промпт."
+    cache_maybe_warm: "Кеш промпту: може бути ще активним до {until} (щонайбільше {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Кеш промпту: невідомо (маршрут, сесія або контекст змінилися після останнього кешованого запиту)."
+    cache_unknown_route: "Кеш промпту: невідомо (цей провайдер не публікує термін зберігання кешу)."
+    cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких Hermes не бачить)."
+    cache_unknown_storage: "Кеш промпту: невідомо (не вдалося прочитати сховище сесії)."
+    cache_confidence:
+      proven: "підтверджено"
+      declared: "запитано"
+      assumed: "припущено"
   status:
     header: "📊 **Стан Hermes Gateway**"
     matrix_scope_header: "**Область Matrix:**"
@@ -3328,6 +3339,10 @@ cli:
     total: "📚 {count} навичок(и) доступно"
     added_header: "➕ Додані навички:"
     removed_header: "➖ Видалені навички:"
+  gateway_restart:
+    waiting: "Hermes перезапускається, щоб завершити оновлення або перезапуск; чекаємо на його повернення…"
+    timed_out: "Hermes не повернувся після перезапуску вчасно. Перевірте `hermes gateway status`, потім знову запустіть `hermes`."
+    stopped: "Очікування перезапуску Hermes припинено; нічого не запущено."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Сховище сеансів недоступне[/bold yellow] — ця розмова [bold]НЕ буде збережена[/bold], і її не можна буде відновити пізніше. Пошук у минулих сеансах також вимкнено.\n  Причина: {reason}.\n  {action}\n  [dim]Деталі: {details}[/dim]"
     unavailable_plain: "ПОПЕРЕДЖЕННЯ: сховище сеансів недоступне — ця розмова НЕ буде збережена, і її не можна буде відновити пізніше. Причина: {reason}. {action}"
@@ -4006,7 +4021,7 @@ plan_usage:
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Файли, змінені у скасованих ходах: {files}. Виконайте /rollback, щоб переглянути контрольні точки й відновити одну."
     more: "ще {count}"

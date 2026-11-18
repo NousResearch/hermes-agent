@@ -208,7 +208,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     """
     if not _scan_on_install_enabled():
         return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+    from hermes_cli.plugins_install_scan import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:
@@ -460,6 +460,13 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     try:
         target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError as e:
+        from pm.filesystem import is_junction
+        link = plugins_dir / name.strip("/")
+        if link.parent == plugins_dir and (link.is_symlink() or is_junction(link)):
+            from rich.markup import escape
+            _fail(console, f"[red]Error:[/red] Plugin '{escape(name)}' is a link to {escape(os.path.realpath(link))}, outside the "
+                           "plugins directory, and Hermes does not change files there. Pull updates in that "
+                           "checkout, or delete the link to remove the plugin.")
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
         target = _resolved_user_plugin_dir(name)

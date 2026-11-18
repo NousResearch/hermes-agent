@@ -35,11 +35,6 @@ def set_emitter(fn: Optional[Callable[[str, str, dict], None]]) -> None:
     _emit = fn
 
 
-def available() -> bool:
-    """True when running under the desktop app (an emitter is wired)."""
-    return _emit is not None
-
-
 def user_enabled(setting: str, default: bool) -> bool:
     """Read a desktop Appearance switch from ``display.<setting>``. The renderer mirrors
     these toggles onto the CONNECTED gateway's config, so this is the user's real answer

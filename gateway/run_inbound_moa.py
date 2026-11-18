@@ -6,7 +6,6 @@ to the admitted turn's execution; every other platform takes the one-shot sessio
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from agent.i18n import t
@@ -19,18 +18,13 @@ class GatewayInboundMoaMixin:
         # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
         # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
         # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import moa_usage
+        from gateway.session_moa_turn import admit_moa_turn, default_preset, moa_override
 
         moa_payload = event.get_command_args().strip()
         if not moa_payload:
             return True, moa_usage()
-        try:
-            cfg = await asyncio.to_thread(load_config)
-            moa_cfg = normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
-        except Exception:  # an unreadable config still runs /moa on the built-in default preset
-            logger.warning("/moa: config unreadable, using the default MoA preset", exc_info=True)
-            moa_cfg = normalize_moa_config({})
+        preset = await default_preset()
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, source)
         if policy is not None:
@@ -45,19 +39,18 @@ class GatewayInboundMoaMixin:
                 if policy_if_managed(policy) is not None:
                     return True, t("gateway.moa.managed_session")
                 return False, None
-            if not rebind_model_override(event.message_id, {"model": moa_cfg["default_preset"], "provider": "moa"}):
+            if not rebind_model_override(event.message_id, {"model": preset, "provider": "moa"}):
                 return True, t("gateway.moa.prepare_failed")
             event.text = moa_payload
             return False, None
         try:
             event.text = moa_payload
+            if admit_moa_turn(self, event, source, _quick_key, preset):
+                return False, None  # its own admission carries the preset (#146026)
             _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
             self._claim_one_turn_restore(_quick_key)
-            _moa_state.conversation.model_override = {
-                "provider": "moa", "model": moa_cfg["default_preset"], "base_url": "moa://local",
-                "api_key": "moa-virtual-provider", "api_mode": "chat_completions",
-            }
+            _moa_state.conversation.model_override = moa_override(preset)
             self._evict_cached_agent(_quick_key)
         except Exception:  # the user gets the prepare-failed notice instead of a turn on the wrong model
             logger.warning("/moa: could not bind the one-shot preset", exc_info=True)

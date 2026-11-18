@@ -406,7 +406,7 @@ def _scan_assembled_cron_prompt(
     payload bypassed every gate. See #3968.
     """
     from tools.cronjob_tools import _scan_cron_prompt
-    from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
+    from cron.prompt_scan import _scan_cron_skill_assembled
     if has_skills or has_injected_data:
         # The cleaned (sanitized) prompt is what actually runs.
         assembled, scan_error = _scan_cron_skill_assembled(assembled)

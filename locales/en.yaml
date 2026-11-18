@@ -439,6 +439,17 @@ gateway:
       provider_usage_plus_estimate: "provider usage + estimated new messages"
     source_line: "Source: {source}; category counts are local estimates."
     hint_all: "Use /context all for per-skill and per-toolset costs."
+    cache_warm: "Prompt cache: warm until {until} ({remaining} left; {ttl}, {confidence})."
+    cache_expired: "Prompt cache: expired {ago} ago ({ttl}, {confidence}); the next message re-processes the full prompt."
+    cache_maybe_warm: "Prompt cache: may still be warm until {until} (at most {remaining} more; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt cache: unknown (the route, session or context changed since the last cached request)."
+    cache_unknown_route: "Prompt cache: unknown (this provider does not publish its cache retention)."
+    cache_unknown_runtime: "Prompt cache: unknown (this runtime sets its own cache options, which Hermes cannot observe)."
+    cache_unknown_storage: "Prompt cache: unknown (the session store could not be read)."
+    cache_confidence:
+      proven: "proven"
+      declared: "declared"
+      assumed: "assumed"
   status:
     header: "📊 **Hermes Gateway Status**"
     matrix_scope_header: "**Matrix scope:**"
@@ -3430,6 +3441,10 @@ cli:
     total: "📚 {count} skill(s) available"
     added_header: "➕ Added Skills:"
     removed_header: "➖ Removed Skills:"
+  gateway_restart:
+    waiting: "Hermes is restarting to finish an update or restart; waiting for it to come back…"
+    timed_out: "Hermes did not come back from its restart in time. Check `hermes gateway status`, then start `hermes` again."
+    stopped: "Stopped waiting for Hermes to restart; nothing was started."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Session store unavailable[/bold yellow] — this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. Searching past sessions is also disabled.\n  Reason: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNING: Session store unavailable — this conversation will NOT be saved and cannot be resumed later. Reason: {reason}. {action}"
@@ -4122,7 +4137,7 @@ plan_usage:
   large_notice_limit_stops: "Large model: your {name} limit is reached ({resets}), so it won't run until then."
   large_notice_percent: "Large model: uses more of your plan's usage per message. Monthly large-model limit: {percent} used."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Files changed in the undone turns: {files}. Run /rollback to see checkpoints and restore them."
     more: "+{count} more"

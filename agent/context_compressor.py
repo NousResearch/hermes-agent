@@ -32,7 +32,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin, summary_view
-from agent.context_compressor_prune import ProactivePruneMixin
+from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
@@ -1564,7 +1564,6 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 def _sum_terminal(name, args, content, content_len, line_count):
-    from agent.context_compressor_prune import terminal_stub
     return terminal_stub(args, content, line_count)
 
 
@@ -1606,7 +1605,6 @@ def _sum_web_extract(name, args, content, content_len, line_count):
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
-    from agent.context_compressor_prune import delegate_stub
     return delegate_stub(args, content, content_len)
 
 
@@ -1919,7 +1917,6 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
-    from agent.context_compressor_prune import stub_arguments
     first_arg = stub_arguments(args)
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 

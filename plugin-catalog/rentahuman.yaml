@@ -1,8 +1,16 @@
 name: rentahuman
 title: RentAHuman
 repo: https://github.com/rentahuman-ai/hermes-plugin
-sha: dc4a731bdbe930a7751c47ef7924cadcea8d7adb
-description: "Find people and coordinate real-world work through the RentAHuman marketplace. Disclosure — runs the third-party `rentahuman-mcp` server via npx, which sends your requests and your RentAHuman API key to rentahuman.ai and stores agent identity keys in `~/.rentahuman-identities/`; its tools can post and fund tasks, accept workers, send messages and release real money to people — write-capable calls ask for approval because the server is marked `trust: untrusted`, but each approval moves money or commits you to work."
+sha: 79a35c6ab70f2ba2b5d4092483a6c9e24f62eb6c
+image: https://raw.githubusercontent.com/rentahuman-ai/hermes-plugin/79a35c6ab70f2ba2b5d4092483a6c9e24f62eb6c/assets/marketplace-cover.jpg
+description: >-
+  Find people for real-world tasks, from local errands to on-site research and user testing.
+  Connect with OAuth via the hosted MCP catalog, or install this local plugin for API-key access.
+  The plugin runs the third-party rentahuman-mcp package via npx, sends requests and your
+  RentAHuman API key to rentahuman.ai, and can store agent identity keys in ~/.rentahuman-identities/.
+  It adds a Hermes source label to tool requests for usage attribution. Hermes asks for approval
+  before write-capable calls because the local server is untrusted. Approved actions can send
+  messages, commit to work, or move real money. A dry-run preview spends nothing.
 maintainer: RentAHuman
 tier: community
 category: tools

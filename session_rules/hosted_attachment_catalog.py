@@ -178,7 +178,8 @@ def _manifest(value: Any) -> list[dict[str, Any]]:
 
 def public_row(row, *, room_id, event_id, entry):
     if (
-        row["room_id"] != room_id
+        "viewer_access" not in row.keys()
+        or row["room_id"] != room_id
         or row["event_id"] != event_id
         or row["state"] != "committed"
         or row["viewer_access"] != 1

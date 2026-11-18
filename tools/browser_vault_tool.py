@@ -648,10 +648,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     def _abort(error_type: str, message: str) -> dict[str, Any]:
         # Remove every stamp: a stamp left behind would let a later read address the control
         # this fill just targeted.
-        try:
-            _eval_js_secret(task_id, build_unstamp_js(nonce))
-        except Exception:  # health: allow BLE001 -- cleanup must not mask the refusal
-            logger.debug("vault fill: stamp cleanup failed")
+        _eval_js_secret(task_id, build_unstamp_js(nonce))
         return {"ok": False, "success": False, "error_type": error_type, "filled_fields": 0,
                 "error": scrub_secret_from_text(message, secret)}
 
@@ -795,12 +792,7 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
     from agent.vault_login_classifier import build_fill_js
     from agent.vault_store import scrub_secret_from_text
 
-    try:
-        fill_result = _eval_js_secret(
-            task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
-        )
-    except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
-        return {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
+    fill_result = _eval_js_secret(task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce))
     if not fill_result.get("success"):
         out = {"success": False, "error": scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)}
         if fill_result.get("error_type"):

@@ -207,10 +207,18 @@ def test_slack_behaviour_keys(cfg):
 
 def test_skills_and_cron(cfg):
     home = _values()["EDUCATOR_HOME"]
-    assert cfg["skills"]["external_dirs"] == [
-        f"{home}/workspace/checkouts/product-skills/plugins/release-comms/skills",
-        f"{home}/workspace/checkouts/product-skills/plugins/product-education/skills",
-    ]
+    root = f"{home}/workspace/checkouts/product-skills/plugins/"
+    dirs = cfg["skills"]["external_dirs"]
+    # Every skill dir lives in the product-skills checkout (write-protected
+    # by agent_write_guard's workspace/checkouts), one plugin's skills/ each.
+    for d in dirs:
+        assert d.startswith(root) and d.endswith("/skills"), d
+        assert "/" not in d[len(root):-len("/skills")], d
+    plugins = [d[len(root):-len("/skills")] for d in dirs]
+    assert len(plugins) == len(set(plugins))
+    # The cron jobs load these by name.
+    assert {"release-comms", "product-education"} <= set(plugins)
+    assert "example-skill" not in plugins          # a template, not a skill
     assert cfg["cron"]["allow_agent_shell"] is False
 
 

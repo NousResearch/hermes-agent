@@ -83,10 +83,23 @@ platform_toolsets:
 
 skills:
   # Read-only clones refreshed by the release-watch script. External dirs are
-  # read-only for every agent write; skill changes go through PRs.
+  # read-only for every agent write; skill changes go through PRs. Every
+  # product-skills plugin except example-skill (a template). There is no glob
+  # support, so a NEW plugin must be added here by hand. Skills whose workflow
+  # runs Python/Node (cinematic-slides, cinematic-videos, feature-video) are
+  # readable but not runnable end to end: this profile has no shell.
   external_dirs:
     - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/release-comms/skills"
     - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/product-education/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/ac-lightweight-requirements/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/cinematic-slides/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/cinematic-videos/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/component-accept/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/component-scan/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/feature-video/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/final-product-review/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/prd-writer/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/ship-prd/skills"
 
 cron:
   allow_agent_shell: false      # fork policy: cron agents never get a shell

@@ -4101,6 +4101,23 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
+    try:
+        from hermes_cli.plugins import allow_auxiliary_main_agent_fallback
+        if not allow_auxiliary_main_agent_fallback(
+            task=task,
+            failed_provider=failed_provider,
+            failed_model=failed_model,
+            fallback_provider=main_provider,
+            fallback_model=main_model,
+            reason=reason,
+        ):
+            logger.info(
+                "Auxiliary %s: %s on %s — plugin policy refused fallback to main agent model %s/%s",
+                task or "call", reason, failed_provider, main_provider, main_model,
+            )
+            return None, None, ""
+    except Exception as exc:
+        logger.debug("Auxiliary fallback policy hook check failed: %s", exc)
     if task == "vision" and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a

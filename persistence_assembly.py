@@ -35,6 +35,7 @@ __all__ = [
     "open_profile_repair",
     "open_store_admin",
     "profile_scope",
+    "require_hosted_persistence",
     "storage_health",
     "store_exists",
     "store_location",
@@ -341,3 +342,9 @@ def close_all_stores() -> int:
     from persistence.sqlite import _registry
 
     return _registry.close_all()
+
+
+def require_hosted_persistence() -> None:
+    """The hosted boot check: assemble the configured provider and return only when it declares ``scope_pinning`` and
+    its ``assert_isolating`` passes; raise ``IsolationUnsupported`` otherwise (always for the built-in SQLite)."""
+    raise NotImplementedError("hosted persistence boot check")  # scaffold: lands with provider discovery

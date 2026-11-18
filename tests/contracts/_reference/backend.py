@@ -39,6 +39,7 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     durable_admissions=False,
     receipted_writes=False,
     physical_admin=False,
+    scope_pinning=False,
 )
 
 RepositoryFactory = Callable[["InMemoryStore"], Any]
@@ -179,6 +180,13 @@ class InMemoryBackend:
     def open_profile_repair(self, scope: ProfileScope, *, read_only: bool) -> AdminUnsupported:
         """As :meth:`open_store_admin`: no physical admin capability."""
         return AdminUnsupported(PHYSICAL_ADMIN, "in_memory")
+
+    def assert_isolating(self) -> None:
+        """Refuses until the reference serves pinned scopes (``scope_pinning``)."""
+        from persistence import IsolationUnsupported
+
+        if not self.capabilities.scope_pinning:
+            raise IsolationUnsupported("the reference backend does not declare scope_pinning")
 
     def reopen(self) -> None:
         """The in-memory reference has no store to survive a reopen, declares ``reopen_durability=False``, and refuses honestly."""

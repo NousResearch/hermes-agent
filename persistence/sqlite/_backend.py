@@ -29,6 +29,7 @@ from persistence.sqlite._state.errors import (
     classify_persistence_error, is_malformed_schema_error,
 )
 from persistence import (
+    IsolationUnsupported, ScopePinRefused,
     AwaitableStore, CorruptStoreError, DeletedWalGeneration, DiskFull, MalformedSchema,
     PermanentStoreError, PersistenceCapabilities, PersistenceError, ProfileScope, SearchIndexCorrupt, StoreContention,
     StoreQuarantined, StoreReplaced, StoreUnavailable, TransientStoreError,
@@ -88,6 +89,7 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     durable_admissions=False,
     receipted_writes=False,
     physical_admin=True,
+    scope_pinning=False,
 )
 
 RepositoryFactory = Callable[["SQLiteStore"], Any]
@@ -213,7 +215,10 @@ class SQLiteBackend:
 
     def open(self, scope: ProfileScope) -> SQLiteStore:
         """A handle bound to ``scope``'s store; opening touches no file. A profile this backend holds no store for is
-        refused with ``ValueError``."""
+        refused with ``ValueError``. A pinned (hosted) scope is refused with ``ScopePinRefused``: a local per-profile
+        file is not a tenant-isolating store."""
+        if scope.pin is not None:
+            raise ScopePinRefused("the SQLite backend serves local profiles only; it cannot serve a pinned scope")
         path = self._stores.get(scope.hermes_home_key)
         if path is None:
             raise ValueError(f"this SQLite backend holds no store for {scope.profile_dir}")
@@ -298,6 +303,10 @@ class SQLiteBackend:
         from .admin import SQLiteProfileRepairAdmin
 
         return SQLiteProfileRepairAdmin(self._admin_file(scope), read_only=read_only)
+
+    def assert_isolating(self) -> None:
+        """Always refuses: a per-profile SQLite file is a single-tenant store with no row-level isolation."""
+        raise IsolationUnsupported("the SQLite backend is a local single-tenant store; it does not isolate tenants")
 
     def reopen(self) -> None:
         """Drop every held reference; the next touch acquires the store again."""

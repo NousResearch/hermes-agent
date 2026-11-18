@@ -13,7 +13,7 @@ import { registerPluginLocales } from '@/i18n/plugin-i18n'
 import { setConnection } from '@/store/session'
 
 import type * as KanbanApi from './api'
-import { $boardSlug, bindApi } from './api'
+import { $boardSlug, bindApi, fetchBoards } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { KANBAN_LOCALES } from './i18n'
 
@@ -153,5 +153,31 @@ describe('board switcher', () => {
     expect(tabNames()).toEqual(['Shipping', 'Research'])
     expect(storage.get('pinnedBoards.remote-test', [])).toEqual(['shipping', 'research'])
     expect(storage.get('pinnedBoards', [])).toEqual(['shipping', 'research'])
+  })
+
+  // Pause is per board: the trigger flags the CURRENT board, and the menu
+  // flags each held one — a single unqualified "paused" would be a lie as soon
+  // as two boards exist (#141451).
+  it('flags the current board in the trigger and each held board in the menu', async () => {
+    vi.mocked(fetchBoards).mockResolvedValue({
+      boards: [
+        { name: 'Shipping', pause: { board: 'shipping', paused_at: 'x', reason: null }, slug: 'shipping', total: 3 },
+        { name: 'Billing', pause: null, slug: 'billing', total: 1 },
+        { name: 'Hold', pause: { board: 'hold', paused_at: 'x', reason: 'provider swap' }, slug: 'hold', total: 0 }
+      ],
+      current: 'shipping'
+    })
+    mount()
+
+    expect(await screen.findByTestId('kanban-switcher-paused')).toBeTruthy()
+
+    const trigger = screen.getByRole('button', { name: /Board: Shipping/ })
+    fireEvent.pointerDown(trigger)
+    fireEvent.click(trigger)
+
+    const held = await screen.findByTestId('kanban-board-paused-shipping')
+    expect(held.textContent).toContain('PAUSED')
+    expect(await screen.findByTestId('kanban-board-paused-hold')).toBeTruthy()
+    expect(screen.queryByTestId('kanban-board-paused-billing')).toBeNull()
   })
 })

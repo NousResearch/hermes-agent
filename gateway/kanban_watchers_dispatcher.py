@@ -228,8 +228,12 @@ class _KanbanDispatcher:
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
         from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_pause as _pause
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
+                # A paused board's ready queue is correctly idle, never "stuck".
+                if _pause.is_paused(slug):
+                    continue
                 conn = None
                 try:
                     conn = _kbc().connect(board=slug)
@@ -258,10 +262,15 @@ class _KanbanDispatcher:
         attempted = 0
         successes = 0
         from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_pause as _pause
         with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
+                # A paused board spends nothing: no aux LLM, no new ready cards
+                # that would just sit in the queue while the operator is away.
+                if _pause.is_paused(slug):
+                    continue
                 # The decomposer connects with no board kwarg. Pin the board for this context only: an
                 # env pin is process-wide, so for the whole aux-LLM call every gateway turn, kanban tool
                 # and spawned subprocess that names no board would resolve this one instead.

@@ -115,9 +115,12 @@ def resolve_identity_verifier(name: str) -> IdentityVerifier:
     if not name:
         raise LookupError("no identity verifier is configured")
     from plugins.identity_verifier import IdentityVerifierRefused, load_identity_verifier
+    from plugins.plugin_loader import NamedProviderRefused
     try:
         verifier = load_identity_verifier(name)
-    except IdentityVerifierRefused as refused:
+    except (IdentityVerifierRefused, NamedProviderRefused) as refused:
+        # The shared named-provider seam refuses out-of-image code (a planted bundled symlink)
+        # before the verifier loader's own checks: either refusal is the same boot refusal.
         raise LookupError(f"identity verifier {name!r}: {refused}") from refused
     if verifier is None:
         raise LookupError(f"identity verifier {name!r}: no such identity verifier")

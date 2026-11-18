@@ -23,11 +23,13 @@ _REJECTED = frozenset({401, 403})
 @dataclass(frozen=True)
 class Outcome:
     """How one report went. ``status`` is None when no HTTP reply came back (network error, timeout);
-    ``retry_after_s`` is the receiver's ``Retry-After`` and only ever set on ``throttled``."""
+    ``retry_after_s`` is the receiver's ``Retry-After`` and only ever set on ``throttled``;
+    ``report_interval_s`` is its ``Report-Interval`` and only ever set on ``stored``."""
 
     kind: OutcomeKind
     status: Optional[int] = None
     retry_after_s: Optional[float] = None
+    report_interval_s: Optional[float] = None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -57,19 +59,19 @@ def post_report(target: ReportTarget, body: bytes, *, timeout: float, opener: An
         logger.debug("status report: no reply (%s)", type(exc).__name__)
         return Outcome("failed")
     if 200 <= status < 300:
-        return Outcome("stored", status)
+        return Outcome("stored", status, report_interval_s=_seconds(headers.get("Report-Interval")))
     if status in _THROTTLED:
-        return Outcome("throttled", status, _retry_after_s(headers.get("Retry-After")))
+        return Outcome("throttled", status, _seconds(headers.get("Retry-After")))
     if status in _REJECTED:
         return Outcome("rejected", status)
     return Outcome("failed" if status >= 500 else "refused", status)
 
 
-def _retry_after_s(value: Optional[str]) -> Optional[float]:
-    """``Retry-After`` as a positive number of seconds. Its HTTP-date form, zero and anything else
-    are None: the sender then keeps its normal interval. Read with ``float()``, never ``int()``: a
-    digit string past the interpreter's integer limit would raise, where ``float()`` reads it as
-    infinity and the sender's cap applies."""
+def _seconds(value: Optional[str]) -> Optional[float]:
+    """``Retry-After`` or ``Report-Interval`` as a positive number of seconds. An HTTP date, zero
+    and anything else are None, which the sender treats as no header at all. Read with ``float()``,
+    never ``int()``: a digit string past the interpreter's integer limit would raise, where
+    ``float()`` reads it as infinity and the sender's cap applies."""
     text = (value or "").strip()
     if not (text.isascii() and text.isdigit()):
         return None

@@ -25,13 +25,15 @@ from gateway.status_report.target import STATUS_REPORT_URL_ENV, report_target_fr
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from tests.gateway.status_report.support import (
     AFTER_INTERVAL_S,
-    BEFORE_INTERVAL_S,
+    INTERVAL_HEADER,
+    INTERVAL_S,
     REPORT_URL,
     RESPONSES,
     Clock,
     Receiver,
     Reply,
     a_status_source,
+    around,
     assert_matches_contract,
     make_reporter,
     new_credential,
@@ -44,6 +46,8 @@ pytestmark = pytest.mark.asyncio
 
 QUICK_RETRY_S = RESPONSES["quick_retry_s"]
 GOODBYE_QUIET_S = RESPONSES["goodbye_quiet_s"]
+# An interval a receiver sets, far enough from the normal one that their jitter bands do not touch.
+TOLD_S = 300
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -60,14 +64,20 @@ def _reply(case: dict) -> Reply:
     return Reply(case["status"], case["headers"], case.get("body"))
 
 
-async def _expect_next_report_at_the_interval(clock, reporter, receiver) -> None:
+def _told(seconds: int) -> Reply:
+    """A stored reply that sets the report interval."""
+    return Reply(204, {INTERVAL_HEADER: str(seconds)})
+
+
+async def _expect_next_report_at_the_interval(clock, reporter, receiver, interval_s: float = INTERVAL_S) -> None:
+    before, after = around(interval_s)
     sent = len(receiver.requests)
-    clock.advance(BEFORE_INTERVAL_S)
+    clock.advance(before)
     await reporter.poll()
-    assert len(receiver.requests) == sent, "a report went out before the interval"
-    clock.advance(AFTER_INTERVAL_S - BEFORE_INTERVAL_S)
+    assert len(receiver.requests) == sent, f"a report went out before the {interval_s}s interval"
+    clock.advance(after - before)
     await reporter.poll()
-    assert len(receiver.requests) == sent + 1, "no report at the interval"
+    assert len(receiver.requests) == sent + 1, f"no report at the {interval_s}s interval"
 
 
 async def test_the_first_report_goes_out_at_once_and_matches_the_contract(clock):
@@ -588,6 +598,192 @@ async def test_a_report_that_cannot_be_built_costs_an_interval_and_never_ends_th
     assert len(said) == 2 and "OSError" in said[0] and "ValueError" in said[1], said
     for leaked in (_FAULT_PATH, "Input/output error", "not a status record"):
         assert leaked not in caplog.text
+
+
+_TOLD = [
+    *_cases("told_interval"),
+    pytest.param({"status": 204, "headers": {INTERVAL_HEADER: "9" * 5000}, "wait_s": RESPONSES["interval_max_s"]},
+                 id="report interval too long to read as an integer"),
+]
+_STORED_WITHOUT_AN_INTERVAL = [case for case in _cases("next_interval") if case.values[0]["outcome"] == "stored"]
+_NOT_STORED = [case for case in _cases("next_interval") if case.values[0]["outcome"] != "stored"]
+
+
+@pytest.mark.parametrize("case", _TOLD)
+async def test_a_stored_reply_sets_the_interval_of_the_next_and_later_reports(clock, case):
+    receiver = Receiver()
+    receiver.reply_with(_reply(case), _reply(case))
+    reporter = make_reporter(receiver)
+
+    await reporter.poll()
+
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, case["wait_s"])
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, case["wait_s"])
+    assert [seen.body["seq"] for seen in receiver.requests] == [1, 2, 3]
+
+
+async def test_reports_at_a_told_interval_keep_the_jitter(clock):
+    """Every gateway of a deployment is told the same interval; without the jitter they would report in step."""
+    receiver = Receiver()
+    receiver.reply_with(*[_told(TOLD_S)] * 6)
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    before, after = around(TOLD_S)
+
+    waits = []
+    for sent in range(1, 7):
+        clock.advance(before)
+        waited = before
+        while waited < after and len(receiver.requests) == sent:
+            clock.advance(1)
+            waited += 1
+            await reporter.poll()
+        assert len(receiver.requests) == sent + 1, f"no report within the jitter band of {TOLD_S}s"
+        waits.append(waited)
+
+    assert len(set(waits)) > 1, f"every report waited exactly {waits[0]}s"
+
+
+@pytest.mark.parametrize("case", _STORED_WITHOUT_AN_INTERVAL)
+async def test_a_stored_reply_without_a_valid_interval_goes_back_to_the_normal_one(clock, case):
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S), _reply(case))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+
+    await _expect_next_report_at_the_interval(clock, reporter, receiver)
+
+
+@pytest.mark.parametrize("case", _NOT_STORED)
+async def test_a_told_interval_outlasts_a_reply_that_is_not_stored(clock, case):
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S), _reply(case))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+
+
+async def test_a_report_interval_on_a_reply_that_is_not_stored_changes_nothing(clock):
+    (case,) = [case for case in RESPONSES["cases"] if case["then"] == "wait" and INTERVAL_HEADER in case["headers"]]
+    receiver = Receiver()
+    receiver.reply_with(_reply(case), Reply(404))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    clock.advance(case["wait_s"])
+    await reporter.poll()
+    assert len(receiver.requests) == 2
+
+    # The second reply set no wait of its own, so the next report shows the interval in force.
+    await _expect_next_report_at_the_interval(clock, reporter, receiver)
+
+
+async def test_a_told_interval_outlasts_a_failed_report_and_its_quick_retry(clock):
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S), Reply(500), Reply(error=TimeoutError("timed out")))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+    clock.advance(QUICK_RETRY_S)
+    await reporter.poll()
+    assert [seen.body["seq"] for seen in receiver.requests] == [1, 2, 2]
+
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+
+
+async def test_a_told_interval_outlasts_a_poll_that_raised(clock):
+    faults, reads = [], []
+
+    def source():
+        reads.append("read")
+        if faults:
+            raise faults.pop()
+        return a_status_source()
+
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S))
+    before, after = around(TOLD_S)
+
+    async with _Watcher(make_reporter(receiver, source=source)) as watcher:
+        await async_wait_until(lambda: receiver.answered == 1, timeout=5, what="the first report")
+        await watcher.polls_on()
+        faults.append(OSError(errno.EIO, "Input/output error", _FAULT_PATH))
+        clock.advance(after)
+        await async_wait_until(lambda: len(reads) == 2, timeout=5, what="the status read that fails")
+        await watcher.polls_on()
+
+        clock.advance(before)
+        await watcher.polls_on()
+        assert len(reads) == 2, "the status was read again before the told interval"
+        clock.advance(after - before)
+        await async_wait_until(lambda: receiver.kinds == ["beat", "beat"], timeout=5, what="a beat at the told interval")
+
+
+async def test_a_sender_that_lost_its_lock_stands_by_at_the_told_interval(clock, monkeypatch):
+    tries, held_elsewhere = [], []
+
+    def take_the_lock(scope, identity):
+        tries.append(scope)
+        if held_elsewhere:
+            return False, None
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    held_elsewhere.append(True)
+    before, after = around(TOLD_S)
+    clock.advance(after)
+    await reporter.poll()
+    assert (len(tries), len(receiver.requests)) == (2, 1)
+
+    clock.advance(before)
+    await reporter.poll()
+    assert len(tries) == 2, "the lock was tried again before the told interval"
+    clock.advance(after - before)
+    await reporter.poll()
+    assert len(tries) == 3, "the lock was not tried at the told interval"
+
+
+async def test_every_reporter_starts_at_the_normal_interval_and_reports_at_once(clock):
+    """The interval a receiver set is the reporter's own: a gateway that starts again was told nothing yet."""
+    earlier = Receiver()
+    earlier.reply_with(_told(TOLD_S))
+    await make_reporter(earlier).poll()
+    receiver = Receiver()
+    receiver.reply_with(Reply(404))  # sets neither an interval nor a wait: the next report shows where it started
+    reporter = make_reporter(receiver)
+
+    await reporter.poll()
+
+    assert len(receiver.requests) == 1, "a new reporter did not report at once"
+    await _expect_next_report_at_the_interval(clock, reporter, receiver)
+
+
+def _kept_outside_the_reporter() -> tuple[dict, dict]:
+    home = get_process_hermes_home()
+    files = {str(path.relative_to(home)): path.read_bytes() for path in home.rglob("*") if path.is_file()}
+    return files, dict(os.environ)
+
+
+async def test_a_told_interval_is_never_written_to_a_file_or_the_environment(clock):
+    receiver = Receiver()
+    receiver.reply_with(_told(TOLD_S), _told(RESPONSES["interval_min_s"]))
+    reporter = make_reporter(receiver)
+    kept = [_kept_outside_the_reporter()]
+
+    await reporter.poll()
+    kept.append(_kept_outside_the_reporter())
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, TOLD_S)
+    kept.append(_kept_outside_the_reporter())
+    await _expect_next_report_at_the_interval(clock, reporter, receiver, RESPONSES["interval_min_s"])
+
+    # Told two different intervals in turn: a copy kept anywhere would differ between the last two.
+    assert kept[1] == kept[0] and kept[2] == kept[0]
 
 
 async def test_the_lock_is_released_when_the_watcher_stops(clock):

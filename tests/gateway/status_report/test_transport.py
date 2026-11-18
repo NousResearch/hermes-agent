@@ -11,7 +11,7 @@ import pytest
 
 from gateway.status_report.target import ReportTarget
 from gateway.status_report.transport import post_report
-from tests.gateway.status_report.support import REPORT_URL, RESPONSES, Receiver, Reply, new_credential
+from tests.gateway.status_report.support import INTERVAL_HEADER, REPORT_URL, RESPONSES, Receiver, Reply, new_credential
 
 BODY = b'{"v":1}'
 
@@ -43,6 +43,9 @@ def test_each_reply_in_the_contract_fixture_is_classified(case):
         assert outcome.retry_after_s is None
     else:  # the cap is the sender's, so the transport reports what the receiver asked for
         assert outcome.retry_after_s == float(case["headers"]["Retry-After"])
+    # So are the interval's bounds. Only a stored reply carries one: the header on any other is dropped.
+    told = float(case["headers"][INTERVAL_HEADER]) if case["then"] == "told_interval" else None
+    assert outcome.report_interval_s == told
 
 
 def test_a_retry_after_too_long_to_read_as_an_integer_never_raises():

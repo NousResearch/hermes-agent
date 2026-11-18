@@ -1,6 +1,6 @@
 name: pi-team
 repo: https://github.com/iliFalk/pi-team
-sha: c02fc142b12fee4ebf8864cb4be2ea22ac91e85c
+sha: 809d0bab0c71dee5ed2d1a5b997608725baa8e06
 description: Coding lanes in the Hermes desktop — a project tree, each lane's task, diff, plan and thread, and a review queue agents act on.
 maintainer: iliFalk
 tier: community

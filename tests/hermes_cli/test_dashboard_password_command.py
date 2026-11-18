@@ -193,6 +193,17 @@ def test_changing_it_keeps_the_signing_secret(tmp_path):
     assert second["password_hash"] != first["password_hash"]
 
 
+def test_password_rotation_preserves_the_username_from_this_homes_dotenv(tmp_path):
+    home, env = _home(tmp_path)
+    assert _set_password(env).returncode == 0
+    (home / ".env").write_text("HERMES_DASHBOARD_BASIC_AUTH_USERNAME=local-operator\n")
+    result = run_cli(env, "dashboard", "password", "--password-stdin", stdin="new-test-input\n")
+    assert result.returncode == 0, result.stdout
+    assert _basic_auth(home)["username"] == "local-operator"
+    assert _verify_password("new-test-input", _basic_auth(home)["password_hash"])
+    assert "HERMES_DASHBOARD_BASIC_AUTH_USERNAME" not in (home / ".env").read_text()
+
+
 def test_a_named_profile_gets_its_own_sign_in(tmp_path):
     _, env = _home(tmp_path)
     default_root = tmp_path / "user" / ".hermes"

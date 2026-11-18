@@ -379,31 +379,21 @@ async function ridesPrimaryBackend(connectionId: null | string, profile: string)
     return false
   }
 
-  // Resolved per call, never cached: main answers the route per request
-  // (`resolveProfileBackendRoute` case 6 keeps a pooled backend for
-  // `HERMES_DESKTOP_ISOLATED_BACKEND=1`), and for a pooled profile this is the
-  // same dial `openSecondary` makes next, coalesced by main's claim key.
+  // Route kind is unknown until main finishes bring-up. Local owner routes need the
+  // pooled registry dial's budget; remote probe failures still ride the primary.
+  // Keep one probe alive rather than timing out and repeating the same dial.
   try {
     const conn = await withTimeout(
       desktop.getConnectionFor({ connectionId: id, profile: key }),
-      RECONNECT_ATTEMPT_TIMEOUT_MS,
+      $primaryGatewayRoute.get().mode === 'local' ? SOURCE_SWITCH_DIAL_TIMEOUT_MS : RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the backend route for "${key}"`
     )
 
     return conn?.sharedRemote === true || conn?.sharedPrimary === true
   } catch (error) {
-    // Probe failed on a remote (or not-yet-classified) primary: a secondary at
-    // this already-attached source is the #96493 ghost WebSocket (accept/close,
-    // messages=1), so prefer the primary until a later probe can prove
-    // isolation (`sharedRemote: false`). A LOCAL primary gets neither
-    // fallback. Riding it is wrong when main pools the profile (isolated
-    // backend): the primary would ACCEPT a `profile`-tagged session.create and
-    // mint it under its own pid, while the exact-owner route names the pool
-    // backend that later refuses it SESSION_NOT_OWNED (#101416). Dialing a
-    // secondary is wrong too: every other local profile rides the host
-    // gateway, the lookup fails mostly while that gateway boots, and the dial
-    // repeats the same lookup and then opens a second socket to it (#120005).
-    // The failure is the caller's.
+    // A failed remote probe rides primary to avoid a ghost socket (#96493).
+    // A local probe must fail closed: guessing primary can mint a session on the
+    // wrong owner (#101416), while a second dial can duplicate the host socket (#120005).
     if ($primaryGatewayRoute.get().mode === 'local') {
       throw error
     }
@@ -681,12 +671,8 @@ async function openSecondary(entry: Secondary): Promise<void> {
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
     //
-    // Two bring-ups with different legitimate worst cases: a registry route is a
-    // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
-    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget. A legacy entry
-    // only exists for a pooled route (isolated app, per-profile remote override):
-    // no child is spawned — main runs `gateway ensure` against the host gateway
-    // or checks the remote — so it takes the reconnect-class budget.
+    // Registry routes (including pooled conn:local entries) get the source-switch
+    // budget for bring-up. Legacy pooled profiles keep the reconnect-class budget.
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
@@ -1174,24 +1160,34 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  // A primary remote selected from the connection registry carries its source
-  // id in the active connection descriptor. Requests for that exact
-  // (connection, profile) already have an owning socket: the window primary.
-  // Dialing a registry secondary here can resolve the same public endpoint to a
-  // different backend/profile route, so durable session.resume reports
-  // "session not found" while REST history from the primary remains visible.
-  // Require both owner identities to agree before collapsing the route; a
-  // different source or profile must retain its isolated secondary.
+  // The exact primary owner already has a socket; different sources/profiles
+  // must retain their route to avoid sending sessions to the wrong backend.
   if (isPrimaryRegistryRoute(connectionId, key)) {
     traceAgentRoute(scope, 'primary')
 
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (notePrimaryRider(primaryIdentity(), scope, await ridesPrimaryBackend(connectionId, key))) {
+  const existing = g.secondaries.get(scope)
+
+  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(scope)) {
+    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
+  }
+
+  // The owner-route probe is itself a dial, just like sharedPrimaryRoute.
+  const owner = primaryIdentity()
+  const rides = await ridesPrimaryBackend(connectionId, key).catch((error: unknown) => {
+    recordDialFailure({ connectionId, scope }, error)
+    throw error
+  })
+
+  if (notePrimaryRider(owner, scope, rides)) {
     traceAgentRoute(scope, 'primary-shared')
 
-    return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
+    const result = await requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
+    g.dialFailures.delete(scope)
+
+    return result
   }
 
   traceAgentRoute(scope, 'secondary')

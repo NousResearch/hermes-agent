@@ -502,9 +502,9 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 // The pointer entering a profile square in the rail signals the switch a few
 // hundred ms before the click lands, so we run the click's route resolution
 // then (openGatewayForProfile — without activating). For a local profile that
-// is only main's route lookup, answered with the shared primary descriptor: no
-// `gateway ensure`, no process, no socket. A pooled route (isolated app,
-// per-profile remote override) or a registry source also gets its socket
+// is main's shared-primary lookup: it can start or join the host's `gateway ensure`,
+// but opens no per-profile backend or secondary socket. A pooled route (isolated
+// app, per-profile remote override) or a registry source also gets its socket
 // dialed. Main coalesces concurrent dials per scope (BackendDialClaims), so the
 // real switch joins in-flight work instead of duplicating it, and a pre-warm
 // for an already-open profile is a no-op. Throttled per profile so drive-by

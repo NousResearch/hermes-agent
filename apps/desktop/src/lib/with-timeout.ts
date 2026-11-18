@@ -23,8 +23,9 @@ export const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
  * selectConnection): the phase-1 open of the target, the OAuth REST probe and
  * the activation (ensureGatewayAgent) each get this whole budget, as does a
  * registry secondary's getConnectionFor in store/gateway. It is sized for the
- * worst of them, the cold dial of an SSH source. A local profile switch never
- * takes it: it rides the host gateway on the reconnect-class budget above.
+ * worst of them, the cold dial of an SSH source. Local owner-route lookups also
+ * take it: main may be bringing up a pooled conn:local backend. Plain profile
+ * lookups retain the reconnect-class budget above.
  * Unlike the two above, the cold dial is not one IPC: it is the main process's
  * whole remote bring-up chain — one ssh connect (DEFAULT_CONNECT_TIMEOUT_MS
  * 15 s in electron/ssh-connection.ts), the sequential ssh execs that probe

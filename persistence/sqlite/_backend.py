@@ -358,5 +358,9 @@ class SQLiteStore:
         return isinstance(other, SQLiteStore) and self.holder() is other.holder()
 
     def require_open(self) -> None:
-        """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file."""
+        """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file. A
+        verb that opens its own connection instead of the holder's (the ``'shared'`` hosted-room file, the resumable
+        subagent probes) calls this first, so it refuses (``ScopePinRefused``) while a hosted scope is bound as
+        ``holder`` does."""
+        _holder_module.refuse_hosted_activity()
         self._backend._require_open()

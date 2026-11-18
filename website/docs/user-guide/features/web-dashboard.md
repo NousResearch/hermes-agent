@@ -507,9 +507,9 @@ gateway status` prints (the steps quote it), and end with `hermes webapp --statu
 started takes a few seconds to serve the address; until then that prints "The gateway is not running", so
 wait a few seconds and run it again. A by-hand move passes the same checks as an automatic one: an address the gateway
 would refuse, a Webapp already enabled elsewhere, or a `webapp:` block the gateway would still refuse
-after the move blocks it (exit 3) with no steps printed. A named profile that the default profile's gateway serves (not
-`gateway.standalone: true`) has no gateway or Webapp of its own, so its dry run is blocked and says to
-turn on the Webapp in the default profile instead. For a system unit only one line, `sudo
+after the move blocks it (exit 3) with no steps printed. A named profile whose gateway is another home's (the live host gateway serves it) is not
+planned: the dry run names that gateway and stops. When it cannot tell which gateway serves the profile
+(no service of its own and no running gateway serving it), it blocks and asks you to identify it. For a system unit only one line, `sudo
 systemctl disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix
 and containers the steps say what to change in the Nix configuration or the container definition
 instead (Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where

@@ -642,19 +642,31 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
     return plan
 
 
+def _owner_problem(host) -> Optional[str]:
+    """Why this profile's move is not planned here: another home's gateway serves it, or which gateway
+    serves it is not known. None for a home whose own gateway would serve the Webapp."""
+    from hermes_constants import profile_name_for_home
+    kind, owner = host.gateway_owner()
+    name = profile_name_for_home(str(host.home))
+    if kind == "other":
+        return (f"Profile {name} is served by another home's gateway ({owner}), whose Webapp settings are that "
+                f"home's, so this dry run does not plan the move. Stop the old backend through its supervisor "
+                f"and turn on the Webapp in the profile that runs that gateway. Nothing changed.")
+    if kind == "unknown":
+        return (f"Cannot tell which gateway serves profile {name}: it has no gateway service of its own and no "
+                f"running gateway serves it. Identify which gateway serves this profile "
+                f"({hermes_command(str(host.home))} gateway status), then re-run. Nothing changed.")
+    return None
+
+
 def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) -> BackendPlan:
     plan = BackendPlan(home=str(host.home))
     if problem := host.config_problem():
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
-    if (plan.unsupported or plan.candidates) and (profile := host.profile_on_shared_gateway()):
-        plan.blockers.append(
-            f"Profile {profile} has no gateway of its own: it is served by the default profile's gateway, whose "
-            f"Webapp settings are the default profile's, so this dry run does not plan the move. Stop the old "
-            f"backend through its supervisor and turn on the Webapp in the default profile "
-            f"(hermes -p default config set webapp.enabled true, with its webapp.host and webapp.port). "
-            f"Nothing changed.")
+    if (plan.unsupported or plan.candidates) and (problem := _owner_problem(host)):
+        plan.blockers.append(problem)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
         plan.candidates = []
         return plan

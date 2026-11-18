@@ -117,3 +117,37 @@ def test_only_a_ready_gateway_is_named_as_the_ports_holder(tmp_path, state, drai
             return await asyncio.to_thread(gateway_holding_port, 41817, home)
 
     assert (asyncio.run(probe()) is not None) is counts
+
+
+def test_a_wildcard_request_on_a_loopback_gateway_promises_no_other_device(gateway):
+    """The gateway listens on 127.0.0.1 only. ``--host 0.0.0.0`` collides with it (exit 78), but nothing
+    on another device can reach that listener, so the hint names the listener and points at
+    ``hermes webapp`` instead of telling the user to come in from another machine."""
+    result = gateway.cli("serve", "--host", "0.0.0.0", "--port", str(gateway.port),
+                         extra_env={"HERMES_DASHBOARD_SESSION_TOKEN": secrets.token_urlsafe(24)})
+    out = result.stdout
+    assert result.returncode == 78, out
+    assert "another device" not in out, out
+    assert f"Gateway listener: http://127.0.0.1:{gateway.port}." in out, out
+    assert "hermes webapp" in out, out
+
+
+def test_the_hint_names_the_live_listener_and_writes_nothing_after_a_config_edit(tmp_path):
+    """``webapp.public_url`` edited after the gateway started is not live yet: the hint names what the
+    gateway really serves, and asking it reads no config (so no config backup is written)."""
+    import json
+
+    from tests.hermes_cli.live_gateway import live_gateway as boot
+
+    with boot(tmp_path) as live:
+        config = json.loads((live.home / "config.yaml").read_text(encoding="utf-8"))
+        config["webapp"]["public_url"] = "https://pending.example.test"
+        (live.home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        before = sorted(str(p.relative_to(live.home)) for p in live.home.rglob("*") if "backups" in p.parts)
+        result = live.cli("serve", "--port", str(live.port))
+        after = sorted(str(p.relative_to(live.home)) for p in live.home.rglob("*") if "backups" in p.parts)
+    out = result.stdout
+    assert result.returncode == 78, out
+    assert "pending.example.test" not in out, out
+    assert f"Gateway listener: http://127.0.0.1:{live.port}." in out, out
+    assert after == before, after

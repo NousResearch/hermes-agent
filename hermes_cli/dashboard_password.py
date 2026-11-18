@@ -145,13 +145,17 @@ def _shadow_refusal() -> Optional[str]:
     return None
 
 
-def _checkout_refusal(project_env: Path) -> Optional[str]:
+def _checkout_refusal(project_env: Path, home: Optional[Path] = None) -> Optional[str]:
     """Why *project_env* (the checkout's ``.env``, which the CLI and the gateway load after the home's
-    own on every start) would bring an override back, or None. Never edits that file: it is shared by
-    every Hermes home run from the checkout."""
-    from agent.secret_scope import load_env_file
-    found = [name for name, value in load_env_file(project_env).items()
-             if name in SHADOWING_ENV and str(value).strip()]
+    own on every start) would bring an override back, or None: evaluated like the loader does it
+    (``${VAR}`` expansion, fill-gaps-only when the home has a ``.env``) against the environment as it
+    is once this command removed the overrides from *home*'s ``.env``. Never edits that file: it is
+    shared by every Hermes home run from the checkout."""
+    from hermes_cli.env_loader import resolve_project_dotenv
+    from hermes_constants import get_hermes_home
+    supplied = resolve_project_dotenv(project_env, Path(home) if home is not None else get_hermes_home(),
+                                      removed=frozenset(SHADOWING_ENV))
+    found = [name for name in SHADOWING_ENV if supplied.get(name, "").strip()]
     if not found:
         return None
     return (f"{', '.join(found)} is set in {project_env} (this checkout's .env, loaded on every start "

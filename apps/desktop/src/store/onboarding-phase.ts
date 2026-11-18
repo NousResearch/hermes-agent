@@ -4,3 +4,4 @@ import { atom } from 'nanostores'
 export type OnboardingPhase = 'done' | 'failed' | 'idle' | 'shown' | 'skipped'
 
 export const $onboardingPhase = atom<OnboardingPhase>('idle')
+export const $setupGuidePhase = atom<OnboardingPhase>('idle')

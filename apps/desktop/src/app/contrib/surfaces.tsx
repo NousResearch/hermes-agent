@@ -18,6 +18,7 @@ import { $gateway } from '@/store/gateway'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { ChatView } from '../chat'
@@ -88,7 +89,9 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
-  const demoLayout = useStore($chatOnboardingSolo)
+  const setupGuide = useStore($setupGuideOnboarding)
+  // The classic first run's demo layout hides the bar: behaviour, so it follows the preference.
+  const demoLayout = useStore($chatOnboardingSolo) && !setupGuide
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
 

@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -17,22 +16,23 @@ import {
 } from '@/store/plugin-update-all'
 import { $gatewayState } from '@/store/session'
 
+import { useSettingsGatewayRequest } from '../../settings/settings-owner-request'
 import { CatalogSwitch } from '../catalog/catalog-switch'
 
 /** Plugins tab header: "Update all" and the profile's auto-update switch (`plugins.auto_apply`). */
 export function PluginUpdateAllActions({ scope }: { scope: null | string }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const { requestGateway } = useGatewayRequest()
+  const requestGateway = useSettingsGatewayRequest()
   const gatewayState = useStore($gatewayState)
-  const running = isPluginUpdateAllRunning(useStore($pluginUpdateAllRunning), scope)
+  const running = isPluginUpdateAllRunning(useStore($pluginUpdateAllRunning), scope, requestGateway.ownerKey)
   const auto = useStore($pluginAutoUpdate)
-  const autoForScope = auto && auto.profile === scope ? auto : null
+  const autoForScope = auto && auto.profile === scope && auto.ownerKey === requestGateway.ownerKey ? auto : null
 
   useEffect(() => {
     if (gatewayState === 'open') {
       // An older backend without the action answers 4017: the switch then stays hidden.
-      void loadPluginAutoUpdate(requestGateway, scope).catch(() => $pluginAutoUpdate.set(null))
+      void loadPluginAutoUpdate(requestGateway, scope).catch(() => undefined)
     }
   }, [requestGateway, scope, gatewayState])
 

@@ -1,0 +1,17 @@
+/* Compact pages scroll as one document so headers cannot squeeze out the preview. */
+@media (max-width: 760px), (max-height: 600px) {
+  [data-page-surface] .session-import {
+    overflow-y: auto;
+  }
+
+  [data-page-surface] .session-import > header {
+    flex-shrink: 0;
+  }
+
+  [data-page-surface] .session-import-body,
+  [data-page-surface] .session-import-list,
+  [data-page-surface] .session-import-preview {
+    flex: none;
+    overflow: visible;
+  }
+}

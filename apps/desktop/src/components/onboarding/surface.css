@@ -1,0 +1,29 @@
+.onboarding-v2 .onboarding-heading {
+  padding: 1.5rem 1.5rem 0.5rem;
+}
+
+.onboarding-v2 .onboarding-heading :is(h1, h2) {
+  padding-right: 2rem;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.onboarding-v2 .onboarding-body {
+  padding: 1rem 1.5rem 1.5rem;
+}
+
+/* Short setup windows scroll the page instead of clipping the final action. */
+.onboarding-v2[data-glass-opaque] {
+  overflow-y: auto;
+}
+
+.onboarding-v2 .onboarding-card {
+  margin-block: auto;
+  flex-shrink: 0;
+}
+
+@media (max-height: 40rem) {
+  .onboarding-v2[data-glass-opaque] {
+    align-items: flex-start;
+  }
+}

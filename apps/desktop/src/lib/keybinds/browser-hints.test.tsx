@@ -1,11 +1,13 @@
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
-beforeEach(() => {
+beforeAll(async () => {
   vi.resetModules()
   localStorage.clear()
   window.document.documentElement.dataset.hermesDesktopHost = 'browser'
-})
+  // Host detection must precede module initialization; cold graph loading is setup, not interaction.
+  await import('@/app/settings/keybind-settings')
+}, 60_000)
 
 afterEach(() => {
   cleanup()
@@ -20,9 +22,12 @@ it('renders the resolved browser binding in the first-run tip, tooltips and sett
   const { I18nProvider } = await import('@/i18n')
   const { TIP_CATALOG } = await import('@/lib/tips/catalog')
   const { setBinding } = await import('@/store/keybinds')
+  // resetModules must give this preference and the editor the same fresh store.
+  const { $shellChoice } = await import('@/store/shell-variant')
   const tip = TIP_CATALOG.find(entry => entry.id === 'new-session')!
   const anchor = window.document.createElement('button')
   window.document.body.append(anchor)
+  $shellChoice.set(true)
 
   const view = render(
     <I18nProvider configClient={null} initialLocale="en">
@@ -50,9 +55,10 @@ it('renders the resolved browser binding in the first-run tip, tooltips and sett
 
   expect(labelText).not.toContain('Ctrl')
 
+  fireEvent.click(view.getByTestId('settings').querySelector('summary')!)
   const search = view.getByRole('textbox', { name: 'Search shortcuts…' })
   fireEvent.change(search, { target: { value: 'session.new' } })
-  const row = within(view.getByTestId('settings')).getByText('New session').parentElement!
+  const row = within(view.getByTestId('settings')).getByText('New chat').parentElement!
   expect(within(row).getByText('Alt')).toBeTruthy()
   expect(within(row).getByText('N')).toBeTruthy()
   expect(within(row).queryByRole('button', { name: 'Reset to default' })).toBeNull()

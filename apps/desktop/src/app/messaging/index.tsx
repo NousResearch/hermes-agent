@@ -1,18 +1,25 @@
+import './messaging.css'
+
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
+import type { ProfileScope } from '@/hermes'
 import {
   approvePairing,
   getMessagingPlatforms,
@@ -35,16 +42,20 @@ import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
+import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
-import { SettingsProfileScope } from '../settings/profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from '../settings/profile-scope'
+import { SettingsAddRow, SettingsCard, SettingsGroup } from '../settings/settings-card'
+import { useSettingsPagesCopy } from '../settings/settings-pages-copy'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
@@ -148,12 +159,168 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   }
 }
 
+function RestartNotice({ restarting, onRestart }: { restarting: boolean; onRestart: () => void }) {
+  const { t } = useI18n()
+  const m = t.messaging
+
+  return (
+    <Alert variant="warning">
+      <AlertTriangle />
+      <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+        <span>{m.restartNeeded}</span>
+        <Button disabled={restarting} onClick={onRestart} size="sm" variant="secondary">
+          <RefreshCw className={restarting ? 'animate-spin' : undefined} />
+          {restarting ? m.restarting : m.restartNow}
+        </Button>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+interface AgentMessagingProps extends React.ComponentProps<'section'> {
+  /** Null while the first read is in flight. */
+  platforms: MessagingPlatformInfo[] | null
+  pendingByPlatform: Record<string, PairingUser[]>
+  selected: MessagingPlatformInfo | null
+  onSelectPlatform: (id: string) => void
+  restartNotice: React.ReactNode
+  platformContent: React.ReactNode
+  platformActions: React.ReactNode
+  revokeDialog: React.ReactNode
+}
+
+/** Agent › Settings › Messaging (Figma 895:17703): the channels this agent is set up on as one list
+ *  card ending in "+ Add channel", which offers the rest; each row opens the platform's full editor. */
+function AgentMessaging({
+  platforms,
+  pendingByPlatform,
+  selected,
+  onSelectPlatform,
+  restartNotice,
+  platformContent,
+  platformActions,
+  revokeDialog,
+  ...props
+}: AgentMessagingProps) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const pages = useSettingsPagesCopy()
+  const [routeSearch] = useSearchParams()
+  const [dialogOpen, setDialogOpen] = useState(routeSearch.has('platform'))
+  const channels = platforms?.filter(platform => platform.configured) ?? []
+  const available = platforms?.filter(platform => !platform.configured) ?? []
+
+  const edit = (id: string) => {
+    onSelectPlatform(id)
+    setDialogOpen(true)
+  }
+
+  return (
+    <section {...props} className={cn(props.className, 'agent-messaging')}>
+      {!platforms ? (
+        <PageLoader label={m.loading} />
+      ) : (
+        <>
+          {!dialogOpen && restartNotice}
+          <SettingsGroup description={pages.messaging.channelsDesc} title={pages.messaging.channels}>
+            <SettingsCard>
+              {channels.map(platform => (
+                <AgentChannelRow
+                  key={platform.id}
+                  onEdit={() => edit(platform.id)}
+                  pending={pendingByPlatform[platform.id]?.length ?? 0}
+                  platform={platform}
+                />
+              ))}
+              {available.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <SettingsAddRow>{pages.messaging.addChannel}</SettingsAddRow>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+                    {available.map(platform => (
+                      <DropdownMenuItem key={platform.id} onSelect={() => edit(platform.id)}>
+                        <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+                        {platform.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </SettingsCard>
+          </SettingsGroup>
+        </>
+      )}
+      <Dialog onOpenChange={setDialogOpen} open={dialogOpen && Boolean(selected)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>{selected?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-6">{platformContent}</div>
+          {platformActions}
+        </DialogContent>
+      </Dialog>
+      {revokeDialog}
+    </section>
+  )
+}
+
+const CHANNEL_STATUS_CLASS: Record<StatusTone, string> = {
+  good: 'text-(--ui-green)',
+  warn: 'text-(--ui-yellow)',
+  bad: 'text-destructive',
+  muted: 'text-(--ui-text-tertiary)'
+}
+
+interface AgentChannelRowProps {
+  platform: MessagingPlatformInfo
+  pending: number
+  onEdit: () => void
+}
+
+/** Name, home channel (or pending pairing requests), status, and Manage — Reconnect when it failed. */
+function AgentChannelRow({ platform, pending, onEdit }: AgentChannelRowProps) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const pages = useSettingsPagesCopy()
+  const tone = platformStatusTone(platform)
+  const detail = pending > 0 ? m.pendingRequests(pending) : platform.home_channel?.name
+
+  return (
+    <div className="agent-messaging-row">
+      <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+      <div className="min-w-0 flex-1">
+        <p className="agent-messaging-name">{platform.name}</p>
+        {detail && <p className={cn('agent-messaging-detail', pending > 0 && 'text-(--ui-yellow)')}>{detail}</p>}
+      </div>
+      <span className={cn('agent-messaging-status', CHANNEL_STATUS_CLASS[tone])}>
+        <StatusDot className={tone === 'good' ? 'bg-(--ui-green)' : undefined} tone={tone} />
+        {stateLabel(platform.state, m)}
+      </span>
+      <Button
+        aria-label={`${tone === 'bad' ? pages.messaging.reconnect : pages.messaging.manage}: ${platform.name}`}
+        onClick={onEdit}
+        size="sm"
+        variant={tone === 'bad' ? 'default' : 'outline'}
+      >
+        {tone === 'bad' ? pages.messaging.reconnect : pages.messaging.manage}
+      </Button>
+    </div>
+  )
+}
+
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
+  const frame = usePageFrameCopy()
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
-  const scopeProfile = useStore($settingsRequestProfile)
+  const requestedProfile = useStore($settingsRequestProfile)
+  const pinnedOwner = useSettingsOwner()
+  const agentLayout = usePortalShell() && Boolean(pinnedOwner)
+  const scopeProfile = pinnedOwner ?? requestedProfile
+  // An agent page restarts (and watches) its owner's messaging gateway; classic keeps the active one.
+  const restartProfile = pinnedOwner?.profile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
@@ -179,13 +346,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    const ok = await runGatewayRestart(restartProfile)
 
     if (ok) {
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
-  }, [])
+  }, [restartProfile])
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
   // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
@@ -468,7 +635,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
       })
       setRestartNeeded(false)
-      const ok = await watchGatewayRestartOutcome()
+      const ok = await watchGatewayRestartOutcome(restartProfile)
 
       if (!ok) {
         setRestartNeeded(true)
@@ -476,7 +643,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           kind: 'error',
           title: m.restartFailedManual,
           message: m.restartFailedManualDetail,
-          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart(restartProfile) },
           secondaryAction: {
             label: m.openLogs,
             onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
@@ -552,8 +719,81 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  const platformActions = selected && (
+    <PlatformActionBar
+      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
+      onSave={() => void handleSave(selected)}
+      onToggle={enabled => void handleToggle(selected, enabled)}
+      platform={selected}
+      saving={saving}
+    />
+  )
+
+  const restartNotice = restartNeeded && (
+    <RestartNotice onRestart={() => void restartGatewayNow()} restarting={gatewayRestarting} />
+  )
+
+  const platformContent = (
+    <>
+      {restartNotice}
+      {selected && (
+        <PlatformDetail
+          approved={approvedByPlatform[selected.id] ?? []}
+          approving={approving}
+          edits={edits[selected.id] || {}}
+          onApprove={user => void handleApprove(user)}
+          onClear={key => void handleClear(selected, key)}
+          onEdit={(key, value) =>
+            setEdits(current => ({
+              ...current,
+              [selected.id]: { ...(current[selected.id] || {}), [key]: value }
+            }))
+          }
+          onRevoke={setPendingRevoke}
+          onTelegramApplied={result => void handleTelegramApplied(result)}
+          pending={pendingByPlatform[selected.id] ?? []}
+          platform={selected}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+
+  const revokeDialog = (
+    <ConfirmDialog
+      busyLabel={m.revoking}
+      cancelLabel={t.common.cancel}
+      confirmLabel={m.revoke}
+      description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
+      destructive
+      onClose={() => setPendingRevoke(null)}
+      onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
+      open={Boolean(pendingRevoke)}
+      title={m.revokeTitle}
+    />
+  )
+
+  if (agentLayout) {
+    return (
+      <AgentMessaging
+        {...props}
+        onSelectPlatform={setSelectedId}
+        pendingByPlatform={pendingByPlatform}
+        platformActions={platformActions}
+        platformContent={platformContent}
+        platforms={platforms}
+        restartNotice={restartNotice}
+        revokeDialog={revokeDialog}
+        selected={selected}
+      />
+    )
+  }
+
   return (
     <PageSearchShell
+      pageDescription={frame.messagingDescription}
+      pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
@@ -572,7 +812,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label={m.loading} />
+        <MessagingLoading label={m.loading} />
       ) : (
         <div className="flex h-full min-h-0 flex-col">
           {/* Which profile's gateway this page configures (hidden for
@@ -595,78 +835,45 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 </ul>
               </ListColumn>
 
-              <DetailColumn
-                actionBar={
-                  selected && (
-                    <PlatformActionBar
-                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
-                      onSave={() => void handleSave(selected)}
-                      onToggle={enabled => void handleToggle(selected, enabled)}
-                      platform={selected}
-                      saving={saving}
-                    />
-                  )
-                }
-              >
-                {restartNeeded && (
-                  <Alert variant="warning">
-                    <AlertTriangle />
-                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{m.restartNeeded}</span>
-                      <Button
-                        disabled={gatewayRestarting}
-                        onClick={() => void restartGatewayNow()}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
-                        {gatewayRestarting ? m.restarting : m.restartNow}
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
-                )}
-                {selected && (
-                  <PlatformDetail
-                    approved={approvedByPlatform[selected.id] ?? []}
-                    approving={approving}
-                    edits={edits[selected.id] || {}}
-                    onApprove={user => void handleApprove(user)}
-                    onClear={key => void handleClear(selected, key)}
-                    onEdit={(key, value) =>
-                      setEdits(current => ({
-                        ...current,
-                        [selected.id]: {
-                          ...(current[selected.id] || {}),
-                          [key]: value
-                        }
-                      }))
-                    }
-                    onRevoke={setPendingRevoke}
-                    onTelegramApplied={result => void handleTelegramApplied(result)}
-                    pending={pendingByPlatform[selected.id] ?? []}
-                    platform={selected}
-                    saving={saving}
-                    scopeProfile={scopeProfile}
-                  />
-                )}
-              </DetailColumn>
+              <DetailColumn actionBar={platformActions}>{platformContent}</DetailColumn>
             </MasterDetail>
           </div>
         </div>
       )}
 
-      <ConfirmDialog
-        busyLabel={m.revoking}
-        cancelLabel={t.common.cancel}
-        confirmLabel={m.revoke}
-        description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
-        destructive
-        onClose={() => setPendingRevoke(null)}
-        onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
-        open={Boolean(pendingRevoke)}
-        title={m.revokeTitle}
-      />
+      {revokeDialog}
     </PageSearchShell>
+  )
+}
+
+const SKELETON_PLATFORMS = 6
+
+/** The redesign waits in the list's own shape; classic keeps its spinner. */
+function MessagingLoading({ label }: { label: string }) {
+  return usePortalShell() ? <MessagingSkeleton label={label} /> : <PageLoader label={label} />
+}
+
+/** Messaging while its platforms load (redesign): the loaded list's 36px rows on the token surfaces,
+ *  beside the empty detail, so the list lands where its placeholder stood. */
+function MessagingSkeleton({ label }: { label: string }) {
+  return (
+    <div aria-busy="true" aria-label={label} className="flex h-full min-h-0 flex-col" role="status">
+      <div className="min-h-0 flex-1">
+        <MasterDetail>
+          <ListColumn>
+            <ul aria-hidden className="space-y-1">
+              {Array.from({ length: SKELETON_PLATFORMS }, (_, index) => (
+                <li className="flex h-9 items-center gap-2 px-2" key={index}>
+                  <Skeleton className="size-6 shrink-0" />
+                  <Skeleton className="h-3.5 w-24" />
+                </li>
+              ))}
+            </ul>
+          </ListColumn>
+          <DetailColumn>{null}</DetailColumn>
+        </MasterDetail>
+      </div>
+    </div>
   )
 }
 
@@ -741,7 +948,7 @@ function PlatformDetail({
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging
@@ -886,7 +1093,7 @@ function DirectSetupSections({
   onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging

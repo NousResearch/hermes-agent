@@ -18,6 +18,7 @@ import {
 } from '@/store/shared-metrics'
 
 import { ToggleRow } from './primitives'
+import { SettingsCard } from './settings-card'
 
 /**
  * Settings › Safety › Privacy: one switch for the answer the first-run offer and
@@ -93,7 +94,7 @@ export function SharedMetricsSettings() {
   const sharing = consent?.send ?? false
 
   return (
-    <div className="grid gap-1" id="setting-shared-metrics">
+    <SettingsCard classicClassName="grid gap-1" id="setting-shared-metrics">
       <ToggleRow
         below={<DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.whatIsCollected}</DocsLink>}
         checked={sharing}
@@ -103,6 +104,6 @@ export function SharedMetricsSettings() {
         label={copy.sendLabel}
         onChange={on => void save({ enabled: on, send: on })}
       />
-    </div>
+    </SettingsCard>
   )
 }

@@ -95,9 +95,10 @@ export interface LocalToolsPanelProps {
   card: ConnectorCardModel
   controller: McpServersController
   onRemove: () => void
+  readOnly?: boolean
 }
 
-export function LocalToolsPanel({ card, controller, onRemove }: LocalToolsPanelProps) {
+export function LocalToolsPanel({ card, controller, onRemove, readOnly = false }: LocalToolsPanelProps) {
   const name = localServerName(card)
   const probe = controller.probes[name]
   const entry = controller.servers[name]
@@ -150,6 +151,7 @@ export function LocalToolsPanel({ card, controller, onRemove }: LocalToolsPanelP
       onRemove={onRemove}
       onRetry={() => void controller.runProbe(name)}
       preview={card.state !== 'connected'}
+      readOnly={readOnly}
       tools={rows}
     />
   )

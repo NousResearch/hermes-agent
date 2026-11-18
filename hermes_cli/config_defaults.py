@@ -2264,12 +2264,12 @@ DEFAULT_CONFIG = {
         # restart also >= 6h idle. Unset: dashboard.ws_orphan_reap_grace_s: 0 / startup_orphan_sweep: false opt out.
         "orphan_end_grace_s": 300.0,
     },
-    # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
         "seen": {},
         "profile_build": "ask",  # first-ever message: ask = offer; off = plain intro only
         # Desktop first run, root profile only (onboarding_run.py): None = fresh install; true = next launch; false = done
         "run": None,
+        "step": None,  # preferences | model after explicit guide start; None preserves remote eligibility
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and upload to Nous (`send`) are separate keys that every consent surface sets together; see

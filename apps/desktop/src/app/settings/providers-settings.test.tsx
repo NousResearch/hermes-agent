@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
-import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+import { $shellChoice } from '@/store/shell-variant'
+import type { EnvVarInfo, OAuthProvider, ProfileInfo } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
@@ -16,22 +17,22 @@ const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
-vi.mock('@/store/profile', () => ({
+vi.mock(import('@/store/profile'), async importOriginal => ({
+  ...(await importOriginal()),
   $activeGatewayProfile: atom('alpha'),
-  $profiles: atom([]),
-  refreshProfiles: async () => {},
-  normalizeProfileKey: (p: string | null) => p || 'default',
-  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
+  $profiles: atom<ProfileInfo[]>([]),
+  refreshProfiles: async () => []
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock(import('@/hermes'), async importOriginal => ({
+  ...(await importOriginal()),
   setApiRequestProfile: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
   listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args),
-  revealEnvVar: (key: string, profile?: string) => revealEnvVar(key, profile),
-  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile)
+  revealEnvVar: (...args: unknown[]) => revealEnvVar(...args),
+  setEnvVar: (...args: unknown[]) => setEnvVar(...args)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -81,6 +82,8 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 }
 
 beforeEach(() => {
+  // The classic page; the redesign's key list is covered in its own test.
+  $shellChoice.set(false)
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
@@ -93,6 +96,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   $confirmRequest.set(null)
   vi.restoreAllMocks()
   vi.clearAllMocks()
@@ -424,6 +428,27 @@ describe('ProvidersSettings', () => {
     // A non-matching query shows the empty-state copy.
     await act(async () => {
       fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    })
+    expect(await screen.findByText('No providers match your search.')).toBeTruthy()
+  })
+
+  it('lists only providers with a key in the redesign; Add key opens the searchable rest', async () => {
+    $shellChoice.set(true)
+    getEnvVars.mockResolvedValue({
+      ACME_API_KEY: keyVar({ is_set: true, provider: 'acme', provider_label: 'Acme', redacted_value: '...1234' }),
+      ZEBRA_API_KEY: keyVar({ provider: 'zebra', provider_label: 'Zebra' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('Acme')
+    expect(screen.queryByText('Zebra')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
+    expect(await screen.findByText('Zebra')).toBeTruthy()
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('Search providers…'), { target: { value: 'nonesuch-xyz' } })
     })
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })

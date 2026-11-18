@@ -1,5 +1,4 @@
 import { useStore } from '@nanostores/react'
-import { Puzzle } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
@@ -19,7 +18,7 @@ import {
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Loader2 } from '@/lib/icons'
+import { AlertTriangle, Loader2, Puzzle } from '@/lib/icons'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import { COMMIT_SHA_RE, inspectAgentPlugin } from '@/store/agent-plugins'

@@ -10,6 +10,10 @@
 :root.dark [data-catalog-editorial-art] { --catalog-art-shade: 72%; }
 [data-catalog-editorial-art]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(to bottom, transparent 8%, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 42%, var(--ui-chat-bubble-background) 92%); }
 [data-catalog-card][data-catalog-editorial-art] .catalog-card-copy { flex: none; background: none; }
+/* Redesign: the art under the title and summary can be near-white (a light photo), and the scrim
+   above faded in only from 8%, leaving white ink on white. Hold the shade from the top edge so every
+   line of copy sits on at least the theme's shade of the card surface. */
+:root[data-shell='portal'] [data-catalog-editorial-art]::before { background: linear-gradient(to bottom, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 0%, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 42%, var(--ui-chat-bubble-background) 92%); }
 [data-catalog-card][data-catalog-editorial-art][data-catalog-variant=showcase] .catalog-card-topline { margin-bottom: 72px; }
 [data-catalog-variant=compact] .catalog-card-footer { padding-bottom: 20px; }
 [data-catalog-results] { container-type: inline-size; }
@@ -51,7 +55,14 @@
 .catalog-featured-slide { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; display: flex; }
 .catalog-featured-slide > [data-catalog-card] { flex: 1; }
 .catalog-featured-controls { display: flex; align-items: center; justify-content: center; gap: var(--capabilities-gap-sticky); padding-top: var(--capabilities-gap-sticky); }
-.catalog-featured-dots { display: flex; align-items: center; gap: 6px; }
+.catalog-featured-dots { --catalog-dot-gap: 6px; display: flex; align-items: center; gap: var(--catalog-dot-gap); }
+/* The feed's first paint (CatalogSkeleton): the slots of the hero (its one-line copy at 1280), the
+   slider row's 24px controls and one shelf, so the loaded page lands on the same lines. */
+[data-catalog-skeleton] .catalog-skeleton-hero { height: 11.25rem; border-radius: var(--radius-lg); }
+[data-catalog-skeleton] .catalog-skeleton-dots { width: 7.5rem; height: 1.5rem; }
+[data-catalog-skeleton] .catalog-skeleton-title { width: 10rem; height: 1.4rem; margin-block: .2rem; }
+[data-catalog-skeleton] .catalog-skeleton-blurb { width: 14rem; height: .8125rem; margin-top: 10px; }
+[data-catalog-skeleton] .catalog-skeleton-card { height: 15.5rem; border-radius: var(--radius-lg); }
 .catalog-featured-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ui-text-quaternary); transition: width 200ms ease, background-color 200ms ease; }
 .catalog-featured-dot:hover { background: var(--ui-text-tertiary); transition: none; }
 .catalog-featured-dot.is-active { width: 18px; background: var(--ui-text-primary); }
@@ -100,3 +111,45 @@
 @container (max-width: 960px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-bento { grid-auto-flow: row dense; } .catalog-bento > [data-catalog-card] { grid-column: auto / span var(--bento-w, 1); grid-row: auto / span var(--bento-h, 1); } }
 @container (max-width: 720px) { .catalog-bento, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .catalog-banner-list { grid-template-columns: minmax(0, 1fr); } .catalog-section-heading { padding-top: 32px; } .catalog-filter-bar > div:first-child { flex-wrap: wrap; } }
 @container (max-width: 440px) { .catalog-bento, .catalog-feature-row, .catalog-filtered-results > :is(.masonry, .catalog-grid) { grid-template-columns: minmax(0, 1fr); } .catalog-bento > [data-catalog-card] { grid-column: auto; grid-row: auto; } [data-catalog-variant=hero] .catalog-card-copy { max-width: 100%; } }
+
+/* In V2's narrow catalog, artwork gets its own space instead of sitting under copy. */
+@container (max-width: 440px) {
+  [data-capabilities-v2] [data-catalog-card][data-catalog-variant=hero] .catalog-card-image {
+    position: static;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 1;
+    border-radius: var(--radius-md);
+    mask-image: none;
+    z-index: auto;
+  }
+
+  [data-capabilities-v2] [data-catalog-variant=hero] .catalog-card-footer {
+    max-width: 100%;
+  }
+
+  [data-capabilities-v2] [data-catalog-variant=hero] .catalog-card-copy button > span {
+    font-size: 1.5rem;
+  }
+}
+
+/* The redesign's section heading role (Agent Overview 877, Settings 1036:7481: 15px Medium, the
+   column's own left edge), so the catalog's shelves read like every other page's sections. */
+/* Catalog cards sit on the redesign's card radius, not the classic scale's. */
+:root[data-shell='portal'] :is([data-catalog-card], .catalog-featured-track, .catalog-developer, [data-catalog-skeleton] :is(.catalog-skeleton-hero, .catalog-skeleton-card)) { border-radius: var(--portal-radius-card); }
+:root[data-shell='portal'] .catalog-section-heading { padding-inline: 0; }
+:root[data-shell='portal'] .catalog-section-heading h2 { font-size: var(--portal-type-section-size); font-weight: 500; line-height: 1.1; letter-spacing: 0; }
+:root[data-shell='portal'] [data-catalog-skeleton] .catalog-skeleton-title { height: var(--portal-type-section-size); margin-block: 0; }
+/* Touch: each dot's hit area (portal-controls.css) reaches the target's height but only half the gap
+   to each neighbour, so a tap lands on the dot under the finger, never its neighbour. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .catalog-featured-dots > .catalog-featured-dot::after { inset-inline: calc(var(--catalog-dot-gap) / -2); }
+}
+
+/* Redesign, compact (breakpoints.ts: max-width 639.98px): the category chips were squeezed to one
+   chip between the Category/Source switch and Filters. They take their own full-width row instead,
+   scrolling sideways with the edge fade (portal-pages.css) as the cue that more follow. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] .catalog-filter-row { flex-wrap: wrap; row-gap: 10px; }
+  :root[data-shell='portal'] .catalog-filter-row > .catalog-filter-chips { order: 1; flex-basis: 100%; }
+}

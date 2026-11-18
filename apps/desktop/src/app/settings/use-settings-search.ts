@@ -1,13 +1,15 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useEffect } from 'react'
+import { useCallback } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent, Monitor, Package, Settings2, Wrench } from '@/lib/icons'
-import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { type AgentPluginRow, isDesktopRelevantPlugin } from '@/store/agent-plugins'
+import { $activeConnectionId } from '@/store/connections'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
@@ -66,20 +68,24 @@ export function useSettingsSearchCatalog(enabled: boolean) {
 
   useOnProfileSwitch(refreshCatalog)
 
-  // Plugin rows: desktop plugins are already in their store (discovered at
-  // boot); agent plugins ride the gateway, so load them the first time the
-  // catalog is wanted — same RPC the Plugins page fires on mount, deduped by
-  // the store's own inflight guard.
+  // Search is a read-only consumer, not the owner of the Plugins editor's
+  // inventory. Keep its ambient lookup separate from the pinned writable list.
   const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
+  const connectionId = useStore($activeConnectionId)
+  const profile = useStore($activeGatewayProfile)
   const desktopPluginRecords = useStore($pluginRecords)
-  const agentPlugins = useStore($agentPlugins)
 
-  useEffect(() => {
-    if (enabled && gatewayState === 'open') {
-      void loadAgentPlugins(requestGateway)
-    }
-  }, [enabled, gatewayState, requestGateway])
+  const { data: agentPlugins = [] } = useQuery({
+    queryKey: ['desktop-settings-search-plugins', connectionId, profile],
+    queryFn: async () => {
+      const result = await requestGateway<{ plugins?: AgentPluginRow[] }>('plugins.manage', { action: 'list' })
+
+      return result?.plugins ?? []
+    },
+    enabled: enabled && gatewayState === 'open',
+    retry: false
+  })
 
   // Installed plugin rows (both halves) — they live on Capabilities → Plugins,
   // so each entry carries the `?plugin=` row selector for that page.

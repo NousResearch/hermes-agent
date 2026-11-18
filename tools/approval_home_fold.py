@@ -11,6 +11,7 @@ import os
 import re
 
 from hermes_platform.host import facts
+from tools.approval_parser_budget import _scan_shell
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
@@ -26,6 +27,44 @@ def _spell_component(component: str) -> str:
     contains one never folded and a ``sed -i`` of its config.yaml passed as safe.
     """
     return re.escape(component).replace(r"\ ", r"\\? ")
+
+
+def _live_space_escapes(command: str, start: int = 0, end: int | None = None, found: set | None = None) -> set:
+    """Indexes of each backslash in *command* the shell reads as escaping a space or tab: unquoted, or
+    unquoted inside a ``$(...)`` / backtick body (a fresh quote context). Inside single or double
+    quotes the backslash is a literal character."""
+    found = set() if found is None else found
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
+        if kind == "subst":
+            _live_space_escapes(command, i + (2 if command.startswith("$(", i) else 1), j - 1, found)
+        elif kind == "esc" and quote is None and command[i + 1] in " \t":
+            found.add(i)
+    return found
+
+
+def _fold_matches(pattern, command: str, replace) -> str:
+    """``pattern.sub(replace, command)``, keeping a match as written when an escaped space in it is
+    not what the shell reads:
+
+    - a quoted ``\\ `` is a literal backslash, so ``'/home/John\\ Smith'`` is another directory than
+      the ``John Smith`` the optional escape in :func:`_spell_component` stands for;
+    - an unquoted ``\\ `` right after the match continues the last name instead of separating a child:
+      ``hermes\\ data\\ backup`` is a sibling of the home ``hermes data``, not inside it.
+    """
+    live = None
+
+    def fold(match: re.Match) -> str:
+        nonlocal live
+        escapes = [i for i in range(match.start(), match.end()) if command.startswith(("\\ ", "\\\t"), i)]
+        if escapes:
+            live = _live_space_escapes(command) if live is None else live
+            for i in escapes:
+                # Inside the match the escape spells a component's space; at its end it follows the home.
+                if (i in live) != (i + 1 < match.end()):
+                    return match.group(0)
+        return replace(match)
+
+    return pattern.sub(fold, command)
 
 
 @functools.lru_cache(maxsize=64)
@@ -60,7 +99,8 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"), command)
+            command = _fold_matches(
+                pattern, command, lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"))
     return command
 
 
@@ -145,7 +185,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _bare_home_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub("~/.hermes", command)
+            command = _fold_matches(pattern, command, lambda _m: "~/.hermes")
     return command
 
 

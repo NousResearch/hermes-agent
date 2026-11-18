@@ -111,3 +111,51 @@ class TestShellEscapedSpaceInWindowsHome:
         monkeypatch.setenv("HERMES_HOME", profile + r"\AppData\Local\hermes")
         assert _is_dangerous(r"sed -i s/a/b/ /c/Users/John\ Smith/AppData/Local/hermes/config.yaml") is True
         assert _is_dangerous(r"sed -i s/a/b/ /c/Users/John\ Smith/AppData/Local/hermes2/config.yaml") is False
+
+
+class TestEscapedSpaceFollowsShellQuoting:
+    r"""``\ `` is the same character as a space only where the shell reads it as an escape. Folding it
+    anywhere else names a directory the command does not touch, and gates a harmless command as an
+    edit of Hermes's own home."""
+
+    @pytest.fixture
+    def spaced_hermes_home(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("HERMES_HOME", "/home/tester/hermes data")
+
+    @pytest.fixture
+    def spaced_user_home(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/home/John Smith")
+        monkeypatch.setenv("HERMES_HOME", "/home/John Smith/hermes")
+
+    def test_the_escaped_home_itself_is_still_gated(self, spaced_hermes_home):
+        assert _is_dangerous(r"mv /home/tester/hermes\ data /home/tester/backup") is True
+        assert _is_dangerous(r"sed -i s/a/b/ /home/tester/hermes\ data/config.yaml") is True
+
+    def test_an_escaped_space_after_the_home_continues_the_name(self, spaced_hermes_home):
+        # `hermes\ data\ backup` is one directory, a sibling of the home, not the home plus a word.
+        assert _is_dangerous(r"mv /home/tester/hermes\ data\ backup /home/tester/backup") is False
+
+    def test_an_escaped_space_after_a_spaceless_home_continues_the_name(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("HERMES_HOME", "/home/tester/hermes")
+        assert _is_dangerous(r"mv /home/tester/hermes\ backup /home/tester/backup") is False
+
+    def test_an_unquoted_escaped_space_folds(self, spaced_user_home):
+        assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml") is True
+        assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes2/config.yaml") is False
+
+    @pytest.mark.parametrize("command", [
+        r"sed -i s/a/b/ '/home/John\ Smith/hermes/config.yaml'",
+        r'sed -i s/a/b/ "/home/John\ Smith/hermes/config.yaml"',
+        r"mv '/home/John\ Smith/hermes' /tmp/x",
+    ])
+    def test_a_quoted_backslash_is_a_literal_name_character(self, spaced_user_home, command):
+        assert _is_dangerous(command) is False
+
+    @pytest.mark.parametrize("command", [
+        r'bash -c "sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml"',
+        r'echo "$(sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml)"',
+    ])
+    def test_an_escape_read_by_an_inner_shell_still_folds(self, spaced_user_home, command):
+        assert _is_dangerous(command) is True

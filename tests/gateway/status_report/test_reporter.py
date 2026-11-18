@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import os
 import stat
@@ -392,6 +393,30 @@ async def test_a_goodbye_is_one_bounded_report_with_no_retry(clock):
     assert_matches_contract(goodbye.body, "goodbye")
     assert goodbye.body["seq"] == 2
     assert 2.0 <= goodbye.timeout <= 3.0
+
+
+async def test_a_goodbye_that_cannot_be_built_is_dropped_without_an_unretrieved_error(clock, caplog):
+    caplog.set_level(logging.DEBUG)
+    unretrieved: list[str] = []
+    asyncio.get_running_loop().set_exception_handler(lambda loop, context: unretrieved.append(context["message"]))
+    receiver = Receiver()
+
+    def source():
+        if receiver.requests:  # the first beat is out: this read is the goodbye's
+            raise OSError("status record unreadable")
+        return a_status_source()
+
+    reporter = make_reporter(receiver, source=source)
+    await reporter.poll()
+
+    reporter.goodbye()
+    await settle()
+    gc.collect()  # a task dropped with its exception unread reports it to the loop when collected
+
+    assert receiver.kinds == ["beat"]
+    assert unretrieved == []
+    assert any(record.levelno == logging.DEBUG and "goodbye" in record.getMessage()
+               for record in caplog.records if record.name.startswith("gateway.status_report"))
 
 
 async def test_no_beat_follows_a_goodbye_until_the_gateway_is_still_running_a_minute_later(clock):

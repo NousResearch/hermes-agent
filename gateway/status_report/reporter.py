@@ -113,7 +113,14 @@ class StatusReporter:
         self._due_at = max(self._due_at, self._quiet_until)
         task = asyncio.get_running_loop().create_task(self._say_goodbye())
         self._goodbyes.add(task)  # the loop keeps only a weak reference to a running task
-        task.add_done_callback(self._goodbyes.discard)
+        task.add_done_callback(self._goodbye_done)
+
+    def _goodbye_done(self, task: asyncio.Task) -> None:
+        self._goodbyes.discard(task)
+        # Read the task's exception here: left unread it is reported as never retrieved once the
+        # task is collected. Only its type is logged, as for a report that got no reply.
+        if not task.cancelled() and task.exception() is not None:
+            logger.debug("status report: goodbye not sent (%s)", type(task.exception()).__name__)
 
     async def _say_goodbye(self) -> None:
         body = await self._next_report("goodbye")

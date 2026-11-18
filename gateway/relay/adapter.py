@@ -1904,6 +1904,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     _EA_CMD_BUDGET = 1500
 
+    async def send_exec_approval(self, chat_id: str, command: str, session_key: str, **kwargs: Any) -> SendResult:
+        """A connector without the ``prompt`` op can never show the button card, so fail before the base class
+        sends a long command as its own message ahead of the card (#157506): run.py's plain-text prompt, which
+        carries the command, is then the one message the user gets. Same early exit as ``send_clarify``."""
+        if not self.descriptor.supports_op("prompt"):
+            return self._PROMPT_UNAVAILABLE
+        return await super().send_exec_approval(chat_id, command, session_key, **kwargs)
+
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Native-button exec approval over the relay (the press resolves via
         tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS

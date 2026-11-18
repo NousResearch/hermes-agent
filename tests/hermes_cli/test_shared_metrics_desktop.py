@@ -259,3 +259,26 @@ def test_ia_daily_counters_preserve_closed_codes_consent_and_replay(marks):
     assert "private-plugin" not in json.dumps(rows)
     assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
     assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == rows
+
+
+def test_discovery_counters_keep_their_codes_and_collapse_anything_else(marks):
+    """The rename splash and the palette's old-word search report closed codes only: a code outside
+    the contract (a row or a word the client invented) is ``other``, never its own row."""
+    params = {
+        "day": "2026-09-26",
+        "actions": [
+            {"action": "ia.splash.rename_shown", "via": "state", "count": 1},
+            {"action": "ia.splash.rename_dismissed_nav", "via": "click", "count": 1},
+            {"action": "ia.splash_row.rename_library", "via": "state", "count": 1},
+            {"action": "ia.alias_search.cron", "via": "palette", "count": 2},
+            {"action": "ia.alias_search.my secret query", "via": "palette", "count": 1},
+            {"action": "ia.splash_row.rename_private-row", "via": "state", "count": 1},
+        ],
+    }
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.splash.rename_shown", "ia.splash.rename_dismissed_nav", "ia.splash_row.rename_library",
+        "ia.alias_search.cron", "other",
+    }
+    assert "secret" not in json.dumps(rows) and "private" not in json.dumps(rows)

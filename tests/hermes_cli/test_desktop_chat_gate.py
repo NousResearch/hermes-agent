@@ -384,30 +384,52 @@ class TestChatGate(ChatGateTestCase):
 
 
 class TestScopeResolution(ChatGateTestCase):
-    """Review 1c-r4: the Desktop serve path's session store is a
+    """Review 1c-r4/r5: the Desktop serve path's session store is a
     gateway client proxy with no _read_ctx. Scope must resolve through
-    the adopted snapshot or a read-only state-DB read, and the Desktop
-    backend must screen when neither can tell."""
+    the DB row (authoritative), the adopted snapshot (fallback), and
+    the Desktop backend must screen when neither can tell."""
 
-    def gate_with_store(self, store, message="hello"):
-        chat, agent = self.fake_chat()
+    def make_db(self, rows, with_created=True):
+        path = os.path.join(self.tmp, f"state-{len(rows)}-{with_created}.db")
+        conn = sqlite3.connect(path)
+        if with_created:
+            conn.execute("CREATE TABLE sessions "
+                         "(id TEXT, source TEXT, created_source TEXT)")
+            conn.executemany("INSERT INTO sessions VALUES (?, ?, ?)", rows)
+        else:
+            conn.execute("CREATE TABLE sessions (id TEXT, source TEXT)")
+            conn.executemany("INSERT INTO sessions VALUES (?, ?)",
+                             [(r[0], r[1]) for r in rows])
+        conn.commit()
+        conn.close()
+        return path
+
+    def gate_with(self, store, session_id="s-1", db_path=None):
+        if db_path is not None:
+            patcher = mock.patch.object(
+                desktop_screen, "_state_db_path", lambda: Path(db_path))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        chat, agent = self.fake_chat(session_id=session_id)
         agent._session_db = store
-        return desktop_screen.chat_gate(chat, agent, message)
+        return desktop_screen.chat_gate(chat, agent, "hello")
 
     def test_client_proxy_snapshot_desktop_screened(self):
         store = _ClientProxy({"s-1": {"source": "desktop"}})
-        self.assertIsNone(self.gate_with_store(store))
+        self.assertIsNone(self.gate_with(store))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
     def test_client_proxy_snapshot_cli_skipped(self):
-        store = _ClientProxy({"s-1": {"source": "cli"}})
-        self.assertIsNone(self.gate_with_store(store))
+        # No DB row for this id, so the snapshot decides (cli => out).
+        store = _ClientProxy({"s-norow": {"source": "cli"}})
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(self.gate_with(store, session_id="s-norow"))
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
     def test_client_proxy_without_snapshot_reads_state_db(self):
         # Temp state DB (patched in setUp) holds s-1 => desktop.
         store = _ClientProxy({})
-        self.assertIsNone(self.gate_with_store(store))
+        self.assertIsNone(self.gate_with(store))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
     def test_client_proxy_state_db_cli_row_skips(self):
@@ -450,6 +472,49 @@ class TestScopeResolution(ChatGateTestCase):
         # Snapshot absent, DB row still resolves it; no exception.
         self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_rebound_local_desktop_row_screens(self):
+        # Review 1c-r5-F1: source='local' + created_source='desktop' is
+        # a re-bound desktop viewer session and must screen.
+        path = self.make_db([("s-1", "local", "desktop")])
+        self.assertIsNone(self.gate_with(_ClientProxy({}), db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_rebound_local_cli_row_skips(self):
+        path = self.make_db([("s-1", "local", "cli")])
+        self.assertIsNone(self.gate_with(_ClientProxy({}), db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_db_row_beats_snapshot_stale_cli(self):
+        # Review 1c-r5-F2 (row authoritative): a stale/poisoned snapshot
+        # claiming cli must NOT win over a desktop DB row.
+        path = self.make_db([("s-1", "desktop", "desktop")])
+        store = _ClientProxy({"s-1": {"source": "cli"}})
+        self.assertIsNone(self.gate_with(store, db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_db_row_beats_snapshot_stale_desktop(self):
+        path = self.make_db([("s-1", "cli", "cli")])
+        store = _ClientProxy({"s-1": {"source": "desktop"}})
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(self.gate_with(store, db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_legacy_db_without_created_column_still_works(self):
+        path = self.make_db([("s-1", "desktop", None)], with_created=False)
+        self.assertIsNone(self.gate_with(_ClientProxy({}), db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_resolve_label_matrix(self):
+        r = desktop_screen._resolve_label
+        self.assertEqual(r("desktop", "desktop"), "desktop")
+        self.assertEqual(r("gui", "desktop"), "gui")
+        self.assertEqual(r("local", "desktop"), "desktop")
+        self.assertEqual(r("local", "cli"), "local")
+        self.assertEqual(r("oneshot", "desktop"), "oneshot")
+        self.assertEqual(r("subagent", "desktop"), "subagent")
+        self.assertEqual(r(None, "desktop"), "desktop")
+        self.assertIsNone(r(None, None))
 
 
 class TestMessageTexts(unittest.TestCase):

@@ -389,11 +389,15 @@ def _source_from_store(db, session_id: str) -> str | None:
     """The session's frozen launch source, resolved WITHOUT a direct
     store handle when the store is a gateway client proxy (review
     1c-r4: in the Desktop serve path ``agent._session_db`` is a
-    ``GatewayClientSessionStore`` whose ``_read_ctx`` raises
+    ``GatewaySessionStore`` client whose ``_read_ctx`` raises
     ``GatewayClientError`` - the gate then skipped itself silently and
-    the 17 Nov live test went unscreened). Order: the client's own
-    adopted snapshot, then a READ-ONLY sqlite read of the state DB.
-    Never raises; None means 'cannot tell'."""
+    the 18 Nov live test went unscreened). The DB ROW is authoritative
+    and read FIRST (module F4 rule); the client's adopted snapshot is a
+    fallback only (review 1c-r5-F2: a stale/poisoned snapshot must not
+    win over the row). Never raises; None means 'cannot tell'."""
+    source = _source_from_db(session_id)
+    if source:
+        return source
     snapshots = None
     try:
         snapshots = getattr(db, "snapshots", None)
@@ -406,6 +410,32 @@ def _source_from_store(db, session_id: str) -> str | None:
                 value = snapshot.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
+    return None
+
+
+def _resolve_label(source, created) -> str | None:
+    """Scope label from (source, created_source): the current transport
+    wins when it is a screened surface; a ``local`` re-bind keeps the
+    created desktop surface (review 1c-r5-F1); machine transports stay
+    out. Never raises."""
+    source = (source or "").strip() if isinstance(source, str) else ""
+    created = (created or "").strip() if isinstance(created, str) else ""
+    if source in _scoped_sources():
+        return source
+    if source == "local" and created in _scoped_sources():
+        return created
+    return source or created or None
+
+
+def _source_from_db(session_id: str) -> str | None:
+    """READ-ONLY state-DB lookup of the session's launch label.
+
+    ``source`` is the current transport; ``created_source`` records the
+    surface the session was created on. A session re-bound to the
+    ``local`` transport keeps ``created_source='desktop'`` (review
+    1c-r5-F1: 47 live archived desktop rows) - those are still desktop
+    viewer sessions and must screen, while machine transports
+    (oneshot/subagent/cli) stay out."""
     try:
         import sqlite3
         path = _state_db_path()
@@ -413,17 +443,24 @@ def _source_from_store(db, session_id: str) -> str | None:
             return None
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
         try:
-            row = conn.execute(
-                "SELECT source FROM sessions WHERE id=?",
-                (session_id,)).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT source, created_source FROM sessions WHERE id=?",
+                    (session_id,)).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    "SELECT source FROM sessions WHERE id=?",
+                    (session_id,)).fetchone()
+                row = (row[0], None) if row else None
         finally:
             conn.close()
-        if row is not None and isinstance(row[0], str) and row[0].strip():
-            return row[0].strip()
+        if row is None:
+            return None
+        return _resolve_label(row[0], row[1])
     except Exception:
         logger.debug("desktop_screen: read-only source lookup failed",
                      exc_info=True)
-    return None
+        return None
 
 
 def session_in_scope(authority, session_id: str) -> bool:
@@ -456,11 +493,18 @@ def session_in_scope(authority, session_id: str) -> bool:
             if callable(read_ctx):
                 try:
                     with read_ctx() as conn:
-                        found = conn.execute(
-                            "SELECT source FROM sessions WHERE id=?",
-                            (session_id,)).fetchone()
+                        try:
+                            found = conn.execute(
+                                "SELECT source, created_source FROM sessions "
+                                "WHERE id=?", (session_id,)).fetchone()
+                        except Exception:
+                            found = conn.execute(
+                                "SELECT source FROM sessions WHERE id=?",
+                                (session_id,)).fetchone()
+                            found = (found[0], None) if found else None
                     if found is not None:
-                        source = found[0]
+                        created = found[1] if len(found) > 1 else None
+                        source = _resolve_label(found[0], created)
                 except Exception:
                     source = None
             if not (isinstance(source, str) and source.strip()):

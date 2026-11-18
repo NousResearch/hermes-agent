@@ -472,6 +472,27 @@ autoraise** described above, while `-900k` variants keep your global
 `compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
 wasting a small window, which a 900K window doesn't need.
 
+For **GPT-6.2 Astra and Sol**, Hermes offers `gpt-6.2-astra-900k` and
+`gpt-6.2-sol-900k` only when the authenticated account catalog publishes a
+`max_context_window` larger than the base model's `context_window`. These
+aliases use `min(900000, max_context_window)`; an 872K published maximum
+therefore means an 872K Hermes budget, not a guaranteed 900K or 1M window.
+The base slugs retain their advertised defaults. No `-pro` or dated-snapshot
+variants are inferred.
+
+Unlike the legacy verified variants above, these new choices are not offered
+from offline compatibility hints. A saved selection can reuse a maximum
+already observed for the same credential and endpoint in this process during
+a catalog outage. With no observed maximum, it falls back conservatively,
+never to the direct API's larger window. Custom `codex_responses` routes use
+only their own catalog and credential. Compression still follows the user's
+existing policy; selecting an alias does not raise the compaction threshold.
+
+Install the updated code and restart the gateway that owns the chat before
+selecting a newly added alias. A new CLI client attached to an older gateway
+does not update that gateway's model validator. An unrecognized alias error
+is a Hermes version/support check, not proof of a provider context limit.
+
 ### Codex app-server thread compaction
 
 Codex app-server sessions (`api_mode: codex_app_server` — the codex CLI/agent

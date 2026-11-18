@@ -129,6 +129,14 @@ def test_gpt62_extended_window_follows_the_account_catalog(monkeypatch):
             assert ResponsesApiTransport().build_kwargs(model=pin, **params)["model"] == model
 
 
+def test_offline_hints_do_not_advertise_catalog_only_context_variants(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    pins = ["gpt-6.2-astra-900k", "gpt-6.2-sol-900k"]
+    (tmp_path / "config.toml").write_text('model = "gpt-6.2-astra-900k"\n', encoding="utf-8")
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [{"slug": pin} for pin in pins]}), encoding="utf-8")
+    assert not set(pins) & set(get_codex_model_ids())
+
+
 def test_catalog_identity_stays_stable_for_rotation_but_changes_with_route(monkeypatch):
     from hermes_cli import auth, codex_models
     import agent.credential_pool as pool

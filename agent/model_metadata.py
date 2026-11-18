@@ -1724,7 +1724,7 @@ def _catalog_variant_limit(maximum: object) -> Optional[int]:
 
 
 def has_codex_context_variant(model_bare: str, catalog_row: Optional[dict] = None) -> bool:
-    """Only offer a catalog-backed variant if this account publishes a larger budget."""
+    """Offer legacy verified variants, or catalog-only variants with a published larger budget."""
     if _bare_codex_slug(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
         row = catalog_row or {}
         standard, limit = row.get("context_window"), _catalog_variant_limit(row.get("max_context_window"))
@@ -1920,7 +1920,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
     # On a catalog miss, never fall through to the direct API's larger window for a saved pin.
     if _codex_variant_base(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
-        return _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare, _CODEX_OAUTH_STALE_ADVERTISED_CTX), "fallback"
+        return _catalog_variant_limit(catalog_max) or _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare, _CODEX_OAUTH_STALE_ADVERTISED_CTX), "fallback"
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
@@ -2087,12 +2087,12 @@ def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_ke
     not know take the ordinary endpoint probes."""
     ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
     if ctx and api_key and is_codex_context_variant(model):
-        # The -900k bump is an account-level assumption; a gateway whose own catalog publishes a
-        # Codex-shaped max_context_window caps it, as the native provider's live catalog does.
+        # A catalog-only opt-in takes this route's max; legacy verified bumps only clamp downward.
         _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)
         cap = _cached_codex_catalog_max(api_key, base_url, _bare_codex_slug(strip_codex_context_variant_suffix(model)))
-        if cap and cap < ctx:
-            logger.info("Route catalog at %s caps %r at max_context_window %s", base_url, model, f"{cap:,}")
+        if _codex_variant_base(model) in _CODEX_CATALOG_WINDOW_BASES:
+            ctx = _catalog_variant_limit(cap) or ctx
+        elif cap and cap < ctx:
             ctx = cap
     if ctx:
         logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)

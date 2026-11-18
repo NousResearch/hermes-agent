@@ -98,10 +98,17 @@ def _finalize_codex_models(model_ids: list[str], catalog_rows: Optional[dict] = 
 
 
 def codex_model_requires_account_discovery(model: str) -> bool:
-    """Whether a Codex model is only advertised after account discovery."""
+    """Whether a Codex model is only advertised after account discovery.
+
+    Astra/GPT-6.2 rows are account-gated, and catalog-only ``-900k`` aliases depend on the live
+    catalog's published ``max_context_window``. A stale ``models_cache.json`` or a ``config.toml``
+    default is a compatibility hint, not entitlement."""
+    from agent.model_metadata import has_codex_context_variant, is_codex_context_variant, strip_codex_context_variant_suffix
     from agent.reasoning_effort import GPT62_MODEL_IDS, is_astra_model
     from hermes_cli.model_normalize import normalize_model_for_provider
 
+    if is_codex_context_variant(model) and not has_codex_context_variant(strip_codex_context_variant_suffix(model)):
+        return True
     return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
 
 

@@ -721,7 +721,7 @@ def _voice_toggle_status(rid, params: dict) -> dict:
     payload = _voice_status_payload()
     try:
         from tools.voice_mode import check_voice_requirements
-        reqs = check_voice_requirements()
+        reqs = check_voice_requirements(list_devices=True)
         payload.update({k: bool(reqs.get(k)) for k in ("available", "audio_available", "stt_available")},
                        details=reqs.get("details") or "")
     except Exception as e:

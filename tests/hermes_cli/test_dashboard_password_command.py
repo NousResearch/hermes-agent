@@ -235,7 +235,7 @@ def test_a_named_profile_gets_its_own_sign_in(tmp_path):
     assert _verify_password(PASSWORD, _basic_auth(profile)["password_hash"])
     assert _basic_auth(default_root) == {}
     assert "This is profile 'work''s own sign-in" in result.stdout
-    assert "hermes dashboard password" in result.stdout  # how to set the shared listeners' sign-in
+    assert "set those with hermes -p default dashboard password." in result.stdout  # the shared listeners'
 
 
 def _wait_ready(proc) -> list[str]:
@@ -379,6 +379,27 @@ def test_a_profile_password_never_claims_the_shared_gateway_that_serves_the_prof
         assert _basic_auth(gateway.home) == {}
 
 
+def test_with_a_sticky_profile_every_printed_command_names_its_home(tmp_path):
+    """After ``hermes profile use work`` a bare ``hermes ...`` runs as ``work``: the commands printed for
+    the default home's shared gateway must say ``-p default``, or following them rotates ``work`` again."""
+    def prepare(home, _env):
+        config = json.loads((home / "config.yaml").read_text())
+        config["gateway"] = {"multiplex_profiles": True}
+        (home / "config.yaml").write_text(json.dumps(config))
+        (home / "profiles" / "work").mkdir(parents=True)
+        write_config(home / "profiles" / "work")
+
+    with live_gateway(tmp_path, prepare=prepare) as gateway:
+        assert gateway.cli("profile", "use", "work").returncode == 0
+        result = gateway.cli("dashboard", "password", "--username", USER, "--password-stdin", stdin=PASSWORD + "\n")
+        assert result.returncode == 0, result.stdout
+        assert _verify_password(PASSWORD, _basic_auth(gateway.home / "profiles" / "work")["password_hash"])
+        assert "change them with hermes -p default dashboard password." in result.stdout
+        assert "set those with hermes -p default dashboard password." in result.stdout
+        bare = [line for line in result.stdout.splitlines() if " hermes dashboard password" in line]
+        assert bare == [], bare
+
+
 def test_the_new_password_signs_in_on_the_gateways_webapp(tmp_path):
     def prepare(_home, env):
         assert _set_password(env).returncode == 0
@@ -389,4 +410,4 @@ def test_the_new_password_signs_in_on_the_gateways_webapp(tmp_path):
         assert _sign_in(base, "wrong-password")[0] == 401
         again = gateway.cli("dashboard", "password", "--username", USER, "--password-stdin", stdin=PASSWORD + "\n")
         assert again.returncode == 0, again.stdout
-        assert "The gateway is running: restart it to use the new sign-in (hermes gateway restart)." in again.stdout
+        assert "The gateway is running: restart it to use the new sign-in (hermes -p default gateway restart)." in again.stdout

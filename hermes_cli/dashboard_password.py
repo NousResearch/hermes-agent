@@ -200,35 +200,51 @@ def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
     return removed, left
 
 
-def _profile_scope_lines(profile_arg: str) -> list[str]:
+def _hermes_command(home) -> str:
+    """``hermes`` pinned to *home*, for a command this one prints: a bare ``hermes`` follows a sticky
+    ``hermes profile use``, so the default home is named ``-p default`` and a profile ``--profile NAME``;
+    a home that is neither gets ``HERMES_HOME=...``."""
+    import shlex
+
+    from hermes_cli.gateway import _profile_arg
+    from hermes_constants import get_default_hermes_root
+    if Path(home).resolve() == get_default_hermes_root().resolve():
+        return "hermes -p default"
+    profile_arg = _profile_arg(str(home))
+    return f"hermes {profile_arg}" if profile_arg else f"HERMES_HOME={shlex.quote(str(home))} hermes"
+
+
+def _profile_scope_lines(home) -> list[str]:
     """For a named profile: which listeners read its own sign-in. Dashboard sign-in belongs to a
     listener's launch home, and ``hermes -p NAME dashboard`` / ``serve`` open the machine dashboard
     unless ``--isolated``, so a profile's credentials reach only the listeners it launches itself."""
+    from hermes_cli.gateway import _profile_arg
+    from hermes_constants import get_default_hermes_root
+    profile_arg = _profile_arg(str(home))
     if not profile_arg:
         return []
-    name = profile_arg.split()[-1]
-    return [f"  This is profile '{name}''s own sign-in: hermes -p {name} dashboard --isolated (or serve) and a "
-            "gateway this profile runs by itself use it. hermes -p {0} dashboard without --isolated opens the "
-            "machine dashboard, and a gateway serving several profiles signs in with its own home's "
-            "credentials: set those with hermes dashboard password.".format(name)]
+    name, own, machine = profile_arg.split()[-1], _hermes_command(home), _hermes_command(get_default_hermes_root())
+    return [f"  This is profile '{name}''s own sign-in: {own} dashboard --isolated (or serve) and a gateway this "
+            f"profile runs by itself use it. {own} dashboard without --isolated opens the machine dashboard, "
+            "and a gateway serving several profiles signs in with its own home's credentials: set those with "
+            f"{machine} dashboard password."]
 
 
 def _restart_lines() -> list[str]:
     """Which running listeners must restart to use the new sign-in (they read it when they start)."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway import _profile_arg
     from hermes_cli.web_server_port_holder import running_gateway
     home = get_hermes_home()
-    lines = _profile_scope_lines(_profile_arg())
+    lines = _profile_scope_lines(home)
     restart = []
     gateway = running_gateway()
     if gateway is not None and Path(gateway.control_home).resolve() != Path(home).resolve():
-        owner = " ".join(("hermes", _profile_arg(str(gateway.control_home)))).strip()
         lines.append(f"  ⚠ The running gateway serves this profile from {gateway.control_home} and signs in with "
-                     f"that home's credentials, not these: change them with {owner} dashboard password.")
+                     f"that home's credentials, not these: change them with "
+                     f"{_hermes_command(gateway.control_home)} dashboard password.")
     elif gateway is not None:
-        hermes = " ".join(("hermes", _profile_arg())).strip()
-        restart.append(f"  The gateway is running: restart it to use the new sign-in ({hermes} gateway restart).")
+        restart.append("  The gateway is running: restart it to use the new sign-in "
+                       f"({_hermes_command(home)} gateway restart).")
     try:
         from hermes_cli.main_dashboard import _find_stale_dashboard_pids
         backends = _find_stale_dashboard_pids(scope_home=str(home))

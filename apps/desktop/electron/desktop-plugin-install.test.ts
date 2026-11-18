@@ -507,7 +507,11 @@ describe('installDesktopPluginFromGit', () => {
     const appRoot = mkdtemp('hermes-plugin-root-')
     roots.push(appRoot)
 
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+    const identifier = pathToFileURL(repo).href
+    const probe = await probePluginRepo('git', identifier)
+    const result = await installDesktopPluginFromGit('git', identifier, appRoot, { sha: probe.sha })
+
+    expect(probe).toMatchObject({ ok: true, agentName: 'hermes-talk', desktopName: result.pluginName })
 
     expect(result).toMatchObject({ ok: true, pluginName: 'hermes-talk' })
     const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'hermes-talk', PACKAGE_MARKER), 'utf8'))
@@ -562,7 +566,11 @@ describe('installDesktopPluginFromGit', () => {
     const appRoot = mkdtemp('hermes-plugin-root-')
     roots.push(appRoot)
 
-    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+    const identifier = pathToFileURL(repo).href
+    const probe = await probePluginRepo('git', identifier)
+    const result = await installDesktopPluginFromGit('git', identifier, appRoot, { sha: probe.sha })
+
+    expect(probe).toMatchObject({ ok: true, agent: false, desktopName: result.pluginName })
 
     expect(result.ok).toBe(true)
     expect(fs.existsSync(path.join(appRoot, String(result.pluginName), 'plugin.js'))).toBe(true)

@@ -92,7 +92,7 @@ def test_agent_only_package_is_read_without_running_its_code(tmp_path, sentinel)
     assert not sentinel.exists()
 
 
-def test_mixed_package_in_a_subdirectory_reports_both_halves(tmp_path, sentinel):
+def test_mixed_package_in_a_subdirectory_previews_both_halves_under_the_manifest_name(tmp_path, sentinel):
     files = {f"pkgs/demo/{k}": v for k, v in _agent_files(sentinel).items()}
     files["pkgs/demo/desktop/plugin.js"] = "export default {}\n"
     files["other/huge.txt"] = "x"
@@ -102,7 +102,7 @@ def test_mixed_package_in_a_subdirectory_reports_both_halves(tmp_path, sentinel)
 
     assert result["ok"] is True
     assert (result["agent"], result["desktop"]) == (True, True)
-    assert (result["agent_name"], result["desktop_name"]) == ("demo-agent", "demo")
+    assert (result["agent_name"], result["desktop_name"]) == ("demo-agent", "demo-agent")
     assert not sentinel.exists()
 
 

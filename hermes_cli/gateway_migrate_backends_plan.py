@@ -182,7 +182,8 @@ def backend_address(argv: list[str]) -> Optional[tuple[str, int]]:
     none), or None when *argv* is empty or not such a command."""
     from hermes_cli.main_dashboard import _parse_dashboard_runtime
     parsed = _parse_dashboard_runtime(shlex.join(argv)) if argv else None
-    return (parsed[1], parsed[2]) if parsed else None
+    # --port 0 asks for a free port: the command line does not say which one it got.
+    return (parsed[1], parsed[2]) if parsed and parsed[2] else None
 
 
 def _address_of(item: BackendItem, host) -> Optional[tuple[str, int]]:
@@ -513,8 +514,9 @@ def _address(plan: BackendPlan, host, keep_webapp: bool) -> None:
     """Rule 1 (never widen exposure) and rule 10 (never guess between addresses)."""
     address = backend_address(plan.old_argv)
     if address is None:
-        plan.blockers.append("The old backend's command line could not be read, so the address it serves is "
-                             "unknown and nothing can be planned for it. Nothing changed.")
+        plan.blockers.append("The old backend's command line could not be read, or it asks for a free port "
+                             "(--port 0), so the address it serves is unknown and nothing can be planned for it. "
+                             "Nothing changed.")
         return
     plan.old_host, plan.old_port = address
     target, problems = _target(host, address, keep_webapp)

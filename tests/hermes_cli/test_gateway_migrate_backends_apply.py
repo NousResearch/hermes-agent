@@ -837,3 +837,25 @@ def test_a_plain_environment_file_home_is_read(tmp_path, monkeypatch):
 
     assert SystemHost(tmp_path).unit_environment("x.service", "system") == (
         {"HERMES_HOME": "/srv/team", "OTHER": "x"}, None)
+
+
+def test_a_backend_that_asked_for_a_free_port_has_no_address(home, capsys):
+    """`--port 0` records the request for a free port, not the port it serves: never probe or plan port 0."""
+    host = FakeHost(home, host="127.0.0.1")
+    host.argv = host.argv[:-1] + ["0"]
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and host.probes == []
+    assert out["plan"]["old_address"] is None and out["plan"]["steps"] == []
+    assert any("--port 0" in b for b in out["plan"]["blockers"])
+
+
+def test_a_by_hand_move_of_a_free_port_backend_prints_no_port(home, capsys):
+    host = ManualHost(home, host="127.0.0.1")
+    host.argv = host.argv[:-1] + ["0"]
+
+    code, out = _plan(host, capsys)
+
+    (entry,) = out["plan"]["unsupported"]
+    assert code == engine.EXIT_UNSUPPORTED and not any("webapp.port: 0" in s or "port 0" in s for s in entry["steps"])

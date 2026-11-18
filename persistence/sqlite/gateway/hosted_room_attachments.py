@@ -931,7 +931,7 @@ class SQLiteHostedRoomAttachmentRepository:
             "recipient_member_id": recipient_member_id or "",
             "normalized_event": event_id,
             "viewer": True,
-            "reconciled": not self._store.read_only,
+            "reconciled": False,
         }
 
         # Each viewer read is one deferred read transaction: the room check and the row read see one snapshot.

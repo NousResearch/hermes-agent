@@ -631,7 +631,7 @@ def test_restore_still_reselects_the_owners_own_pool_row(tmp_path, monkeypatch, 
 
     initial = rp.resolve_runtime_provider(requested="custom:deepseek")
     agent = _snapshotted_agent(builder, initial, "custom:deepseek", api_key="stale-snapshot-key-0123")
-    agent._swap_credential = lambda entry: setattr(agent, "api_key", entry.runtime_api_key)
+    agent._swap_credential = lambda entry, **kwargs: setattr(agent, "api_key", entry.runtime_api_key)
     assert agent._restore_primary_runtime() is True
     assert agent.api_key == MANUAL_KEY
     assert {e.access_token for e in agent._credential_pool.entries()} == {MANUAL_KEY}

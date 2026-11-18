@@ -412,6 +412,10 @@ def _refresh_credentials_after_401(
 
     if status_code != 401:
         return False
+    from agent.credential_auth_recovery import agent_pool_runtime_refresh_profile
+    if agent_pool_runtime_refresh_profile(agent) is not None:
+        # The pool already tried the dispatched row. Never spend an ambient login here.
+        return False
     if (
         agent.api_mode == "codex_responses"
         and agent.provider in {"openai-codex", "xai-oauth"}

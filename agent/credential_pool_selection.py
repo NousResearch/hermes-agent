@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import replace
+from agent.credential_pool_plugin import replace_runtime_entry
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -83,8 +83,8 @@ class CredentialPoolSelectionMixin:
             entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
-            rotated.append(replace(entry, priority=len(self._entries) - 1))
-            self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
+            rotated.append(replace_runtime_entry(entry, priority=len(self._entries) - 1))
+            self._entries = [replace_runtime_entry(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
             entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id

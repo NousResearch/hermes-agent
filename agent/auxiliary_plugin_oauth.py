@@ -30,8 +30,25 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
     provider = req.provider
     api_key = aux._normalize_api_key(req.explicit_api_key)
     entry = None
-    if not api_key:
-        _exists, entry = aux._select_pool_entry(provider, req.model)
+    if api_key:
+        # Identify an explicitly shared session bearer without selecting a different account; a durable
+        # grant is swapped for its row's derived bearer, never sent.
+        from agent.auxiliary_pool_recovery import entry_for_explicit_key, rehydrate
+        try:
+            if isinstance(api_key, str):
+                pool = rehydrate(aux.load_pool(provider))
+                entry, api_key = entry_for_explicit_key(pool, api_key, source_base_url=req.explicit_base_url or None)
+        except Exception:  # health: allow BLE001 -- pool lookup boundary; exception text may expose credentials
+            from agent.credential_pool_plugin import _overrides, _profile
+            profile = _profile(provider)
+            if profile is not None and (
+                _overrides(profile, "prepare_pool_entry") or _overrides(profile, "refresh_pool_runtime_credentials")
+            ):
+                api_key = ""  # It might be a durable grant; do not dispatch without attribution.
+            entry = None
+        api_key = api_key or ""
+    else:
+        _exists, entry = aux._select_pool_entry(provider, req.model, req.explicit_base_url or None)
         api_key = str(getattr(entry, "runtime_api_key", "") or "") if entry is not None else ""
     base_url = (req.explicit_base_url or str(getattr(entry, "runtime_base_url", "") or "")
                 or _configured_endpoint(provider)).strip().rstrip("/")
@@ -42,4 +59,8 @@ def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:
                             "plugin transport, try 'auto'", provider)
         return None, None
     model = aux._normalize_resolved_model(req.model or aux._get_aux_model_for_provider(provider), provider)
-    return aux._route_client(req, client, model)
+    routed_client, model = aux._route_client(req, client, model)
+    entry_id = getattr(entry, "id", None)
+    if routed_client is not None and isinstance(entry_id, str) and entry_id:
+        routed_client._hermes_credential_pool_entry_id = entry_id
+    return routed_client, model

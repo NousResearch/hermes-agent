@@ -181,7 +181,14 @@ def restore(value: Any, hint: Any) -> Any:
     origin = typing.get_origin(hint)
     if origin in (typing.Union, types.UnionType):
         arms = [arm for arm in typing.get_args(hint) if arm is not type(None)]
-        return restore(value, arms[0]) if len(arms) == 1 else value
+        if len(arms) == 1:
+            return restore(value, arms[0])
+        # Only a wire dataclass record can choose a dataclass arm. Ordinary mappings and scalars
+        # must retain their types; guessing from field names would accept an invalid plugin result.
+        records = [arm for arm in arms if isinstance(arm, type) and dataclasses.is_dataclass(arm)]
+        if isinstance(value, Record) and len(records) == 1:
+            return restore(value, records[0])
+        return value
     if origin is not None:
         return _restore_container(value, origin, typing.get_args(hint))
     if not isinstance(hint, type) or isinstance(value, hint):

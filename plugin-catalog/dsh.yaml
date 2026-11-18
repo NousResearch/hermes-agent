@@ -1,0 +1,16 @@
+name: dsh
+repo: https://github.com/haroon0x/hermes-dsh
+sha: cb554080000bb3b9de57634bb44545788a62edff
+description: Drive DeepSeek Harness (dsh) agents from Hermes — one-shot headless runs plus live SDK sessions with streaming tool events, per-session approvals, resumable session ids, and parallel fanout.
+maintainer: haroon0x
+tier: community
+category: automation
+requires_hermes: ">=0.22"
+docs_url: https://github.com/haroon0x/hermes-dsh#readme
+version: "1.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [dsh_agent, dsh_session]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

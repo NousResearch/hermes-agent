@@ -26,6 +26,9 @@ export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_DASHBOARD_PROFILE__?: string
+  /** Where a visitor with no account signs up; its presence means nothing runs until they do
+   *  (lib/visitor-access.ts). Injected by the hosting that serves signed-out visitors. */
+  __HERMES_SIGN_UP_URL__?: string
   __HERMES_UI_SURFACE__?: string
 }
 

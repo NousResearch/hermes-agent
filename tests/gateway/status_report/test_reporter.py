@@ -862,6 +862,86 @@ async def test_no_beat_follows_a_goodbye_until_the_gateway_is_still_running_a_mi
     assert receiver.kinds == ["beat", "goodbye", "beat"]
 
 
+async def test_the_first_beat_after_a_goodbye_waits_only_the_quiet_minute(clock):
+    """A gateway whose machine woke soon after its goodbye, or never froze, says so once the quiet
+    minute is over, whatever interval the receiver set: at a told 600 s, a three-minute suspend would
+    otherwise leave it reported asleep for minutes after it woke."""
+    receiver = Receiver()
+    receiver.reply_with(_told(RESPONSES["interval_max_s"]))
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    clock.advance(30)
+
+    reporter.goodbye()
+    await settle()
+    clock.advance(GOODBYE_QUIET_S - 1)
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "goodbye"]
+    clock.advance(1)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "goodbye", "beat"]
+
+
+def _goodbye_while_the_second_beat_is_in_flight(receiver: Receiver):
+    """A reporter whose suspend path says goodbye while its second beat waits for the reply."""
+    loop = asyncio.get_running_loop()
+    reporter = None
+
+    async def say_goodbye() -> None:
+        reporter.goodbye()
+
+    def answer_after_the_goodbye(request, timeout=None):
+        try:
+            return receiver(request, timeout)  # raises for a non-2xx reply, as urllib does
+        finally:
+            if receiver.kinds == ["beat", "beat"]:
+                asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
+                assert receiver.goodbye_arrived.wait(timeout=5)
+
+    reporter = make_reporter(answer_after_the_goodbye)
+    return reporter
+
+
+async def test_a_beat_answered_after_the_goodbye_leaves_the_next_beat_at_the_quiet_minute(clock):
+    """The suspend path can say goodbye while a beat is still in flight. That beat's reply must not push
+    the next beat back out to a told 600 s interval."""
+    receiver = Receiver()
+    receiver.reply_with(_told(RESPONSES["interval_max_s"]), _told(RESPONSES["interval_max_s"]))
+    reporter = _goodbye_while_the_second_beat_is_in_flight(receiver)
+    await reporter.poll()
+    clock.advance(RESPONSES["interval_max_s"] * 1.1 + 1)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+
+    clock.advance(GOODBYE_QUIET_S + 1)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+
+
+async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clock):
+    """The quiet minute only brings the next beat forward from the interval: a wait the receiver asks
+    for in that late reply still holds."""
+    receiver = Receiver()
+    receiver.reply_with(Reply(), Reply(429, {"Retry-After": "300"}))
+    reporter = _goodbye_while_the_second_beat_is_in_flight(receiver)
+    await reporter.poll()
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+
+    clock.advance(GOODBYE_QUIET_S + 1)
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+    clock.advance(300 - GOODBYE_QUIET_S)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+
+
 @pytest.mark.parametrize("held_off", [Reply(401), Reply(503, {"Retry-After": "300"})], ids=["rejected", "asked to wait"])
 async def test_no_goodbye_while_the_receiver_holds_the_sender_off(clock, held_off):
     receiver = Receiver()

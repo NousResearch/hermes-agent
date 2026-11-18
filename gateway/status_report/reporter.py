@@ -126,7 +126,10 @@ class StatusReporter:
             return
         self._retry_body = None
         self._no_beat_before = time.time() + _GOODBYE_QUIET_S
-        self._due_at = max(self._due_at, self._no_beat_before)
+        # The next beat is due as soon as the quiet minute ends, not at the interval: a machine that
+        # froze beats on waking, and one that woke soon after (or never froze) says so within a
+        # minute, however long an interval the receiver set.
+        self._due_at = self._no_beat_before
         task = asyncio.get_running_loop().create_task(self._say_goodbye())
         self._goodbyes.add(task)  # the loop keeps only a weak reference to a running task
         task.add_done_callback(self._goodbye_done)
@@ -204,7 +207,10 @@ class StatusReporter:
             # higher, so the receiver would drop the retry.
             wait, self._retry_body = _QUICK_RETRY_S, body
         self._receiver_holds_off = held_off
-        self._due_at = max(now + wait, self._no_beat_before)
+        # A goodbye that went out while this report was in flight keeps the next beat at the end of its
+        # quiet minute, unless the receiver asked for a wait.
+        quiet = now < self._no_beat_before and not held_off
+        self._due_at = self._no_beat_before if quiet else max(now + wait, self._no_beat_before)
         changed, self._last_kind = outcome.kind != self._last_kind, outcome.kind
         level = logging.DEBUG if not changed else logging.INFO if outcome.kind == "stored" else logging.WARNING
         logger.log(level, "status report: %s (%s), next in %.0fs",

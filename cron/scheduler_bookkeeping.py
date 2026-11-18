@@ -20,7 +20,8 @@ def finish_interrupted_run(job, execution_id, delivery_error):
     if delivery_error:
         try:
             from cron.jobs import update_job
-            update_job(job['id'], {'last_delivery_error': delivery_error})
+            from cron.jobs_error_text import sanitize_persisted_error
+            update_job(job['id'], {'last_delivery_error': sanitize_persisted_error(delivery_error)})
         except Exception as exc:
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
     scheduler.finish_execution(execution_id, success=False,
@@ -127,3 +128,50 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         settle_quietly(job["id"], execution_id)
     journal.unlink(missing_ok=True)
     return True
+
+
+class _BoundedCronSessionDB:
+    """Proxy store cleanup calls through the cron cleanup timeout; after the first failure or
+    timeout all later calls fail immediately (a damaged connection leaks at most one worker).
+    Proxies made with ``beside`` share that latch."""
+
+    def __init__(self, session_db, job_id: str, disabled: Optional[list] = None):
+        self._session_db = session_db
+        self._job_id = job_id
+        self._disabled = disabled if disabled is not None else [False]
+
+    def beside(self, target):
+        """A proxy over ``target`` under the same timeout and latch."""
+        return _BoundedCronSessionDB(target, self._job_id, self._disabled)
+
+    def __getattr__(self, name):
+        target = getattr(self._session_db, name)
+        if not callable(target):
+            return target
+
+        def _bounded(*args, **kwargs):
+            if self._disabled[0]:
+                raise RuntimeError("session finalization disabled after prior cleanup failure")
+
+            result = {}
+
+            def _call():
+                try:
+                    result["value"] = target(*args, **kwargs)
+                except BaseException as exc:
+                    result["error"] = exc
+                    raise
+
+            from cron import scheduler
+            ok = scheduler._run_cron_cleanup_with_timeout(
+                _call, job_id=self._job_id, label=f"session finalization ({name})")
+            if not ok:
+                error = result.get("error")
+                if error is not None:
+                    raise error
+                # No error yet not complete == timeout: disable so later steps fail fast.
+                self._disabled[0] = True
+                raise TimeoutError(f"session finalization method {name} timed out")
+            return result.get("value")
+
+        return _bounded

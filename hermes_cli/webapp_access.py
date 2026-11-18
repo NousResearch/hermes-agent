@@ -83,11 +83,8 @@ def nous_signed_in() -> bool:
 
 def _registration(home: Path) -> dict:
     """*home*'s registration record, or ``{}`` when there is none or it cannot be read."""
-    try:
-        record = json.loads((Path(home) / _REGISTRATION_PATH).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return record if isinstance(record, dict) else {}
+    from utils import read_json_or_empty
+    return read_json_or_empty(Path(home) / _REGISTRATION_PATH)
 
 
 def sign_in_client(home) -> Optional[tuple[str, str]]:

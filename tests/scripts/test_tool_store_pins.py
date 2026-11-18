@@ -18,6 +18,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import StatePackage
 from pm.registry import get_package, tool_roots, walk
 from pm.store import current_target
+from pm.testenv import developer_tools
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,7 +38,7 @@ def _matching_store(store: Path) -> Path:
     lock = Lockfile(ROOT / "pm" / "lock.json")
     names, target = lock.names(), current_target()
     facts = Facts(store / "facts.json")
-    for package in walk(tool_roots(names) + default_packages(names) + ["venv"]):
+    for package in walk(tool_roots(names) + developer_tools(names) + default_packages(names) + ["venv"]):
         if isinstance(package, StatePackage):
             continue
         version = lock.version(package.name)
@@ -76,6 +77,7 @@ BREAKAGES = {
     "setup_uv_missing": lambda store, uv: uv.unlink(),
     "setup_uv_not_executable": lambda store, uv: uv.chmod(0o644),
     "ripgrep_not_executable": lambda store, uv: _entry_binary(store, "ripgrep").chmod(0o644),
+    "just_not_executable": lambda store, uv: _entry_binary(store, "just").chmod(0o644),
     "node_env_stale": lambda store, uv: _stale_env(store, "node"),
 }
 

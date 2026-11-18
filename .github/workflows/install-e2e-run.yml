@@ -118,7 +118,7 @@ jobs:
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: pnpm install --frozen-lockfile --filter "{./tests-js}..." --prod --ignore-scripts
+        run: just js-install-tests
 
       # One recording mechanism on every OS (Xvfb gives headless linux a
       # display; the same display serves any app the driver launches).
@@ -178,7 +178,7 @@ jobs:
         with:
           # Unique per leg: a matrix over releases runs this workflow several
           # times per route, and same-named artifacts collide.
-          name: ${{ steps.artifact.outputs.name }}-${{ github.sha }}
+          name: ${{ steps.artifact.outputs.name }}-${{ inputs.commit || github.sha }}
           path: ${{ runner.temp }}/e2e-logs
           retention-days: 14
           if-no-files-found: ignore

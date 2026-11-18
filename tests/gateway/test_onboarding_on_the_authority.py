@@ -9,8 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.onboarding_flow import Facts
+from persistence.conversation.sessions import SessionWindow
+from persistence_assembly import open_persistence, profile_scope
+from session_rules.onboarding_flow import Facts
+from tests.fixtures.storage_holder import guarded_ids
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.waiting import async_wait_until
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
 
@@ -50,7 +56,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
         return "ok"
 
     store = SessionStore(home / "sessions", GatewayConfig())
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _handle_message=answer, _evict_cached_agent=lambda route: None,
                              _cached_agent_for=lambda route: None, _peek_session_state=lambda key: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -62,7 +68,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
     connection = AuthorityConnection(authority, transport, identity)
     from gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
-    return SimpleNamespace(authority=authority, connection=connection, transport=transport, db=store._db)
+    return SimpleNamespace(authority=authority, connection=connection, transport=transport, db=store.persistence)
 
 
 async def _request(desktop, rid, method, params):
@@ -108,8 +114,8 @@ async def test_a_rerun_replaces_the_open_run_and_skip_ends_the_new_one(tmp_path,
         first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
         second = (await _request(desktop, 2, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
         assert second != first
-        assert onboarding_record.load(desktop.db, first)["phase"] != "onboarding"
-        assert onboarding_record.load(desktop.db, second)["phase"] == "onboarding"
+        assert onboarding_record.load(desktop.db, first, persistence=desktop.db)["phase"] != "onboarding"
+        assert onboarding_record.load(desktop.db, second, persistence=desktop.db)["phase"] == "onboarding"
         again = (await _request(desktop, 3, "onboarding.start", {}))["result"]
         assert again["stored_session_id"] == second and again["resumed"] is True
 
@@ -120,7 +126,7 @@ async def test_a_rerun_replaces_the_open_run_and_skip_ends_the_new_one(tmp_path,
         skipped = await _request(desktop, 4, "onboarding.skip", {"session_id": second})
         assert skipped["result"] == {"skipped": True}, skipped
         assert await answer is None
-        assert onboarding_record.load(desktop.db, second)["phase"] == "skipped"
+        assert onboarding_record.load(desktop.db, second, persistence=desktop.db)["phase"] == "skipped"
     finally:
         await desktop.connection.close()
 
@@ -134,10 +140,11 @@ async def test_a_rerun_with_no_model_opens_no_chat(tmp_path, monkeypatch):
     (tmp_path / ".hermes" / ".env").write_text("", encoding="utf-8")
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda config=None: None)
     try:
-        before = {row["id"] for row in desktop.db.search_sessions(limit=100)}
+        before = {entry.session.session_id for entry in desktop.db.sessions.search_sessions(window=SessionWindow(limit=100))}
         refused = await _request(desktop, 1, "onboarding.start", {"rerun": True})
         assert refused["error"]["code"] == 5080, refused
-        assert {row["id"] for row in desktop.db.search_sessions(limit=100)} == before
+        assert {entry.session.session_id
+                for entry in desktop.db.sessions.search_sessions(window=SessionWindow(limit=100))} == before
     finally:
         await desktop.connection.close()
 
@@ -146,19 +153,18 @@ def test_an_onboarding_chat_folds_in_setup_beat_for_its_whole_life(tmp_path):
     """The authority resolves toolsets every turn; the fold-in keys on the record existing, so a run
     that ends never changes the tool array mid-conversation (prompt cache)."""
     from agent import onboarding_record
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from agent.onboarding_session import onboarding_chat_toolsets
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("onb", source="local")
-        db.create_session("plain", source="local")
-        onboarding_record.start(db, "onb", FACTS)
-        assert onboarding_chat_toolsets(["web"], db, "onb") == ["web", "onboarding"]
-        assert onboarding_chat_toolsets(["web"], db, "plain") == ["web"]
-        assert onboarding_chat_toolsets([], db, "onb") == []
-        onboarding_record.advance(db, "onb", End("skipped"))
-        assert onboarding_chat_toolsets(["web"], db, "onb") == ["web", "onboarding"]
+        seed_session(db, "onb", "local")
+        seed_session(db, "plain", "local")
+        onboarding_record.start(db, "onb", FACTS, persistence=db)
+        assert onboarding_chat_toolsets(["web"], db, "onb", persistence=db) == ["web", "onboarding"]
+        assert onboarding_chat_toolsets(["web"], db, "plain", persistence=db) == ["web"]
+        assert onboarding_chat_toolsets([], db, "onb", persistence=db) == []
+        onboarding_record.advance(db, "onb", End("skipped"), persistence=db)
+        assert onboarding_chat_toolsets(["web"], db, "onb", persistence=db) == ["web", "onboarding"]
     finally:
         db.close()
 
@@ -168,14 +174,13 @@ def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_wa
     from agent.onboarding_text import GREETING
     from gateway.session_onboarding import arm_onboarding_turn
     from gateway.session_server_requests import _Pending, _lock, _open
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("onb", source="local")
-        onboarding_record.start(db, "onb", FACTS)
+        seed_session(db, "onb", "local")
+        onboarding_record.start(db, "onb", FACTS, persistence=db)
         stream = object()
         owner = (SimpleNamespace(sessions={"onb": SimpleNamespace(event_stream=stream)}), "onb", 1)
-        agent = SimpleNamespace(_session_db=db, session_id="onb", valid_tool_names={"setup_beat"},
+        agent = SimpleNamespace(_session_db=db, persistence=db, session_id="onb", valid_tool_names={"setup_beat"},
                                 _gateway_turn_context_notes="")
         assert list(arm_onboarding_turn(agent, owner, [])) == [(GREETING, "setup_beat", {"beat": "name"})]
         assert arm_onboarding_turn(SimpleNamespace(valid_tool_names={"terminal"}), owner, []) is None
@@ -195,8 +200,7 @@ def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_wa
 async def _settled(desktop, session_id):
     """The opening turn's lease released: a delete is not refused as a write in flight."""
     def idle():
-        with desktop.db._read_ctx() as conn:
-            return not desktop.db._guarded_ids(conn, [session_id])
+        return not guarded_ids(desktop.db, [session_id])
     await async_wait_until(idle, timeout=10)
 
 
@@ -208,7 +212,6 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
     desktop = await _desktop(tmp_path, monkeypatch, [])
     home = tmp_path / ".hermes"
     work = home / "profiles" / "work"
@@ -221,9 +224,8 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
     monkeypatch.setattr("hermes_cli.welcome_trial.claim_desktop_free_tier", claim)
     runner = desktop.authority.runner
     runner.config = SimpleNamespace(multiplex_profiles=True)
-    work_db = SessionDB(db_path=work / "state.db")
-    secondary = await initialize_session_authority(runner, profile_id=str(work), instance_id="owner", db=work_db,
-                                                   register=False)
+    secondary = await initialize_session_authority(runner, profile_id=str(work), instance_id="owner",
+                                                   persistence=storage_handle(work), register=False)
     runner.session_authorities = SessionAuthorities(home, multiplexed=True)
     runner.session_authorities.add(home, desktop.authority, name="default")
     runner.session_authorities.add(work, secondary, name="work")
@@ -240,7 +242,6 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
     finally:
         await connection.close()
         await desktop.connection.close()
-        work_db.close()
 
 
 @pytest.mark.asyncio
@@ -271,7 +272,7 @@ async def test_deleting_the_onboarding_chat_from_the_sidebar_ends_the_run(tmp_pa
         async def delete_at_the_current_revision():
             # The settlement can still bump the revision after the lease releases; the Desktop
             # re-reads and resends on a conflict, so the test does too.
-            row = desktop.db.get_session(stored)
+            row = session_row(desktop.db, stored)
             replies.append(await _request(desktop, 2 + len(replies), "session.mutate", {
                 "session_id": stored, "request_id": f"delete-onboarding-{len(replies)}",
                 "expected_revision": row["runtime_revision"], "expected_generation": row["runtime_generation"],
@@ -308,7 +309,7 @@ async def test_a_fresh_launch_deletes_the_chat_the_last_launch_left_with_no_view
     try:
         second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
         assert second["stored_session_id"] != first
-        assert desktop.db.get_session(first) is None
+        assert session_row(desktop.db, first) is None
         assert first not in desktop.authority.sessions
     finally:
         await desktop.connection.close()
@@ -341,8 +342,8 @@ async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_ke
     first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
     await async_wait_until(lambda: turns, timeout=10)
     await _settled(desktop, first)
-    desktop.db.append_message(first, "user", "Call me Sid.")  # the answer the user gave the name card
-    messages = desktop.db.get_messages(first)
+    seed_messages(desktop.db, first, {"role": "user", "content": "Call me Sid."})  # the answer the user gave the name card
+    messages = transcript_rows(desktop.db, first)
     await desktop.connection.close()
     identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
                 "instance_id": "owner"}
@@ -350,8 +351,8 @@ async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_ke
     other = AuthorityConnection(desktop.authority, _Transport(), identity)
     loop, resumed, record_new_run = asyncio.get_running_loop(), [], onboarding_record.start
 
-    def new_run_then_another_window_resumes(db, stored, facts):
-        record_new_run(db, stored, facts)
+    def new_run_then_another_window_resumes(db, stored, facts, **kwargs):
+        record_new_run(db, stored, facts, **kwargs)
         resumed.append(asyncio.run_coroutine_threadsafe(other.dispatch({
             "jsonrpc": "2.0", "id": 9, "method": "session.resume", "params": {"session_id": first}}),
             loop).result(timeout=20))
@@ -360,8 +361,8 @@ async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_ke
         second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
         assert second["stored_session_id"] != first
         assert "result" in resumed[0], resumed
-        assert desktop.db.get_messages(first) == messages
-        assert (onboarding_record.load(desktop.db, first) or {}).get("ended_by") == "replaced"
+        assert transcript_rows(desktop.db, first) == messages
+        assert (onboarding_record.load(desktop.db, first, persistence=desktop.db) or {}).get("ended_by") == "replaced"
         assert first in desktop.authority.sessions
     finally:
         await other.close()
@@ -382,8 +383,8 @@ async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_t
     first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
     await async_wait_until(lambda: turns, timeout=10)
     await _settled(desktop, first)
-    desktop.db.append_message(first, "user", "Call me Sid.")
-    messages = desktop.db.get_messages(first)
+    seed_messages(desktop.db, first, {"role": "user", "content": "Call me Sid."})
+    messages = transcript_rows(desktop.db, first)
     await desktop.connection.close()
     identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
                 "instance_id": "owner"}
@@ -400,8 +401,8 @@ async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_t
 
     record_new_run = onboarding_record.start
 
-    def new_run_then_the_resume_finishes(db, stored, facts):
-        record_new_run(db, stored, facts)
+    def new_run_then_the_resume_finishes(db, stored, facts, **kwargs):
+        record_new_run(db, stored, facts, **kwargs)
         release.set()
         assert resume_done.wait(timeout=20), "the resume never finished"
 
@@ -415,8 +416,8 @@ async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_t
         second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
         assert second["stored_session_id"] != first
         assert "result" in (await resume), resume.result()
-        assert desktop.db.get_messages(first) == messages
-        assert (onboarding_record.load(desktop.db, first) or {}).get("ended_by") == "replaced"
+        assert transcript_rows(desktop.db, first) == messages
+        assert (onboarding_record.load(desktop.db, first, persistence=desktop.db) or {}).get("ended_by") == "replaced"
         assert first in desktop.authority.sessions
     finally:
         release.set()

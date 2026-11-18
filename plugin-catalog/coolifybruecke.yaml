@@ -1,0 +1,36 @@
+name: coolifybruecke
+title: Coolifybrücke
+repo: https://github.com/studioluftbruecke/hermes-coolifybruecke
+sha: a5a138502e4ff17458b2a343082a35b151f8913d
+description: "See what needs you across your Coolify instance, deploy with your approval, and let Hermes explain failed deploys. Disclosure — Talks only to your Coolify instance with the tokens you give it, Coolify's public release feed (cdn.coollabs.io) and, for \"branch ahead\", your apps' git hosts (an optional git token is sent only to the host you name, or GitHub). Agent actions (deploy, restart, stop, rollback) each ask for approval and are refused in cron, webhook and one-shot runs. `hermes coolifybruecke alerts on` writes a script to Hermes' scripts folder and adds a no-agent cron job by running `hermes cron`; `alerts off` removes both. No telemetry."
+maintainer: studioluftbruecke
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://coolifybruecke.luftbruecke.studio
+version: "0.2.7"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/a5a138502e4ff17458b2a343082a35b151f8913d/docs/screenshot-4.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Coolify API token with read and deploy, and Coolify's API (and ideally its MCP server) enabled under Settings, Advanced."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the Coolifybrücke page from its own computer."
+capabilities:
+  provides_tools:
+    - coolify_capabilities
+    - coolify_overview
+    - coolify_deployments
+    - coolify_diagnose
+    - coolify_action
+    - coolify_cockpit
+    - coolify_notes
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

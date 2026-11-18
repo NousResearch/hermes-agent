@@ -1,0 +1,22 @@
+name: mindhall
+repo: https://github.com/jai-srinivas/mindhall
+sha: 9c1965443eed86cca6cc145e5a01aeb747d25f7f
+description: "One shared mind for every AI you use. Work, dates and a signed change log that Hermes, ChatGPT, Claude and your other AIs all read and write. Disclosure — stores its data in ~/.mindhall/mindhall.db (outside the Hermes home, shared by every profile unless MINDHALL_DB is set per profile) and injects a summary of it into every turn, telling the model Mindhall overrides its own memory; the optional, separately run mcp_server.py lets other AI apps read and write the same data and serves an edit page, protected only by a secret in the URL path, and the README suggests publishing it through a cloudflared tunnel, so anyone holding that URL can change what Hermes is told each turn. No telemetry, no self-update."
+maintainer: jai-srinivas
+tier: community
+category: tools
+title: Mindhall
+requires_hermes: ">=0.23.0"
+version: "0.3.0"
+capabilities:
+  provides_tools:
+    - mindhall_read
+    - mindhall_update_work
+    - mindhall_set_date
+    - mindhall_add_note
+    - mindhall_remove
+  provides_hooks:
+    - pre_llm_call
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

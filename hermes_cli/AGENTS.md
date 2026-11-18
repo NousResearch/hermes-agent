@@ -13,8 +13,7 @@ phases), ... Module-level helpers live in topical siblings that `cli.py` re-expo
 light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
 sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
 `cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
-Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
-`cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
+Mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
 `_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
@@ -24,8 +23,7 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 `gateway_launchd.py` (macOS LaunchAgent backend), `gateway_setup_wizard.py`
 (`hermes gateway setup`: `_PLATFORMS` registry, status table, per-platform prompts, service offer),
 `gateway_windows*.py`, `gateway_supervised_restart.py`, `gateway_migrate*.py`, `gateway_multiplex_*.py`,
-`gateway_enroll.py`, `gateway_command_errors.py`. Sibling bodies read facade names through `_gw()`
-(late binding on `hermes_cli.gateway`), so monkeypatch on the facade; mutable state such as
+`gateway_enroll.py`, `gateway_command_errors.py`. Mutable state such as
 `_resolved_launchd_domain` stays a facade global.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
 `HermesCLI._SLASH_DISPATCH` (`canonical -> (method name, pass_arg)`), falling back to a
@@ -76,7 +74,7 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   migrate/transform existing config (rename keys, restructure); new keys deep-merge automatically.
   Top-level sections (non-exhaustive): `model, agent, terminal, compression, display, stt, tts,
 memory, security, delegation, smart_model_routing, checkpoints, auxiliary, curator, skills,
-gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
+gateway, logging, cron, profiles, plugins`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
@@ -169,7 +167,7 @@ shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfil
 files — fail closed, never rmtree). A dangling symlinked marker still counts as identity (`is_symlink()`).
 `tools/bot_mode_probe._roster` (Bot Mode teammate roster, `bot_relay.deliver` target check) applies the same
 predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
-Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
+Enumeration is a pure read: never `mkdir` a profile home from a served path (the session store, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.

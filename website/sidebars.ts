@@ -3,11 +3,9 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'user-stories',
-    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
-    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
-    // undiscoverable on a phone.
-    {type: 'link', label: 'Browse Skills', href: '/skills'},
-    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
+    // The Marketplace lives in the navbar. On mobile Docusaurus opens the drawer on the doc sidebar,
+    // with the navbar a "Back to main menu" tap away, so without this link it is undiscoverable on a phone.
+    {type: 'link', label: 'Browse the Marketplace', href: 'https://hermes-agent.nousresearch.com/marketplace'},
     {
       type: 'category',
       label: 'Getting Started',
@@ -629,15 +627,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/web-development/web-development-scrollcraft',
                   ],
                 },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-optional-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/optional/yuanbao/yuanbao-yuanbao',
-                  ],
-                },
               ],
             },
           ],
@@ -718,6 +707,7 @@ const sidebars: SidebarsConfig = {
         'integrations/nous-portal',
         'integrations/providers',
         'integrations/buzz',
+        'integrations/nemo-relay',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',
@@ -791,6 +781,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/provider-runtime',
             'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
+            'developer-guide/gateway-ssh-clients',
           ],
         },
         {
@@ -897,6 +888,11 @@ const sidebars: SidebarsConfig = {
         'reference/cli-symbols',
         'reference/faq',
       ],
+    },
+    {
+      type: 'link',
+      label: 'Compare Hermes Agent',
+      href: 'https://hermes-agent.nousresearch.com/compare',
     },
   ],
 };

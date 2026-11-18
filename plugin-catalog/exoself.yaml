@@ -1,0 +1,22 @@
+name: exoself
+repo: https://github.com/cYoren/exoself
+sha: f5d8d663c0638fc41560b93d184cf09d3e7d874f
+subdir: hermes
+description: "An unchosen temperament for every Hermes profile: on the first load it draws one seed into the profile's home and renders it into SOUL.md inside a managed block, then records one experience event per turn and refreshes that block. Two profiles get two different agents, a second load never redraws, and no tool draws a seed. Disclosure — writes $HERMES_HOME/SOUL.md (its own managed block only) and $HERMES_HOME/.exoself/, and reads the turn's ask from pre_llm_call in memory to form the event line, which is hashed into the state chain and never stored as text. No network calls, credentials, subprocesses or telemetry; uninstalling leaves the certificate and the block in place."
+maintainer: cYoren
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/cYoren/exoself/tree/main/hermes
+platforms: []
+capabilities:
+  provides_tools:
+    - exoself_status
+    - exoself_verify
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

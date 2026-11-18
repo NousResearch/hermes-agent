@@ -75,7 +75,7 @@ def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile with spaces"))
     binary = tmp_path / "program files" / "whisper-cli.exe"
     monkeypatch.setattr(pm, "installed_package",
-                        lambda name: SimpleNamespace(binary=binary) if name == "whispercpp-cpu" else None)
+                        lambda name, **_: SimpleNamespace(binary=binary) if name == "whispercpp-cpu" else None)
     monkeypatch.setattr(stt, "_HAS_FASTER_WHISPER", False)
     calls = []
     monkeypatch.setattr(cpp, "ensure_whisper_cpp_models", lambda model: calls.append(model))
@@ -97,3 +97,19 @@ def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeyp
     assert calls == ["base"]
     monkeypatch.setenv("HERMES_LOCAL_STT_COMMAND", "custom-command {input_path}")
     assert local._get_local_command_template() == "custom-command {input_path}"
+
+
+def test_an_install_from_an_earlier_pin_stays_the_local_command(tmp_path, monkeypatch):
+    """A lock change (the VC++ runtime joining the win32-arm64 pin) leaves the installed whisper.cpp
+    outdated, not gone: like the engines' boot lookup, STT keeps it until a deliberate re-stage."""
+    from tools import transcription_whisper_cpp as cpp
+    import pm
+
+    binary = tmp_path / "whisper-cli.exe"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pm, "installed_package", lambda name, *, allow_outdated=False: (
+        SimpleNamespace(binary=binary) if name == "whispercpp-cpu" and allow_outdated else None))
+
+    command = cpp.whisper_cpp_command()
+
+    assert command is not None and command.startswith(binary.as_posix())

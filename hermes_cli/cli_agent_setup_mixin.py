@@ -176,7 +176,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     screen, retitle the window or restyle the panel. Pure-reasoning assistant rows with no
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
-    from agent.message_metadata import withheld_prompt_text
+    from session_rules.turns import withheld_prompt_text
     from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))
@@ -386,16 +386,10 @@ class CLIAgentSetupMixin:
             if not _fb_provider or not _fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import fallback_entry_runtime_kwargs
                 # target_model: the fallback entry names the model that will be sent; without it the
                 # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
-                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
-                if _fb.get("base_url"):
-                    _fb_kwargs["explicit_base_url"] = _fb["base_url"]
-                _fb_api_key = resolve_entry_api_key(_fb)
-                if _fb_api_key:
-                    _fb_kwargs["explicit_api_key"] = _fb_api_key
-                runtime = resolve_runtime_provider(**_fb_kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(_fb))
                 _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
                     "Primary provider %s (%s). Falling through to fallback: %s/%s",
@@ -666,6 +660,8 @@ class CLIAgentSetupMixin:
         try:
             self._ensure_gateway_session()
         except Exception as e:  # health: allow BLE001 -- any session.create/resume failure is main's agent-init failure copy, never a traceback
+            from hermes_cli.gateway_owner_restart import exit_on_stopped_wait
+            exit_on_stopped_wait(self, e)  # -q: Ctrl+C during a gateway restart exits 130, not init-failure 1
             from hermes_cli.gateway_chat import exit_on_resume_refusal
             exit_on_resume_refusal(e)  # -q: a changed flag on --resume is interactive startup's `Error:` + exit 2
             ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
@@ -713,6 +709,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
+                persistence=getattr(self._session_db, "persistence", None),
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
                 connection_update_callback=None if single_query_mode else self._connection_on_change,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
@@ -802,14 +799,14 @@ class CLIAgentSetupMixin:
         if not self._session_db:
             return None
         from cli import logger
-        from hermes_state import SessionResumeTooLargeError
+        from persistence.conversation.messages import ResumeTooLarge
         try:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
             if not callable(safety_check):
                 return None
             safety_check(getattr(self, "_resume_read_id", None) or self.session_id,
                          **({"tip_only": True} if tip_only else {}))
-        except SessionResumeTooLargeError as exc:
+        except ResumeTooLarge as exc:
             return str(exc)
         except Exception as exc:
             logger.warning(
@@ -840,7 +837,7 @@ class CLIAgentSetupMixin:
         if (kanban_refusal := kanban_resume_refusal(self._session_db, self._resume_read_id)):
             self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
             self._resumed = False
-            from hermes_state_ids import new_session_id
+            from session_rules.session_ids import new_session_id
             self.session_id = new_session_id(self.session_start)
             return False
         resume_limit_error = self._resume_history_limit_error()

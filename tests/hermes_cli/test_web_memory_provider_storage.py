@@ -155,3 +155,53 @@ def test_a_refused_write_is_a_400_with_no_secret_saved_and_no_switch(client):
     assert _config_path().read_text(encoding="utf-8") == "{not json"
     assert (load_config().get("memory") or {}).get("provider") != "ownprov"
     assert "OWNPROV_API_KEY" not in load_env()
+
+
+def _install(name, init, schema):
+    from hermes_constants import get_hermes_home
+    plugin_dir = get_hermes_home() / "plugins" / name
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(init, encoding="utf-8")
+    (plugin_dir / "config_schema.py").write_text(schema, encoding="utf-8")
+
+
+def test_storage_provider_without_a_writer_is_a_501_with_no_secret_saved(client):
+    from hermes_cli.config import load_env
+
+    init = _INIT.replace("class OwnProv", "class _Unused").replace("def write_config_fields", "def _unused_write")
+    init = init.replace("ctx.register_memory_provider(OwnProv())", "ctx.register_memory_provider(_Unused())")
+    init = init.replace('name = "ownprov"', 'name = "nowriter"')
+    _install("nowriter", init, _SCHEMA.replace('name="ownprov"', 'name="nowriter"'))
+
+    resp = client.put("/api/memory/providers/nowriter/config?surface=declared",
+                      json={"values": {"workspace": "x", "apiKey": "nw-key"}})
+
+    assert resp.status_code == 501
+    assert "OWNPROV_API_KEY" not in load_env()
+
+
+def test_a_provider_that_fails_to_load_is_a_503_not_unknown(client):
+    _install("broken", "from agent.memory_provider import MemoryProvider\nraise RuntimeError('import-time failure')\n",
+             _SCHEMA.replace('name="ownprov"', 'name="broken"'))
+    assert client.get("/api/memory/providers/broken/config?surface=declared").status_code == 503
+
+
+def test_an_unknown_storage_kind_shows_no_panel_and_writes_no_stray_file(client):
+    from hermes_constants import get_hermes_home
+
+    _install("oddstore", _INIT.replace('name = "ownprov"', 'name = "oddstore"'),
+             _SCHEMA.replace('name="ownprov"', 'name="oddstore"').replace("storage=STORAGE_PROVIDER", 'storage="retired_kind"'))
+    url = "/api/memory/providers/oddstore/config?surface=declared"
+
+    assert client.get(url).json()["fields"] == []
+    assert client.put(url, json={"values": {"workspace": "x"}}).status_code == 400
+    assert not (get_hermes_home() / "oddstore").exists()
+
+
+def test_a_schema_that_fails_to_load_logs_its_traceback_once(client, caplog):
+    _install("oldschema", _INIT.replace('name = "ownprov"', 'name = "oldschema"'),
+             "from plugins.memory.config_schema import NO_SUCH_NAME\n")
+    with caplog.at_level("ERROR", logger="plugins.memory.config_schema"):
+        for _ in range(3):
+            assert client.get("/api/memory/providers/oldschema/config?surface=declared").status_code == 200
+    assert sum("failed to load config schema" in r.getMessage() for r in caplog.records if r.levelname == "ERROR") == 1

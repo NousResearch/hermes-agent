@@ -43,6 +43,13 @@ from pathlib import Path, PurePosixPath
 
 _STUB_MODULE = "tools.lazy_deps"
 _DELETED_PARENT = "tools"
+# The move gives every top-level package one new name under this package; the stub is caught under
+# both, including in a tree whose MOVES does not list it yet.
+_MOVED_UNDER = "hermes_agent."
+
+
+def _old_name(module: str) -> str:
+    return module.removeprefix(_MOVED_UNDER)
 
 
 def _tracked_python_files(root: Path) -> list[str]:
@@ -96,12 +103,12 @@ def _relative_target(relpath: str, node: ast.ImportFrom) -> str | None:
 
 
 def _import_sites(tree: ast.AST, relpath: str) -> list[str]:
-    """``relpath:line: <description>`` for every tools.lazy_deps import."""
+    """``relpath:line: <description>`` for every tools.lazy_deps import, under its old or new name."""
     sites: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == _STUB_MODULE or alias.name.startswith(
+                if _old_name(alias.name) == _STUB_MODULE or _old_name(alias.name).startswith(
                     _STUB_MODULE + "."
                 ):
                     sites.append(
@@ -112,18 +119,20 @@ def _import_sites(tree: ast.AST, relpath: str) -> list[str]:
             names = ", ".join(a.name for a in node.names)
             kind: str | None = None
             if node.level == 0:
-                if node.module == _STUB_MODULE or (
-                    node.module and node.module.startswith(_STUB_MODULE + ".")
-                ) or node.module == _DELETED_PARENT and any(
+                module = node.module and _old_name(node.module)
+                if module == _STUB_MODULE or (
+                    module and module.startswith(_STUB_MODULE + ".")
+                ) or module == _DELETED_PARENT and any(
                     a.name == "lazy_deps" for a in node.names
                 ):
                     kind = f"'{node.module} ({names})'"
             else:
                 resolved = _relative_target(relpath, node)
-                if resolved == _DELETED_PARENT and any(
+                module = resolved and _old_name(resolved)
+                if module == _DELETED_PARENT and any(
                     a.name == "lazy_deps" for a in node.names
-                ) or resolved == _STUB_MODULE or (
-                    resolved and resolved.startswith(_STUB_MODULE + ".")
+                ) or module == _STUB_MODULE or (
+                    module and module.startswith(_STUB_MODULE + ".")
                 ):
                     kind = f"'{resolved} ({names})' (relative)"
             if kind is not None:

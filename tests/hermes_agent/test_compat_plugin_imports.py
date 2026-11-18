@@ -14,8 +14,7 @@ from hermes_agent.compat.moves import MOVES
 # Every MOVES key is checked as well.
 _PLUGIN_IMPORTS = {
     "agent.message_content": ("flatten_message_text", "_text_from_part"),
-    "agent.context_compressor_retry": ("retryable_user_text",),
-    "agent.skill_commands": ("extract_user_instruction_from_skill_message", "register_auto_load_scaffold"),
+    "agent.skill_commands": ("extract_user_instruction_from_skill_message",),
     "hermes_state_common": ("TITLE_SOURCE_DERIVED", "TITLE_SOURCE_LLM"),
 }
 

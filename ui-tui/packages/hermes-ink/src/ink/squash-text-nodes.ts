@@ -5,25 +5,60 @@ import type { TextStyles } from './styles.js'
 // string handed to <Text>) would be tokenized as a real link, so visible text such as
 // "docs.python.org" could open another URL. Links come only from <Link> (ink-link), so
 // every OSC 8 sequence in plain text is dropped, its label kept.
-// eslint-disable-next-line no-control-regex -- matching the escape sequence is the point
-const OSC8_IN_TEXT_RE = /\u001b\]8;[^\u0007\u001b]*(?:\u0007|\u001b\\)?/g
+const OSC8_OPEN = '\u001b]8;'
 
-// Repeat to a fixed point: removing one sequence can join the bytes around it into a new one.
-const textOf = (value: string) => {
-  let text = value
+const endsWithOpener = (out: string[]) => {
+  const start = out.length - OSC8_OPEN.length
 
-  while (text.includes('\u001b]8;')) {
-    const next = text.replace(OSC8_IN_TEXT_RE, '')
-
-    if (next === text) {
-      break
-    }
-
-    text = next
+  if (start < 0) {
+    return false
   }
 
-  return text
+  for (let j = 0; j < OSC8_OPEN.length; j++) {
+    if (out[start + j] !== OSC8_OPEN[j]) {
+      return false
+    }
+  }
+
+  return true
 }
+
+// Rule: the output never contains the opener. Chars are appended one at a time; the moment
+// the output ends with the opener — whether the sequence was in the input or spliced together
+// by an earlier removal — it is popped and the payload up to its terminator is skipped.
+// Linear in the input, so nested inputs cannot stall a frame.
+export const stripOsc8 = (value: string) => {
+  if (!value.includes(OSC8_OPEN)) {
+    return value
+  }
+
+  const out: string[] = []
+  let i = 0
+
+  while (i < value.length) {
+    out.push(value[i++]!)
+
+    if (!endsWithOpener(out)) {
+      continue
+    }
+
+    out.length -= OSC8_OPEN.length
+
+    while (i < value.length && value[i] !== '\u0007' && value[i] !== '\u001b') {
+      i++
+    }
+
+    if (value[i] === '\u0007') {
+      i++
+    } else if (value[i] === '\u001b' && value[i + 1] === '\\') {
+      i += 2
+    }
+  }
+
+  return out.join('')
+}
+
+const textOf = stripOsc8
 
 /**
  * A segment of text with its associated styles.

@@ -113,10 +113,12 @@ class TestShellEscapedSpaceInWindowsHome:
         assert _is_dangerous(r"sed -i s/a/b/ /c/Users/John\ Smith/AppData/Local/hermes2/config.yaml") is False
 
 
-class TestEscapedSpaceFollowsShellQuoting:
-    r"""``\ `` is the same character as a space only where the shell reads it as an escape. Folding it
-    anywhere else names a directory the command does not touch, and gates a harmless command as an
-    edit of Hermes's own home."""
+class TestEscapedSpaceFailsClosed:
+    r"""An unquoted ``\ `` is the same character as a space, so a path spelled through it is the home.
+    Whether a given ``\ `` is unquoted takes a full shell parse: a quote in a comment, a heredoc body
+    or a backtick flips every lexical quote model for the rest of the command. The fold therefore
+    reads every ``\ `` inside a home spelling as a space; a quoted one costs a prompt, a misread one
+    would lose the gate on the approval policy file."""
 
     @pytest.fixture
     def spaced_hermes_home(self, monkeypatch):
@@ -134,7 +136,9 @@ class TestEscapedSpaceFollowsShellQuoting:
 
     def test_an_escaped_space_after_the_home_continues_the_name(self, spaced_hermes_home):
         # `hermes\ data\ backup` is one directory, a sibling of the home, not the home plus a word.
+        # Quoted, the backslash is literal and the name is no closer to the home: no quote state matters.
         assert _is_dangerous(r"mv /home/tester/hermes\ data\ backup /home/tester/backup") is False
+        assert _is_dangerous(r"mv '/home/tester/hermes\ data\ backup' /home/tester/backup") is False
 
     def test_an_escaped_space_after_a_spaceless_home_continues_the_name(self, monkeypatch):
         monkeypatch.setenv("HOME", "/home/tester")
@@ -145,17 +149,40 @@ class TestEscapedSpaceFollowsShellQuoting:
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml") is True
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes2/config.yaml") is False
 
+    @pytest.mark.parametrize("prefix", [
+        "echo hi # don't\n",
+        "# it's\n",
+        "cat <<EOF >/dev/null\nit's\nEOF\n",
+        "cat <<-EOF >/dev/null\n\tit's\n\tEOF\n",
+        ': <<EOF\n"\nEOF\n',
+        "echo `echo '`; ",
+        'echo `echo "`; ',
+        "echo ${x#'}; ",
+        "echo {a,'}; ",
+    ])
+    @pytest.mark.parametrize("home, hermes_home, path", [
+        ("/home/John Smith", "/home/John Smith/hermes", r"/home/John\ Smith/hermes/config.yaml"),
+        ("/home/tester", "/home/tester/hermes data", r"/home/tester/hermes\ data/config.yaml"),
+    ])
+    def test_a_stray_quote_earlier_does_not_hide_an_unquoted_escape(
+            self, monkeypatch, prefix, home, hermes_home, path):
+        # Each command runs in bash and rewrites HERMES_HOME/config.yaml: the quote before it is
+        # inert (comment, heredoc body, backtick body, expansion), the path after it is unquoted.
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.setenv("HERMES_HOME", hermes_home)
+        assert _is_dangerous(prefix + "sed -i s/a/b/ " + path) is True
+
     @pytest.mark.parametrize("command", [
         r"sed -i s/a/b/ '/home/John\ Smith/hermes/config.yaml'",
         r'sed -i s/a/b/ "/home/John\ Smith/hermes/config.yaml"',
-        r"mv '/home/John\ Smith/hermes' /tmp/x",
-    ])
-    def test_a_quoted_backslash_is_a_literal_name_character(self, spaced_user_home, command):
-        assert _is_dangerous(command) is False
-
-    @pytest.mark.parametrize("command", [
         r'bash -c "sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml"',
         r'echo "$(sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml)"',
     ])
-    def test_an_escape_read_by_an_inner_shell_still_folds(self, spaced_user_home, command):
+    def test_an_escape_in_any_quote_context_gates(self, spaced_user_home, command):
         assert _is_dangerous(command) is True
+
+    def test_deeply_nested_substitutions_fold_without_recursing(self, spaced_user_home):
+        path = r"/home/John\ Smith/hermes/config.yaml"
+        # Every level is a double-quoted `"$(`, a fresh quote context the shell reads the escape in.
+        command = "echo " + '"$(' * 3000 + "sed -i s/a/b/ " + path + ')"' * 3000
+        assert "~/.hermes/config.yaml" in approval_home_fold._rewrite_resolved_hermes_home(command)

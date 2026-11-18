@@ -2,6 +2,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by en.ts.
 export const enPreviewWeb: Translations['preview']['web'] = {
+  textComment: 'Comment on selected text',
+  textCommentOn: 'Stop commenting on text',
+  textCommentPlaceholder: 'Add comment…',
+  sendTextComment: 'Send edit',
+  textCommentUnavailable: 'Open the original chat and try again. Your comment has not been sent.',
   embeddedPreviewHint: 'Some sites block embedded previews. Open the original page in a browser tab.',
   appFailedToBoot: 'Preview app failed to boot',
   serverNotFound: 'Server not found',

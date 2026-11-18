@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by ja.ts.
 export const jaPreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: '選択したテキストにコメント',
+  textCommentOn: 'テキストへのコメントを終了',
+  textCommentPlaceholder: 'コメントを追加…',
+  sendTextComment: '編集を送信',
+  textCommentUnavailable: '元のチャットを開いて再試行してください。コメントは送信されていません。',
   embeddedPreviewHint: '埋め込みプレビューを許可しないサイトもあります。元のページをブラウザーのタブで開いてください。',
   appFailedToBoot: 'プレビューアプリの起動に失敗しました',
   serverNotFound: 'サーバーが見つかりません',

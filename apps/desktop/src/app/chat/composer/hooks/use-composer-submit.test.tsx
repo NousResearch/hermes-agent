@@ -1253,3 +1253,14 @@ describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.ran
     expect(stashAt).toHaveBeenCalledWith('stored-session', 'keep these words', [attachment])
   })
 })
+
+
+describe('external submit acceptance', () => {
+  it.each([false, true])('acknowledges only an enabled recipient (inputDisabled=%s)', inputDisabled => {
+    const composer = renderSubmitHook({ inputDisabled })
+    expect(requestComposerSubmit('Edit selected text', {
+      target: 'main', surfaceId: composer.composerSurfaceId, requireAccepted: true
+    })).toBe(!inputDisabled)
+    expect(composer.onSubmit).toHaveBeenCalledTimes(inputDisabled ? 0 : 1)
+  })
+})

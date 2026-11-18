@@ -114,6 +114,11 @@ export const arArtifacts = {
       sentMessage: count => `أُضيف ${count} ${count === 1 ? 'إدخال سجل' : 'إدخالات سجل'} إلى المُنشئ`
     },
     web: {
+      textComment: 'التعليق على النص المحدد',
+      textCommentOn: 'إيقاف التعليق على النص',
+      textCommentPlaceholder: 'أضف تعليقًا…',
+      sendTextComment: 'إرسال التعديل',
+      textCommentUnavailable: 'افتح المحادثة الأصلية وحاول مجددًا. لم يتم إرسال تعليقك.',
       embeddedPreviewHint: 'تمنع بعض المواقع المعاينات المضمّنة. افتح الصفحة الأصلية في علامة تبويب بالمتصفح.',
       appFailedToBoot: 'فشل إقلاع تطبيق المعاينة',
       serverNotFound: 'الخادم غير موجود',

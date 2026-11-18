@@ -4,6 +4,11 @@ import type { Translations } from './types'
 
 // The in-app browser pane's copy (`preview.web`), composed by zh.ts.
 export const zhPreviewWeb: TranslationOverride<Translations['preview']['web']> = {
+  textComment: '批注所选文字',
+  textCommentOn: '停止文字批注',
+  textCommentPlaceholder: '添加批注…',
+  sendTextComment: '发送修改',
+  textCommentUnavailable: '请打开原来的聊天后重试。批注尚未发送。',
   embeddedPreviewHint: '部分网站不允许嵌入式预览。请在浏览器标签页中打开原始页面。',
   appFailedToBoot: '预览应用启动失败',
   serverNotFound: '未找到服务器',

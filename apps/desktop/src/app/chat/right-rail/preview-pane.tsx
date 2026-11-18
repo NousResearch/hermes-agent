@@ -30,6 +30,7 @@ import {
 import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
 import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { isTextCommentPreviewUrl } from '@/lib/preview-text-comment'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -51,7 +52,6 @@ import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { previewPartitionForProfile } from '../../../../electron/preview-guest-throttle'
 
-import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
   captureAnnotateCrop,
   createPreviewAnnotateGuest,
@@ -65,6 +65,7 @@ import { ArtifactPreview } from './preview-artifact'
 import { externalOpenerFor, PreviewBrowserBar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
+import { PreviewCommentCards } from './preview-comment-cards'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -82,6 +83,7 @@ import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { watchPreviewDocumentLifecycle } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
+import { canUsePreviewTextComments, usePreviewTextComments } from './use-preview-text-comments'
 
 type PreviewWebview = HTMLElement &
   PreviewNavigationSurface & {
@@ -100,6 +102,7 @@ type PreviewWebview = HTMLElement &
     isDevToolsOpened?: () => boolean
     openDevTools?: () => void
     paste?: () => void
+    send?: (channel: string, ...args: unknown[]) => void
     reloadIgnoringCache?: () => void
     replaceMisspelling?: (word: string) => void
     selectAll?: () => void
@@ -812,31 +815,6 @@ export function PreviewPane({
   // dead end without it. Only the pane that holds DOM focus backs up, so two
   // side-by-side panes never fight, and only when the webview actually has
   // history — a remote-HTML report (data: document, no webview) or a
-  // first-page preview claims no back at all. While focus sits in an editable
-  // surface inside the pane (the browser bar's address input, an annotate
-  // note), Escape keeps its native meaning for that control and does not
-  // also navigate.
-  const onPaneKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Escape') {
-      return
-    }
-
-    const target = event.target as HTMLElement | null
-
-    if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
-      return
-    }
-
-    const webview = webviewRef.current
-
-    if (!webview?.canGoBack?.()) {
-      return
-    }
-
-    event.preventDefault()
-    webview.goBack?.()
-  }, [])
-
   // Gestures that land on the app's chrome (⌘R from the address bar, a mouse
   // button over the frame). A gesture made INSIDE the page is answered by main
   // against the focused guest — this renderer can't see into a webview.
@@ -858,6 +836,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -967,9 +946,9 @@ export function PreviewPane({
 
     lastReloadRequestRef.current = reloadRequest
 
-    // An agent's file edit can only change a page a local dev server serves.
+    // Agent edits can change local files and pages served by a local dev server.
     // Reloading any other site just throws away the user's page state.
-    if (target.kind !== 'url' || !isLoopbackPreviewUrl(currentUrl)) {
+    if (target.kind !== 'url' || !isTextCommentPreviewUrl(currentUrl)) {
       return
     }
 
@@ -1401,7 +1380,6 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1436,10 +1414,19 @@ export function PreviewPane({
     })
   }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
 
+  const textComments = usePreviewTextComments({
+    available: canUsePreviewTextComments(usesWebview, loading, currentUrl),
+    annotateMode: annotate.mode,
+    stopAnnotate,
+    webviewRef,
+    url: currentUrl,
+    sessionKey: selectedStoredSessionId
+  })
+
   return (
     <aside
       className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground"
-      onKeyDown={onPaneKeyDown}
+      onKeyDown={event => onPreviewPaneKeyDown(event, webviewRef.current)}
       // Buttons 3/4 are a mouse's back/forward. Chromium delivers them to
       // the renderer as a normal mouse event inside the app's own chrome (the
       // guest page gets its own via `app-command` in main), and unhandled they
@@ -1519,6 +1506,7 @@ export function PreviewPane({
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             tabId={tabId}
+            textCommentAction={textComments.action}
             url={currentUrl}
           />
         )}
@@ -1571,23 +1559,15 @@ export function PreviewPane({
             />
           )}
 
-          {isWebPreview && annotate.draft ? (
-            <PreviewAnnotateCard
-              {...placeAnnotateCard({
-                paneHeight: previewContentRef.current?.clientHeight || 360,
-                paneWidth: previewContentRef.current?.clientWidth || 360,
-                rect: annotate.draft.rect
-              })}
-              note={draftNote}
-              number={annotate.stack.nextNumber}
-              onCancel={() => void cancelAnnotateDraft()}
-              onChange={setDraftNote}
-              onSave={() => void saveAnnotateDraft()}
-              placeholder={copy.commentPlaceholder}
-              saveLabel={copy.saveComment}
-              title={copy.commentTitle(annotate.stack.nextNumber)}
-            />
-          ) : null}
+          <PreviewCommentCards
+            annotate={annotate}
+            cancelAnnotateDraft={cancelAnnotateDraft}
+            draftNote={draftNote}
+            previewContentRef={previewContentRef}
+            saveAnnotateDraft={saveAnnotateDraft}
+            setDraftNote={setDraftNote}
+            textComments={textComments}
+          />
 
           {usesWebview && consoleOpen && (
             <PreviewConsolePanel
@@ -1601,4 +1581,24 @@ export function PreviewPane({
       </div>
     </aside>
   )
+}
+
+// Escape belongs to the focused field before it can navigate browser history.
+function onPreviewPaneKeyDown(event: React.KeyboardEvent<HTMLElement>, webview: PreviewWebview | null) {
+  if (event.key !== 'Escape') {
+    return
+  }
+
+  const target = event.target as HTMLElement | null
+
+  if (target?.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
+    return
+  }
+
+  if (!webview?.canGoBack?.()) {
+    return
+  }
+
+  event.preventDefault()
+  webview.goBack?.()
 }

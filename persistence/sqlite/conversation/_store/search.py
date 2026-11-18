@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Collection, Optional
 from persistence.sqlite._state.common import fts_rebuild_admission
+from persistence.sqlite._state.errors import _DISK_IO_ERROR_MARKER
+from persistence.sqlite._state.health import note_storage_error
 from sqlite_support import routed_sessions_setting
 from storage_errors import is_fts_scoped_corruption_error, is_malformed_db_error
 from persistence.sqlite._holder import StoreHolder
@@ -463,10 +465,10 @@ def _attribute_ranked_corruption(
         # bm25() is refused inside an aggregate, so stream the rows.
         for _ in conn.execute(f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?", (match_query,)):
             pass
-    except sqlite3.OperationalError:
-        # A transient IOERR (or any other operational failure) proves nothing about the index: let
-        # _read_retrying_ioerr replay the whole read instead of publishing the unattributed error.
-        raise
+    except sqlite3.OperationalError as probe_exc:
+        if _DISK_IO_ERROR_MARKER in str(probe_exc).lower():
+            raise  # transient: _read_retrying_ioerr replays the whole read (see _fts_match_read)
+        logger.debug("%s rank-corruption probe could not run; keeping the original error", table, exc_info=True)
     except sqlite3.DatabaseError as probe_exc:
         if is_fts_scoped_corruption_error(probe_exc):
             logger.warning("%s ranked MATCH reported bare SQLITE_CORRUPT; the index alone reports %s, "
@@ -492,10 +494,20 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
                 raise
             raise attributed from exc
 
-    if order_by_sql == _FTS_RANK_ORDER_BY:
+    if order_by_sql != _FTS_RANK_ORDER_BY:
+        return [dict(row) for row in holder._read_retrying_ioerr(read)]
+    try:
         # One snapshot for the failed read and its probe: a peer rebuild in between must not hide the damage.
         return [dict(row) for row in _in_one_read(holder, read)]
-    return [dict(row) for row in holder._read_retrying_ioerr(read)]
+    except sqlite3.OperationalError as exc:
+        unattributed = exc.__context__
+        if _DISK_IO_ERROR_MARKER not in str(exc).lower() or not isinstance(unattributed, sqlite3.DatabaseError) \
+                or isinstance(unattributed, sqlite3.OperationalError):
+            raise
+        # The probe's IOERR outlasted the retry budget: the corruption it was diagnosing stays unattributed,
+        # so it fails closed as the read reported it.
+        note_storage_error(holder.db_path, unattributed)
+        raise unattributed from exc
 
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:

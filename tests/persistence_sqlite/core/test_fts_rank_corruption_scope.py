@@ -293,7 +293,7 @@ def test_a_transient_ioerr_in_the_rank_probe_replays_the_read(tmp_path, monkeypa
         monkeypatch.setattr(holder, "_read_retrying_ioerr", lambda fn: original(lambda conn: fn(FlakyProbe(conn))))
         rows = search_messages(holder, "orphanword")
 
-        assert probe_failures
+        assert len(probe_failures) == 1
         assert any("survives" in (row.get("snippet") or "") for row in rows)
         assert storage_state(path) == STORAGE_OK
     finally:
@@ -329,5 +329,46 @@ def test_structural_error_the_index_does_not_reproduce_still_latches(tmp_path, m
             search_messages(holder, "healthyword")
         assert raised.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
         assert storage_state(path) == STORAGE_CORRUPT
+    finally:
+        holder.close()
+
+
+@pytest.mark.parametrize("probe_error, retries", [("database is locked", False), ("disk I/O error", True)])
+def test_an_inconclusive_rank_probe_keeps_the_corruption_closed(tmp_path, monkeypatch, probe_error, retries):
+    """A probe that never answers (a non-IOERR failure, or an IOERR outlasting the retry budget)
+    leaves the bare SQLITE_CORRUPT as the read reported it: raised and latched, never an empty answer."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        append_message(holder, "s", role="user", content="healthyword")
+        original = holder._read_retrying_ioerr
+        ranked_reads = []
+
+        class CorruptReadFailingProbe:
+            def __init__(self, conn):
+                self._conn = conn
+
+            @property
+            def in_transaction(self):
+                return self._conn.in_transaction
+
+            def execute(self, sql, *args):
+                if "ORDER BY rank" in sql:
+                    ranked_reads.append(sql)
+                    exc = sqlite3.DatabaseError("database disk image is malformed")
+                    exc.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+                    raise exc
+                if sql.startswith("SELECT bm25("):
+                    raise sqlite3.OperationalError(probe_error)
+                return self._conn.execute(sql, *args)
+
+        monkeypatch.setattr(holder, "_read_retrying_ioerr",
+                            lambda fn: original(lambda conn: fn(CorruptReadFailingProbe(conn))))
+        with pytest.raises(sqlite3.DatabaseError) as raised:
+            search_messages(holder, "healthyword")
+        assert raised.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
+        assert storage_state(path) == STORAGE_CORRUPT
+        assert (len(ranked_reads) > 1) is retries
     finally:
         holder.close()

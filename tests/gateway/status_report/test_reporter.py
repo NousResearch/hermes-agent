@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import logging
 import os
@@ -10,6 +11,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -374,6 +376,125 @@ async def test_an_unusable_lock_directory_stands_the_sender_by_until_it_is_repai
     await reporter.poll()
 
     assert receiver.kinds == ["beat"], "the sender never picked the repaired directory up"
+
+
+class _Watcher:
+    """``run()`` on its own task, as the gateway's supervisor starts it. Cancelled when the test leaves."""
+
+    def __init__(self, reporter: StatusReporter) -> None:
+        self.polls = 0
+        self.task = asyncio.create_task(reporter.run(self._is_running, tick=0.01))
+
+    def _is_running(self) -> bool:
+        self.polls += 1
+        return True
+
+    async def __aenter__(self) -> _Watcher:
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        self.task.cancel()
+        await settle()
+
+    async def polls_on(self) -> None:
+        """Let a few more polls pass; fail if the watcher has ended instead."""
+        wanted = self.polls + 3
+        await async_wait_until(lambda: self.task.done() or self.polls >= wanted, timeout=5, what="the next polls")
+        assert not self.task.done(), f"the watcher ended: {self.task.exception()!r}"
+
+    async def ends_when_cancelled_mid_beat(self, clock: Clock, receiver: Receiver) -> None:
+        """A gateway shutdown cancels the watcher, and a beat may be on the wire when it does."""
+        hang, sent = threading.Event(), len(receiver.requests)
+        receiver.reply_with(Reply(hang=hang))
+        clock.advance(AFTER_INTERVAL_S)
+        try:
+            await async_wait_until(lambda: len(receiver.requests) == sent + 1, timeout=5, what="a beat on the wire")
+            self.task.cancel()
+            await asyncio.wait({self.task}, timeout=5)
+            assert self.task.cancelled(), "cancellation did not end the watcher"
+        finally:
+            hang.set()
+
+
+def _warnings(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records
+            if record.name.startswith("gateway.status_report") and record.levelno >= logging.WARNING]
+
+
+# What the OS puts into an error's text: the path it failed on.
+_FAULT_PATH = "/mnt/state/gateway-locks/status-report.lock"
+_LOCK_FAULTS = [
+    pytest.param(OSError(errno.EROFS, "Read-only file system", _FAULT_PATH), id="read-only disk"),
+    pytest.param(OSError(errno.ENOSPC, "No space left on device", _FAULT_PATH), id="full disk"),
+    pytest.param(NotADirectoryError(errno.ENOTDIR, "Not a directory", _FAULT_PATH), id="a file where the lock directory goes"),
+]
+
+
+@pytest.mark.parametrize("fault", _LOCK_FAULTS)
+async def test_a_lock_that_cannot_be_taken_stands_the_sender_by_and_never_ends_the_watcher(
+        clock, caplog, monkeypatch, fault):
+    """A watcher that dies on it is restarted a few times and then given up on: a healthy gateway
+    that never reports again."""
+    caplog.set_level(logging.DEBUG)
+    faults, tries = [fault], []
+
+    def take_the_lock(scope, identity):
+        tries.append(scope)
+        if faults:
+            raise faults[0]
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+
+    async with _Watcher(make_reporter(receiver)) as watcher:
+        for failed in (1, 2):
+            await async_wait_until(lambda failed=failed: len(tries) == failed, timeout=5, what=f"try {failed} for the lock")
+            await watcher.polls_on()
+            assert len(tries) == failed, "the lock was tried again within the interval"
+            clock.advance(AFTER_INTERVAL_S)
+        assert receiver.requests == []
+
+        faults.clear()  # the disk is usable again
+        clock.advance(AFTER_INTERVAL_S)
+        await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="a beat once the lock can be taken")
+        await watcher.ends_when_cancelled_mid_beat(clock, receiver)
+
+    assert len(_warnings(caplog)) == 1, _warnings(caplog)
+    # The reason is fixed: nothing of the error reaches the log, not even its type.
+    for leaked in (_FAULT_PATH, fault.strerror, type(fault).__name__):
+        assert leaked not in caplog.text
+
+
+async def test_a_report_that_cannot_be_built_costs_an_interval_and_never_ends_the_watcher(clock, caplog):
+    caplog.set_level(logging.DEBUG)
+    faults = [OSError(errno.EIO, "Input/output error", _FAULT_PATH), OSError(errno.EIO, "Input/output error", _FAULT_PATH),
+              ValueError(f"not a status record: {_FAULT_PATH}")]
+    reads = []
+
+    def source():
+        reads.append(len(faults))
+        if faults:
+            raise faults.pop(0)
+        return a_status_source()
+
+    receiver = Receiver()
+
+    async with _Watcher(make_reporter(receiver, source=source)) as watcher:
+        for failed in (1, 2, 3):
+            await async_wait_until(lambda failed=failed: len(reads) == failed, timeout=5, what=f"status read {failed}")
+            await watcher.polls_on()
+            assert len(reads) == failed, "the status was read again within the interval"
+            clock.advance(AFTER_INTERVAL_S)
+
+        await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="a beat once the status can be read")
+        await watcher.ends_when_cancelled_mid_beat(clock, receiver)
+
+    # Each kind of error is said once, by its type alone.
+    said = _warnings(caplog)
+    assert len(said) == 2 and "OSError" in said[0] and "ValueError" in said[1], said
+    for leaked in (_FAULT_PATH, "Input/output error", "not a status record"):
+        assert leaked not in caplog.text
 
 
 async def test_the_lock_is_released_when_the_watcher_stops(clock):

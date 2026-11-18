@@ -110,9 +110,11 @@ def live_server(tmp_path: Path):
     # probe. Ready means answering, so wait for that before any test asserts on it.
     from gateway.control_socket import identify_gateway
 
-    wait_until(lambda: identify_gateway(home, timeout=10.0), timeout=60, what="pipe server's first identify")
-    yield proc, home, server_pid
-    _kill_tree(proc)
+    try:
+        wait_until(lambda: identify_gateway(home, timeout=10.0), timeout=60, what="pipe server's first identify")
+        yield proc, home, server_pid
+    finally:
+        _kill_tree(proc)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:

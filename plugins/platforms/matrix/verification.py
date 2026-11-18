@@ -33,13 +33,12 @@ commitment).  The commitment is computed exactly like matrix-rust-sdk does:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 logger = logging.getLogger("hermes.matrix.verification")
@@ -141,7 +140,7 @@ def _txid_from(content: Any, event: Any = None) -> str:
     return ""
 
 
-def _compute_commitment(our_pubkey_b64: str, start_content: Dict[str, Any]) -> str:
+def _compute_commitment(our_pubkey_b64: str, start_content: dict[str, Any]) -> str:
     """Compute the SAS commitment exactly like matrix-rust-sdk.
 
     commitment = unpadded_base64(SHA256(our_pubkey_b64 + canonical_json(start_content)))
@@ -191,6 +190,10 @@ class _SasSession:
     chosen_mac: str = _MAC_V2
     mac_sent: bool = False
     done_sent: bool = False
+    done_received: bool = False
+    # Set only once the user's MACs actually verified — `done` must never
+    # finalise a session before that (Element X can send done before mac).
+    mac_verified: bool = False
     created_at: float = field(default_factory=time.time)
     we_initiated: bool = False  # True when *we* sent the request (initiator)
     their_commitment: str = ""  # initiator: commitment from their accept
@@ -204,7 +207,7 @@ class SasVerificationHandler:
         self._adapter = adapter
         self._client = client
         self._olm = olm
-        self._sessions: Dict[str, _SasSession] = {}
+        self._sessions: dict[str, _SasSession] = {}
         self._registered = False
 
     # ------------------------------------------------------------------
@@ -706,6 +709,17 @@ class SasVerificationHandler:
                 return
             session.room_id = room_id or session.room_id
             session.last_event_id = event_id or session.last_event_id
+            session.done_received = True
+            # Element X can send `done` before our `mac` arrives (or before
+            # we got theirs); `done` only acknowledges that the peer is
+            # finished, it does not prove the key MACs.  Hold the session —
+            # _on_mac finalises once the MACs actually verified.
+            if not session.mac_verified:
+                logger.info(
+                    "Matrix: SAS done from %s before MACs verified — holding session",
+                    sender,
+                )
+                return
             if not session.done_sent:
                 await self._send(
                     "m.key.verification.done",
@@ -798,7 +812,6 @@ class SasVerificationHandler:
 
     def _mac_func(self, session: _SasSession):
         """Return the python-olm MAC function for the chosen MAC method."""
-        import olm as olm_lib
 
         sas = session.sas
         if session.chosen_mac == _MAC_V2:
@@ -813,7 +826,7 @@ class SasVerificationHandler:
         mac_func = self._mac_func(session)
         info = self._mac_info_for(session, our_side=True)
 
-        keys_to_mac: Dict[str, str] = {}
+        keys_to_mac: dict[str, str] = {}
         # Our device ed25519 key.
         try:
             device_key = self._olm.account.identity_keys.get("ed25519")
@@ -883,12 +896,22 @@ class SasVerificationHandler:
             keys_mac_expected = str(content.get("keys") or "")
             if not macs:
                 return False
+            # The spec's m.key.verification.mac carries the KEY_IDS MAC in
+            # `keys` alongside the per-key MACs, and in-room verification
+            # always sends it.  Without it there is nothing binding the MAC
+            # map to a key-id list, so treat the event as unverifiable
+            # instead of silently skipping the check.
+            if not keys_mac_expected:
+                logger.warning(
+                    "Matrix: user MAC event from %s without KEY_IDS MAC", session.other_user
+                )
+                return False
 
             # Make sure we have the user's device + cross-signing keys.
             await self._ensure_user_keys(session)
 
             # Build key_id -> public key map from what we know about the user.
-            known: Dict[str, str] = {}
+            known: dict[str, str] = {}
             try:
                 dev = await self._olm.crypto_store.get_device(
                     session.other_user, session.other_device
@@ -916,17 +939,20 @@ class SasVerificationHandler:
 
             # Verify the KEY_IDS MAC over the sorted key-id list.
             sorted_key_ids = ",".join(sorted(macs.keys()))
-            if keys_mac_expected:
-                try:
-                    calc = str(mac_func(sorted_key_ids, info + "KEY_IDS"))
-                    if calc != keys_mac_expected:
-                        logger.warning("Matrix: user KEY_IDS MAC mismatch")
-                        return False
-                except Exception as exc:
-                    logger.debug("Matrix: KEY_IDS MAC verify failed: %s", exc)
+            try:
+                calc = str(mac_func(sorted_key_ids, info + "KEY_IDS"))
+                if calc != keys_mac_expected:
+                    logger.warning("Matrix: user KEY_IDS MAC mismatch")
                     return False
+            except Exception as exc:
+                logger.debug("Matrix: KEY_IDS MAC verify failed: %s", exc)
+                return False
 
-            # Verify every MAC we have a key for.
+            # Verify every MAC we have a key for; at least one must match.
+            # Unknown key ids (another device, keys we never fetched) are
+            # skipped, but a MAC map that matches nothing proves nothing —
+            # previously it returned True and "verified" the device.
+            verified = 0
             for key_id, mac_value in macs.items():
                 public_key = known.get(key_id)
                 if public_key is None:
@@ -939,7 +965,17 @@ class SasVerificationHandler:
                 if calc != str(mac_value):
                     logger.warning("Matrix: MAC mismatch for %s", key_id)
                     return False
+                verified += 1
 
+            if verified == 0:
+                logger.warning(
+                    "Matrix: no user MAC matched a known key for %s (sent: %s)",
+                    session.other_user,
+                    sorted(macs.keys()),
+                )
+                return False
+
+            session.mac_verified = True
             logger.info("Matrix: user MACs verified for %s", session.other_user)
             return True
         except Exception as exc:
@@ -964,7 +1000,7 @@ class SasVerificationHandler:
     # Messaging helpers
     # ------------------------------------------------------------------
 
-    async def _send(self, event_name: str, session: _SasSession, content: Dict[str, Any]) -> None:
+    async def _send(self, event_name: str, session: _SasSession, content: dict[str, Any]) -> None:
         """Send a verification event via the session's transport.
 
         In-room sessions (MSC 2241) send timeline events chained via
@@ -977,7 +1013,7 @@ class SasVerificationHandler:
             await self._send_to_device(event_name, session, content)
 
     async def _send_room_event(
-        self, event_name: str, session: _SasSession, content: Dict[str, Any]
+        self, event_name: str, session: _SasSession, content: dict[str, Any]
     ) -> Optional[str]:
         """Send an in-room verification event (MSC 2241).
 
@@ -1021,7 +1057,7 @@ class SasVerificationHandler:
             logger.warning("Matrix: send room event %s failed: %s", event_name, exc)
             return None
 
-    async def _send_to_device(self, event_name: str, session: _SasSession, content: Dict[str, Any]) -> None:
+    async def _send_to_device(self, event_name: str, session: _SasSession, content: dict[str, Any]) -> None:
         from mautrix.types import EventType
 
         evt_type = EventType.find(event_name, EventType.Class.TO_DEVICE)
@@ -1110,6 +1146,17 @@ class SasVerificationHandler:
 
     async def _finalize(self, session: _SasSession) -> None:
         """Mark the verification as complete."""
+        # Fail closed: a session is only ever complete once the user's MACs
+        # verified against their keys.  Every caller checks this already;
+        # the guard keeps a future call site from silently marking an
+        # unverified device as verified.
+        if not session.mac_verified:
+            logger.warning(
+                "Matrix: refusing to finalise SAS session %s with %s — MACs not verified",
+                session.transaction_id,
+                session.other_user,
+            )
+            return
         self._sessions.pop(session.transaction_id, None)
         logger.info(
             "Matrix: SAS verification with %s completed successfully 🎉",

@@ -13,6 +13,8 @@ import json
 import time
 import types
 
+import asyncio
+
 import pytest
 
 from plugins.platforms.matrix.verification import (
@@ -281,3 +283,175 @@ class TestExpireOldSessions:
         h._sessions = {"t": s}
         h._expire_old_sessions()
         assert "t" in h._sessions
+
+
+# ---------------------------------------------------------------------------
+# MAC verification gate — an unverified session must never count as verified
+# ---------------------------------------------------------------------------
+
+
+class _FakeDevice:
+    def __init__(self, signing_key):
+        self.signing_key = signing_key
+
+
+class _FakeCryptoStore:
+    def __init__(self, device_key):
+        self._device_key = device_key
+
+    async def get_device(self, user_id, device_id):
+        if self._device_key is None:
+            return None
+        return _FakeDevice(self._device_key)
+
+
+class _FakeOlm:
+    """Just enough OlmMachine surface for _verify_user_macs."""
+
+    def __init__(self, device_key="ALICE_ED25519", master_key=None):
+        self.crypto_store = _FakeCryptoStore(device_key)
+        self._master_key = master_key
+        self.key_queries = 0
+
+    async def _fetch_keys(self, user_ids, include_untracked=False):
+        self.key_queries += 1
+
+    async def get_cross_signing_public_keys(self, user_id):
+        if not self._master_key:
+            return None
+        return types.SimpleNamespace(master_key=self._master_key)
+
+
+class _FakeAdapter:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, room_id, text):
+        self.sent.append((room_id, text))
+
+
+def _test_mac(key, info):
+    """Deterministic stand-in for python-olm's MAC calc (no libolm needed)."""
+    return f"MAC<{key}|{info}>"
+
+
+def _make_mac_handler(device_key="ALICE_ED25519", adapter=None):
+    handler = SasVerificationHandler(
+        adapter=adapter or _FakeAdapter(),
+        client=types.SimpleNamespace(mxid="@bot:example.org", device_id="BOTDEV"),
+        olm=_FakeOlm(device_key=device_key),
+    )
+    handler._mac_func = lambda session: _test_mac
+    return handler
+
+
+def _mac_event(content, sender="@alice:example.org"):
+    return types.SimpleNamespace(
+        content=content,
+        sender=sender,
+        room_id="!room:example.org",
+        event_id="$evt",
+    )
+
+
+def _their_mac_content(session, handler, key_ids, keys_field=True):
+    """Build the MAC event a user's client sends after confirming the emojis."""
+    info = handler._mac_info_for(session, our_side=False)
+    content = {"transaction_id": session.transaction_id, "mac": {}}
+    for key_id in key_ids:
+        content["mac"][key_id] = _test_mac("ALICE_ED25519", info + key_id)
+    if keys_field:
+        content["keys"] = _test_mac(
+            ",".join(sorted(content["mac"])), info + "KEY_IDS"
+        )
+    return content
+
+
+class TestVerifyUserMacsGate:
+    def test_missing_key_ids_mac_is_rejected(self):
+        handler = _make_mac_handler()
+        session = _make_session()
+        content = _their_mac_content(
+            session, handler, ["ed25519:ALICEDEV"], keys_field=False
+        )
+        assert asyncio.run(handler._verify_user_macs(session, content)) is False
+        assert session.mac_verified is False
+
+    def test_mac_matching_no_known_key_is_rejected(self):
+        handler = _make_mac_handler()
+        session = _make_session()
+        info = handler._mac_info_for(session, our_side=False)
+        content = {
+            "transaction_id": session.transaction_id,
+            "mac": {"ed25519:UNKNOWNDEV": _test_mac("STRANGER", info + "ed25519:UNKNOWNDEV")},
+            "keys": _test_mac("ed25519:UNKNOWNDEV", info + "KEY_IDS"),
+        }
+        assert asyncio.run(handler._verify_user_macs(session, content)) is False
+        assert session.mac_verified is False
+
+    def test_mac_for_known_device_is_accepted(self):
+        handler = _make_mac_handler()
+        session = _make_session()
+        content = _their_mac_content(session, handler, ["ed25519:ALICEDEV"])
+        assert asyncio.run(handler._verify_user_macs(session, content)) is True
+        assert session.mac_verified is True
+
+    def test_wrong_mac_is_rejected(self):
+        handler = _make_mac_handler()
+        session = _make_session()
+        content = _their_mac_content(session, handler, ["ed25519:ALICEDEV"])
+        content["mac"]["ed25519:ALICEDEV"] = "WRONG"
+        assert asyncio.run(handler._verify_user_macs(session, content)) is False
+        assert session.mac_verified is False
+
+
+class TestDoneOrdering:
+    def _handler_with_session(self, mac_verified=False):
+        adapter = _FakeAdapter()
+        handler = _make_mac_handler(adapter=adapter)
+        session = _make_session()
+        session.mac_verified = mac_verified
+        handler._sessions[session.transaction_id] = session
+        sent = []
+
+        async def _record_send(event_name, s, content):
+            sent.append(event_name)
+
+        handler._send = _record_send
+        return handler, session, adapter, sent
+
+    def test_done_before_mac_does_not_finalise(self):
+        handler, session, adapter, sent = self._handler_with_session()
+        asyncio.run(handler._on_done(_mac_event({"transaction_id": "t-1"})))
+        assert sent == []
+        assert session.done_sent is False
+        assert session.done_received is True
+        assert handler._sessions.get("t-1") is session  # held, not dropped
+        assert adapter.sent == []  # no "verification successful" message
+
+    def test_done_after_mac_finalises(self):
+        handler, _session, adapter, sent = self._handler_with_session(mac_verified=True)
+        asyncio.run(handler._on_done(_mac_event({"transaction_id": "t-1"})))
+        assert sent == ["m.key.verification.done"]
+        assert handler._sessions == {}
+        assert adapter.sent and "Verification successful" in adapter.sent[0][1]
+
+    def test_mac_after_early_done_finalises_then(self):
+        handler, session, adapter, sent = self._handler_with_session()
+        session.mac_sent = True  # keep this test off _send_our_mac
+        asyncio.run(handler._on_done(_mac_event({"transaction_id": "t-1"})))
+        assert handler._sessions.get("t-1") is session
+
+        content = _their_mac_content(session, handler, ["ed25519:ALICEDEV"])
+        asyncio.run(handler._on_mac(_mac_event(content)))
+
+        assert session.mac_verified is True
+        assert handler._sessions == {}
+        assert sent == ["m.key.verification.done"]
+        assert adapter.sent and "Verification successful" in adapter.sent[0][1]
+
+    def test_finalize_refuses_unverified_session(self):
+        handler, session, adapter, _sent = self._handler_with_session()
+        asyncio.run(handler._finalize(session))
+        assert handler._sessions.get("t-1") is session
+        assert adapter.sent == []

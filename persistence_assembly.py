@@ -9,6 +9,18 @@ store. ``storage_health``, ``store_exists`` and ``store_location`` answer for a 
 every store the process holds open. ``open_store_admin``
 and ``open_profile_repair`` open the physical admin capability, or answer ``AdminUnsupported`` on a backend without it.
 Only this module names a backend package: callers branch on ``capabilities``, never on a provider name.
+
+``persistence.provider`` names the provider; ``plugins.persistence`` resolves it by explicit name only (the built-in
+``sqlite``, a bundled ``plugins/persistence/<name>/`` package or a ``hermes_agent.persistence`` entry point) and an
+unknown, doubly-provided or failing name raises ``ValueError``: nothing falls back to SQLite. ``storage_health``,
+``store_exists`` and ``store_location`` answer from the SQLite file only under the built-in provider: another provider
+gets ``None`` from ``store_location`` and ``CapabilityUnsupported`` from the other two. ``live_stores`` lends, and
+``close_stores_under``/``close_all_stores`` close, the built-in's stores only; another provider's backend releases its
+stores through its handles' ``close``.
+
+``require_hosted_persistence()`` is the hosted boot check: it assembles the provider configured for the current home
+and returns None only when that backend declares ``scope_pinning`` and its ``assert_isolating()`` passes; otherwise,
+and always for the built-in SQLite, it raises ``IsolationUnsupported``. The probe backend is closed either way.
 """
 
 from __future__ import annotations
@@ -42,8 +54,6 @@ __all__ = [
     "store_location",
     "store_owner_name",
 ]
-
-_KNOWN_PROVIDERS = ("sqlite",)
 
 # The names a handle forwards to its bound store: the storage interface's attributes and the eager open.
 _FORWARDED = frozenset(inspect.get_annotations(PersistenceStore)) | {"ready"}
@@ -148,9 +158,10 @@ def store_owner_name(profile_dir: Path) -> Optional[str]:
     return None
 
 
-def _provider_for_home(home: Path) -> str:
-    """The configured ``persistence.provider`` for ``home``: the process config for the current home, the target's own
-    ``config.yaml`` for another one. An absent section or file means ``sqlite``."""
+def _configured_provider(home: Path) -> str:
+    """The ``persistence.provider`` name configured for ``home``, unresolved: the process config for the current home,
+    the target's own ``config.yaml`` for another one. An absent section or file means ``sqlite``; so does an
+    unreadable or unparsable foreign config, except in hosted mode, where it raises ``ValueError``."""
     from hermes_constants import get_hermes_home, hermes_home_key
 
     section: Any = None
@@ -166,28 +177,40 @@ def _provider_for_home(home: Path) -> str:
             try:
                 with open(config_path, encoding="utf-8") as fh:
                     loaded = fast_safe_load(fh)
-            except Exception:  # health: allow BLE001 -- an unreadable foreign config means the default provider
-                loaded = None
+            except Exception as exc:  # health: allow BLE001 -- an unreadable foreign config means the default provider
+                loaded = exc
             if isinstance(loaded, dict):
                 section = loaded.get("persistence")
-    provider = "sqlite"
+            elif loaded is not None and bound_hosted_scope() is not None:
+                raise ValueError(f"cannot read the persistence provider from {config_path}: hosted mode does not "
+                                 f"default it") from (loaded if isinstance(loaded, Exception) else None)
     if isinstance(section, dict) and section.get("provider"):
-        provider = str(section["provider"])
-    if provider not in _KNOWN_PROVIDERS:
-        raise ValueError(
-            f"unknown persistence provider {provider!r} for {home} (known: {', '.join(_KNOWN_PROVIDERS)})"
-        )
-    return provider
+        return str(section["provider"])
+    return "sqlite"
+
+
+def _provider_for_home(home: Path) -> str:
+    """The configured ``persistence.provider`` for ``home`` (see ``_configured_provider``), resolved to exactly one
+    provider without loading it; ``ValueError`` naming it when none or more than one provides it."""
+    from plugins.persistence import resolve
+
+    try:
+        return resolve(_configured_provider(home))
+    except ValueError as exc:
+        raise ValueError(f"{exc} for {home}") from exc
 
 
 def _assemble(provider: str, stores: Mapping[str, Path], *, read_only: bool = False,
               read_patience_s: Optional[float] = None) -> Any:
-    """The one provider branch."""
-    if provider == "sqlite":
-        from persistence.sqlite import SQLiteBackend
+    """The one provider branch: ``provider``'s backend factory (``plugins.persistence``) over ``stores``."""
+    from plugins.persistence import backend_factory
 
-        return SQLiteBackend(stores, read_only=read_only, read_patience_s=read_patience_s)
-    raise ValueError(f"unknown persistence provider {provider!r}")
+    return backend_factory(provider)(stores, read_only=read_only, read_patience_s=read_patience_s)
+
+
+def _sqlite_only(scope: ProfileScope) -> bool:
+    """Whether ``scope``'s configured provider is the built-in SQLite, the only one the file-level helpers answer for."""
+    return _configured_provider(scope.profile_dir) == "sqlite"
 
 
 def _state_db(scope: ProfileScope) -> Path:
@@ -302,13 +325,19 @@ def open_profile_repair(scope: ProfileScope, *, read_only: bool) -> ProfileRepai
 
 
 def store_location(scope: ProfileScope) -> Optional[Path]:
-    """The file that holds ``scope``'s store under the configured provider, or ``None`` for a provider without one."""
-    return _state_db(scope)
+    """The file that holds ``scope``'s store under the configured provider, or ``None`` for a provider without one
+    (any provider but the built-in SQLite)."""
+    return _state_db(scope) if _sqlite_only(scope) else None
 
 
 def storage_health(scope: ProfileScope) -> StorageHealth:
-    """The health latch and readiness probe of ``scope``'s store, answered without opening it."""
+    """The health latch and readiness probe of ``scope``'s store, answered without opening it; a provider other than
+    the built-in SQLite raises ``CapabilityUnsupported`` (its health is its open store's ``health``)."""
+    from persistence import CapabilityUnsupported
     from persistence.sqlite.services import SQLiteStorageHealth
+
+    if not _sqlite_only(scope):
+        raise CapabilityUnsupported("storage_health")
 
     return SQLiteStorageHealth(_state_db(scope))
 
@@ -357,4 +386,26 @@ def close_all_stores() -> int:
 def require_hosted_persistence() -> None:
     """The hosted boot check: assemble the configured provider and return only when it declares ``scope_pinning`` and
     its ``assert_isolating`` passes; raise ``IsolationUnsupported`` otherwise (always for the built-in SQLite)."""
-    raise NotImplementedError("hosted persistence boot check")  # scaffold: lands with provider discovery
+    from hermes_constants import get_hermes_home
+    from persistence import IsolationUnsupported
+
+    scope = profile_scope(home=get_hermes_home())
+    provider = _provider_for_home(scope.profile_dir)
+    if provider == "sqlite":
+        raise IsolationUnsupported("persistence.provider is the built-in sqlite, a local single-tenant store; hosted "
+                                   "mode needs a provider that declares scope_pinning")
+    backend = _assemble(provider, {scope.hermes_home_key: _state_db(scope)})
+    try:
+        if not backend.capabilities.scope_pinning:
+            raise IsolationUnsupported(f"persistence provider {provider!r} does not declare scope_pinning")
+        assert_isolating = getattr(backend, "assert_isolating", None)
+        if not callable(assert_isolating):
+            raise IsolationUnsupported(f"persistence provider {provider!r} has no callable assert_isolating")
+        try:
+            assert_isolating()
+        except IsolationUnsupported:
+            raise
+        except Exception as exc:  # health: allow BLE001 -- any failure to prove isolation refuses hosted boot
+            raise IsolationUnsupported(f"persistence provider {provider!r} failed assert_isolating: {exc}") from exc
+    finally:
+        backend.close()

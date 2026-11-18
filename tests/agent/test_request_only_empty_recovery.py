@@ -169,7 +169,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
             assert not stages
         finally:
             agent.client.close()
-            agent._session_db.close()
+            agent.persistence.close()
             server.shutdown()
             thread.join(timeout=5)
 
@@ -187,7 +187,6 @@ def test_post_tool_model_extra_thinking_reaches_completion_reminder(tmp_path, mo
         "auxiliary:\n  title_generation:\n    enabled: false\n"
     )
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     requests = []
@@ -244,7 +243,8 @@ def test_post_tool_model_extra_thinking_reaches_completion_reminder(tmp_path, mo
         agent.compression_enabled = False
         agent.tool_delay = 0
         agent.session_id = "post-tool-thinking-prefill"
-        agent._session_db = SessionDB(tmp_path / "recovery.db")
+        from persistence_assembly import open_persistence, profile_scope
+        agent._session_db = agent.persistence = open_persistence(profile_scope(home=tmp_path))
         agent.tools = [{"type": "function", "function": {
             "name": "lookup", "description": "Look up a number",
             "parameters": {"type": "object", "properties": {}},
@@ -263,6 +263,6 @@ def test_post_tool_model_extra_thinking_reaches_completion_reminder(tmp_path, mo
             assert _CODEX_INCOMPLETE_NUDGE not in json.dumps(result["messages"])
         finally:
             agent.client.close()
-            agent._session_db.close()
+            agent.persistence.close()
             server.shutdown()
             thread.join(timeout=5)

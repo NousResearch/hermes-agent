@@ -953,7 +953,7 @@ def plan_next_task(
                 if read_messages is not None else iter(thread_messages))
             # Once replies exhaust the budget, only the finite input before Send remains.
             delta, attachments = _bounded_task_delta(
-                (event for event in messages if not budget_exhausted or event.seq <= discussion.seq),
+                (event for event in messages if not budget_exhausted or event.seq < discussion.seq),
                 watermark=watermark, member=member)
             if not delta or ((round_index, member.member_id) in terminals and not attachments):
                 continue

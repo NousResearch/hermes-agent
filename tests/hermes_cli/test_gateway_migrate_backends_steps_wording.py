@@ -96,17 +96,34 @@ def _no_service(monkeypatch, pids: list[int]):
     return lambda: gw._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
 
 
-def _windows(monkeypatch, task: bool, pids: list[int]):
+def _windows(monkeypatch, tmp_path, installed: str | None, pids: list[int]):
+    """The whole of `hermes gateway status` on Windows: the service ladder in ``_cmd_status`` picks
+    ``gateway_windows.status()`` only when a Scheduled Task or Startup entry exists."""
+    from hermes_cli import gateway as gw
     from hermes_cli import gateway_windows as gwin
+    entry = tmp_path / "Hermes Gateway.lnk"
+    entry.write_text("", encoding="utf-8")
     for name in ("_assert_windows", "_print_start_attestation_warning", "_print_scheduled_task_drift"):
         monkeypatch.setattr(gwin, name, lambda *a, **k: None)
     monkeypatch.setattr(gwin, "get_task_name", lambda: "Hermes Gateway")
-    monkeypatch.setattr(gwin, "is_task_registered", lambda: task)
-    monkeypatch.setattr(gwin, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gwin, "is_task_registered", lambda: installed == "task")
+    monkeypatch.setattr(gwin, "is_startup_entry_installed", lambda: installed == "startup")
+    monkeypatch.setattr(gwin, "get_startup_entry_path", lambda: entry)
     monkeypatch.setattr(gwin, "_gateway_pids", lambda: list(pids))
     monkeypatch.setattr(gwin, "query_task_status", dict)
     monkeypatch.setattr("hermes_cli.gateway_windows_legacy.warn_legacy_launchers", lambda: None)
-    return gwin.status
+    snapshot = SimpleNamespace(running=bool(pids), gateway_pids=pids, service_running=False, manager=None)
+    monkeypatch.setattr(gw, "get_gateway_runtime_snapshot", lambda system=False: snapshot)
+    monkeypatch.setattr(gw, "is_windows", lambda: True)
+    monkeypatch.setattr(gw, "is_macos", lambda: False)
+    monkeypatch.setattr(gw, "_gw_windows", lambda: gwin)
+    monkeypatch.setattr(gw, "_systemd_unit_installed", lambda: False)
+    monkeypatch.setattr(gw, "_status_host_kind", lambda: "windows")
+    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes.report_incompatible_owner", lambda pids: False)
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr(gw, "_print_runtime_health", lambda *a, **k: None)
+    return lambda: gw._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
 
 
 @pytest.mark.parametrize(("case", "verb"), [
@@ -130,12 +147,17 @@ def test_the_posix_branch_names_the_right_command_for_what_status_prints(case, v
     assert _command_for(steps, printed) == f"{_H} gateway {verb}", printed
 
 
-@pytest.mark.parametrize(("task", "pids", "verb"), [(False, [], "install"), (True, [], "start"),
-                                                     (True, [77], "restart")])
-def test_the_windows_branch_names_the_right_command_for_what_status_prints(task, pids, verb, monkeypatch,
-                                                                             capsys):
-    printed = _printed(capsys, _windows(monkeypatch, task, pids))
+@pytest.mark.parametrize(("installed", "pids", "verb"), [
+    (None, [], "install"),         # no service: "✗ Gateway is not running" (the VM run's P1)
+    (None, [77], "restart"),       # run by hand: "(Running manually, not as a system service)"
+    ("task", [], "start"), ("task", [77], "restart"),
+    ("startup", [], "start"), ("startup", [77], "restart"),
+])
+def test_the_windows_branch_names_the_right_command_for_what_status_prints(installed, pids, verb, monkeypatch,
+                                                                             tmp_path, capsys):
+    printed = _printed(capsys, _windows(monkeypatch, tmp_path, installed, pids))
 
+    assert "Gateway" in printed, printed  # the status ran: its first line is captured
     assert _command_for(_windows_steps(), printed) == f"{_H} gateway {verb}", printed
 
 

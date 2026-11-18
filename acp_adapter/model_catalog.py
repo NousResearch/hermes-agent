@@ -152,6 +152,19 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
+def fallback_model_state(model: str, provider: str) -> SessionModelState | None:
+    """Keep the current identity when inventory is unavailable, without offering gated models."""
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
+    from hermes_cli.models import normalize_provider
+
+    if not model:
+        return None
+    codex = _semantic_provider(provider, normalize_provider) == "openai-codex"
+    choice = encode_model_choice("openai-codex" if codex else provider, model)
+    available = [] if codex and codex_model_requires_account_discovery(model) else [ModelInfo(model_id=choice, name=model)]
+    return SessionModelState(available_models=available, current_model_id=choice)
+
+
 @dataclass
 class _ModelCatalog:
     """Deduplicated ACP model rows from the inventory + named endpoints.
@@ -238,8 +251,9 @@ class _ModelCatalog:
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
     from hermes_cli.inventory import build_models_payload, load_picker_context
-    from hermes_cli.models import _model_requires_account_discovery, normalize_provider, provider_label
+    from hermes_cli.models import normalize_provider, provider_label
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(
@@ -263,7 +277,8 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     # runs on the canonical endpoint — alone, or picking "current" re-routes to the proxy.
     all_rows = payload.get("providers") or []
     canonical_current = any(
-        str(r.get("slug") or "").strip().lower() == current_choice_provider and not r.get("is_user_defined")
+        not r.get("is_user_defined") and _semantic_provider(str(r.get("slug") or ""), normalize_provider)
+        == _semantic_provider(current_choice_provider, normalize_provider)
         for r in all_rows
     )
     inventory_rows: list = []
@@ -284,6 +299,8 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     cat.add_inventory_rows(inventory_rows, provider_label)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)
     available_models = cat.models
+    if cat.semantic(cat.current_choice_provider) == "openai-codex":
+        cat.current_choice_provider = "openai-codex"
 
     def empty_applies(provider_id: str) -> bool:
         return _empty_catalog_applies(provider_id, cat.empty_authoritative, normalize_provider)
@@ -295,7 +312,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_is_empty:
         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
-    requires_discovery = cat.current_choice_provider == "openai-codex" and _model_requires_account_discovery("openai-codex", model)
+    requires_discovery = cat.current_choice_provider == "openai-codex" and codex_model_requires_account_discovery(model)
     if current_model_id and not requires_discovery and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(

@@ -1,16 +1,20 @@
+import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import type { ComponentType } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
+import { $firstTimeSplashReopenable, reopenFirstTimeSplash } from '@/store/first-time-splash'
 import { $newVersionReady } from '@/store/new-version'
 import { createNotificationTray, type TrayItemSource } from '@/store/notification-tray'
 import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
 import { $connection } from '@/store/session'
 import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus, startActiveUpdate } from '@/store/updates'
+import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-access'
 
 import { useDiscoveryCopy } from './discovery-copy'
+import { useFirstTimeCopy } from './first-time-copy'
 
 export interface TrayCardProps {
   /** Closes the tray: call it before an action that takes the person somewhere else. */
@@ -130,8 +134,54 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
   )
 }
 
+/** Sign up (1A' 479:4114), for as long as it is required: news until the tray has been opened. A
+ *  sign up that came back without signing the visitor in is news again, and the card says so (a held
+ *  message says it in the chat instead, held-exchange.tsx). */
+const $signUpItem = computed([$signUpRequired, $signInFailed], (required, failed) =>
+  required ? { news: failed ? 'sign-in-failed' : 'v1' } : null
+)
+
+function SignUpCard({ close, unseen }: TrayCardProps) {
+  const copy = useFirstTimeCopy()
+  const failed = useStore($signInFailed)
+
+  return (
+    <TrayCard
+      action={{
+        label: failed ? copy.held.tryAgain : copy.tray.signUp.action,
+        run: () => {
+          close()
+          startSignUp('tray')
+        }
+      }}
+      description={failed ? copy.held.failedBody : copy.tray.signUp.description}
+      title={failed ? copy.held.failedTitle : copy.tray.signUp.title}
+      unseen={unseen}
+    />
+  )
+}
+
+function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
+  const copy = useFirstTimeCopy().tray.meet
+
+  return (
+    <TrayCard
+      action={{
+        label: copy.action,
+        run: () => {
+          close()
+          reopenFirstTimeSplash()
+        }
+      }}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
 /** The tray's items, in the order they list. */
 export const TRAY_ITEMS: readonly TrayItemDefinition[] = [
+  { id: 'sign-up', $state: $signUpItem, Card: SignUpCard },
   { id: 'app-update', $state: $pendingUpdate, Card: AppUpdateCard },
   {
     id: 'new-version',
@@ -143,6 +193,12 @@ export const TRAY_ITEMS: readonly TrayItemDefinition[] = [
     id: 'rename-splash',
     $state: computed($renameSplashReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
     Card: RenameSplashCard
+  },
+  // The same for the first-time splash, which says it can be found here too.
+  {
+    id: 'first-time-splash',
+    $state: computed($firstTimeSplashReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
+    Card: FirstTimeSplashCard
   }
 ]
 

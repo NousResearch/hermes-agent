@@ -47,6 +47,7 @@ import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
+import { installPortalAccentAttribute } from './store/portal-accent'
 import { installShellAttribute } from './store/shell-variant'
 import { installVisitorAccess } from './store/visitor-access'
 import { ThemeProvider } from './themes/context'
@@ -63,6 +64,8 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 // <html data-shell> gates every redesign rule, including body-portalled surfaces;
 // set it before the first render and keep it in step with runtime toggles.
 installShellAttribute()
+// The redesign's accent ("Make it yours"), on <html> before the first paint like the shell.
+installPortalAccentAttribute()
 // The launch's artwork (redesign only), on <html> before the first paint so no other art flashes.
 installArtworkAttributes()
 // Whether this visitor must sign up before anything runs: settled from the serving page, once.

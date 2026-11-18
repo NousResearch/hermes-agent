@@ -11,6 +11,7 @@
   inset: 0;
   display: flex;
   padding: var(--portal-space-tight);
+  container: discovery-splash / inline-size;
 }
 
 :root[data-shell='portal'] .discovery-splash {
@@ -19,6 +20,8 @@
   --discovery-scrim-end: transparent;
   /* The struck-through classic word's column, so the arrows and new names line up. */
   --discovery-classic-column: 6rem;
+  /* Where a row's longer line starts: under the row's own text. */
+  --discovery-detail-indent: 0.875rem;
   position: relative;
   display: flex;
   flex: 1;
@@ -45,8 +48,23 @@
   --discovery-scrim-toward: to left;
 }
 
-/* Programmatic focus lands on the surface so Tab starts inside it; it is not a control. */
-:root[data-shell='portal'] .discovery-splash:focus:not(:focus-visible) {
+/* The rename splash's line starts under the new name, past the struck word and the arrow. */
+:root[data-shell='portal'] .discovery-splash[data-splash='rename'] {
+  --discovery-detail-indent: calc(0.875rem + var(--discovery-classic-column) + 0.875rem + 1.5rem);
+}
+
+/* The ×, in the corner inside the brackets. */
+:root[data-shell='portal'] .discovery-splash-close {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 1.75rem;
+  inset-inline-end: 1.75rem;
+  color: var(--portal-text-secondary);
+}
+
+/* Programmatic focus lands on the surface so Tab starts inside it; it is not a control, so it draws no
+   ring (Chromium counts a focus moved on load as keyboard focus and would ring the whole stage). */
+:root[data-shell='portal'] .discovery-splash:focus {
   outline: none;
 }
 
@@ -196,7 +214,7 @@
 :root[data-shell='portal'] .discovery-splash-row-detail {
   margin: 0;
   padding-block: 0 0.75rem;
-  padding-inline: calc(0.875rem + var(--discovery-classic-column) + 0.875rem + 1.5rem) 0.75rem;
+  padding-inline: var(--discovery-detail-indent) 0.75rem;
   color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
@@ -210,6 +228,24 @@
   margin-block-start: 1.5rem;
 }
 
+:root[data-shell='portal'] .discovery-splash-ready {
+  margin: 0;
+  font-size: var(--portal-type-section-size);
+  font-weight: 600;
+}
+
+/* The splash's way in is the one brand gesture on it (the app's primary actions, as in pages and
+   dialogs), so it wears the accent. */
+:root[data-shell='portal'] :is(.discovery-splash-footer, .discovery-held-reply) [data-variant='default'] {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* With the ready line above it, the footnote sits close under that line. */
+:root[data-shell='portal'] .discovery-splash-ready + .discovery-splash-footnote {
+  margin-block-start: -0.75rem;
+}
+
 :root[data-shell='portal'] .discovery-splash-footnote {
   margin: 0;
   color: var(--portal-text-tertiary);
@@ -218,9 +254,10 @@
   letter-spacing: var(--portal-tracking-ui);
 }
 
-/* Compact (< 640, breakpoints.ts): the splash is the whole stage and the text spans it, so the veil
-   never thins under it; the struck word and the detail come in closer. */
-@media (max-width: 639.98px) {
+/* A narrow splash (a compact window, < 640 in breakpoints.ts, or a stage the chat sidebar and a tool
+   panel squeeze to the same width): the text spans it, so the veil never thins under it; the struck
+   word and the detail come in closer. */
+@container discovery-splash (max-width: 39.98rem) {
   :root[data-shell='portal'] .discovery-splash {
     --discovery-classic-column: 4.5rem;
     --discovery-scrim-end: var(--portal-surface-stage-veil);
@@ -240,6 +277,260 @@
   :root[data-shell='portal'] .discovery-splash-row-button {
     min-block-size: var(--portal-touch-target);
   }
+}
+
+/* ── First-time splash (1A 477:4004) ─────────────────────────────────────────────────────────── */
+
+/* A place's name, then its one line beside it; the line gives way first on a narrow stage. */
+:root[data-shell='portal'] .discovery-first-name {
+  flex: none;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-first-line {
+  min-inline-size: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+}
+
+/* "Make it yours": its name, then light / dark and the colours, on the row's line; they wrap under
+   the name when the stage is narrow. */
+:root[data-shell='portal'] .discovery-splash-row-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  min-block-size: 2.875rem;
+  padding-block: 0.5rem;
+  padding-inline: 0.875rem 0.75rem;
+}
+
+:root[data-shell='portal'] .discovery-splash-row-group > .discovery-splash-row-label {
+  flex: none;
+}
+
+:root[data-shell='portal'] .discovery-theme-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+}
+
+:root[data-shell='portal'] :is(.discovery-theme-modes, .discovery-theme-colors) {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+/* Light / dark: the redesign's segmented track (895:9670), its pick on the brand selection. */
+:root[data-shell='portal'] .discovery-theme-modes {
+  gap: 0.125rem;
+  padding: 0.125rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-field);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-field);
+}
+
+:root[data-shell='portal'] .discovery-theme-mode {
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--portal-radius-chip);
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+}
+
+:root[data-shell='portal'] .discovery-theme-mode:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .discovery-theme-mode:has(:checked) {
+  background-color: var(--portal-surface-brand-selected);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] :is(.discovery-theme-mode, .discovery-theme-color):has(:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* The five colours: each its own fill under a hairline, the picked one ringed in full ink. */
+:root[data-shell='portal'] .discovery-theme-colors {
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .discovery-theme-color {
+  --discovery-swatch: var(--portal-raw-blue);
+  display: inline-flex;
+  padding: 0.1875rem;
+  border-radius: var(--portal-radius-round);
+  cursor: pointer;
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='violet'] {
+  --discovery-swatch: var(--portal-raw-violet);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='green'] {
+  --discovery-swatch: var(--portal-raw-green-deep);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='orange'] {
+  --discovery-swatch: var(--portal-raw-orange-deep);
+}
+
+:root[data-shell='portal'] .discovery-theme-color[data-accent='pink'] {
+  --discovery-swatch: var(--portal-raw-pink);
+}
+
+:root[data-shell='portal'] .discovery-theme-swatch {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  border-radius: var(--portal-radius-round);
+  background-color: var(--discovery-swatch);
+  box-shadow: inset 0 0 0 1px var(--portal-stroke-strong);
+}
+
+:root[data-shell='portal'] .discovery-theme-color:has(:checked) {
+  box-shadow: 0 0 0 1.5px var(--portal-text-primary);
+}
+
+/* Touch: light / dark take the touch target's height; each colour keeps its visual and reaches a 44px
+   target past it, the swatches spaced so the reaches never overlap. */
+@media (hover: none), (pointer: coarse) {
+  :root[data-shell='portal'] .discovery-theme-mode {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: calc(var(--portal-touch-target) - 0.25rem);
+  }
+
+  :root[data-shell='portal'] .discovery-theme-colors {
+    gap: calc(var(--portal-touch-target) - 1.5rem);
+  }
+
+  :root[data-shell='portal'] .discovery-theme-color {
+    position: relative;
+  }
+
+  :root[data-shell='portal'] .discovery-theme-color::after {
+    position: absolute;
+    inset: calc((1.5rem - var(--portal-touch-target)) / 2);
+    content: '';
+  }
+}
+
+/* ── The empty chat: greeting and starter ideas (479:4114, 486:4227, 486:5035) ───────────────── */
+
+:root[data-shell='portal'] .discovery-landing-greeting {
+  margin: 0 0 1rem;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.2;
+  text-align: center;
+}
+
+:root[data-shell='portal'] .discovery-ideas {
+  display: flex;
+  justify-content: center;
+  padding-block-start: 1rem;
+  padding-inline: 5px;
+}
+
+:root[data-shell='portal'] .discovery-ideas-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root[data-shell='portal'] .discovery-idea {
+  font-size: var(--portal-type-ui-size);
+  font-weight: 400;
+}
+
+/* Hide and Show ideas: small quiet text actions. */
+:root[data-shell='portal'] .discovery-ideas-toggle {
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] .discovery-ideas-toggle:hover {
+  color: var(--portal-text-primary);
+}
+
+/* Touch: every idea and toggle is a 44px target. */
+@media (hover: none), (pointer: coarse) {
+  :root[data-shell='portal'] :is(.discovery-idea, .discovery-ideas-toggle) {
+    min-block-size: var(--portal-touch-target);
+  }
+}
+
+/* ── A message held until sign up, and Hermes' answer (1C 462:3935) ──────────────────────────── */
+
+:root[data-shell='portal'] .discovery-held {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow-y: auto;
+  padding-block: calc(var(--portal-stage-header-height) + 1.5rem) 14rem;
+}
+
+:root[data-shell='portal'] .discovery-held-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  inline-size: min(var(--portal-column-conversation), 100% - 2rem);
+  margin-inline: auto;
+}
+
+:root[data-shell='portal'] .discovery-held-you {
+  align-self: flex-end;
+  max-inline-size: 80%;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-control);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+:root[data-shell='portal'] .discovery-held-reply {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--portal-surface-brand);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-brand-selected);
+}
+
+:root[data-shell='portal'] .discovery-held-title {
+  margin: 0;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-held-body {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-held-action {
+  margin-block-start: 0.25rem;
 }
 
 /* ── Nav spotlight ───────────────────────────────────────────────────────────────────────────── */

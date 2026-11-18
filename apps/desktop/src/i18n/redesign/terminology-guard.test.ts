@@ -12,6 +12,7 @@ import { agentCapabilityCopy } from '@/app/capabilities/ui/agent-capability-copy
 import { useHiddenAgentCopy } from '@/app/chat/sidebar/hidden-agent-copy'
 import { useNewSessionCopy } from '@/app/chat/sidebar/simplified-new-session-copy'
 import { discoveryCopy } from '@/app/discovery/discovery-copy'
+import { firstTimeCopy } from '@/app/discovery/first-time-copy'
 import { usePageFrameCopy } from '@/app/overlays/page-frame-copy'
 import { routinesCopy } from '@/app/routines/routines-copy'
 import { appearanceAdvancedCopy } from '@/app/settings/appearance-advanced-copy'
@@ -187,6 +188,7 @@ function redesignCopyModules(): Record<string, unknown> {
     appearanceOverview: appearanceOverviewCopy('en'),
     capabilitiesPage: hook(useCapabilitiesPageDescription),
     discovery: discoveryCopy('en'),
+    firstTime: firstTimeCopy('en'),
     hiddenAgent: hook(useHiddenAgentCopy),
     history: hook(useHistoryCopy),
     newSession: hook(useNewSessionCopy),

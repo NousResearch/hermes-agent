@@ -216,6 +216,16 @@ def test_hardline_detection_allows(command):
     assert desc is None
 
 
+@pytest.mark.parametrize("command", [
+    "x=('reboot')",
+    "declare -a arr=('reboot')",
+    "key=[('reboot','x')]",
+    "print('reboot')",
+])
+def test_quoted_words_after_data_openers_are_not_commands(command):
+    assert detect_hardline_command(command) == (False, None)
+
+
 # Multi-line QUOTED arguments are data, not command sequences: a newline
 # inside quotes is part of the argument the shell passes to the program.
 # These previously tripped the hardline floor because the flat command-start

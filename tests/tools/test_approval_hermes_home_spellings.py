@@ -145,6 +145,13 @@ class TestEscapedSpaceFailsClosed:
         monkeypatch.setenv("HERMES_HOME", "/home/tester/hermes")
         assert _is_dangerous(r"mv /home/tester/hermes\ backup /home/tester/backup") is False
 
+    def test_an_escaped_backslash_before_a_space_ends_the_word(self, monkeypatch):
+        # `\\\\` is one literal backslash, so the space after it splits words: a match ending on that
+        # backslash is not followed by an escaped space and still folds, as on main.
+        monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("HERMES_HOME", "/home/tester/.hermes")
+        assert _is_dangerous("sed -i s/a/b/ /home/tester/.hermes/config.yaml\\\\ x") is True
+
     def test_an_unquoted_escaped_space_folds(self, spaced_user_home):
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes/config.yaml") is True
         assert _is_dangerous(r"sed -i s/a/b/ /home/John\ Smith/hermes2/config.yaml") is False

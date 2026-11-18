@@ -29,7 +29,8 @@ def _spell_component(component: str) -> str:
 
 
 def _fold_matches(pattern, command: str, replace) -> str:
-    """``pattern.sub(replace, command)``, except a match that ends on the backslash of a ``\\ ``:
+    """``pattern.sub(replace, command)``, except a match that ends on the backslash of a ``\\ ``
+    (the last of an odd run; ``\\\\`` is one literal backslash, and a space after it splits words):
     unquoted it continues the last name (``hermes\\ data\\ backup`` is a sibling of the home
     ``hermes data``, ``config.yaml\\ `` is another file), quoted it is a literal name character.
     Either way the command does not name what the fold would, so that rule needs no quote state.
@@ -40,8 +41,9 @@ def _fold_matches(pattern, command: str, replace) -> str:
     costs a prompt, a misread unquoted one would lose the gate on the approval policy file.
     """
     def fold(match: re.Match) -> str:
-        if command.startswith(("\\ ", "\\\t"), match.end() - 1):
-            return match.group(0)
+        text = match.group(0)
+        if command.startswith((" ", "\t"), match.end()) and (len(text) - len(text.rstrip("\\"))) % 2:
+            return text
         return replace(match)
 
     return pattern.sub(fold, command)

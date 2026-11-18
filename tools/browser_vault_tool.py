@@ -62,10 +62,11 @@ def _check_vault_available() -> bool:
 # in-page and its message (which may quote the script) never reaches the backend's error path or logs.
 _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 
-# How long the page gets to re-render between the fill and the read-back. One turn of a 60 fps
-# frame (16 ms) is not enough for a React commit pass on a loaded form; 150 ms leaves room without
-# making a ten-field fill feel slow.
-_FILL_VERIFY_DELAY_S = 0.15
+# Read-back pacing. A framework commits on its own schedule, so one read is a guess: 50 ms is a
+# frame or three, and 500 ms (~30 frames) is where a real commit has happened or is not coming.
+# Polling beats a single sleep because a mask or a late revert can write the value twice.
+_FILL_VERIFY_INTERVAL_S = 0.05
+_FILL_VERIFY_CEILING_S = 0.5
 
 
 def _page_backend(task_id: str):
@@ -687,28 +688,38 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
 
 
 def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[str, Any]:
-    """Read every filled control back one page turn later; counts only, never a value.
+    """Poll the filled controls until the page keeps every value, or the ceiling expires.
 
-    The fill's own count is a claim about the write. This is the claim about the page: a controlled
-    input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field is gone with
-    its stamp. Returns ``{"success": True, "landed": n}`` or a refusal dict.
+    The fill's own count is a claim about the write; this is the claim about the page. A controlled
+    input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field loses its stamp.
+    Polling rather than sleeping once: a mask reformat or a late revert writes twice, and the second
+    write is the one that matters. Counts only — no value leaves the page.
     """
-    from agent.vault_login_classifier import build_fill_verify_js
+    from agent.vault_login_classifier import build_fill_verify_js, build_unstamp_js
 
-    time.sleep(_FILL_VERIFY_DELAY_S)
-    verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce))
-    verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
-    if isinstance(verified, str):
-        verified = _parse_json_result(verified)
-    if not isinstance(verified, dict):
-        return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
-                "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
-    landed = int(verified.get("landed", 0) or 0)
-    if landed <= 0:
+    expected = len(fills)
+    deadline = time.monotonic() + _FILL_VERIFY_CEILING_S
+    landed = 0
+    reverted = 0
+    while True:
+        time.sleep(_FILL_VERIFY_INTERVAL_S)
+        verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, unstamp=False))
+        verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
+        if isinstance(verified, str):
+            verified = _parse_json_result(verified)
+        if not isinstance(verified, dict):
+            _eval_js(task_id, build_unstamp_js())
+            return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
+                    "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
+        landed = int(verified.get("landed", 0) or 0)
         reverted = int(verified.get("reverted", 0) or 0)
+        if landed >= expected or time.monotonic() >= deadline:
+            break
+    _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
+    if landed < expected:
         return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
-                "error": (f"The page rejected the value: {reverted} field(s) reverted after the input event. "
-                          "Nothing is filled.")}
+                "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
+                          "or were re-rendered. Nothing is filled.")}
     return {"success": True, "landed": landed}
 
 

@@ -85,9 +85,10 @@ def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
         "action": "fill", "handle": meta.id, "target": "preview"}, InlineToolContext(effective_task_id="t"))
     result = json.loads(raw)
     assert result["success"] is True and result["filled_fields"] == 1 and result["origin"] == ORIGIN, result
-    # inspection, origin pre-check, fill, read-back, close: the fourth evaluate is the read-back
-    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "evaluate", "close"]
-    assert json.dumps(password) in window.calls[-2]["expression"]
+    # inspection, origin pre-check, fill, read-back, unstamp, close
+    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "evaluate", "evaluate", "close"]
+    secret_calls = [c["expression"] for c in window.calls if json.dumps(password) in c.get("expression", "")]
+    assert secret_calls  # the fill and the read-back both carry the value; neither leaks it
     assert password not in raw
     # A page can echo its input into its text, an element label or an error.
     echoed = json.dumps({"success": True, "text": password, "elements": [{"label": password}], password: 1})

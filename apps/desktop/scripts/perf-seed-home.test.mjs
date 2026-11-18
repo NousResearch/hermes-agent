@@ -108,6 +108,18 @@ platforms:
     expect(config.gateway.discord).toEqual({ enabled: false, token: 't' })
   })
 
+  it.each([
+    ['<<: *group', false],
+    ['gateway: {<<: *group}', true],
+    ['wrapper: &wrapper {gateway: *group}\n<<: *wrapper', true]
+  ])('pins a platform block inherited via %s without editing the template', (section, nested) => {
+    const config = `group: &group {telegram: {enabled: true, require_mention: true, label: "no"}}\n${section}\n`
+    const result = parse(withPlatformsDisabled(config, ['telegram']), { version: '1.1' })
+
+    expect(result.group.telegram.enabled).toBe(true)
+    expect((nested ? result.gateway : result).telegram).toEqual({ enabled: false, require_mention: true, label: 'no' })
+  })
+
   it('keeps a long one-line electron_flags list readable by the Desktop launch reader', () => {
     const flags = [
       '--disable-gpu-compositing',

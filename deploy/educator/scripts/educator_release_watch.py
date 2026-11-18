@@ -41,7 +41,8 @@ Events (``type``):
 
 When the previous woken run **failed**, its events are carried over
 (``carried_over: true``, ``attempt``) so a crash never loses a trigger, up
-to ``MAX_ATTEMPTS`` attempts.
+to ``MAX_ATTEMPTS`` attempts. The one-off ``baseline`` post is never carried:
+a run that posted it and still ended failed must not post it again.
 """
 from __future__ import annotations
 
@@ -70,7 +71,10 @@ NO_BASELINE_STATUSES = frozenset({"Published", "Won't do", "Not started"})
 MAX_KIT_STARTS_PER_RUN = 3
 MAX_ATTEMPTS = 3  # a carried event is tried at most this many times in all
 NOT_CARRIED = frozenset({"checkout_error", "source_error", "config_error",
-                         "notebook_not_updated", "gave_up"})
+                         "notebook_not_updated", "gave_up",
+                         # one-off post: re-sending it after a failed run that
+                         # already posted it would duplicate the message
+                         "baseline"})
 
 
 def _settings(cfg: dict) -> dict:
@@ -291,8 +295,9 @@ def _carry_over(state: dict, previous: dict, have: set) -> list[dict]:
     """Events of a failed woken run, carried into this one — each at most
     MAX_ATTEMPTS times in all. Then ONE ``gave_up`` (with the scheduler's
     last error) replaces it, so a broken step cannot loop every 20 minutes
-    forever on an essential, budget-exempt job. Errors, notebook checks and
-    gave_up itself are never carried: they are re-detected or best-effort."""
+    forever on an essential, budget-exempt job. Errors, notebook checks,
+    gave_up itself and the one-off baseline are never carried: they are
+    re-detected or best-effort."""
     out = []
     for ev in (state.get("last_wake") or {}).get("events") or []:
         if ev.get("type") in NOT_CARRIED or _event_id(ev) in have:

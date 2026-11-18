@@ -49,9 +49,12 @@ jobs:
       anything — every step must be safe to repeat.
 
       - baseline: first run only. Draft nothing. Post ONE home-channel message
-        (slack_post_thread, chat_id={{HOME_CHANNEL_ID}}, no thread_ts) listing the
-        PRDs whose tickets already reached staging, and ask the Comm Owners which, if
-        any, they want backfilled. Backfill only what they ask for, in that thread.
+        (slack_post_thread, chat_id={{HOME_CHANNEL_ID}}, no thread_ts): list each PRD
+        whose tickets are currently IN staging ("Ready for staging" / "In Staging"),
+        and give only a COUNT of the PRDs whose tickets are already Done (there can
+        be hundreds — never try to list them; offer the list on request). Ask the
+        Comm Owners which, if any, they want backfilled. Backfill only what they ask
+        for, in that thread. A partial Done list is not a failure.
       - kit_start: run `release-comms` end to end for the PRD, drafting exactly the
         assets in "assets" (the PRD's Release Comms Assets) and nothing else. Create
         the Releases row WITH its "PRD" relation set to this PRD in the create body
@@ -106,9 +109,14 @@ jobs:
 
       Last: rewrite notebook.md per `notebook-keeping` (compact, ~12 KB cap).
 
+      A Slack post succeeded when slack_post_thread returned a message_ts (and,
+      usually, a permalink) — that is your receipt. You have no tool to read Slack
+      back and do not need one; never treat "could not verify by reading it back"
+      as a failure.
+
       Final response: "[SILENT]" when your Slack posts already said everything.
-      Start it with "[FAILED]" when a required step was refused, blocked or broke.
-      Otherwise one short summary line for the home channel.
+      Start it with "[FAILED]" only when a required step was refused, blocked or
+      returned an error. Otherwise one short summary line for the home channel.
 
   - name: explore
     schedule: "{{EXPLORE_CRON}}"             # 3x per working day, in the GATEWAY's timezone (ROLLOUT §1)
@@ -159,6 +167,9 @@ jobs:
       8. Research notes and sources go to research/.
 
       Last: rewrite notebook.md per `notebook-keeping`.
+
+      A Slack post succeeded when slack_post_thread returned a message_ts — that is
+      your receipt; you have no tool to read Slack back and need none.
 
       Final response: "[SILENT]" unless something is worth the team's attention — then
       a short digest (it is posted to the home channel). Never post "nothing changed".

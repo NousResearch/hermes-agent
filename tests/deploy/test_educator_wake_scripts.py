@@ -541,6 +541,23 @@ def test_failed_woken_run_carries_its_events_over(mods, http, monkeypatch):
     assert p2["previous_run_failed"] is True
 
 
+def test_failed_baseline_run_is_not_carried_over(mods, http, monkeypatch):
+    # The baseline is a one-off home-channel post. A run that posted it but
+    # still ended [FAILED] (seen 2026-11-18: it could not "read back" its own
+    # post) must not post it again on the next three runs.
+    wake, watch, _ = mods
+    http.prds = [prd(PRD_A, "Audio items", "Not started", "https://x.atlassian.net/browse/BA-1")]
+    http.jira = {"BA-1": "Ready for staging"}
+    p0 = run_watch(mods, T0)
+    assert [e["type"] for e in p0["events"]] == ["baseline"]
+    t1 = T0 + timedelta(minutes=20)
+    monkeypatch.setattr(wake, "list_executions", lambda job_id: [
+        _exec(t1, "running"), _exec(T0 - timedelta(seconds=5), "failed")])
+    p1 = watch.main(now=t1)
+    assert not events_of(p1, "baseline")
+    assert not events_of(p1, "gave_up")
+
+
 def test_carried_event_gives_up_after_three_attempts(mods, http, monkeypatch):
     wake, watch, _ = mods
     run_watch(mods, T0)

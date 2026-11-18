@@ -17,6 +17,7 @@ from persistence.sqlite._schema_ddl import (
 )
 from persistence.sqlite.conversation._store.messages import _decode_content, _row_to_message_dict, get_messages_around
 from persistence.sqlite.conversation._store.sessions import list_sessions_rich
+from persistence.sqlite.conversation._store.stored_reads import _in_one_read
 from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, escape_like as _escape_like
 
 
@@ -488,18 +489,10 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
                 raise
             raise attributed from exc
 
-    def snapshot_read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-        if conn.in_transaction:
-            return read(conn)
-        conn.execute("BEGIN")
-        try:
-            return read(conn)
-        finally:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-
-    callback = snapshot_read if order_by_sql == _FTS_RANK_ORDER_BY else read
-    return [dict(row) for row in holder._read_retrying_ioerr(callback)]
+    if order_by_sql == _FTS_RANK_ORDER_BY:
+        # One snapshot for the failed read and its probe: a peer rebuild in between must not hide the damage.
+        return [dict(row) for row in _in_one_read(holder, read)]
+    return [dict(row) for row in holder._read_retrying_ioerr(read)]
 
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:
@@ -663,9 +656,9 @@ def search_messages(
 
 def _search_messages_stale(holder: StoreHolder, query: str, limit: int, offset: int, sort: Optional[str],
                            filters: dict[str, Any], result_fields) -> list[dict[str, Any]]:
-    """The one canonical-row answer for a store whose FTS indexes are detached, on the triggering
-    request and every later one: exact terms, then any term on a miss (the FTS route's OR-relaxed
-    retry, which skips CJK queries the same way)."""
+    """Search canonical rows while FTS is detached. Latin retries use this path on the
+    triggering and later requests: exact terms, then any term on a miss. A triggering
+    CJK trigram failure uses the separate any-term fallback in _search_cjk."""
     matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
     relaxed = None if matches or _contains_cjk(query) else _or_relaxed_query(query)
     if relaxed is not None:

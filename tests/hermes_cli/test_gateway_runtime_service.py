@@ -345,7 +345,7 @@ def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, mon
 
     def run(argv, *_args, **_kwargs):
         queries.append(argv)
-        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in argv).encode())
+        return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key == Path(argv[0]).name or key in argv).encode())
 
     monkeypatch.setattr(service, "_run", run)
     found = service._windows(home, time.monotonic() + 5)
@@ -427,7 +427,7 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
     actual = subprocess.run
     calls = []
     def boundary(argv, **kw):
-        if argv[0] == 'whoami.exe':
+        if Path(argv[0]).name == 'whoami.exe':
             return actual(argv, **kw)
         assert argv[0] == 'schtasks.exe'
         calls.append(argv)
@@ -599,7 +599,7 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     def run(argv, *_args, encoding=None, **_kwargs):
         # Windows subprocess decodes text in a reader thread: a decode error there leaves stdout None
         # (main then read an empty task list and fell through to an unmanaged spawn), it does not raise.
-        data = next(text for key, text in out.items() if key in argv).encode("cp936")
+        data = next(text for key, text in out.items() if key == Path(argv[0]).name or key in argv).encode("cp936")
         if encoding:
             try:
                 data = data.decode(encoding)

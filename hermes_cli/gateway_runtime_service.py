@@ -19,6 +19,7 @@ from xml.parsers.expat import ExpatError
 
 from gateway.runtime_contract import RuntimeState
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver import windows_system_executable
 
 
 class RuntimeStartError(RuntimeError):
@@ -275,7 +276,8 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
         from hermes_cli.gateway_runtime_service_identity import verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
-        accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
+        whoami = windows_system_executable("whoami.exe")
+        accounts = list(csv.reader(io.StringIO(query(unverified, whoami, "/USER", "/FO", "CSV", "/NH"))))
         if len(accounts) != 1 or len(accounts[0]) != 2:
             raise RuntimeStartError("service_identity_unverified", detail=(
                 f"whoami.exe /USER printed {len(accounts)} row(s) of {[len(row) for row in accounts]} field(s), "

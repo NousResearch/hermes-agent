@@ -55,7 +55,7 @@ def _interpreter(vbs):
 
 def _fake_schtasks(monkeypatch, *, task=None):
     def run(argv, *_args, **_kwargs):
-        if argv[0] == "whoami.exe":
+        if Path(argv[0]).name == "whoami.exe":
             out = '"DESKTOP-1\\owner","S-1-5-21-1"\r\n'
         elif "/XML" in argv:
             out = gateway_windows._build_scheduled_task_xml(task.name, task.vbs, "DESKTOP-1\\owner")

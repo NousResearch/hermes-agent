@@ -57,13 +57,54 @@ def _windows_refusal(tmp_path, monkeypatch, *, xml_rc=0, whoami=None, launcher_e
     }
 
     def run(argv, *_args, **_kwargs):
-        code, out, err = next(answer for key, answer in answers.items() if key in argv)
+        code, out, err = next(answer for key, answer in answers.items() if key == Path(argv[0]).name or key in argv)
         return SimpleNamespace(returncode=code, stdout=out.encode(), stderr=err.encode())
 
     monkeypatch.setattr(service, "_run", run)
     with pytest.raises(service.RuntimeStartError) as refused:
         service._windows(home, time.monotonic() + 5)
     return refused.value
+
+
+def test_whoami_uses_system32_instead_of_path(tmp_path, monkeypatch):
+    """Regression for #157356: Git's coreutils whoami must not handle /USER."""
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    system_root = tmp_path / "Windows"
+    whoami = system_root / "System32" / "whoami.exe"
+    shadow = tmp_path / "Git" / "usr" / "bin" / "whoami.exe"
+    for executable in (whoami, shadow):
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("PATH", os.pathsep.join((str(shadow.parent), str(whoami.parent))))
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\owner", "S-1-5-21-123"
+    answers = {
+        "whoami.exe": f'"{account}","{sid}"\r\n',
+        "/XML": _build_scheduled_task_xml(name, script, account),
+        "/FO": f'"\\{name}","N/A","Ready"\r\n',
+    }
+    queries = []
+
+    def run(argv, *_args, **_kwargs):
+        queries.append(argv)
+        out = next(text for key, text in answers.items() if key == Path(argv[0]).name or key in argv)
+        return SimpleNamespace(returncode=0, stdout=out.encode(), stderr=b"")
+
+    monkeypatch.setattr(service, "_run", run)
+    found = service._windows(home, time.monotonic() + 5)
+
+    assert found is not None and found.backend == "windows"
+    assert [argv for argv in queries if Path(argv[0]).name == "whoami.exe"] == [
+        [str(whoami), "/USER", "/FO", "CSV", "/NH"],
+    ]
+    assert all(argv[0] != str(shadow) for argv in queries)
 
 
 def test_a_failing_task_query_names_the_command_and_its_error(tmp_path, monkeypatch):

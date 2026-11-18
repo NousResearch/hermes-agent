@@ -9,9 +9,11 @@ from hermes_platform.resolver.core import (
     Observation,
     Resolution,
     locate_command,
+    windows_system_executable,
 )
 
 __all__ = [
     "ABSENT", "Candidate", "CheckState", "Effort", "Inspection", "LookupContext",
     "Observation", "Probe", "Probeable", "Resolution", "Resolver", "locate_command",
+    "windows_system_executable",
 ]

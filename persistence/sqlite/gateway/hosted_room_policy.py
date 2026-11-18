@@ -23,7 +23,7 @@ from session_rules.hosted_rooms import MAX_LOG_LIMIT, MAX_THREAD_TRANSCRIPT_EVEN
 from session_rules.hosted_tasks import validate_task_input
 
 from .._backend import SQLiteStore, register_repository, translated
-from ._hosted_room_log_context import discussion_events, read_thread_messages
+from ._hosted_room_log_context import discussion_events, read_thread_messages, thread_prefix
 from ._hosted_rooms_common import fenced_update
 from ._hosted_rooms_schema import ROOMS_STEP
 from ._hosted_store import HostedFiles, file_identity
@@ -198,7 +198,8 @@ def _discussion_events(
 ) -> list[dict[str, Any]]:
     """Merge the thread transcript with the active projection, ordered by seq."""
     active = discussion_events(conn, room_id=room_id, discussion_event_id=discussion_event_id, kinds=_REOPENED_KINDS)
-    if not active_policy_within_budget(active, capacity=max_active_events, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS):
+    if not active_policy_within_budget(active, capacity=max_active_events, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS,
+                                       read_prefix=partial(thread_prefix, conn, room_id, thread_id)):
         raise PolicyProjectionError(bound_error)
     # LIMIT also reads one overflow sentinel; keep its parameter inside SQLite's integer range.
     max_transcript_policy_events = min(

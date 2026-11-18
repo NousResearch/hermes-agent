@@ -335,3 +335,13 @@ def test_an_earlier_file_does_not_exempt_unrelated_replies_from_the_projection_b
                        {"thread_id": "t1", "discussion_event_id": "later", "member_id": "m1"}, actor=MEMBER)
     with pytest.raises(PolicyProjectionError, match="active room policy projection exceeded its bound"):
         _snapshot(store, last)
+
+
+def test_failure_after_a_text_only_prefix_counts_as_an_ordinary_event():
+    from session_rules.hosted_rooms import active_policy_within_budget
+
+    send = {"kind": "message.user", "seq": 2, "payload": {"thread_id": "thread"}}
+    failure = {"kind": "turn.failed", "seq": 3, "payload": {
+        "discussion_event_id": "send", "thread_id": "thread", "member_id": "a",
+        "task_id": "task", "seen_through_seq": 1}}
+    assert not active_policy_within_budget([send, failure], capacity=1, retry_limit=1)

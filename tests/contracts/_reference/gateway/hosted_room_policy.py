@@ -94,7 +94,12 @@ def _discussion_events(tables: HostedTables, *, room_id: str, thread_id: str, di
                    if row["discussion_event_id"] == discussion_event_id), None)
     active = [e for e in log_events if anchor and e["seq"] >= anchor["seq"] and
               (e["seq"] == anchor["seq"] or (e["kind"] in _REOPENED_KINDS and e["payload"].get("discussion_event_id") == discussion_event_id))]
-    if not active_policy_within_budget(active, capacity=capacity, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS):
+    def read_prefix(after, end, published_through):
+        return (event for event in _read_messages(tables, room_id, published_through, thread_id=thread_id, watermark=after)
+                if event["seq"] <= end)
+
+    if not active_policy_within_budget(active, capacity=capacity, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS,
+                                       read_prefix=read_prefix):
         raise PolicyProjectionError(bound_error)
     transcript_bound = min(2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (capacity + MAX_ACTIVE_RETRY_RECEIPTS + 2))
     transcript = [row for row in tables["hosted_room_policy_transcript"].get(room_id, {}).values() if row["thread_id"] == thread_id]

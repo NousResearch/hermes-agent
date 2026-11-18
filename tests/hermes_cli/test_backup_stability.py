@@ -186,7 +186,7 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     monkeypatch.setattr("hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
     monkeypatch.setattr(*store_copy_seam(), lambda _src, _dst, **_kwargs: False)
 
-    assert _write_full_zip_backup(archive, home) is None
+    assert _write_full_zip_backup(archive, home).status == "failed"
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
 

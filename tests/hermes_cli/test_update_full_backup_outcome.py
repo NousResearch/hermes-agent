@@ -97,7 +97,7 @@ def test_incomplete_backup_returns_its_salvage_path(home, monkeypatch):
     assert outcome.path is not None and outcome.path.exists()
     assert outcome.path.name.endswith(".incomplete.zip")
     assert outcome.files == 1
-    assert outcome.skipped == 1
+    assert len(outcome.errors) == 1
     assert any("cron/gone.stderr" in line for line in outcome.errors)
     assert zipfile.is_zipfile(outcome.path)
 

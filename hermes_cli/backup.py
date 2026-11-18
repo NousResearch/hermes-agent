@@ -12,7 +12,7 @@ import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
@@ -1058,25 +1058,12 @@ _PRE_MIGRATION_DEFAULT_KEEP = 5
 _INCOMPLETE_ZIP_SUFFIX = ".incomplete.zip"
 
 
-class FullBackupOutcome(NamedTuple):
-    """What an automatic full zip backup actually did — one value per real outcome, so a caller
-    never has to read ``None`` as "nothing to copy" when an archive was in fact published (#147246).
-
-    ``status`` is ``"complete"`` (whole archive at ``path``), ``"incomplete"`` (a usable salvage
-    archive at ``path``, some entries unreadable), ``"empty"`` (nothing to copy) or ``"failed"``
-    (no archive: walk/write error, every entry failed, or another backup held the slot).
-    """
-
-    status: str
+class FullBackupOutcome(NamedTuple):  # ``incomplete``: an importable salvage, missing ``errors``
+    status: Literal["complete", "incomplete", "empty", "failed"]
     path: Optional[Path] = None
-    files: int = 0          # entries written to the archive
-    skipped: int = 0        # entries the archive could not take
-    detail: str = ""        # human-readable reason, for the failed/skipped cases
+    files: int = 0
     errors: tuple[str, ...] = ()
-
-    @property
-    def wrote_archive(self) -> bool:
-        return self.path is not None
+    detail: str = ""
 
 
 def _prune_prefixed_zips(backup_dir: Path, prefix: str, keep: int, what: str) -> int:
@@ -1102,13 +1089,8 @@ def _prune_incomplete_zips(backup_dir: Path, prefix: str, what: str) -> int:
 
 
 def _create_prefixed_full_backup(
-    hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str,
-) -> FullBackupOutcome:
-    """Write ``<HERMES_HOME>/backups/<prefix><timestamp>.zip`` and prune older same-prefix zips.
-
-    Returns the outcome of the run (see ``FullBackupOutcome``): ``complete`` with the archive path,
-    ``incomplete`` with the published ``<prefix><timestamp>.incomplete.zip`` salvage (excluded from
-    retention), ``empty`` when there is nothing to copy, or ``failed``. Never raises."""
+    hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str) -> FullBackupOutcome:
+    """Write ``backups/<prefix><timestamp>.zip`` (a salvage: ``….incomplete.zip``), prune older ones. Never raises."""
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
         return FullBackupOutcome("failed", detail=f"not a directory: {hermes_root}")
@@ -1121,32 +1103,23 @@ def _create_prefixed_full_backup(
         logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
         return FullBackupOutcome("failed", detail=f"could not create {backup_dir}: {exc}")
     out_path = backup_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
-    outcome = _write_full_zip_backup_outcome(out_path, hermes_root)
-    if outcome.status == "incomplete":
-        # Incomplete runs publish straight to ``*.incomplete.zip`` (all-failed runs are discarded);
-        # cap those salvages at one without letting them rotate complete backups out.
+    outcome = _write_full_zip_backup(out_path, hermes_root)
+    if outcome.status == "complete":
+        _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
+    else:  # a salvage ``*.incomplete.zip``: keep one, without rotating complete backups out
         _prune_incomplete_zips(backup_dir, prefix, prune_what)
-        return outcome
-    if outcome.status != "complete":
-        return outcome
-    _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
     return outcome
 
 
 def create_pre_update_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> Optional[Path]:
-    """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` if nothing
-    was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``).
-    Never raises — ``hermes update`` continues anyway. Use ``create_pre_update_backup_outcome``
-    to tell those outcomes apart (and to get the salvage path)."""
+    """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` unless complete."""
     outcome = create_pre_update_backup_outcome(hermes_home, keep)
     return outcome.path if outcome.status == "complete" else None
 
 
-def create_pre_update_backup_outcome(
-    hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> FullBackupOutcome:
-    """``create_pre_update_backup`` with the outcome kept: what was written, where, and what was
-    skipped. Never raises."""
+def create_pre_update_backup_outcome(hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> FullBackupOutcome:
+    """``create_pre_update_backup`` keeping every outcome apart (#147246). Never raises."""
     return _create_prefixed_full_backup(hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
 
 
@@ -1942,29 +1915,17 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = ()) -> Optional[Path]:
-    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home.
-    Returns the published *complete* archive, or ``None`` (nothing to copy, a failure, or an incomplete
-    salvage); ``_write_full_zip_backup_outcome`` is the same run with those outcomes kept apart (#147246)."""
-    outcome = _write_full_zip_backup_outcome(out_path, hermes_root, extra)
-    return outcome.path if outcome.status == "complete" else None
-
-
-def _write_full_zip_backup_outcome(
-    out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = (),
-) -> FullBackupOutcome:
-    """Single-flight full zip backup, returning what it did — including a published salvage."""
+def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = ()) -> FullBackupOutcome:
+    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home."""
     try:
         with _backup_operation_lock(hermes_root):
             return _write_full_zip_backup_locked(out_path, hermes_root, list(extra))
     except BackupInProgressError as exc:
         logger.warning("Full-zip backup skipped: %s", exc)
-        return FullBackupOutcome("failed", detail=f"another backup is already running: {exc}")
+        return FullBackupOutcome("failed", detail=f"another backup is running: {exc}")
 
 
-def _write_full_zip_backup_locked(
-    out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]],
-) -> FullBackupOutcome:
+def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]]) -> FullBackupOutcome:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
     try:
@@ -1973,7 +1934,7 @@ def _write_full_zip_backup_locked(
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return FullBackupOutcome("failed", detail=f"could not scan {hermes_root}: {exc}")
     if not files_to_add:
-        return FullBackupOutcome("empty", detail=f"no files to back up under {hermes_root}")
+        return FullBackupOutcome("empty")
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
                 (time.monotonic() - scan_started) * 1000, len(files_to_add))
 
@@ -2021,9 +1982,7 @@ def _write_full_zip_backup_locked(
 
     if published is None:
         logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
-        return FullBackupOutcome(
-            "failed", skipped=len(errors), errors=tuple(errors),
-            detail=f"every one of {len(files_to_add)} entry(ies) failed; nothing salvaged: {_capped_errors()}")
+        return FullBackupOutcome("failed", errors=tuple(errors), detail="no entry could be read")
     zip_size = published.stat().st_size
     if published != out_path:
         logger.warning(
@@ -2031,15 +1990,11 @@ def _write_full_zip_backup_locked(
             "bytes=%d salvage=%s skipped=%s",
             (time.monotonic() - archive_started) * 1000, len(files_to_add), len(errors), zip_size,
             salvage_path, _capped_errors())
-        # The salvage is a real, importable archive: hand it back instead of a bare ``None`` that a
-        # caller can only read as "you have no backup" (#147246).
-        return FullBackupOutcome(
-            "incomplete", published, files=len(files_to_add) - len(errors), skipped=len(errors),
-            errors=tuple(errors), detail=_capped_errors())
+        return FullBackupOutcome("incomplete", published, len(files_to_add) - len(errors), tuple(errors))
 
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
                 (time.monotonic() - archive_started) * 1000, len(files_to_add), zip_size)
-    return FullBackupOutcome("complete", out_path, files=len(files_to_add))
+    return FullBackupOutcome("complete", out_path, len(files_to_add))
 
 
 # ---------------------------------------------------------------------------

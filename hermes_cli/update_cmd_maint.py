@@ -692,14 +692,10 @@ def _run_quick_snapshots() -> Optional[str]:
 
 
 def _run_full_backup() -> None:
-    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises.
-
-    Reports what actually happened: the archive and its entry count, an incomplete-but-importable
-    salvage, "nothing to copy", or a failure. A published salvage is never reported as "skipped"
-    (#147246: a valid 512 MiB ``*.incomplete.zip`` was described as "no files found or write failed").
-    """
+    """Zip HERMES_HOME under ``backups/`` (restorable via ``hermes import``). Never raises. Reports
+    what happened: a published ``*.incomplete.zip`` salvage is never "skipped" (#147246)."""
     try:
-        from hermes_cli.backup import FullBackupOutcome, create_pre_update_backup_outcome
+        from hermes_cli.backup import create_pre_update_backup_outcome
     except Exception as exc:
         print(f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update.")
         print()
@@ -720,41 +716,38 @@ def _run_full_backup() -> None:
         print()
         return
     elapsed = _time.monotonic() - t0
-    if not isinstance(outcome, FullBackupOutcome):  # a stubbed/replaced helper returning a bare path
-        outcome = FullBackupOutcome("complete", outcome) if outcome else FullBackupOutcome("empty")
-
-    from hermes_constants import get_hermes_home, display_hermes_home
-
-    def _display(path) -> str:
-        # display_hermes_home so the user sees ~/.hermes/...
-        try:
-            return f"{display_hermes_home()}/{path.relative_to(get_hermes_home())}"
-        except Exception:
-            return str(path)
 
     if outcome.status == "empty":
         print("  ⚠ Backup skipped: nothing to copy; continuing update.")
         print()
         return
-    if outcome.status == "failed" or outcome.path is None:
-        print(f"  ⚠ Backup failed: {outcome.detail or 'no archive was written'}; continuing update.")
+    if outcome.path is None:
+        print(f"  ⚠ Backup failed: {outcome.detail}; continuing update.")
         print()
         return
-
     out_path = outcome.path
+
     try:
         size_bytes = out_path.stat().st_size
     except OSError:
         size_bytes = 0
 
     from hermes_cli.sizefmt import format_bytes
-    display_path = _display(out_path)
+    # display_hermes_home so the user sees ~/.hermes/...
+    try:
+        from hermes_constants import get_hermes_home, display_hermes_home
+        display_path = f"{display_hermes_home()}/{out_path.relative_to(get_hermes_home())}"
+    except Exception:
+        display_path = str(out_path)
+
     if outcome.status == "incomplete":
-        print(f"  ⚠ Backup incomplete: {outcome.skipped} file(s) could not be read "
+        print(f"  ⚠ Backup incomplete: {len(outcome.errors)} file(s) could not be read "
               f"({outcome.files} saved, {format_bytes(size_bytes)}, {elapsed:.1f}s)")
         print(f"  Saved:    {display_path}")
-        for line in outcome.errors[:3]:
-            print(f"    skipped: {line}")
+        for error in outcome.errors[:3]:
+            print(f"    skipped: {error}")
+        if len(outcome.errors) > 3:
+            print(f"    … and {len(outcome.errors) - 3} more (see hermes logs)")
         print(f"  Restore:  hermes import {out_path}   (the archive is valid as-is)")
         print("  Continuing with update.")
         print()

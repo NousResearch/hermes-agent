@@ -323,11 +323,24 @@ def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> lis
     """A restore that drops a pinned tool has already moved tools[] (the cached prefix is broken
     there), so a surviving tool whose ``_DYNAMIC_SCHEMA_REWRITERS`` entry derives its text from the
     other tool names takes this build's definition: pinned bytes would still name what was dropped
-    (execute_code's sandbox list, delegate_task's sibling line). Nothing dropped: bytes untouched."""
+    (execute_code's sandbox list, delegate_task's sibling line). A carried survivor this process did
+    not build is rewritten from its registry schema against the final names. Nothing dropped: bytes untouched."""
     if not dropped:
         return merged
     from model_tools import _DYNAMIC_SCHEMA_REWRITERS
-    return [fresh.get(name, t) if (name := _def_name(t)) in _DYNAMIC_SCHEMA_REWRITERS else t for t in merged]
+    from tools.registry import registry
+    available = {_def_name(t) for t in merged}
+
+    def _current(tool):
+        name = _def_name(tool)
+        rewrite = _DYNAMIC_SCHEMA_REWRITERS.get(name)
+        if rewrite is None or name in fresh:
+            return fresh.get(name, tool)
+        entry = registry.get_entry(name)
+        rebuilt = rewrite({"type": "function", "function": {**entry.schema, "name": entry.name}}, available) if entry else None
+        return rebuilt or tool  # None only for a gated tool, which _drop_gated_carried_tools already removed
+
+    return [_current(t) for t in merged]
 
 
 def pinned_tool_defs(saved) -> list:

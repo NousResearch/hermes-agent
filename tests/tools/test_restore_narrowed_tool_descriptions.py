@@ -45,6 +45,22 @@ def test_a_narrowed_resume_stops_naming_the_tools_it_dropped():
     assert _by_name(resumed.tools)["execute_code"] == _by_name(_agent(["terminal", "code_execution"]).tools)["execute_code"]
 
 
+def test_a_carried_survivor_is_rewritten_against_the_final_tool_names():
+    # execute_code's check_fn fails in the resuming process (a sandbox went away), so it is carried from the pin
+    # rather than built here; the file toolset is gone too. Its pinned helper list must not survive either.
+    pin = _pin(PINNED)
+    resumed = _agent(["terminal", "code_execution"])
+    resumed.tools = [t for t in resumed.tools if t["function"]["name"] != "execute_code"]
+
+    mcp_tool_agent.restore_agent_tool_prefix(resumed, pin)
+
+    restored = _by_name(resumed.tools)
+    assert "execute_code" in restored
+    named = [n for n in ("read_file", "write_file", "patch", "search_files")
+             if n in restored["execute_code"]["function"]["description"]]
+    assert not named
+
+
 def test_a_resume_with_the_same_toolsets_sends_the_pinned_bytes():
     pin = _pin(PINNED)
     for tool in pin["tools"]:  # bytes this process would not derive: the pin must still win

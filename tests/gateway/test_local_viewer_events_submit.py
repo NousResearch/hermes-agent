@@ -20,7 +20,6 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     from gateway.session_cli_turn import cli_turn
     from gateway.session_controls import AuthorityConnection
     from gateway.session_ingress import admission_author
-    from hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):
@@ -50,13 +49,13 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     finally:
         await connection.close()
 
-    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
-    assert rows['full']['payload']['cli_turn_v1'] == {
+    rows = {row.request_id: row for row in authority.persistence.admissions.list(session_id='s', pending_only=False)}
+    assert rows['full'].payload['cli_turn_v1'] == {
         'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
         'model_override': {'model': 'gpt-x', 'provider': 'openrouter'}}
-    assert 'cli_turn_v1' not in rows['plain']['payload']
+    assert 'cli_turn_v1' not in rows['plain'].payload
     assert not {'no-model', 'extra-key', 'bad-text', 'bad-author', 'bad-batch'} & set(rows)
-    assert seen[0] == ('full', rows['full']['payload']['cli_turn_v1'], {}, author)
+    assert seen[0] == ('full', rows['full'].payload['cli_turn_v1'], {}, author)
     # The next admission never inherits the previous turn's fields.
     assert seen[1][:3] == ('plain', {}, {})
 
@@ -84,7 +83,7 @@ def _gateway_runner():
     runner._provider_routing = {}
     runner._agent_cache_lock = None
     runner._agent_cache = {}
-    runner._session_db = runner._prefill_messages = None
+    runner._session_db = runner.persistence = runner._prefill_messages = None
     runner._pending_model_notes = runner._pending_skills_reload_notes = {}
     runner.session_store._entries = {}
     runner._pre_agent_fallback_notice = None
@@ -250,10 +249,10 @@ def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
     from hermes_cli.model_switch import ModelSwitchResult
 
     written = []
-    db = SimpleNamespace(get_session=lambda sid: {"model": "session-model", "model_config": "{}"},
-                         update_session_meta=lambda sid, config, model=None: written.append((sid, model)))
+    sessions = SimpleNamespace(get=lambda sid: SimpleNamespace(model="session-model", model_config={}),
+                               replace_session_config=lambda sid, command: written.append((sid, command.model)))
     runner = _gateway_runner()
-    runner._session_db = SimpleNamespace(_db=db)
+    runner.persistence = SimpleNamespace(sessions=sessions)
     runner._sync_session_model_from_agent = (
         lambda sid, agent: GatewayTurnPrepareMixin._sync_session_model_from_agent(runner, sid, agent))
     moa = ModelSwitchResult(success=True, new_model="default", target_provider="moa", api_key="",

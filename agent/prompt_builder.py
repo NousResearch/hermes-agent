@@ -1689,6 +1689,19 @@ def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, Optiona
             for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
 
 
+def _context_cwd_path(cwd: Optional[str]) -> Optional[Path]:
+    """Resolved discovery root, or None when the launch dir is gone: a Kanban worker's workspace is
+    removed on ``kanban_complete`` while the process still sits in it, and a prompt rebuild then must
+    not raise from ``os.getcwd()`` — project context is skipped, as ``runtime_cwd`` skips a missing
+    TERMINAL_CWD (#138015)."""
+    try:
+        return Path(cwd if cwd is not None else os.getcwd()).resolve()
+    except OSError as exc:
+        logger.warning("skipping project-context discovery: could not resolve the working directory — "
+                       "set terminal.cwd to your project directory: %s", exc)
+        return None
+
+
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
     """A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
     default would load this repo's contributor AGENTS.md). An explicitly configured cwd is honored verbatim —
@@ -1766,8 +1779,10 @@ def build_context_files_prompt(
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    cwd_path = _context_cwd_path(cwd)
+    if cwd_path is None:
+        sections = []
+    elif _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
             "skipping project-context discovery: working-directory resolution fell back to the Hermes "
             "install tree (%s) — set terminal.cwd to your project directory", cwd_path,

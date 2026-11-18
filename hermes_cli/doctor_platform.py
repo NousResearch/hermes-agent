@@ -83,7 +83,12 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
     from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     header = read_header_bytes_preopen(db_path, length=20)
     if header is None:
-        return None, "database is open in this process" if has_live_connection(db_path) else _unreadable_reason(db_path)
+        live = has_live_connection(db_path)
+        if live is True:
+            return None, "database is open in this process"
+        if live is None:
+            return None, "the connection registry is wedged by another thread's raw read"
+        return None, _unreadable_reason(db_path)
     if len(header) == 0:
         return None, "file is empty"
     if len(header) < 20 or not header.startswith(_SQLITE_HEADER_MAGIC):

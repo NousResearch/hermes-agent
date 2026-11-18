@@ -25082,6 +25082,18 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "extended_context_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Extended Context Tokens"
           }
         },
         "required": [

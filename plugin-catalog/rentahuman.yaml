@@ -1,8 +1,8 @@
 name: rentahuman
 title: RentAHuman
 repo: https://github.com/rentahuman-ai/hermes-plugin
-sha: 0d4920ea0496be49d153bcdf3364bd3f3976e740
-image: https://raw.githubusercontent.com/rentahuman-ai/hermes-plugin/0d4920ea0496be49d153bcdf3364bd3f3976e740/assets/marketplace-cover.jpg
+sha: 091d9b9eb41d7253d9b56acdda74efbd458ec49f
+image: https://raw.githubusercontent.com/rentahuman-ai/hermes-plugin/091d9b9eb41d7253d9b56acdda74efbd458ec49f/assets/marketplace-cover.jpg
 description: >-
   Find people for real-world tasks, from local errands to on-site research and user testing.
   Connect with OAuth via the hosted MCP catalog, or install this local plugin for API-key access.

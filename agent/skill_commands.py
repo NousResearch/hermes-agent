@@ -24,6 +24,11 @@ from session_rules.turns import (
     _SKILL_NAME_RE,
     _SUPPORTING_FILES_END,
 )
+# Published here before the storage interface (#149567) moved them; outside plugins (OpenViking) import them from here.
+from session_rules.turns import (
+    extract_user_instruction_from_skill_message,
+    register_auto_load_scaffold,
+)
 
 logger = logging.getLogger(__name__)
 

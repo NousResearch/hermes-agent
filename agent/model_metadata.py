@@ -1651,10 +1651,9 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
     return None
 
 
-# Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
-# slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
+# Subscription defaults when discovery is unavailable (longest-key-first); the 6.1 models default to 500K.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6.1-sol": 500_000, "gpt-6.1-terra": 500_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1663,11 +1662,8 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
-# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
-# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
-# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
-# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
+# Raise legacy 272K advertisements (also Sol's 500K default) only for opted-in variants. Dated tier
+# snapshots inherit the bump; gpt-5.4 is exact because -mini enforces 272K. Catalog ceilings still win.
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: dict[str, int] = {
     "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-luna": 900_000,
 }
@@ -1899,10 +1895,14 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
+        """Replace Sol's legacy advertisement with its published 500K Codex default; larger windows
+        remain opt-in and bounded by the catalog's ``max_context_window`` (#105443)."""
+        # https://developers.openai.com/api/docs/models/gpt-6.1-sol: 500K in Codex, 1.05M in the API.
+        sol = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare)) == "gpt-6.1-sol"
+        if sol and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            ctx = min(500_000, catalog_max) if catalog_max else 500_000
         bumped = _verified_codex_ctx_for_slug(model_bare)
-        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+        if bumped is not None and (ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX or sol and ctx == 500_000):
             bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source

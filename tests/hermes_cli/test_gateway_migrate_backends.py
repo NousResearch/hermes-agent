@@ -498,3 +498,13 @@ def test_the_pointer_names_the_default_profile_for_the_default_home(monkeypatch)
     item = gmb.BackendItem(supervisor="manual", running=True, pid=4701, argv=_argv("dashboard"), this_home=True)
 
     assert gmb.format_report([item])[-1].endswith(": hermes -p default gateway migrate --backends --apply --dry-run")
+
+
+def test_the_scan_lists_its_own_process_only_when_that_process_is_a_backend(monkeypatch):
+    me = os.getpid()
+    rows = {"dashboard": [(me, "/venv/bin/python -m hermes_cli.main dashboard --no-open --port 9119")],
+            "cli": [(me, "/venv/bin/python -m hermes_cli.main gateway migrate --backends --json")]}
+    for kind, table in rows.items():
+        monkeypatch.setattr("hermes_cli.dashboard_procs._iter_process_table", lambda table=table: table)
+        # A dashboard that scans from its own pages finds itself; the report's own CLI row never matches.
+        assert [pid for pid, _cmd in gmb._running_backends()] == ([me] if kind == "dashboard" else [])

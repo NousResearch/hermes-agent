@@ -228,12 +228,12 @@ def _running_backends() -> list[tuple[int, str]]:
             rows = process_rows()
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):  # same failures the update sweep tolerates
         return []
-    me = os.getpid()
     recover = os_family() == "darwin"  # only macOS ``ps`` loses the launcher's argv boundaries
     found = []
+    # This process is listed too when it is a backend itself: a `hermes dashboard` that runs the scan for
+    # its own pages is the backend being asked about. The CLI's own row (`hermes gateway migrate ...`)
+    # never matches, so the report lists exactly what it listed before.
     for pid, cmd in rows:
-        if pid == me:
-            continue
         if _hermes_holder_subcommand(cmd) in ("serve", "dashboard"):
             found.append((pid, cmd))
         elif recover and " -c " in cmd and "hermes" in cmd and (exact := _exact_argv(pid)) and \

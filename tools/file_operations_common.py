@@ -366,7 +366,9 @@ def _dir_entry(entry: os.DirEntry) -> dict | None:
     except FileNotFoundError:  # removed between scandir and stat
         return None
     kind = next((name for test, name in _KINDS if test(st.st_mode)), "other")
-    item = {"name": entry.name, "type": kind, "size": st.st_size if kind == "file" else None,
+    # Every kind carries its lstat size, as ``ls -la`` shows it: a "-" for a directory sent the
+    # model back to ``stat`` in the live eval when it was asked for every entry's size.
+    item = {"name": entry.name, "type": kind, "size": st.st_size,
             "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))}
     if kind == "link":
         item["target"] = os.readlink(entry.path)
@@ -374,7 +376,7 @@ def _dir_entry(entry: os.DirEntry) -> dict | None:
 
 
 def _dir_row(item: dict) -> str:
-    size = "-" if item["size"] is None else str(item["size"])
+    size = str(item["size"])
     name = item["name"] + ("/" if item["type"] == "dir" else "")
     link = f" -> {item['target']}" if item["type"] == "link" else ""
     return f"{size:>10}  {item['mtime']}  {name}{link}"

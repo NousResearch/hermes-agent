@@ -1,0 +1,335 @@
+// @vitest-environment jsdom
+// The System page's "move to a single Hermes" card and the poll reading behind it.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+
+import { BackendMigrationCard } from "./BackendMigrationCard";
+import {
+  applyOutcome,
+  blockerAdvice,
+  readPoll,
+  type BackendMigrationPlanResponse,
+  type BackendMigrationStatus,
+  type PollRef,
+} from "@/lib/backend-migration";
+
+let container: HTMLDivElement;
+let root: Root;
+
+async function render(initial: BackendMigrationPlanResponse) {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root.render(<BackendMigrationCard initial={initial} />));
+}
+
+const none: BackendMigrationStatus = {
+  state: "none", step: "", steps: [], message: "", old_address: "", new_address: "", started_at: 0, finished_at: null,
+};
+
+function planWith(
+  overrides: Partial<BackendMigrationPlanResponse["plan"]>,
+  run = none,
+  profile: string | null = "work",
+): BackendMigrationPlanResponse {
+  return {
+    exit_code: 0,
+    run,
+    profile,
+    plan: {
+      old_address: "0.0.0.0:9119", new_address: "0.0.0.0:9119",
+      old_backend: { supervisor: "systemd", unit: "hermes-dashboard.service", scope: "user", pid: 1, was_active: true },
+      keep_webapp_address: false, copy_env_keys: [], generate_secret: true, public_url: null,
+      auth_before: { auth_required: true, providers: ["basic"] }, gateway: { installed: false, active: false },
+      linger: false, webapp_bundle_missing: "missing", running_turns: 0, blockers: [], unsupported: [], notices: [],
+      nothing_to_do: false, text: [], ...overrides,
+    },
+  };
+}
+
+const button = (label: string) => [...document.querySelectorAll("button")].find((b) => b.textContent === label);
+const moveButton = () => button("Move");
+
+/** A server for the card: `apply` answers as each test says; `status` returns the queued records (the
+ *  last one again and again). */
+function server(apply: (init?: RequestInit) => Promise<Response>, statuses: BackendMigrationStatus[]) {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+    const url = String(input);
+    calls.push(`${init?.method ?? "GET"} ${url}`);
+    if (url.includes("/apply")) return apply(init);
+    const next = statuses.length > 1 ? statuses.shift()! : statuses[0];
+    return new Response(JSON.stringify(next), { status: 200, headers: { "Content-Type": "application/json" } });
+  }));
+  return { applies: () => calls.filter((c) => c.startsWith("POST") && c.includes("/apply")).length };
+}
+
+const json = (status: number, body: unknown) =>
+  Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
+
+async function confirmMove(times = 1) {
+  await act(async () => moveButton()!.click());
+  await act(async () => {
+    for (let i = 0; i < times; i++) button("Move now")!.click();
+  });
+}
+
+async function wait(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(async () => {
+  await act(async () => root?.unmount());
+  container?.remove();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("BackendMigrationCard", () => {
+  it("is hidden when no older server was found and no run needs reporting", async () => {
+    await render(planWith({ nothing_to_do: true }));
+    expect(container.querySelector('[data-testid="backend-migration-card"]')).toBeNull();
+  });
+
+  it("stays hidden for a blocker without any old backend, and shows only the run when one needs reporting", async () => {
+    const blockerOnly = { old_backend: null, old_address: null, new_address: null, nothing_to_do: false, found: false,
+      blockers: ["/h/config.yaml cannot be read or parsed (ParserError): fix it and re-run the dry run. Nothing changed."] };
+    await render(planWith(blockerOnly));
+    expect(container.querySelector('[data-testid="backend-migration-card"]')).toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+
+    await render(planWith(blockerOnly, { ...none, state: "rolled_back", started_at: 10, message: "verify failed; rolled back" }));
+    expect(container.querySelector('[data-slot="backend-migration-rolled-back"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("An older Hermes server is running");
+    expect(moveButton()).toBeUndefined();
+  });
+
+  it("says what was found in plain words and offers the move", async () => {
+    await render(planWith({}));
+    expect(container.textContent).toContain(
+      "An older Hermes server is running on port 9119. Phones and browsers that use it talk to a second copy of Hermes.",
+    );
+    expect(container.textContent).toContain("The same username and password keep working.");
+    expect(moveButton()?.disabled).toBe(false);
+  });
+
+  it("holds the move while a blocker stands and says what to do", async () => {
+    await render(planWith({
+      blockers: ["1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted)."],
+    }));
+    expect(moveButton()?.disabled).toBe(true);
+    expect(container.textContent).toContain("Wait for them to finish. Or move anyway");
+    expect(container.textContent).not.toContain("--force-interrupt");
+    expect(button("Move anyway")).toBeDefined();
+  });
+
+  it("reports a rolled-back run with its reason even when nothing is left to move", async () => {
+    await render(planWith({ nothing_to_do: true }, {
+      ...none, state: "rolled_back", step: "verify", started_at: 10, finished_at: 20,
+      message: "verify failed: no HTTP 200 on 127.0.0.1:9119/api/status; rolled back, old backend verified on 0.0.0.0:9119",
+    }));
+    expect(container.querySelector('[data-slot="backend-migration-rolled-back"]')?.textContent).toContain(
+      "Reason: verify failed: no HTTP 200 on 127.0.0.1:9119/api/status",
+    );
+  });
+
+  it("sends one apply for a double confirm and follows a 409 'already running' instead of applying again", async () => {
+    const running = { ...none, state: "running" as const, step: "stop_old_backend", started_at: 50, alive: true };
+    const srv = server(() => json(409, { ok: false, error: "already_running", message: "A move is already starting." }),
+      [running]);
+    await render(planWith({}));
+
+    await confirmMove(2);
+    expect(srv.applies()).toBe(1);
+    expect(container.textContent).toContain("Finding out whether the move started");
+    expect(moveButton()).toBeUndefined();
+    expect(container.querySelector('[data-slot="backend-migration-refusal"]')).toBeNull();
+
+    await wait(1600);
+    expect(container.textContent).toContain("Switching off the older server");
+    expect(srv.applies()).toBe(1);
+  });
+
+  it("treats a lost apply answer as an unknown outcome, never as 'did not start'", async () => {
+    const srv = server(() => Promise.reject(new TypeError("Failed to fetch")), [{ ...none, state: "restored", started_at: 0 }]);
+    await render(planWith({}));
+
+    await confirmMove();
+    expect(container.textContent).toContain("Finding out whether the move started");
+    await wait(65_000);
+    const unknown = container.querySelector('[data-slot="backend-migration-unknown"]');
+    expect(unknown?.textContent).toContain("It is not known yet whether the move started.");
+    expect(unknown?.textContent).toContain("hermes -p work gateway migrate --backends --status");
+    expect(container.textContent).not.toContain("did not start");
+    expect(moveButton()).toBeUndefined();
+    expect(button("Check again")).toBeDefined();
+    expect(srv.applies()).toBe(1);
+  });
+
+  it("names the profile in the undo command, and in the recovery command of a run whose process is gone", async () => {
+    await render(planWith({ nothing_to_do: true }, { ...none, state: "done", started_at: 100, new_address: "0.0.0.0:9119" }));
+    expect(container.querySelector('[data-slot="backend-migration-done"]')?.textContent).toContain(
+      "hermes -p work gateway migrate --backends --restore",
+    );
+    await act(async () => root.unmount());
+    container.remove();
+
+    // The engine may leave the address out of a record: the card never prints "null".
+    await render(planWith({ nothing_to_do: true }, { ...none, state: "done", started_at: 100, new_address: null }));
+    expect(container.querySelector('[data-slot="backend-migration-done"]')?.textContent).toContain(
+      "Hermes now answers at the same address",
+    );
+    await act(async () => root.unmount());
+    container.remove();
+
+    await render(planWith({ nothing_to_do: true },
+      { ...none, state: "running", step: "start_gateway", started_at: 100, alive: false }));
+    expect(container.querySelector('[data-slot="backend-migration-stalled"]')?.textContent).toContain(
+      "hermes -p work gateway migrate --backends --restore",
+    );
+  });
+
+  it("shows the server's commands as given: a profile outside the standard root keeps its HERMES_HOME pin", async () => {
+    const pinned = "HERMES_HOME=/srv/team hermes -p work gateway migrate --backends";
+    await render({
+      ...planWith({ nothing_to_do: true }, { ...none, state: "done", started_at: 100, new_address: "0.0.0.0:9119" }),
+      commands: { status: `${pinned} --status`, restore: `${pinned} --restore` },
+    });
+    const done = container.querySelector('[data-slot="backend-migration-done"]')?.textContent ?? "";
+    expect(done).toContain(`${pinned} --restore`);
+    expect(done).not.toContain("hermes -p work gateway migrate --backends --restore to");
+  });
+
+  it("never prints an unknown new address", async () => {
+    await render(planWith({ new_address: null }));
+    expect(container.textContent).toContain("Hermes itself takes over its address.");
+    expect(container.textContent).not.toContain("null");
+  });
+});
+
+describe("readPoll", () => {
+  const run = (state: BackendMigrationStatus["state"], started_at = 100): BackendMigrationStatus =>
+    ({ ...none, state, started_at, new_address: "0.0.0.0:9119", step: "verify" });
+  const asked: PollRef = { previousStartedAt: 50, requestedAt: 100 };
+  const lost: PollRef = { previousStartedAt: 50, requestedAt: null };
+  const at = (sinceSeconds: number, quietSeconds = sinceSeconds) => ({ sinceSeconds, quietSeconds });
+
+  it("ignores the previous run's final status until the new run writes its own", () => {
+    expect(readPoll({ kind: "status", status: run("restored", 50) }, asked, at(2)).kind).toBe("starting");
+    // No record for a minute proves nothing: unknown, never "did not start".
+    expect(readPoll({ kind: "status", status: run("restored", 50) }, asked, at(90)).kind).toBe("unknown");
+    expect(readPoll({ kind: "status", status: run("done") }, asked, at(2))).toEqual({ kind: "done", address: "0.0.0.0:9119" });
+  });
+
+  it("never calls a run whose request answer was lost 'not started': it is unknown", () => {
+    expect(readPoll({ kind: "status", status: run("restored", 50) }, lost, at(2)).kind).toBe("checking");
+    expect(readPoll({ kind: "status", status: run("restored", 50) }, lost, at(90)).kind).toBe("unknown");
+    expect(readPoll({ kind: "status", status: { ...run("running", 51), alive: true } }, lost, at(2)).kind).toBe("running");
+  });
+
+  it("shows a refused background run as not started with its reason, never as a failed undo", () => {
+    const refused = { ...run("failed"), refused: true, message: "the background migration did not start: x" };
+    expect(readPoll({ kind: "status", status: refused }, asked, at(2))).toEqual({
+      kind: "notStarted",
+      lines: ["the background migration did not start: x"],
+    });
+  });
+
+  it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
+    expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
+    expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");
+    expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("unreachable");
+  });
+
+  it("reads a running record whose process is gone as stalled, from alive or the engine's note", () => {
+    expect(readPoll({ kind: "status", status: { ...run("running"), alive: false } }, asked, at(2)).kind).toBe("stalled");
+    expect(readPoll({ kind: "status", status: { ...run("running"), alive: true } }, asked, at(2)).kind).toBe("running");
+    const old = { ...run("running"), message: "x; interrupted: the next run rolls it back" };
+    expect(readPoll({ kind: "status", status: old }, asked, at(2)).kind).toBe("stalled");
+  });
+
+  it("prefers the route's reason over the engine's message", () => {
+    const rolled = { ...run("rolled_back"), reason: "verify failed", message: "verify failed; rolled back, old backend verified" };
+    expect(readPoll({ kind: "status", status: rolled }, asked, at(2))).toEqual({ kind: "rolledBack", reason: "verify failed" });
+  });
+
+  it("keeps the engine's blocker sentences but drops flags the card does not offer", () => {
+    expect(blockerAdvice("This command runs inside x itself; stopping it would end this run. Re-run with --detach.").text)
+      .not.toContain("--detach");
+  });
+});
+
+describe("applyOutcome", () => {
+  it("knows a started move, a refusal, a move already going and a lost answer apart", () => {
+    expect(applyOutcome({ status: 200, body: { ok: true, requested_at: 5, old_address: null, new_address: null } }))
+      .toEqual({ kind: "started", requestedAt: 5, confirmed: true });
+    expect(applyOutcome({ status: 202, body: { ok: true, confirmed: false, requested_at: 5, old_address: null, new_address: null } }))
+      .toEqual({ kind: "started", requestedAt: 5, confirmed: false });
+    expect(applyOutcome({ status: 409, body: { ok: false, error: "blocked", message: "m" } }).kind).toBe("refused");
+    expect(applyOutcome({ status: 409, body: { ok: false, error: "unfinished_run", message: "m" } }).kind).toBe("refused");
+    expect(applyOutcome({ status: 409, body: { ok: false, error: "already_running", message: "m" } }).kind).toBe("running");
+    expect(applyOutcome({ status: 0, body: null }).kind).toBe("lost");
+    expect(applyOutcome({ status: 502, body: null }).kind).toBe("lost");
+    expect(applyOutcome({ status: 500, body: { ok: false, error: "spawn_failed", message: "m" } }).kind).toBe("lost");
+  });
+});
+
+describe("BackendMigrationCard review round", () => {
+  it("sends the confirmed backend with the apply and asks again when the server's plan changed", async () => {
+    const bodies: unknown[] = [];
+    const fresh = { ...planWith({ old_address: "0.0.0.0:9200", new_address: "0.0.0.0:9200" }).plan, expect_token: "t-9200" };
+    const srv = server((init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return json(409, { ok: false, error: "plan_changed", message: "What this server would move changed since it was shown.", plan: fresh });
+    }, [none]);
+    await render(planWith({ expect_token: "t-9119" }));
+
+    await confirmMove();
+    expect(bodies).toEqual([{ address: "0.0.0.0:9119", expect: "t-9119" }]);
+    expect(container.textContent).toContain("What this server would move changed");
+    expect(container.textContent).toContain("running on port 9200");
+    expect(moveButton()?.disabled).toBe(false); // a new confirmation is needed, and offered
+    expect(srv.applies()).toBe(1);
+
+    // Confirming the new plan sends ITS token, not the old one.
+    await confirmMove();
+    expect(bodies[1]).toEqual({ address: "0.0.0.0:9200", expect: "t-9200" });
+  });
+
+  it("keeps an unconfirmed start unknown until a record says otherwise, never 'did not start'", async () => {
+    server(() => json(202, { ok: true, confirmed: false, requested_at: 100, old_address: null, new_address: null }),
+      [{ ...none, state: "restored", started_at: 10 }]);
+    await render(planWith({}));
+
+    await confirmMove();
+    expect(container.textContent).toContain("Finding out whether the move started");
+    await wait(30_000);
+    expect(container.textContent).toContain("Finding out whether the move started");
+    await wait(40_000);
+    expect(container.querySelector('[data-slot="backend-migration-unknown"]')?.textContent).toContain(
+      "hermes -p work gateway migrate --backends --status",
+    );
+    expect(container.textContent).not.toContain("did not start");
+  });
+
+  it("never shows an engine step without the profile", async () => {
+    await render(planWith({ nothing_to_do: true }, {
+      ...none, state: "failed", started_at: 10, message: "verify failed; rollback incomplete: x",
+      manual_steps: ["hermes gateway stop", "cp /b/config.yaml.bak /h/.hermes/config.yaml", "hermes -p work gateway start"],
+    }));
+    const manual = container.querySelector('[data-slot="backend-migration-manual"]')?.textContent ?? "";
+    expect(manual).toContain("hermes -p work gateway stop");
+    expect(manual).toContain("cp /b/config.yaml.bak /h/.hermes/config.yaml");
+    expect(manual).toContain("hermes -p work gateway start");
+    expect(manual).not.toMatch(/hermes gateway/);
+  });
+});

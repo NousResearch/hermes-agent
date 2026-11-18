@@ -43,6 +43,7 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
+import { BackendMigrationCard } from "@/components/BackendMigrationCard";
 import { MultiplexMigrateOffer } from "@/components/MultiplexMigrateOffer";
 import { cn, themedBody } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -1218,6 +1219,7 @@ export default function SystemPage() {
           )}
           {migratePlan && <MultiplexMigrateOffer plan={migratePlan} onMigrate={migrateToMultiplex} />}
         </Card>
+        <BackendMigrationCard />
       </section>
 
       {/* ── Memory ────────────────────────────────────────────────── */}

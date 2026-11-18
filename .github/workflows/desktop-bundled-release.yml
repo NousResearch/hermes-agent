@@ -2327,8 +2327,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         assemble-win32-bundle,
         smoke-darwin-arm64,
         smoke-win32-arm64,
@@ -2366,8 +2364,7 @@ jobs:
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
-      # publish-canary consumes this job's result. Publish diagnostics first,
-      # then require every need except the diagnostic Linux builds.
+      # publish-canary consumes this job's result even when rendering succeeds for a failed build.
       - name: Preserve release success gate
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}

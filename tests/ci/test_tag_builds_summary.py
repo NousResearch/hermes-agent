@@ -8,11 +8,12 @@ import pytest
 from scripts.releases import r2
 from scripts.releases.job_groups import DIAGNOSTIC_JOBS
 from tests.ci.desktop_release_roles import (
-    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, gate, needs_of, selection_gates, tag_summary, termux_builder,
-    updater_publishers,
+    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, gate, needs_of, selection_gates, tag_summary,
+    termux_builder, updater_publishers,
 )
 from tests.ci.test_commit_build_staging import shell_step
 from tests.ci.test_desktop_release_tag_admission import _workflow
+from tests.ci.test_stable_release_graph import ancestors
 from tests.scripts.test_release_r2 import r2_server
 
 
@@ -112,23 +113,8 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
         assert (checked.returncode == 0) is (state == "success"), checked.stdout + checked.stderr
 
 
-def test_linux_builds_are_reported_to_the_table_but_never_block_its_release_gate(tmp_path, r2_server):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+def test_canary_publication_does_not_wait_for_diagnostic_builds():
     jobs = _workflow()["jobs"]
-    table = tag_summary(jobs)
-    termux = termux_builder(jobs)
-    needs = {name: {"result": "success"} for name in needs_of(jobs[table])}
-    assert DIAGNOSTIC_JOBS <= set(needs)
-    for state in ("failure", "skipped", "cancelled"):
-        for name in DIAGNOSTIC_JOBS:
-            needs[name]["result"] = state
-        checked = shell_step(tmp_path, r2_server, table, "Preserve release success gate", {
-            "RELEASE_NEEDS": json.dumps(needs),
-        })
-        assert checked.returncode == 0, checked.stdout + checked.stderr
-    needs[termux]["result"] = "failure"
-    checked = shell_step(tmp_path, r2_server, table, "Preserve release success gate", {
-        "RELEASE_NEEDS": json.dumps(needs),
-    })
-    assert checked.returncode != 0
-    assert f"Release blocked: {termux}=failure" in checked.stderr
-    assert "build-linux" not in checked.stderr
+    required = ancestors(jobs, canary_publisher(jobs))
+    assert {tag_summary(jobs), termux_builder(jobs)} <= required
+    assert not DIAGNOSTIC_JOBS.intersection(required)

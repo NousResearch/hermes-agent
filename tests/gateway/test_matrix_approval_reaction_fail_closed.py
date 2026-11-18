@@ -9,7 +9,6 @@ PR #28494).
 import asyncio
 import sys
 import types
-from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -65,6 +64,7 @@ def _stub_mautrix():
 _stub_mautrix()
 
 from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+from plugins.platforms.matrix.adapter_identity import MatrixIdentity
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +79,10 @@ def _make_adapter(allowed_user_ids=None):
     adapter._approval_reaction_map = {"✅": "once", "❎": "deny"}
     adapter._approval_prompts_by_event = {}
     adapter._approval_prompt_by_session = {}
-    adapter._processed_events = deque(maxlen=512)
-    adapter._processed_events_set = set()
+    adapter._identity = MatrixIdentity(
+        own_user_id=lambda: adapter._user_id,
+        dm_room_check=lambda room_id: adapter._is_dm_room(room_id),
+    )
     return adapter
 
 

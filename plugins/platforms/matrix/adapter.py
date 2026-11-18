@@ -82,7 +82,7 @@ from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, downloa
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
-from plugins.platforms.matrix.adapter_identity import MatrixIdentityMixin
+from plugins.platforms.matrix.adapter_identity import MatrixIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -657,7 +657,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
+class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
     serial_receive_loop = True  # _sync_loop reads the next sync only after this sync's handlers return
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -715,9 +715,10 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
         self._joined_rooms: set[str] = set()
-        from collections import deque
-        self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
-        self._processed_events_set: set = set()
+        # Own-account classification + replay tracker. Callables, not values: the MXID is resolved
+        # from whoami after construction, and the DM classifier is a seam tests swap.
+        self._identity = MatrixIdentity(
+            own_user_id=lambda: self._user_id, dm_room_check=lambda room_id: self._is_dm_room(room_id))
         # Rooms already warned for dropping encrypted events this process lifetime (#131778).
         self._warned_encrypted_drop_rooms: set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
@@ -1268,7 +1269,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
-        self._remember_event(str(event_id))
+        self._identity.remember_event(str(event_id))
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1676,7 +1677,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
-            self._remember_event(str(event_id))
+            self._identity.remember_event(str(event_id))
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -1843,8 +1844,8 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
         # DEBUG-level proof the callback fires at all (silent-inbound troubleshooting).
         logger.debug(
             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
-        if self._is_self_sender(sender):
-            if not self._self_chat or not self._is_confirmed_self_sender(sender):
+        if self._identity.is_self_sender(sender):
+            if not self._self_chat or not self._identity.is_confirmed_self_sender(sender):
                 return
             # Self-chat mode (MATRIX_SELF_CHAT=true): CONFIRMED owner messages become user input
             # (the WhatsApp bridge self-chat equivalent; an unresolved _user_id keeps the
@@ -1852,7 +1853,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
             #   1. sends from OTHER processes (`hermes send`, cron standalone) carry a hermes_*
             #      transaction ID, echoed back in unsigned.transaction_id;
             #   2. sends through THIS adapter were recorded at send time and are dropped by the
-            #      _is_duplicate_event check below (the agent's own replies never loop).
+            #      identity.is_duplicate_event check below (the agent's own replies never loop).
             unsigned = getattr(event, "unsigned", None)
             if isinstance(unsigned, dict):
                 txn_id = str(unsigned.get("transaction_id") or "")
@@ -1860,14 +1861,14 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
                 txn_id = str(getattr(unsigned, "transaction_id", "") or "")
             if txn_id.startswith("hermes_"):
                 return
-            if not await self._is_self_chat_room(room_id):
+            if not await self._identity.is_self_chat_room(room_id):
                 return
         # Bridge/system identities must never reach the pairing flow (echo loop once paired).
         # Ignore own messages (case-insensitive; also drops when our own user_id hasn't been resolved yet —
-        # see _is_self_sender docstring and issue #15763).
+        # see MatrixIdentity.is_self_sender docstring and issue #15763).
         # Once a bridge user is paired, every outbound message it relays would loop back as an authorized
         # user message (the "hall of mirrors" in #15763).
-        if self._is_system_or_bridge_sender(sender):
+        if self._identity.is_system_or_bridge_sender(sender):
             logger.debug("Matrix: ignoring system/bridge sender %s in %s", sender, room_id)
             return
         if any(pattern.search(sender or "") for pattern in self._ignored_user_patterns):
@@ -1877,7 +1878,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
             logger.info("Matrix: ignoring message from unauthorized room %s", room_id)
             return
         event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
+        if self._identity.is_duplicate_event(event_id):
             return
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
@@ -2291,7 +2292,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
         content = {"m.relates_to": {"rel_type": "m.annotation", "event_id": event_id, "key": emoji}}
         try:
             resp_event_id = await self._client.send_message_event(RoomID(room_id), EventType.REACTION, content)
-            self._remember_event(str(resp_event_id))
+            self._identity.remember_event(str(resp_event_id))
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
             return str(resp_event_id)
         except Exception as exc:
@@ -2336,12 +2337,12 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
 
     async def _on_reaction(self, event: Any) -> None:
         sender = str(getattr(event, "sender", ""))
-        if self._is_self_sender(sender):
-            if not self._self_chat or not self._is_confirmed_self_sender(sender):
+        if self._identity.is_self_sender(sender):
+            if not self._self_chat or not self._identity.is_confirmed_self_sender(sender):
                 return
             # Self-chat: your own reactions (approvals, picker picks) count; agent-sent reaction
             # echoes carry either a hermes_* txn (other processes) or are dropped by the
-            # _is_duplicate_event check below (this adapter's own sends).
+            # identity.is_duplicate_event check below (this adapter's own sends).
             unsigned = getattr(event, "unsigned", None)
             if isinstance(unsigned, dict):
                 txn_id = str(unsigned.get("transaction_id") or "")
@@ -2350,7 +2351,7 @@ class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
             if txn_id.startswith("hermes_"):
                 return
         event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
+        if self._identity.is_duplicate_event(event_id):
             return
         room_id = str(getattr(event, "room_id", ""))
         content = getattr(event, "content", None)

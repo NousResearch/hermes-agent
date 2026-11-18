@@ -2,7 +2,7 @@
 input — the WhatsApp bridge self-chat equivalent for Matrix. The suite pins the two
 echo-suppression layers that keep the agent from replying to itself forever:
 
-1. sends through THIS adapter are recorded at send time (``_remember_event``) and dropped when the
+1. sends through THIS adapter are recorded at send time (``remember_event``) and dropped when the
    sync replays them back;
 2. sends made by OTHER processes (``hermes send``, cron standalone) carry a ``hermes_*``
    transaction ID echoed in ``unsigned.transaction_id`` and are dropped by prefix.
@@ -15,6 +15,7 @@ import time
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.matrix.adapter_identity import DEDUPE_MAXLEN
 
 _SELF = "@bot:example.org"
 _DM_ROOM = "!dm:example.org"
@@ -63,26 +64,27 @@ def _wire(adapter, handled, *, dm_rooms=({_DM_ROOM} | set())):
 
 def test_sent_events_are_tracked_and_dropped_as_echoes():
     adapter = _make_adapter()
-    assert not adapter._is_duplicate_event("$sent")
+    assert not adapter._identity.is_duplicate_event("$sent")
     # Every send path (_send_room_message, _send_content_event, reactions) records its event ID.
-    adapter._remember_event("$sent")
-    assert adapter._is_duplicate_event("$sent")
+    adapter._identity.remember_event("$sent")
+    assert adapter._identity.is_duplicate_event("$sent")
 
 
 def test_remember_event_is_idempotent_null_safe_and_bounded():
     adapter = _make_adapter()
-    adapter._remember_event("$a")
-    adapter._remember_event("$a")  # double-record stays one entry
-    adapter._remember_event(None)
-    adapter._remember_event("")  # null-safe
-    assert adapter._is_duplicate_event("$a")
+    identity = adapter._identity
+    identity.remember_event("$a")
+    identity.remember_event("$a")  # double-record stays one entry
+    identity.remember_event(None)
+    identity.remember_event("")  # null-safe
+    assert identity.is_duplicate_event("$a")
 
-    cap = adapter._processed_events.maxlen
-    assert cap is not None  # the tracker is a bounded deque by construction
+    cap = DEDUPE_MAXLEN
     for i in range(cap + 50):
-        adapter._remember_event(f"$fill-{i}")
-    assert len(adapter._processed_events) == cap  # bounded deque
-    assert len(adapter._processed_events_set) == cap  # evicted IDs leave the lookup set too
+        identity.remember_event(f"$fill-{i}")
+    assert not identity.is_duplicate_event("$fill-0")  # oldest evicted → treated as new
+    assert identity.is_duplicate_event(f"$fill-{cap + 49}")  # newest still tracked
+    assert identity.is_duplicate_event(f"$fill-{cap + 49}")  # idempotent under the cap
 
 
 @pytest.mark.asyncio
@@ -105,7 +107,7 @@ async def test_every_send_path_records_its_event_for_echo_suppression():
            await adapter._send_reaction(_DM_ROOM, "$target", "✅")]
     assert ids == ["$wired-1", "$wired-2", "$wired-3"]
     for ev_id in ids:
-        assert adapter._is_duplicate_event(ev_id)  # replay of any send path is an echo
+        assert adapter._identity.is_duplicate_event(ev_id)  # replay of any send path is an echo
 
 
 # --- Layer 2: hermes_* transaction-ID echoes (other processes' sends) -----------------------
@@ -187,14 +189,14 @@ async def test_self_chat_room_scope_fails_closed():
         return room_id == _DM_ROOM
 
     adapter._is_dm_room = is_dm
-    assert await adapter._is_self_chat_room(_DM_ROOM)  # DM classification
-    assert not await adapter._is_self_chat_room(_GROUP_ROOM)
+    assert await adapter._identity.is_self_chat_room(_DM_ROOM)  # DM classification
+    assert not await adapter._identity.is_self_chat_room(_GROUP_ROOM)
 
     async def boom(room_id):
         raise RuntimeError("classification unavailable")
 
     adapter._is_dm_room = boom
-    assert not await adapter._is_self_chat_room(_GROUP_ROOM)  # errors fail closed
+    assert not await adapter._identity.is_self_chat_room(_GROUP_ROOM)  # errors fail closed
 
 
 # --- Reactions (approvals / pickers) use the same two layers --------------------------------

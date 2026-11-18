@@ -3,7 +3,7 @@ import { type McpOAuthFlow, mcpOAuthRpc } from '@/api/mcp'
 
 import { isMissingRpcMethod } from './gateway-rpc'
 
-interface CompleteOptions {
+export interface CompleteOptions {
   serverName: string
   profile?: ProfileScope
   cancelled?: () => boolean

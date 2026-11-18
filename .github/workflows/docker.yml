@@ -215,10 +215,16 @@ jobs:
         id: buildx
         continue-on-error: true
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # PR runs execute PR code on the runner: keep their layers out of main's cache.
+          cache-key: hermes-agent/${{ github.event_name == 'pull_request' && 'pr-' || '' }}${{ matrix.variant }}-${{ matrix.arch }}
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # PR runs execute PR code on the runner: keep their layers out of main's cache.
+          cache-key: hermes-agent/${{ github.event_name == 'pull_request' && 'pr-' || '' }}${{ matrix.variant }}-${{ matrix.arch }}
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
@@ -390,10 +396,14 @@ jobs:
         id: buildx
         continue-on-error: true
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          cache-key: hermes-agent/${{ matrix.variant }}-${{ matrix.arch }}
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          cache-key: hermes-agent/${{ matrix.variant }}-${{ matrix.arch }}
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

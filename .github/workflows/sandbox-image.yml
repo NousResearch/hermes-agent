@@ -72,6 +72,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # PR runs execute PR code on the runner: keep their layers out of publish's cache.
+          cache-key: hermes-sandbox/${{ github.event_name == 'pull_request' && 'pr-' || '' }}desktop-${{ matrix.arch }}
 
       - name: Build (${{ matrix.arch }})
         uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2

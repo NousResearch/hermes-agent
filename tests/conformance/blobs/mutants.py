@@ -12,7 +12,10 @@ stored without their subject (``participant_shared``), reads ignoring the partic
 (``participant_writes_skip_the_fence``), and work designed to outlive the turn
 (``agent.runtime_scope.outlive_turn``) held to the wrong half of its fence: to the session's
 generation as well (``outlived_work_held_to_the_generation``) or to neither half, so a takeover
-no longer refuses it (``outlived_work_skips_the_owner_epoch``).
+no longer refuses it (``outlived_work_skips_the_owner_epoch``, and the delete-only
+``outlived_deletes_skip_the_owner_epoch``); a participant delete that never removes anything
+(``participant_deletes_never_delete``); and a key both levels hold listed twice
+(``shadowed_key_listed_twice``).
 """
 
 LOCAL_SUITE = "tests/conformance/blobs/test_local.py"
@@ -184,6 +187,57 @@ def _reference_outlived_work_skips_the_owner_epoch(monkeypatch):
                         lambda fence, epoch, generation: fence.owner_only or holds(fence, epoch, generation))
 
 
+def _reference_outlived_deletes_skip_the_owner_epoch(monkeypatch):
+    """Puts are fenced correctly, but a delete under an ``owner_only`` fence unlinks without
+    checking it: work that outlives the turn still deletes after a takeover."""
+    from persistence.core.fences import current_turn_fence
+    from tests.conformance.blobs.reference import ReferenceBlobStore
+    delete = ReferenceBlobStore.delete
+
+    def broken(self, key, *, level="agent"):
+        fence = current_turn_fence(self.store_key)
+        if level == "participant" and fence is not None and fence.owner_only:
+            self._pin()
+            path = self._locate(key, self._level_dir(level, self._subject(level)))
+            try:
+                path.unlink()
+                return True
+            except (FileNotFoundError, IsADirectoryError):
+                return False
+        return delete(self, key, level=level)
+    monkeypatch.setattr(ReferenceBlobStore, "delete", broken)
+
+
+def _reference_participant_deletes_never_delete(monkeypatch):
+    """A participant delete checks the pin, its subject and its fence, then removes nothing and
+    reports that there was nothing to delete."""
+    from tests.conformance.blobs.reference import ReferenceBlobStore
+    delete = ReferenceBlobStore.delete
+
+    def broken(self, key, *, level="agent"):
+        if level != "participant":
+            return delete(self, key, level=level)
+        self._pin()
+        self._subject(level)
+        self._write_fence(level)
+        return False
+    monkeypatch.setattr(ReferenceBlobStore, "delete", broken)
+
+
+def _reference_shadowed_key_listed_twice(monkeypatch):
+    """The listing concatenates both levels without merging: a key a participant record shadows
+    is listed twice."""
+    from tests.conformance.blobs.reference import ReferenceBlobStore
+    list_ = ReferenceBlobStore.list
+
+    def broken(self, prefix=""):
+        keys = list_(self, prefix)
+        dirs = self._read_dirs()
+        shadowed = [k for k in keys if len(dirs) == 2 and all(self._locate(k, d).is_file() for d in dirs)]
+        return sorted(keys + shadowed)
+    monkeypatch.setattr(ReferenceBlobStore, "list", broken)
+
+
 #: name → (how to apply it, which suite file kills it, its own-agent control arguments).
 MUTANTS = {
     "reads_skip_the_pin": (_local_reads_skip_the_pin, LOCAL_SUITE,
@@ -216,6 +270,15 @@ MUTANTS = {
     "outlived_work_skips_the_owner_epoch": (_reference_outlived_work_skips_the_owner_epoch, REFERENCE_SUITE,
                                             [REFERENCE_SUITE, "-k",
                                              "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "outlived_deletes_skip_the_owner_epoch": (_reference_outlived_deletes_skip_the_owner_epoch, REFERENCE_SUITE,
+                                              [REFERENCE_SUITE, "-k",
+                                               "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "participant_deletes_never_delete": (_reference_participant_deletes_never_delete, REFERENCE_SUITE,
+                                         [REFERENCE_SUITE, "-k",
+                                          "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "shadowed_key_listed_twice": (_reference_shadowed_key_listed_twice, REFERENCE_SUITE,
+                                  [REFERENCE_SUITE, "-k",
+                                   "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
 }
 
 

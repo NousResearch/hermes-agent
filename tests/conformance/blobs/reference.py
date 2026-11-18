@@ -190,7 +190,8 @@ class ReferenceBlobStore(BlobStore):
                     resolved = path.resolve()
                     if resolved == level_dir or level_dir in resolved.parents:
                         keys.append(str(path.relative_to(level_dir)).replace(os.sep, "/"))
-        return sorted(k for k in keys if k.startswith(prefix))
+        # A key is listed once, however many levels hold it: reads resolve it to one blob.
+        return sorted({k for k in keys if k.startswith(prefix)})
 
     def _read_dirs(self) -> list[Path]:
         """The directories a read resolves through, in the documented order: the bound

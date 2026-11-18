@@ -23,14 +23,15 @@ Covered:
   the level in the error (:class:`BlobLevelRefusalConformance`); one that does stores
   conversation files per participant (:class:`ParticipantConformance`): a member of a group
   agent cannot read, list or delete another member's conversation file, a participant's record
-  resolves before an agent record of the same key, two members' files of one key never
+  resolves before an agent record of the same key (and such a key is listed once), two members' files of one key never
   collide, a member still reads the agent's own files, and an actor that is no principal
   cannot write a participant record;
 - the turn fence on conversation-file writes (:class:`ParticipantWriteFenceConformance`): a
   participant-level write with no bound turn is refused, one under a fence its session's lease
   no longer holds is refused with nothing written, one under the current lease lands, work
-  designed to outlive the turn keeps the fence's owner-epoch half (it writes after the session's
-  next claim and is refused after a takeover), and an agent-level write is never turn-fenced.
+  designed to outlive the turn keeps the fence's owner-epoch half (its puts and deletes land
+  after the session's next claim and are refused after a takeover), a delete under the current
+  lease removes the file, and an agent-level write is never turn-fenced.
   Today's local backend stores no participant level, so nothing changes there: its participant
   writes are refused by the level conformance before any fence is asked for, and this class
   runs only against backends that store the participant level.
@@ -336,6 +337,9 @@ class ParticipantConformance:
             store.put("pets/ghost/shared.bin", b"m1-private", level="participant")
         with backend.bind_member("a", "m1"):
             assert store.get("pets/ghost/shared.bin") == b"m1-private"
+            # The port lists keys, not (level, key) records: a shadowed key is listed once.
+            assert store.list("pets/ghost/").count("pets/ghost/shared.bin") == 1
+            assert store.list("").count("pets/ghost/shared.bin") == 1
         with backend.bind_member("a", "m2"):
             assert store.get("pets/ghost/shared.bin") == b"agent-level"
         with backend.bind("a"):
@@ -408,6 +412,17 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"fenced"
 
+    def test_a_conversation_file_delete_under_its_sessions_current_lease_removes_it(self, backend):
+        self._hooks(backend)
+        store = make_world(backend)
+        fence = backend.claim("a", "s1")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("media/image/inbound.png", b"fenced", level="participant")
+            assert store.delete("media/image/inbound.png", level="participant") is True
+        with backend.bind_member("a", "m1"):
+            assert not store.exists("media/image/inbound.png")
+            assert "media/image/inbound.png" not in store.list("media/")
+
     @pytest.mark.parametrize("how", ["owner_epoch", "next_claim"])
     def test_a_conversation_file_write_under_a_superseded_fence_is_refused_and_writes_nothing(
             self, backend, how):
@@ -425,26 +440,41 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"first"
 
-    def test_work_that_outlives_the_turn_writes_after_the_sessions_next_claim(self, backend):
+    @pytest.mark.parametrize("write", ["put", "delete"])
+    def test_work_that_outlives_the_turn_writes_after_the_sessions_next_claim(self, backend, write):
         self._hooks(backend)
         store = make_world(backend)
         fence = backend.claim("a", "s1")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("media/image/inbound.png", b"first", level="participant")
         backend.supersede("a", "s1", "next_claim")
         with backend.turn("a", "m1", "s1", fence, outlives=True):
-            store.put("media/image/inbound.png", b"outlives", level="participant")
+            if write == "put":
+                store.put("media/image/inbound.png", b"outlives", level="participant")
+            else:
+                assert store.delete("media/image/inbound.png", level="participant") is True
         with backend.bind_member("a", "m1"):
-            assert store.get("media/image/inbound.png") == b"outlives"
+            if write == "put":
+                assert store.get("media/image/inbound.png") == b"outlives"
+            else:
+                assert not store.exists("media/image/inbound.png")
 
-    def test_work_that_outlives_the_turn_is_refused_after_a_takeover(self, backend):
+    @pytest.mark.parametrize("write", ["put", "delete"])
+    def test_work_that_outlives_the_turn_is_refused_after_a_takeover(self, backend, write):
         self._hooks(backend)
         store = make_world(backend)
         fence = backend.claim("a", "s1")
+        with backend.turn("a", "m1", "s1", fence):
+            store.put("media/image/inbound.png", b"first", level="participant")
         backend.supersede("a", "s1", "owner_epoch")
         with backend.turn("a", "m1", "s1", fence, outlives=True):
             with pytest.raises(BlobFenceSuperseded):
-                store.put("media/image/inbound.png", b"outlives", level="participant")
+                if write == "put":
+                    store.put("media/image/inbound.png", b"outlives", level="participant")
+                else:
+                    store.delete("media/image/inbound.png", level="participant")
         with backend.bind_member("a", "m1"):
-            assert not store.exists("media/image/inbound.png")
+            assert store.get("media/image/inbound.png") == b"first"
 
     def test_an_agent_level_write_is_never_turn_fenced(self, backend):
         self._hooks(backend)

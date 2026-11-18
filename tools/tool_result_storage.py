@@ -389,6 +389,23 @@ def _readback_archive_path(tool_name: str, tool_args: str) -> str | None:
     return f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{candidate.name}"
 
 
+def _calls_for_rows(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """``(tool_name, raw_arguments)`` of the call each row answers, by row index: the nearest PRECEDING assistant
+    call with that id. A resumed history can repeat an id, and a whole-transcript map would hand an older result a
+    later call's arguments (a later archive read-back would then skip saving that result's own original)."""
+    from agent.context_compressor import _tc_get
+
+    seen: dict[str, tuple[str, str]] = {}
+    out: list[tuple[str, str]] = []
+    for msg in messages:
+        out.append(seen.get(str(msg.get("tool_call_id") or ""), ("unknown", "")) if isinstance(msg, dict) else ("unknown", ""))
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                fn = _tc_get(tc, "function", {})
+                seen[_tc_get(tc, "id") or ""] = (_tc_get(fn, "name", "unknown"), _tc_get(fn, "arguments"))
+    return out
+
+
 def archive_pruned_originals(
     messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
@@ -398,9 +415,7 @@ def archive_pruned_originals(
     so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
     that already names its archive is left as the prune made it: its original is on disk.
     """
-    from agent.context_compressor import _tool_calls_by_id
-
-    call_id_to_tool = _tool_calls_by_id(messages)
+    call_at = _calls_for_rows(messages)
     rows, written, reverted = list(pruned), [], 0
     for i, (original, replacement) in enumerate(zip(messages, pruned)):
         if (not isinstance(original, dict) or original.get("role") != "tool"
@@ -411,7 +426,7 @@ def archive_pruned_originals(
             continue
         text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
         call_id = str(original.get("tool_call_id") or "")
-        tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+        tool_name, tool_args = call_at[i]
         if (read_back := _readback_archive_path(tool_name, tool_args)) is not None:
             rows[i] = {**replacement, "content": _with_pointer(replacement.get("content"), read_back)}
             continue

@@ -284,6 +284,7 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
     if not argv and _windows_without_wmic():
         from hermes_cli.gateway_migrate_backends_windows import argv_of
         argv = argv_of(pid)
+    exact_argv = argv
     if not argv:
         try:
             argv = shlex.split(command)
@@ -325,7 +326,9 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         item.supervisor = "detached" if orphan else ("manual" if ppid and ppid > 1 else "unknown")
     with contextlib.suppress(Exception):
         from hermes_cli.dashboard_procs import _hermes_home_for_pid
-        item.hermes_home = _hermes_home_for_pid(pid) or item.hermes_home
+        home = (_hermes_home_for_pid(pid, argv_reader=lambda _: exact_argv) if _windows_without_wmic() and exact_argv
+                else _hermes_home_for_pid(pid))
+        item.hermes_home = home or item.hermes_home
     return item
 
 

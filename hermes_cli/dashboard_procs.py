@@ -163,7 +163,12 @@ def _pid_passwd_home(pid: int) -> str | None:
     return None
 
 
-def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> str | None:
+def _discovery_argv(pid: int) -> list[str] | None:
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    return _dashboard_cmdline_for_pid(pid)
+
+
+def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False, argv_reader=_discovery_argv) -> str | None:
     """Resolve a process home for discovery, or require pinned launch identity for termination.
 
     By default, ``None`` means an unreadable environment (another user, hardened ``/proc``).
@@ -183,9 +188,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
-    argv = _dashboard_cmdline_for_pid(pid)
+    argv = argv_reader(pid)
     if require_launch_identity and argv is None:
         # The dashboard argv reader has no Windows implementation; psutil does.
         import psutil

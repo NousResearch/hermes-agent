@@ -1652,3 +1652,82 @@ def test_the_by_hand_recipe_copies_only_what_the_env_file_lacks(home, capsys):
     (rest,) = _system_unit_steps(home, capsys)  # nothing left to name: the generic line must not undo the .env
     assert rest == (f"# copy every HERMES_DASHBOARD_* line from the old launcher's environment that {env} does "
                     f"not already set, if any, into {env} (chmod 600)")
+
+
+def test_the_gateway_install_output_is_shown_only_when_it_fails(capfd):
+    import subprocess
+    import sys
+
+    from hermes_cli.gateway_migrate_backends_host import run_quietly
+
+    def noisy(fail):
+        print("Next steps: hermes gateway start")
+        subprocess.run([sys.executable, "-c", "print('Created symlink from a child')"], check=True)
+        if fail:
+            raise RuntimeError("install failed")
+        return "installed"
+
+    assert run_quietly(lambda: noisy(False)) == "installed"
+    assert capfd.readouterr().out == ""
+    with pytest.raises(RuntimeError):
+        run_quietly(lambda: noisy(True))
+    out = capfd.readouterr().out
+    assert "Next steps" in out and "Created symlink from a child" in out
+
+
+class _Site(SystemHost):
+    """The real page check against a real local HTTP server serving a temp bundle."""
+
+    def __init__(self, home, dist):
+        super().__init__(home)
+        self.dist = dist
+
+    def webapp_dist(self):
+        return self.dist
+
+
+@pytest.mark.parametrize(("answer", "ok"), [("index", True), ("login", True), ("unavailable", False),
+                                             ("login-other-asset", False)])
+def test_the_webapp_page_check_needs_this_bundle_served(home, tmp_path, answer, ok):
+    import http.server
+    import threading
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    index = '<!doctype html><html><head><script type="module" src="/assets/index-abc.js"></script></head></html>'
+    (dist / "index.html").write_text(index, encoding="utf-8")
+    (dist / "assets" / "index-abc.js").write_text("console.log('webapp')", encoding="utf-8")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # http.server API
+            if self.path == "/" and answer == "index":
+                body, code, extra = index.encode(), 200, {}
+            elif self.path == "/" and answer == "unavailable":
+                body, code, extra = b"<h1>Hermes is unavailable</h1>", 404, {}
+            elif self.path == "/":
+                body, code, extra = b"", 302, {"Location": "/login?next=%2F"}
+            elif self.path == "/assets/index-abc.js":
+                body = b"console.log('webapp')" if answer == "login" else b"console.log('another build')"
+                code, extra = 200, {}
+            else:
+                body, code, extra = b"", 404, {}
+            self.send_response(code)
+            for k, v in extra.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):  # http.server API
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        problem = _Site(home, dist).webapp_page_problem("127.0.0.1", server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert (problem is None) is ok, problem
+    (dist / "index.html").rename(dist / "index.html.moved")  # a bundle broken after the build
+    assert "cannot be served" in str(_Site(home, dist).webapp_page_problem("127.0.0.1", 9))

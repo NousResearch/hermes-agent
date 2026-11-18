@@ -1217,14 +1217,20 @@ class HostedRoomRuntime:
             transport, profile, session_id = self._open_session(binding, task)
             receipt = (self._terminal_receipt(transport, profile, session_id, task)
                        if session_id and callable(getattr(transport, "results", None)) else None)
+            if receipt is None and session_id and callable(getattr(transport, "discard", None)):
+                info = transport.info(**_session_kw(profile, session_id))
+                self._report_pending_action(task, session_id=session_id, info=info)
+                # Keep the admitting home's authority until its generation-fenced Discard answers.
+                resolved = self._settle_lost_attempt(transport, profile, session_id, task, info)
+                if isinstance(resolved, _TerminalReceipt):
+                    receipt = resolved
+                elif resolved is True and task["payload"].get("lead_routing"):
+                    lease = self._ensure_lease(binding)
+                    reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
+                    self._cancel_lost_routing(binding, reopened, lease)
             if receipt is not None:
                 self._fenced(state.settle_recovered_task, binding, task,
                              self._ensure_lease(binding), **asdict(receipt))
-            elif session_id and callable(getattr(transport, "discard", None)):
-                inspection = self._inspect_session(transport, task, session_id, read_history=False)
-                if inspection.status == "unknown" and not inspection.active:
-                    task = self._fenced(state.reopen_deferred_task, None, task, self._ensure_lease(binding))
-                    self._give_up_on_attempt(binding, task, inspection, probe_failed=False)
         except Exception as exc:  # health: allow BLE001 -- a failed old receipt must not block later work
             logger.debug("deferred receipt read failed: %s", type(exc).__name__)
 
@@ -1404,13 +1410,13 @@ class HostedRoomRuntime:
             self._resolve_indeterminate(binding, task, lease, lost_routing)
             return
         if lost_routing:
-            given_up = self._fenced(
-                state.resolve_indeterminate_cancellation, None, task, lease,
-                cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}", reason=LOST_ROUTING_REASON)
+            self._cancel_lost_routing(binding, task, lease)
         else:
-            given_up = self._fenced(
-                state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
-        self._publish(binding, given_up)
+            self._fenced(state.defer_indeterminate_task, binding, task, lease, reason="member_unavailable")
+
+    def _cancel_lost_routing(self, binding, task, lease):
+        self._fenced(state.resolve_indeterminate_cancellation, binding, task, lease,
+                     cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}", reason=LOST_ROUTING_REASON)
 
     def _lead_takes_lost_routing(
         self, binding: HostedRoomBinding, task: Mapping[str, Any],

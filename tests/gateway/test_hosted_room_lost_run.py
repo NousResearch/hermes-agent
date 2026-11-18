@@ -283,37 +283,23 @@ def test_stop_keeps_a_deferred_turn_whose_lost_run_could_not_be_resolved(left_un
 
 
 def test_retry_during_observer_discard_requires_a_deferred_probe(left_unknown, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-    from threading import Event
     from persistence.core.errors import AuthorityRefusal
 
     room = left_unknown
-    read, resume = Event(), Event()
+    binding, = room.service.bindings()
+    lease = room.runtime._ensure_lease(binding)
+    deferred = state.get_task(room.db, room.routing, placement='profile')
+    reopened = room.runtime._fenced(state.reopen_deferred_task, None, deferred, lease)
     select = room.service._control_task
 
-    def pause_after_selection(*args):
+    def finish_deferral_after_read(*args):
         selected = select(*args)
-        if not read.is_set():
-            assert selected[0]['status'] == 'indeterminate'
-            read.set()
-            assert resume.wait(10)
+        if selected[0]['status'] == 'indeterminate':
+            room.runtime._fenced(state.defer_indeterminate_task, None, reopened, lease, reason='member_unavailable')
         return selected
 
-    monkeypatch.setattr(room.service, '_control_task', pause_after_selection)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        retries = []
-
-        def timeout(**kwargs):
-            retries.append(pool.submit(room.service.retry_room_task, ROOM, **room.control))
-            assert read.wait(10)
-            raise TimeoutError('unconfirmed discard')
-
-        monkeypatch.setattr(HostedRoomAuthorityRPC, 'discard', lambda self, **kw: timeout(**kw))
-        try:
-            room.runtime._process_room(room.service.bindings()[0])
-        finally:
-            resume.set()
-        with pytest.raises(AuthorityRefusal, match='unknown_execution'):
-            retries[0].result(timeout=10)
+    monkeypatch.setattr(room.service, '_control_task', finish_deferral_after_read)
+    with pytest.raises(AuthorityRefusal, match='unknown_execution'):
+        room.service.retry_room_task(ROOM, **room.control)
     assert state.get_task(room.db, room.routing, placement='profile')['status'] == 'deferred'
     assert _admissions(room.authority, room.sid) == ['unknown']

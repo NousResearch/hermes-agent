@@ -376,7 +376,10 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstam
     between two ``Input.insertText`` calls and must still find the next field by its stamp.
 
     A ``<select>`` holds the value when its selected option matches it the way the fill script
-    picks options; a text control holds it when it reads back exactly.
+    picks options. A text control holds it when it reads back exactly — except that a card number,
+    combined expiry, phone number or postal code made only of digits and separators also holds it
+    when a display mask regrouped the same digits (``4111 1111 …``, ``(555) 123-4567``). A dropped
+    or added digit, any letter, and every other token (passwords, usernames) stay exact.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
@@ -509,6 +512,14 @@ _VERIFY_JS_TEMPLATE = """(() => {
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
 __OPTION_MATCH__
+  const digitMasked = new Set(["cc-number", "cc-exp", "tel", "postal-code"]);
+  const digitsAndSeparators = (v) => /^[\d\s()+\-./]*$/.test(v) && /\d/.test(v);
+  const holds = (f, shown) => {
+    const want = String(f.value);
+    if (shown === want) return true;
+    return digitMasked.has(f.token) && digitsAndSeparators(want) && digitsAndSeparators(shown)
+      && shown.replace(/\D/g, "") === want.replace(/\D/g, "");
+  };
   let landed = 0;
   let reverted = 0;
   const missing = [];
@@ -520,7 +531,7 @@ __OPTION_MATCH__
       if (selected && optionMatches(selected, f.value)) landed += 1; else reverted += 1;
       continue;
     }
-    if (String(el.value) === String(f.value)) landed += 1; else reverted += 1;
+    if (holds(f, String(el.value))) landed += 1; else reverted += 1;
   }
   if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ landed, reverted, missing });

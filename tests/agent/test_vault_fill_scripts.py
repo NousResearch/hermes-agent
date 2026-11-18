@@ -149,3 +149,25 @@ class TestReadBack:
         expr = ("(() => { " + build_fill_js(fills, expected_origin="https://example.com", nonce=NONCE)
                 + "; return " + build_fill_verify_js(fills, nonce=NONCE) + "; })()")
         assert _run(setup, expr) == {"landed": 1, "reverted": 0, "missing": []}
+
+    @pytest.mark.parametrize(("token", "value", "shown"), [
+        ("cc-number", "4111111111111111", "4111 1111 1111 1111"),
+        ("cc-exp", "07/29", "07 / 29"),
+        ("tel", "5551234567", "(555) 123-4567"),
+    ])
+    def test_a_mask_that_only_reformats_digits_is_landed(self, token, value, shown):
+        setup = f'stamp(add(document, "input", {{ type: "text", value: {json.dumps(shown)} }}), 0);'
+        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE)
+        assert _run(setup, js)["landed"] == 1
+
+    @pytest.mark.parametrize(("token", "value", "shown"), [
+        ("cc-number", "4111111111111111", "4111 1111 1111 111"),   # a digit lost
+        ("tel", "+15551234567", "(555) 123-4567"),                 # the country code dropped
+        ("tel", "user@example.com", ""),                           # not a number: exact only
+        ("current-password", "12 34", "1234"),                     # passwords stay exact
+        ("username", "a-b", "ab"),
+    ])
+    def test_anything_beyond_formatting_digits_is_reverted(self, token, value, shown):
+        setup = f'stamp(add(document, "input", {{ type: "{"password" if token == "current-password" else "text"}", value: {json.dumps(shown)} }}), 0);'
+        js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE)
+        assert _run(setup, js)["reverted"] == 1

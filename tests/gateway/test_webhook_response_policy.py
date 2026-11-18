@@ -168,9 +168,14 @@ def test_policy_grammar_tolerances_and_hardening():
     assert allow(URGENT)
     assert allow(URGENT.replace("Action required:", "**Action Required:**"))
     assert allow(URGENT.replace("[NEEDS-APPROVAL]", "**[NEEDS-APPROVAL]**"))
+    assert allow(URGENT.replace("[NEEDS-APPROVAL]", "[Needs-Approval]"))
+    assert allow(URGENT.replace("[NEEDS-APPROVAL]", "[needs-approval]"))
     assert allow("[NEEDS-APPROVAL] Disk full on db-01\n- action required: purge the WAL archive")
-    for noop in ("No action required.", "None needed", "not applicable", "`none`", "—"):
+    for noop in ("No action required.", "None needed", "not applicable", "`none`", "—",
+                 "**none**", "**No action needed.**", "_none_"):
         assert not allow(f"[NEEDS-APPROVAL] x\nAction required: {noop}")
+    # A bolded REAL action still passes.
+    assert allow("[NEEDS-APPROVAL] x\nAction required: **rotate the leaked key now**")
     # A fenced no-op must not veto the real action line below it...
     assert allow("[NEEDS-APPROVAL] x\n```\nAction required: none\n```\nAction required: Rotate the leaked key now")
     # ...and a fence cannot smuggle urgency in either.

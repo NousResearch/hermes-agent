@@ -243,8 +243,9 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         **_dashboard_route_signature(body.signature, expected),
     }
     # Re-POSTs rebuild the record; keep a hand-configured response_policy instead of
-    # silently reverting an urgent_only route to unrestricted delivery.
-    if "response_policy" in expected:
+    # silently reverting an urgent_only route to unrestricted delivery. On create,
+    # `expected` is the _MISSING_SUBSCRIPTION sentinel, not a dict — guard the lookup.
+    if isinstance(expected, dict) and "response_policy" in expected:
         route["response_policy"] = expected["response_policy"]
     if body.script and body.script.strip():
         route["script"] = body.script.strip()

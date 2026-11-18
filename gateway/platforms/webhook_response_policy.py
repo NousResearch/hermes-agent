@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 # Escalation header, optionally wrapped in markdown emphasis; NBSP counts as spacing.
-_URGENT_HEADER = re.compile(r"^\*{0,2}\[(?:NEEDS-APPROVAL|UNRESOLVED|SECURITY-INCIDENT)\]\*{0,2}[ \t\u00a0]+\S.*$")
+_URGENT_HEADER = re.compile(r"^\*{0,2}\[(?:NEEDS-APPROVAL|UNRESOLVED|SECURITY-INCIDENT)\]\*{0,2}[ \t\u00a0]+\S.*$", re.IGNORECASE)
 # `Action required:` line, case-insensitive, tolerant of a bullet or bold emphasis on the label.
 _ACTION_LINE = re.compile(r"^(?:[-*]\s+)?\*{0,2}action required\*{0,2}:\s*(.*)$", re.IGNORECASE)
 _NO_ACTION = frozenset({
@@ -53,7 +53,7 @@ def urgent_response_allowed(content: str, metadata: dict | None = None) -> bool:
         if fenced:
             continue
         if match := _ACTION_LINE.match(line):
-            action = match.group(1).strip().strip("`\"'()[] \u00a0")
+            action = match.group(1).strip().strip("`\"'()[]*_ \u00a0")
             if action and any(ch.isalnum() for ch in action) \
                     and action.rstrip(".!; \u3002").casefold() not in _NO_ACTION:
                 return True

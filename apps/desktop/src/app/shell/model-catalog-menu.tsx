@@ -1371,7 +1371,7 @@ function groupModels(
     // Keep the OpenRouter/custom fallback (#57534), but don't synthesize
     // Codex choices the backend omitted. The composer still shows the current model.
     if (
-      provider.slug !== 'openai-codex' &&
+      (provider.slug !== 'openai-codex' || provider.is_user_defined) &&
       catalogProviderMatches(provider, current.provider) &&
       current.model &&
       !allFamilies.some(family => family.id === current.model || family.fastId === current.model)

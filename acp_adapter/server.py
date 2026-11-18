@@ -19,7 +19,7 @@ import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
-    McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
+    McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
     SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
@@ -32,7 +32,7 @@ from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
-from acp_adapter.model_catalog import build_model_state, encode_model_choice
+from acp_adapter.model_catalog import build_model_state, fallback_model_state
 from acp_adapter import modes as _modes
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
@@ -343,10 +343,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         except Exception:
             logger.debug("Could not build ACP model state", exc_info=True)
 
-        if not model:
-            return None
-        choice = encode_model_choice(provider, model)
-        return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+        return fallback_model_state(model, provider)
 
     def _switch_model(
         self, state: SessionState, raw_model: str, *, keep_endpoint: bool = False

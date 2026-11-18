@@ -564,6 +564,29 @@ describe('the current model the catalog omits (#57534)', () => {
     expect(row.textContent).toContain('Qwen 2.5 72B Instruct')
   })
 
+  it.each(['openai-codex', 'review-proxy'])('keeps the current model for a custom endpoint named %s', async slug => {
+    const model = 'gpt-6.2-sol'
+    const provider = `custom:${slug}`
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          aliases: [provider],
+          api_url: 'https://proxy.example/v1',
+          is_user_defined: true,
+          models: ['gpt-6-sol'],
+          name: 'Proxy',
+          slug
+        }
+      ]
+    })
+
+    renderMenu({ model, provider })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(screen.getByText(modelDisplayParts(model).name).closest('[role="menuitem"]')).not.toBeNull()
+  })
+
   it('does not inject the current model into a provider that is not the current one', async () => {
     // current.provider has no row; the model must not leak into another group.
     getGlobalModelOptions.mockResolvedValue({

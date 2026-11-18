@@ -354,8 +354,9 @@ happens:
   `components` table keeps its identity and Block memos hold when a reply
   finishes. Only the code blocks re-render, from plain code to Shiki, in
   place. Measured in jsdom: 755 ms down to 10 ms for a 50 KB reply.
-- **The splitter's exact cache drops superseded streamed prefixes.** It
-  used to keep up to 256 full-length copies per stream (~12 MB after a
+- **The splitter drops only unsettled superseded prefixes.** Settled replies remain
+  reusable when another stream extends the same text, within the 256-entry LRU.
+  This avoids retaining 256 full-length copies per active stream (~12 MB after a
   50 KB reply).
 
 What remains grows with message length, all in the deferred render:

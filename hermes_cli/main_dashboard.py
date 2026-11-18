@@ -136,6 +136,14 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
         "enabled", "enabled-runtime", "linked", "linked-runtime", "static", "generated",
     }:
         return False
+    if active_state != "active":
+        from hermes_cli.backend_migration_marker import backend_retired_by_migration
+        if backend_retired_by_migration():
+            # Moved to the gateway: a stopped old backend stays stopped (a `static` unit is never
+            # `disabled`, so the enabled check above cannot tell).
+            print(f"\n  • {unit} stays stopped: this profile's backend was moved to the gateway "
+                  "(backend_migration.json).")
+            return True
 
     print(f"\n⟲ Restarting managed dashboard service ({reason})")
 

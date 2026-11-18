@@ -39,6 +39,10 @@ def stored_policy(**overrides):
     ({"cwd": None}, "cwd"),
     ({"platform": "tui"}, "source"),
     ({"source": "nowhere", "platform": "nowhere"}, "source"),
+    ({"source": []}, "source"),
+    ({"source": {}}, "source"),
+    ({"source": "local", "platform": []}, "source"),
+    ({"edit_approval_policy": ["ask"]}, "edit_approval_policy"),
     ({"toolsets": [1, 2]}, "toolsets"),
     ({"safe_mode": "yes"}, "safe_mode"),
     ({"ignore_user_config": "yes"}, "ignore_user_config"),
@@ -63,6 +67,13 @@ def test_refusal_names_the_failing_field(overrides, expected_field):
     assert error.field == expected_field, (error.field, error.detail)
     assert error.detail, "a named field without a detail tells the operator nothing"
     assert f"storage_unavailable[{expected_field}]: {error.detail}" in _refused_check(error)
+
+
+@pytest.mark.parametrize("not_an_object", [None, [], "policy"])
+def test_a_receipt_whose_policy_is_not_an_object_names_it(not_an_object):
+    with pytest.raises(AuthorityRefusal) as caught:
+        restore_policy(not_an_object)
+    assert (caught.value.reason, caught.value.field) == ("storage_unavailable", "policy")
 
 
 @pytest.mark.parametrize("missing", ["model", "cwd", "toolsets"])

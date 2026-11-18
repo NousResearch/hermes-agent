@@ -1082,11 +1082,30 @@ def _adopt_stored_policy(data):
 
 def _stored_policy(data):
     """The receipt's policy object; a required field the receipt lacks is refused by name."""
+    if not isinstance(data, dict):
+        raise _policy_refused('policy', 'the stored policy is not an object')
     stored = _adopt_stored_policy(data)
-    missing = sorted(_REQUIRED_POLICY_FIELDS - set(stored)) if isinstance(stored, dict) else ()
+    missing = sorted(_REQUIRED_POLICY_FIELDS - set(stored))
     if missing:
         raise _policy_refused(missing[0], 'the stored policy has no value for this required field')
     return LocalSessionPolicy(**stored)
+
+
+def _check_stored_surface(policy) -> None:
+    """Refuse a receipt whose source/platform is not a surface pair this build knows, by name."""
+    from gateway.session_a2a import is_forward_policy
+    # The membership checks below hash these; a list or dict would raise TypeError unnamed.
+    if not isinstance(policy.source, str) or not isinstance(policy.platform, str):
+        raise _policy_refused('source', 'the stored source/platform is not a pair of names')
+    surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
+    # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
+    # (#148473): that pair restores; a ``local`` label on any other platform still refuses.
+    source_ok = ((policy.source in surfaces and policy.platform == surfaces[policy.source])
+                 or (policy.source == 'local'
+                     and policy.platform in {SURFACES[name] for name in STORED_AS_LOCAL}))
+    if not is_forward_policy(policy) and not source_ok:
+        raise _policy_refused('source', f'stored source/platform {policy.source}/'
+                                        f'{policy.platform} is not a known surface pair')
 
 
 def restore_policy(data):
@@ -1100,16 +1119,7 @@ def restore_policy(data):
     """
     try:
         policy = _stored_policy(data)
-        from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
-        # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
-        # (#148473): that pair restores; a ``local`` label on any other platform still refuses.
-        source_ok = ((policy.source in surfaces and policy.platform == surfaces[policy.source])
-                     or (policy.source == 'local'
-                         and policy.platform in {SURFACES[name] for name in STORED_AS_LOCAL}))
-        if not is_forward_policy(policy) and not source_ok:
-            raise _policy_refused('source', f'stored source/platform {policy.source}/'
-                                            f'{policy.platform} is not a known surface pair')
+        _check_stored_surface(policy)
         if not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd):
             raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
         # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
@@ -1135,7 +1145,8 @@ def restore_policy(data):
         if not _valid_client_env(policy.client_env_rules_json, list):
             raise _policy_refused('client_env_rules_json', 'the stored client environment rules are '
                                                            'malformed')
-        if policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES:
+        if not isinstance(policy.edit_approval_policy, str) or (
+                policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES):
             raise _policy_refused('edit_approval_policy', 'the stored edit approval policy is unknown')
         if policy.edit_approval_policy != 'ask' and (policy.source, policy.platform) not in {
                 ('acp', 'acp'), ('local', 'acp')}:

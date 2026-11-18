@@ -883,8 +883,9 @@ async def test_the_first_beat_after_a_goodbye_waits_only_the_quiet_minute(clock)
     assert receiver.kinds == ["beat", "goodbye", "beat"]
 
 
-def _goodbye_while_the_second_beat_is_in_flight(receiver: Receiver):
-    """A reporter whose suspend path says goodbye while its second beat waits for the reply."""
+def _goodbye_while_the_second_beat_is_in_flight(receiver: Receiver, clock=None, freeze_s: float = 0):
+    """A reporter whose suspend path says goodbye while its second beat waits for the reply; with
+    *freeze_s*, the machine then freezes for that long before the reply comes back."""
     loop = asyncio.get_running_loop()
     reporter = None
 
@@ -898,6 +899,8 @@ def _goodbye_while_the_second_beat_is_in_flight(receiver: Receiver):
             if receiver.kinds == ["beat", "beat"]:
                 asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
                 assert receiver.goodbye_arrived.wait(timeout=5)
+                if freeze_s:
+                    clock.advance(freeze_s)
 
     reporter = make_reporter(answer_after_the_goodbye)
     return reporter
@@ -919,6 +922,42 @@ async def test_a_beat_answered_after_the_goodbye_leaves_the_next_beat_at_the_qui
     await reporter.poll()
 
     assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+
+
+async def test_a_beat_answered_after_the_machine_froze_and_woke_lets_the_next_go_out_at_once(clock):
+    """The machine can freeze with a beat still in flight and wake after the quiet minute: the reply
+    that comes back then must not push the first beat after the wake out to a told 600 s."""
+    receiver = Receiver()
+    receiver.reply_with(_told(RESPONSES["interval_max_s"]), _told(RESPONSES["interval_max_s"]))
+    reporter = _goodbye_while_the_second_beat_is_in_flight(receiver, clock, freeze_s=3 * 60)
+    await reporter.poll()
+    clock.advance(RESPONSES["interval_max_s"] * 1.1 + 1)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "beat", "goodbye"]
+
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+
+
+async def test_a_beat_that_failed_across_the_freeze_is_not_retried_after_the_goodbye(clock):
+    """A quick retry would re-send a report older than the goodbye, which the receiver drops: the
+    first beat after the wake is a new report instead."""
+    receiver = Receiver()
+    receiver.reply_with(Reply(), Reply(500))
+    reporter = _goodbye_while_the_second_beat_is_in_flight(receiver, clock, freeze_s=3 * 60)
+    await reporter.poll()
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+    await settle()
+    clock.advance(QUICK_RETRY_S + 1)
+
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat", "goodbye", "beat"]
+    goodbye_seq, wake_seq = (seen.body["seq"] for seen in receiver.requests[2:])
+    assert wake_seq > goodbye_seq
 
 
 async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clock):

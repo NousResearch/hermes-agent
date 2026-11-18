@@ -455,16 +455,23 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     Returns None (fall through) when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
-        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
+        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant, is_codex_context_variant
 
         # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
         # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real
         # hidden provider slug — soft-accepting one silently runs at 272K on a different model.
         if req.lookup.strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and req.lookup not in set(catalog):
-            if is_codex_context_variant(req.lookup):
-                # Valid variant a stale catalog hasn't synthesized yet.
-                return _accept()
             base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+            if is_codex_context_variant(req.lookup):
+                if has_codex_context_variant(base_guess):
+                    # Legacy verified variant a stale catalog hasn't synthesized yet.
+                    return _accept()
+                # Catalog-only variant: unlocked only by an account catalog that lists the alias.
+                return _reject(
+                    f"`{req.requested}` is only offered when your Codex account catalog publishes a larger "
+                    f"`max_context_window` for `{base_guess}`, and the current catalog does not. "
+                    f"Pick `{base_guess}`, or refresh the model list and choose the alias if it appears."
+                )
             return _reject(
                 f"`{req.requested}` is not a recognized large-context variant in this Hermes version. "
                 f"Pick `{base_guess}` or an available variant from `/model`. "

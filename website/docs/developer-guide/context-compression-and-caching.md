@@ -481,17 +481,14 @@ The base slugs retain their advertised defaults. No `-pro` or dated-snapshot
 variants are inferred.
 
 Unlike the legacy verified variants above, these new choices are not offered
-from offline compatibility hints. A saved selection can reuse a maximum
-already observed for the same credential and endpoint in this process during
-a catalog outage. With no observed maximum, it falls back conservatively,
-never to the direct API's larger window. Custom `codex_responses` routes use
-only their own catalog and credential. Compression still follows the user's
-existing policy; selecting an alias does not raise the compaction threshold.
-
-Install the updated code and restart the gateway that owns the chat before
-selecting a newly added alias. A new CLI client attached to an older gateway
-does not update that gateway's model validator. An unrecognized alias error
-is a Hermes version/support check, not proof of a provider context limit.
+from offline compatibility hints, and `/model` rejects them unless the
+current account catalog lists them. A saved selection gets the larger budget
+only while the current catalog for the same credential and endpoint lists the
+base model. During a catalog outage it fails closed to the conservative
+fallback, never to an earlier observation or the direct API's larger window.
+Custom `codex_responses` routes use only their own catalog and credential.
+Compression still follows the user's existing policy; selecting an alias
+does not raise the compaction threshold.
 
 ### Codex app-server thread compaction
 

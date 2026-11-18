@@ -1918,9 +1918,9 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
         slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
-    # On a catalog miss, never fall through to the direct API's larger window for a saved pin.
-    if _codex_variant_base(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
-        return _catalog_variant_limit(catalog_max) or _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare, _CODEX_OAUTH_STALE_ADVERTISED_CTX), "fallback"
+    if _codex_variant_base(model_bare) in _CODEX_CATALOG_WINDOW_BASES:  # a miss never unlocks; a stale max only clamps
+        fallback = _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare, _CODEX_OAUTH_STALE_ADVERTISED_CTX)
+        return min(fallback, catalog_max or fallback), "fallback"
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
@@ -2087,10 +2087,10 @@ def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_ke
     not know take the ordinary endpoint probes."""
     ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
     if ctx and api_key and is_codex_context_variant(model):
-        # A catalog-only opt-in takes this route's max; legacy verified bumps only clamp downward.
-        _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)
-        cap = _cached_codex_catalog_max(api_key, base_url, _bare_codex_slug(strip_codex_context_variant_suffix(model)))
-        if _codex_variant_base(model) in _CODEX_CATALOG_WINDOW_BASES:
+        # A catalog-only opt-in needs this route's current catalog to list the slug; stale caps only clamp.
+        live = _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)[0]
+        cap = _cached_codex_catalog_max(api_key, base_url, slug := _bare_codex_slug(strip_codex_context_variant_suffix(model)))
+        if _codex_variant_base(model) in _CODEX_CATALOG_WINDOW_BASES and _codex_catalog_key(live, slug) is not None:
             ctx = _catalog_variant_limit(cap) or ctx
         elif cap and cap < ctx:
             ctx = cap

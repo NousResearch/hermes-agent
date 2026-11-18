@@ -53,7 +53,7 @@ Speed is separate from reasoning effort. On supported subscription models, **Fas
 
 Hermes creates the **GPT-6.1 Sol-900k** choice from an eligible discovered GPT-6.1 Sol model. The `-900k` suffix is a local context choice, removed from the model ID sent to OpenAI. Hermes limits its budget to the account catalog's maximum, and Codex may report a smaller usable context after its own reserve. Use **Refresh models** if a new model is absent. A failed discovery uses short-lived compatibility hints instead of caching them as a successful account catalog.
 
-GPT-6.2 Astra and Sol also offer `-900k` choices when the authenticated catalog publishes a larger `max_context_window` than the standard window. Their budget is the smaller of that maximum and 900,000 tokens; the base selections are unchanged. These choices require live discovery and are not added from offline hints. After installing support for a new alias, restart the gateway handling the chat, not just the CLI client. See [Codex extended context](../developer-guide/context-compression-and-caching.md#codex-large-context--900k-picker-variants-opt-in).
+GPT-6.2 Astra and Sol also offer `-900k` choices when the authenticated catalog publishes a larger `max_context_window` than the standard window. Their budget is the smaller of that maximum and 900,000 tokens; the base selections are unchanged. These choices require live discovery and are not added from offline hints. While the catalog is unavailable, a saved choice runs with the standard window. See [Codex extended context](../developer-guide/context-compression-and-caching.md#codex-large-context--900k-picker-variants-opt-in).
 
 ### Mid-session switches and context warnings
 

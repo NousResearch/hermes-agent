@@ -39,8 +39,8 @@ def test_the_built_in_sqlite_is_refused(monkeypatch):
 @pytest.mark.parametrize("pinning, isolating, refusal", [
     (False, "pass", "scope_pinning"),
     (True, "raise", "role bypasses row security"),
-    (True, "absent", "assert_isolating"),
-    (True, "not-callable", "assert_isolating"),
+    (True, "absent", "no callable assert_isolating"),
+    (True, "not-callable", "no callable assert_isolating"),
 ])
 def test_a_backend_that_cannot_prove_isolation_is_refused_and_closed(bundled_root, entry_points, pinning, isolating,
                                                                     refusal):

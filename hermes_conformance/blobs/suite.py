@@ -84,8 +84,8 @@ class Backend:
       :class:`ParticipantConformance`'s writes and :class:`ParticipantWriteFenceConformance`.
     - ``turn(agent, member, session, fence, outlives=False)``: bind *member*'s claimed turn of
       *session* under *fence* — the scope a conversation-file write runs under (*outlives*:
-      work designed to outlive the turn, keeping the fence's owner-epoch half). Required by
-      the same classes.
+      work designed to outlive the turn, keeping the fence's owner-epoch half; in-tree that is
+      ``agent.runtime_scope.outlive_turn`` inside ``bind_turn``). Required by the same classes.
     - ``supersede(agent, session, how)``: move the lease out from under the fence a claim
       issued — ``"owner_epoch"`` (another owner took the agent over) or ``"next_claim"`` (the
       session's next input was claimed elsewhere). Required by
@@ -425,7 +425,6 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"first"
 
-    @pytest.mark.skip(reason="needs feat/hosted-persistence: outlive_turn")
     def test_work_that_outlives_the_turn_writes_after_the_sessions_next_claim(self, backend):
         self._hooks(backend)
         store = make_world(backend)
@@ -436,7 +435,6 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"outlives"
 
-    @pytest.mark.skip(reason="needs feat/hosted-persistence: outlive_turn")
     def test_work_that_outlives_the_turn_is_refused_after_a_takeover(self, backend):
         self._hooks(backend)
         store = make_world(backend)

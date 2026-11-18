@@ -8,8 +8,11 @@ lock leaking through a tenant-blind or missing pin (``reads_skip_the_pin``,
 (``level_refusal_removed``). The two-level reference backend's holes: participant records
 stored without their subject (``participant_shared``), reads ignoring the participant level
 (``participant_reads_ignored``), one shared namespace across agents
-(``shared_namespace``), and the turn fence on conversation-file writes never checked
-(``participant_writes_skip_the_fence``).
+(``shared_namespace``), the turn fence on conversation-file writes never checked
+(``participant_writes_skip_the_fence``), and work designed to outlive the turn
+(``agent.runtime_scope.outlive_turn``) held to the wrong half of its fence: to the session's
+generation as well (``outlived_work_held_to_the_generation``) or to neither half, so a takeover
+no longer refuses it (``outlived_work_skips_the_owner_epoch``).
 """
 
 LOCAL_SUITE = "tests/conformance/blobs/test_local.py"
@@ -164,6 +167,23 @@ def _reference_participant_writes_skip_the_fence(monkeypatch):
     monkeypatch.setattr(ReferenceBlobStore, "_write_fence", lambda self, level: None)
 
 
+def _reference_outlived_work_held_to_the_generation(monkeypatch):
+    """The fence check ignores ``owner_only``: work that outlives the turn is refused after the
+    session's next claim, like a stale reply."""
+    from tests.conformance.blobs import reference
+    monkeypatch.setattr(reference, "fence_holds",
+                        lambda fence, epoch, generation: epoch == fence.epoch and generation == fence.generation)
+
+
+def _reference_outlived_work_skips_the_owner_epoch(monkeypatch):
+    """An ``owner_only`` fence is never checked: work that outlives the turn still writes after
+    another owner took the agent over."""
+    from tests.conformance.blobs import reference
+    holds = reference.fence_holds
+    monkeypatch.setattr(reference, "fence_holds",
+                        lambda fence, epoch, generation: fence.owner_only or holds(fence, epoch, generation))
+
+
 #: name → (how to apply it, which suite file kills it, its own-agent control arguments).
 MUTANTS = {
     "reads_skip_the_pin": (_local_reads_skip_the_pin, LOCAL_SUITE,
@@ -190,6 +210,12 @@ MUTANTS = {
     "participant_writes_skip_the_fence": (_reference_participant_writes_skip_the_fence, REFERENCE_SUITE,
                                           [REFERENCE_SUITE, "-k",
                                            "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "outlived_work_held_to_the_generation": (_reference_outlived_work_held_to_the_generation, REFERENCE_SUITE,
+                                             [REFERENCE_SUITE, "-k",
+                                              "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
+    "outlived_work_skips_the_owner_epoch": (_reference_outlived_work_skips_the_owner_epoch, REFERENCE_SUITE,
+                                            [REFERENCE_SUITE, "-k",
+                                             "succeeds_for_its_own_agent or reads_the_agents_own_files"]),
 }
 
 

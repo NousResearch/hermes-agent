@@ -11,11 +11,11 @@ against the session's lease (``reference.SessionLeases``) inside the write: the 
 drives a hosted one.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import pytest
 
-from agent.runtime_scope import bind_state, bind_turn
+from agent.runtime_scope import bind_state, bind_turn, outlive_turn
 from hermes_conformance.blobs import Backend, BlobConformance
 from hermes_scope import Group, Principal, Scope, System
 from tests.conformance.blobs.reference import ReferenceBlobStore, SessionLeases
@@ -39,15 +39,14 @@ def reference_backend(tmp_path):
 
     @contextmanager
     def turn(agent, member, session, fence, *, outlives=False):
-        # A member's claimed turn: the scope a conversation-file write runs under, bound as
-        # the turn's TurnScope (outlives: work designed to outlive it, keeping the fence's
-        # owner-epoch half — needs outlive_turn from feat/hosted-persistence; the suite skips
-        # those cases on main).
-        if outlives:
-            raise NotImplementedError("needs feat/hosted-persistence: outlive_turn")
+        # A member's claimed turn, bound the way the gateway binds it: the member's hosted
+        # scope, then bind_turn, which makes it a TurnScope and stamps the turn's fence with the
+        # issuing store's key (the hosted pin's, the reference store's own). outlives: work
+        # designed to outlive the turn, under outlive_turn, keeping the fence's owner-epoch half.
         with bind_state(Scope(TENANT, agent, Principal(member), owner=Group("g1"), can_administer=False)):
             with bind_turn(session, "t1", fence):
-                yield
+                with outlive_turn() if outlives else nullcontext():
+                    yield
 
     def supersede(agent, session, how):
         lease = leases_of(agent)

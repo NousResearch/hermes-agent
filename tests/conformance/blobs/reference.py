@@ -13,10 +13,15 @@ The pin is the bound scope, with no fallback: a hosted backend never serves an a
 profile. A participant record is the bound principal's — the ownership key's subject comes
 from the scope, never from the key.
 
-A conversation file is session-owned data, so its writes are fenced: they must run under the
-bound turn (``hermes_scope.TurnScope``), whose fence the store checks against the session's
-lease on its :class:`SessionLeases` inside the write, before anything of it lands. The leases
-model the turn-admission lease the hosted blob backend would read from its own index.
+A conversation file is session-owned data, so its writes are fenced the way every hosted
+repository write is (``persistence.core.fences``): inside the write the store reads
+:func:`~persistence.core.fences.current_turn_fence` for its own store key (the hosted pin key,
+``persistence.StorePin(tenant, agent).key``, which ``agent.runtime_scope.bind_turn`` stamps on
+the turn a hosted scope binds) and checks it with :func:`~persistence.core.fences.fence_holds`
+against the session's lease on its :class:`SessionLeases`, before anything of it lands. Work
+designed to outlive the turn (``agent.runtime_scope.outlive_turn``) carries an ``owner_only``
+fence, held to the owner epoch alone. The leases model the turn-admission lease the hosted blob
+backend would read from its own index.
 """
 
 from __future__ import annotations
@@ -28,7 +33,9 @@ from hermes_blob_port import (
     LEVELS, BlobFenceRequired, BlobFenceSuperseded, BlobKeyRefused, BlobLevelRefused,
     BlobNotFound, BlobPinRefused, BlobStore, parse_key,
 )
-from hermes_scope import Fence, Principal, TurnScope, current_scope
+from hermes_scope import Fence, Principal, current_scope
+from persistence.core.context import StorePin
+from persistence.core.fences import current_turn_fence, fence_holds
 
 
 class SessionLeases:
@@ -50,13 +57,10 @@ class SessionLeases:
         """Another owner takes the agent over: every fence's owner-epoch half is gone."""
         self.epoch += 1
 
-    def holds(self, session: str, fence: Fence, *, owner_only: bool = False) -> bool:
-        """Whether *fence* is still *session*'s lease here: the owner epoch the claim stamped is
-        still current, and (*owner_only*: work designed to outlive the turn) so is the session's
-        runtime generation."""
-        if fence.epoch != self.epoch:
-            return False
-        return owner_only or self.generations.get(session) == fence.generation
+    def current(self, session: str) -> tuple[int, int | None]:
+        """The lease as the store reads it inside a write: the owner epoch and *session*'s
+        runtime generation (``None``: never claimed here)."""
+        return self.epoch, self.generations.get(session)
 
 
 class ReferenceBlobStore(BlobStore):
@@ -69,6 +73,8 @@ class ReferenceBlobStore(BlobStore):
         #: per agent, shared by every store opened over it in a test.
         self.root, self.tenant, self.agent = root.resolve(), tenant, agent
         self.leases = leases if leases is not None else SessionLeases()
+        #: The key turn fences on this store are issued under: the hosted pin's.
+        self.store_key = StorePin(tenant, agent).key
 
     # --- the pin: the bound scope, nothing else
 
@@ -101,26 +107,25 @@ class ReferenceBlobStore(BlobStore):
 
     def _write_fence(self, level: str) -> None:
         """The turn fence on a conversation-file write (``participant`` level): it is
-        session-owned data, so it runs under the bound turn, whose fence this store checks
-        against the session's lease on ``self.leases`` inside the write, before anything of it
-        lands. The bound turn is the bound scope when it is a ``TurnScope`` (what
-        ``agent.runtime_scope.bind_turn`` binds). Work designed to outlive the turn (checked on
-        the owner-epoch half alone) needs ``outlive_turn`` from feat/hosted-persistence, which
-        main lacks, so every turn here is checked on its whole fence. Agent-level writes are
-        never turn-fenced."""
+        session-owned data, so it runs under the bound claimed turn, whose fence
+        (``current_turn_fence`` for this store's key) this store checks against the session's
+        lease on ``self.leases`` inside the write, before anything of it lands — the owner-epoch
+        half alone for work designed to outlive the turn (``outlive_turn``: an ``owner_only``
+        fence). No fence for this store (no turn bound, the owner's own operation, or a turn
+        claimed on another store) refuses the write. Agent-level writes are never turn-fenced."""
         if level != "participant":
             return
-        scope = current_scope()
-        mark = scope if isinstance(scope, TurnScope) else None
-        if mark is None:
+        fence = current_turn_fence(self.store_key)
+        if fence is None:
             raise BlobFenceRequired(
                 "a conversation-file write is session-owned data and must run under its turn's "
-                "fence; no turn is bound")
-        if not self.leases.holds(mark.session, mark.fence):
+                "fence; no turn claimed on this store is bound")
+        epoch, generation = self.leases.current(fence.session_id)
+        if not fence_holds(fence, epoch, generation):
             raise BlobFenceSuperseded(
-                f"turn {mark.turn!r} of session {mark.session!r} no longer holds its session's "
-                f"lease (fence epoch={mark.fence.epoch}, generation={mark.fence.generation}); "
-                "refusing its conversation-file write")
+                f"turn {fence.turn_id!r} of session {fence.session_id!r} no longer holds its "
+                f"session's lease (fence epoch={fence.epoch}, generation={fence.generation}, "
+                f"owner_only={fence.owner_only}); refusing its conversation-file write")
 
     def _locate(self, key: str, level_dir: Path) -> Path:
         """The file *key* names under *level_dir*, refused (``BlobKeyRefused``) when the key

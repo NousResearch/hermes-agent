@@ -291,8 +291,9 @@ async def test_admitted_completion_reaches_compressed_owners_tip_without_reading
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stamped", [False, True])
 async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
-    tmp_path, monkeypatch, private_db_probe_cleanup,
+    tmp_path, monkeypatch, private_db_probe_cleanup, stamped,
 ):
     """A compression after admission plus a failed read leaves the result pending and queued; the next
     delivery proves the compressed tip and reaches it."""
@@ -333,6 +334,8 @@ async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
             ad._persist_dispatch(event)
             ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
 
+            if stamped:
+                event["_completion_ledger_home"] = db.scope.hermes_home_key
             # The turn runs after admission settled the row, as the adapter's background task does.
             assert await runner._deliver_completion_notification("completed result", event) is True
             seed_session(db, "owner-tip", "telegram", parent_session_id=owner)

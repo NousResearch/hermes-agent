@@ -368,6 +368,7 @@ def _offer_pending(completions, target_queue, *, startup: bool = False) -> int:
         evt = completion.event
         if isinstance(evt, dict):
             evt = redact_completion_event(evt)
+            evt["_completion_ledger_home"] = home
         with _orphan_lock:
             if startup:
                 _startup_replayed.add(delegation_id)
@@ -1090,6 +1091,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
                     record.get("delegation_id"))
         return
     try:
+        evt["_completion_ledger_home"] = record.get("_home") or hermes_home_key(get_hermes_home())
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
@@ -1128,6 +1130,7 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
         "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
         **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
     try:
+        evt["_completion_ledger_home"] = snapshot.get("_home") or hermes_home_key(get_hermes_home())
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)

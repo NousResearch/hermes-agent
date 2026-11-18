@@ -23,6 +23,7 @@ from gateway.session_worker import _claim
 def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp_path, monkeypatch):
     from gateway.session_worker_delegation import worker_delegation_request
     from tools.process_registry import process_registry
+    from hermes_constants import hermes_home_key
     target = queue.Queue()
     monkeypatch.setattr(process_registry, 'completion_queue', target)
     handle = open_persistence(profile_scope(home=tmp_path))
@@ -52,9 +53,9 @@ def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp
                               payload={'event': event, 'result': {'summary': 'durable'}})
         response = asyncio.run(worker_delegation_request(connection, ref, params))
         assert response == {'value': None}
-        assert target.get_nowait() == event | {'restored': True}
+        assert target.get_nowait() == event | {'restored': True, '_completion_ledger_home': hermes_home_key(tmp_path)}
         assert asyncio.run(worker_delegation_request(connection, ref, params)) == response
-        assert target.get_nowait() == event | {'restored': True}
+        assert target.get_nowait() == event | {'restored': True, '_completion_ledger_home': hermes_home_key(tmp_path)}
         with raw_holder(handle)._read_ctx() as conn:
             row = conn.execute('SELECT event_json FROM async_delegations').fetchone()
             assert json.loads(row[0]) == event

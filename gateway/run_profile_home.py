@@ -1,5 +1,6 @@
 """Which profile's HERMES_HOME serves an inbound source (``GatewayRunner._resolve_profile_home_for_source``)."""
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -82,3 +83,51 @@ async def completion_event_scope_or_refuse(runner, evt: dict, what: str):
                        what, evt.get("session_key") or evt.get("session_id") or "<unknown>", exc.profile)
         return None
     return stack
+
+
+def completion_ledger_home(runner, evt: dict) -> Path | None:
+    """Validate private queue provenance against the gateway's served profiles.
+
+    The producing ledger stamps this after decoding a stored event. A deleted
+    raw local parent cannot rediscover that owner from its session row. Unknown
+    owners stay retryable rather than falling through to the launch profile.
+    """
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    owner = evt.get("_completion_ledger_home")
+    if owner is None:
+        return None
+    if not isinstance(owner, str) or not owner or not Path(owner).is_absolute():
+        raise LookupError("Invalid completion ledger owner")
+    homes = dict(getattr(runner, "_served_profile_homes", None) or {})
+    primary = getattr(runner, "_primary_profile_name", None) or "default"
+    routing_home = getattr(getattr(runner, "session_store", None), "_routing_home", None)
+    homes.setdefault(primary, routing_home or get_routing_process_hermes_home())
+    key = hermes_home_key(owner)
+    for home in homes.values():
+        if hermes_home_key(home) == key:
+            return Path(home)
+    raise LookupError("Completion ledger owner is not served by this gateway")
+
+
+def completion_event_scope(runner, evt: dict):
+    """Bind the ledger owner before source/session heuristics for legacy events."""
+    from gateway.run import _async_profile_runtime_scope
+    from hermes_constants import get_hermes_home_override
+    from gateway.run_notifications import _raw_process_event_session_id
+    owner = completion_ledger_home(runner, evt)
+    if owner is not None:
+        return _async_profile_runtime_scope(owner)
+    source = runner._build_process_event_source(evt)
+    if source is None or not getattr(source, "profile", None):
+        raw_sid = _raw_process_event_session_id(evt)
+        if raw_sid and getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+            return runner._served_api_server_event_scope(evt, raw_sid)
+        # No routed profile: the launch profile's own completion. Bind ITS scope once the
+        # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
+        # launch-profile event (no-op while single-profile).
+        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        return async_launch_profile_scope_if_multiplexed()
+    profile_home = runner._resolve_profile_home_for_source(source)
+    if get_hermes_home_override() == str(profile_home):
+        return contextlib.nullcontext()  # already inside this profile's scope
+    return _async_profile_runtime_scope(profile_home)

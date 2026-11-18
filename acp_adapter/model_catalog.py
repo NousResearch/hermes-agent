@@ -239,7 +239,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
-    from hermes_cli.models import normalize_provider, provider_label
+    from hermes_cli.models import _model_requires_account_discovery, normalize_provider, provider_label
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(
@@ -295,7 +295,8 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_is_empty:
         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
-    if current_model_id and current_model_id not in {item.model_id for item in available_models}:
+    requires_discovery = cat.current_choice_provider == "openai-codex" and _model_requires_account_discovery("openai-codex", model)
+    if current_model_id and not requires_discovery and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(
             model_id=current_model_id, name=f"{provider_name} · {model}",
@@ -304,7 +305,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
 
     if not available_models and current_is_empty:
         return SessionModelState(available_models=[], current_model_id="")
-    if available_models:
+    if available_models or (current_model_id and requires_discovery):
         return SessionModelState(
             available_models=available_models,
             current_model_id=current_model_id if current_model_id or current_is_empty else available_models[0].model_id,

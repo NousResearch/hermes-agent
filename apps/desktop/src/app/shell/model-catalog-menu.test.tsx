@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { registry } from '@/contrib/registry'
+import { modelDisplayParts } from '@/lib/model-status-label'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -536,6 +537,19 @@ describe('the catalog owns favorite models', () => {
 })
 
 describe('the current model the catalog omits (#57534)', () => {
+  it.each([false, true])('shows the current Codex model in the menu only when listed (%s)', async listed => {
+    const model = 'gpt-6.2-sol'
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: listed ? ['gpt-6-sol', model] : ['gpt-6-sol'], name: 'OpenAI Codex', slug: 'openai-codex' }]
+    })
+
+    renderMenu({ model, provider: 'openai-codex' })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(Boolean(screen.queryByText(modelDisplayParts(model).name)?.closest('[role="menuitem"]'))).toBe(listed)
+  })
+
   it('renders the current model as a selectable row when the provider catalog lacks it', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]

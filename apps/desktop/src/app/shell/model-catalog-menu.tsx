@@ -1368,12 +1368,10 @@ function groupModels(
   for (const provider of providers) {
     let allFamilies = collapseModelFamilies(provider.models ?? [])
 
-    // The catalog row is a hint, not the authority: an OpenRouter current
-    // model the returned catalog omits must still render and stay selectable,
-    // or the picker has no active-model row at all (#57534). The backend
-    // injects current_model into the row when it can, but the renderer cannot
-    // rely on that — the row may arrive from a cache that predates the switch.
+    // Keep the OpenRouter/custom fallback (#57534), but don't synthesize
+    // Codex choices the backend omitted. The composer still shows the current model.
     if (
+      provider.slug !== 'openai-codex' &&
       catalogProviderMatches(provider, current.provider) &&
       current.model &&
       !allFamilies.some(family => family.id === current.model || family.fastId === current.model)

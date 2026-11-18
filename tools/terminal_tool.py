@@ -176,9 +176,9 @@ from tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and exported variables persist between calls: activate a virtualenv or export once. Output is truncated with the full text saved to a file; never pipe it through head/tail.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and env persist between calls: activate a virtualenv or export once. Output is truncated, full text saved to a file; never pipe through head/tail.
 
-Foreground (default) returns when the command finishes; to wait a fixed time, run the wait in the foreground, never background a sleep or polling loop. Health-check background servers separately; manage jobs with process_manage. After a cd, trust the result's "cwd" instead of repeating the cd. Do not use it to read, search or edit files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked."""
+Foreground (default) returns when done; to wait a fixed time, sleep in the foreground, never a background or polling loop. Health-check background servers separately; use process_manage for jobs. Trust the result's "cwd" after a cd. Do not use it to read, search or edit files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked; for several files or counts, call them in parallel or loop in execute_code."""
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}

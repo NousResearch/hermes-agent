@@ -290,6 +290,23 @@ describe('Md link labels', () => {
     expect(rendered).toContain(url)
   })
 
+  it('drops a raw OSC 8 link inside plain text, keeping its label and real <Link>s', () => {
+    const spoof = `see ${ESC}]8;;https://evil.example/x${BEL}docs.python.org${ESC}]8;;${BEL} ok`
+
+    const ansi = renderAnsi(
+      React.createElement(
+        Box,
+        { flexDirection: 'column' },
+        React.createElement(Text, null, spoof),
+        React.createElement(Link, { url: 'https://docs.example.com/real' }, 'real')
+      )
+    )
+
+    expect(ansi).not.toContain('evil.example')
+    expect(ansi).toContain(';https://docs.example.com/real')
+    expect(renderPlain(React.createElement(Text, null, spoof)).join('\n')).toContain('see docs.python.org ok')
+  })
+
   it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {
     const ansi = renderAnsi(md(`[x](https://example.com/x${BEL}${ESC}]2;TITLE${BEL})`))
 

@@ -1,7 +1,7 @@
 name: hermes-pilot
 title: Hermes Pilot
 repo: https://github.com/hajimemanila/hermes-pilot
-sha: "8c7d8d817f120a07258dc02ffe585ab8d6c149d9"
+sha: "5c82ba628ae715e5ae4d390940d5fd4c20612cac"
 description: >-
   Drive an autonomous Hermes Agent from a phone or tablet. Hermes Pilot turns the decisions an agent needs into
   one-tap review sheets and annotated screenshots, carries a one-line idea through a Quick Review interview into a
@@ -19,7 +19,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/hajimemanila/hermes-pilot#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: [macos, linux]
 capabilities:
   provides_tools: []

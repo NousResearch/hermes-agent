@@ -1,15 +1,18 @@
-"""The printed by-hand steps quote what ``hermes gateway status`` and ``hermes webapp --status`` really print.
+"""The printed by-hand steps match what ``hermes gateway status`` and ``hermes webapp --status`` print.
 
-A step that says "if it prints X" is only followable when X is a line the command prints. Each quoted phrase
-is checked against the source of the status commands, so a wording change there fails here instead of in a
-user's terminal. The closing ``webapp --status`` runs while a just-started gateway may still be binding, so
-the step before it says to wait and re-run.
+The branch step reads "# then by what it prints: 'A' or 'B' -> install; ... -> start; ... -> restart".
+Each case runs the real status function with controlled inputs, captures its output, and checks that the
+first group of the step whose quoted line appears there names the right command. The functions are the
+systemd and launchd service status, the no-service and by-hand paths of ``hermes gateway status``, and
+the Windows service status. The closing ``webapp --status`` runs while a just-started gateway may still
+be binding, so the step before it quotes what ``webapp --status`` prints then (captured the same way)
+and says to wait and run it again.
 """
 
 from __future__ import annotations
 
+import contextlib
 import re
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,21 +20,21 @@ import pytest
 from hermes_cli import gateway_migrate_backends_plan as plan
 from hermes_cli import gateway_migrate_backends_windows as win
 
-_ROOT = Path(plan.__file__).resolve().parent
 _H = "hermes -p work"
 
 
-def _source(*names: str) -> str:
-    return "\n".join((_ROOT / n).read_text(encoding="utf-8") for n in names)
-
-
-def _quoted(line: str) -> list[str]:
-    return re.findall(r"'([^']+)'", line)
-
-
-def _branch(steps: list[str]) -> str:
+def _groups(steps: list[str]) -> list[tuple[list[str], str]]:
+    """``[(quoted lines, command)]`` of the branch step, in the order a reader checks them."""
     (line,) = [s for s in steps if s.startswith("# then by what it prints")]
-    return line
+    groups = []
+    for part in line.split(":", 1)[1].split(";"):
+        quoted, _, command = part.partition("->")
+        groups.append((re.findall(r"'([^']+)'", quoted), command.strip()))
+    return groups
+
+
+def _command_for(steps: list[str], printed: str) -> str | None:
+    return next((command for quoted, command in _groups(steps) if any(q in printed for q in quoted)), None)
 
 
 def _system_unit_steps():
@@ -44,36 +47,118 @@ def _windows_steps():
     return win.manual_steps("127.0.0.1", 9119, item, home="/home/u/.hermes/profiles/work")
 
 
-def test_the_posix_branch_quotes_what_gateway_status_prints():
-    line = _branch(_system_unit_steps())
-    phrases = _quoted(line)
-
-    assert "not installed ->" not in line  # `hermes gateway status` never prints "not installed" there
-    source = _source("gateway.py", "gateway_launchd.py")
-    assert phrases and all(p in source for p in phrases), [p for p in phrases if p not in source]
-    for verb in ("install", "start", "restart"):
-        assert f"-> {_H} gateway {verb}" in line
+def _printed(capsys, call) -> str:
+    # The status line comes first; probes after it (health, logs) may not run in a test and are not checked.
+    with contextlib.suppress(Exception):
+        call()
+    return capsys.readouterr().out
 
 
-def test_the_windows_branch_quotes_what_gateway_status_prints_there():
-    line = _branch(_windows_steps())
-    phrases = _quoted(line)
+def _systemd(monkeypatch, tmp_path, active: bool):
+    from hermes_cli import gateway as gw
+    unit = tmp_path / "hermes-gateway.service"
+    unit.write_text("[Service]\n", encoding="utf-8")
+    monkeypatch.setattr(gw, "_select_systemd_scope", lambda system=False: system)
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit)
+    monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: False)
+    monkeypatch.setattr(gw, "systemd_unit_is_current", lambda system=False: True)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes.print_scrubbed_output", lambda *a, **k: None)
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **k: SimpleNamespace(
+        returncode=0, stdout="active" if active else "inactive", stderr=""))
+    return gw.systemd_status
 
-    source = _source("gateway_windows.py")
-    assert phrases and all(p in source for p in phrases), [p for p in phrases if p not in source]
-    for verb in ("install", "start", "restart"):
-        assert f"-> {_H} gateway {verb}" in line
+
+def _launchd(monkeypatch, state: str):
+    from hermes_cli import gateway_launchd as ld
+    listed = {"not-loaded": (1, ""), "registered": (0, '{\n\t"Label" = "ai.hermes.gateway";\n};'),
+              "supervised": (0, '{\n\t"PID" = 4321;\n\t"Label" = "ai.hermes.gateway";\n};')}
+    code, out = listed[state]
+    fake = SimpleNamespace(get_launchd_plist_path=lambda: "/Users/u/Library/LaunchAgents/ai.hermes.gateway.plist",
+                           get_launchd_label=lambda: "ai.hermes.gateway", _CAPTURE_TEXT={},
+                           _parse_launchd_pid_from_list_output=lambda text: 4321 if '"PID"' in text else None,
+                           _launchd_unsupported_marker_exists=lambda: False, launchd_plist_is_current=lambda: True)
+    monkeypatch.setattr(ld, "_gw", lambda: fake)
+    monkeypatch.setattr(ld.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=code, stdout=out, stderr=""))
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda **k: None)
+    return ld.launchd_status
+
+
+def _no_service(monkeypatch, pids: list[int]):
+    from hermes_cli import gateway as gw
+    snapshot = SimpleNamespace(running=bool(pids), gateway_pids=pids, service_running=False, manager=None)
+    monkeypatch.setattr(gw, "get_gateway_runtime_snapshot", lambda system=False: snapshot)
+    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes.report_incompatible_owner", lambda pids: False)
+    monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda probe: None)
+    monkeypatch.setattr(gw, "_print_runtime_health", lambda *a, **k: None)
+    return lambda: gw._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
+
+
+def _windows(monkeypatch, task: bool, pids: list[int]):
+    from hermes_cli import gateway_windows as gwin
+    for name in ("_assert_windows", "_print_start_attestation_warning", "_print_scheduled_task_drift"):
+        monkeypatch.setattr(gwin, name, lambda *a, **k: None)
+    monkeypatch.setattr(gwin, "get_task_name", lambda: "Hermes Gateway")
+    monkeypatch.setattr(gwin, "is_task_registered", lambda: task)
+    monkeypatch.setattr(gwin, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gwin, "_gateway_pids", lambda: list(pids))
+    monkeypatch.setattr(gwin, "query_task_status", dict)
+    monkeypatch.setattr("hermes_cli.gateway_windows_legacy.warn_legacy_launchers", lambda: None)
+    return gwin.status
+
+
+@pytest.mark.parametrize(("case", "verb"), [
+    ("systemd-stopped", "start"), ("systemd-running", "restart"),
+    ("launchd-not-loaded", "start"), ("launchd-registered", "start"), ("launchd-supervised", "restart"),
+    ("no-service", "install"), ("by-hand", "restart"),
+])
+def test_the_posix_branch_names_the_right_command_for_what_status_prints(case, verb, monkeypatch, tmp_path,
+                                                                           capsys):
+    call = {"systemd-stopped": lambda: _systemd(monkeypatch, tmp_path, False),
+            "systemd-running": lambda: _systemd(monkeypatch, tmp_path, True),
+            "launchd-not-loaded": lambda: _launchd(monkeypatch, "not-loaded"),
+            "launchd-registered": lambda: _launchd(monkeypatch, "registered"),
+            "launchd-supervised": lambda: _launchd(monkeypatch, "supervised"),
+            "no-service": lambda: _no_service(monkeypatch, []),
+            "by-hand": lambda: _no_service(monkeypatch, [4321])}[case]()
+    printed = _printed(capsys, call)
+
+    steps = _system_unit_steps()
+    assert "not installed ->" not in "\n".join(steps)  # `hermes gateway status` never prints that there
+    assert _command_for(steps, printed) == f"{_H} gateway {verb}", printed
+
+
+@pytest.mark.parametrize(("task", "pids", "verb"), [(False, [], "install"), (True, [], "start"),
+                                                     (True, [77], "restart")])
+def test_the_windows_branch_names_the_right_command_for_what_status_prints(task, pids, verb, monkeypatch,
+                                                                             capsys):
+    printed = _printed(capsys, _windows(monkeypatch, task, pids))
+
+    assert _command_for(_windows_steps(), printed) == f"{_H} gateway {verb}", printed
 
 
 @pytest.mark.parametrize("steps", [_system_unit_steps, _windows_steps,
                                    lambda: plan.manual_steps("127.0.0.1", 9119, None, env_keys=(),
                                                              home="/home/u/.hermes/profiles/work", no_service=True)])
-def test_the_closing_check_says_to_wait_and_re_run_while_the_gateway_binds(steps):
-    got = steps()
+def test_the_closing_check_quotes_what_webapp_status_prints_while_the_gateway_starts(steps, monkeypatch,
+                                                                                     tmp_path, capsys):
+    from gateway import webapp_listener
+    from hermes_cli import webapp_launcher
 
+    def unreachable(*a, **k):
+        raise webapp_launcher.GatewayUnreachable("not up yet")
+
+    monkeypatch.setattr(webapp_launcher, "_control", unreachable)
+    monkeypatch.setattr(webapp_listener, "webapp_settings", lambda *a, **k: webapp_listener.WebappSettings(
+        enabled=True))
+    assert webapp_launcher._status(tmp_path) == 1
+    printed = capsys.readouterr().out
+
+    got = steps()
     assert got[-1] == f"{_H} webapp --status"
     wait = got[-2]
     assert wait.startswith("# ") and "wait" in wait and "again" in wait
-    phrases = _quoted(wait)
-    source = _source("webapp_launcher.py")
-    assert phrases and all(p in source for p in phrases), [p for p in phrases if p not in source]
+    quoted = re.findall(r"'([^']+)'", wait)
+    assert quoted and all(q in printed for q in quoted), printed

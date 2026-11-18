@@ -286,8 +286,8 @@ def _supervisor_kind(item: BackendItem, host) -> str:
 # the Scheduled Task on Windows): the step tells the user which line to look for, first match first.
 _STATUS_LINES = {
     "posix": ("'Gateway is not running' (no service installed)",
-              "'service is stopped' or 'service is not loaded'",
-              "'service is running' or 'supervised by launchd'"),
+              "'service is stopped', 'service is not loaded' or 'registered with launchd'",
+              "'service is running', 'supervised by launchd' or 'Running manually'"),
     "windows": ("'Gateway service not installed'", "'No gateway process detected'", "'Gateway process running'"),
 }
 # A gateway just installed, started or restarted takes a few seconds to bind before `webapp --status` sees it.

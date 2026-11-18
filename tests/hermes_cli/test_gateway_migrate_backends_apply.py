@@ -252,8 +252,9 @@ def test_a_system_unit_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys)
     h = "hermes -p default"  # never a bare `hermes`: it would follow a sticky `hermes profile use` choice
     assert after[1:] == [f"{h} gateway status",
                          f"# then by what it prints: 'Gateway is not running' (no service installed) -> {h} gateway "
-                         f"install; 'service is stopped' or 'service is not loaded' -> {h} gateway start; "
-                         f"'service is running' or 'supervised by launchd' -> {h} gateway restart",
+                         f"install; 'service is stopped', 'service is not loaded' or 'registered with launchd' "
+                         f"-> {h} gateway start; 'service is running', 'supervised by launchd' or 'Running "
+                         f"manually' -> {h} gateway restart",
                          WEBAPP_STATUS_WAIT, f"{h} webapp --status"]
     before_stop = steps[:steps.index(sudo[0])]
     assert not any(" gateway " in s for s in before_stop)

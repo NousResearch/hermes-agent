@@ -202,3 +202,22 @@ def test_a_routing_turn_that_could_not_be_read_is_not_cancelled_while_it_runs(db
         session['active'] = False
     _passes(runtime, now, 12)
     assert state.get_task(db, identity, placement='profile')['status'] == 'deferred', runtime._last_error
+
+
+def test_member_completion_publishes_its_answer_for_any_stop_id(store, monkeypatch):
+    service = HostedRoomService(_server(), store=store, placement='profile')
+    rpc = service.rpc = service.runtime.rpc = _LeadRPC()
+    rpc.held['ada'] = None
+    service.local_profiles = lambda: PROFILES
+    service.create_room(room_id=ROOM_ID, name='Build', members=MEMBERS)
+    service.send(room_id=ROOM_ID, event_id='u1', payload={'text': '@ada status?', 'thread_id': 't1'})
+    binding, = service.bindings()
+    monkeypatch.setattr(service.runtime._wake, 'wait', lambda _: service.runtime._stop.set())
+    service.runtime._process_room(binding)
+    member, = state.list_tasks(store, placement='profile', room_id=ROOM_ID, status='running')
+    state.begin_task_cancel(store, member['identity'], placement='profile', cancel_id='lead-routing:1',
+                            expected_cancel_generation=0, clock=service.runtime.clock)
+    rpc.held.pop('ada')({'status': 'settled', 'text': 'Saved answer.'})
+    service.prepare_room(binding)
+    events = hosted_rooms.read_events(store, placement='profile', room_id=ROOM_ID)['events']
+    assert [e['payload']['text'] for e in events if e['kind'] == 'message.member'] == ['Saved answer.']

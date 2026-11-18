@@ -254,7 +254,8 @@ def resolve_indeterminate_task(
 
 def resolve_indeterminate_cancellation(
     store, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,
-    expected_execution_generation: int, expected_cancel_generation: int, cancel_id: Any, clock: Clock
+    expected_execution_generation: int, expected_cancel_generation: int, cancel_id: Any, clock: Clock,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Commit a verified terminal cancellation for an uncertain attempt."""
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
@@ -262,7 +263,7 @@ def resolve_indeterminate_cancellation(
     now = _timestamp(clock)
     return store.hosted_room_driver.resolve_indeterminate_cancellation(
         identity, lease, placement=placement, expected_execution_generation=expected_execution_generation,
-        expected_cancel_generation=expected_cancel_generation, cancel_id=cancel_id, now=now)
+        expected_cancel_generation=expected_cancel_generation, cancel_id=cancel_id, reason=reason, now=now)
 
 
 def requeue_indeterminate_task(

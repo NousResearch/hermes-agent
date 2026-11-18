@@ -77,7 +77,8 @@ _GENERATION_FENCE = "execution_generation=? AND cancel_generation=?"
 _RUN_FENCE = "run_gateway_id=? AND run_process_generation=? AND run_lease_generation=?"
 _SETTLE_SET = "status=?, settlement_id=?, settlement_status=?, result_json=?, terminal_at=?, updated_at=?"
 _REQUEUE_SET = "status='queued', run_gateway_id=NULL, run_process_generation=NULL, run_lease_generation=NULL"
-_CANCEL_SET = "status='cancelled', result_json=NULL, cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_FIELDS = "cancel_generation=?, cancel_id=?, terminal_at=?, updated_at=?"
+_CANCEL_SET = f"status='cancelled', result_json=NULL, {_CANCEL_FIELDS}"
 
 
 def _task_update(set_clause: str, fence: str) -> str:
@@ -106,7 +107,7 @@ _INDETERMINATE_STALE = "indeterminate task generation changed"
 _GENERATION_TRANSITIONS = {
     "resolve": ("indeterminate", _SETTLE_SET, _INDETERMINATE_STALE, "indeterminate task changed during reconciliation"),
     "resolve_cancel": (
-        "indeterminate", _CANCEL_SET, "indeterminate cancellation proof is stale",
+        "indeterminate", f"status='cancelled', result_json=?, {_CANCEL_FIELDS}", "indeterminate cancellation proof is stale",
         "indeterminate cancellation proof lost its fence"),
     "requeue": (
         "indeterminate", f"{_REQUEUE_SET}, started_at=NULL, indeterminate_at=NULL, updated_at=?", _INDETERMINATE_STALE,
@@ -638,11 +639,13 @@ class SQLiteHostedRoomDriverRepository:
     def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *,
                                            placement: HostedPlacement, expected_execution_generation: int,
                                            expected_cancel_generation: int, cancel_id: str,
-                                           now: float | None = None) -> Mapping[str, JsonValue]:
+                                           reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         now = clock(now)
         return self._generation_transition(
             placement, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation,
-            now=now, replay=_cancel_replay(cancel_id), set_params=(expected_cancel_generation + 1, cancel_id, now, now))
+            now=now, replay=_cancel_replay(cancel_id), set_params=(
+                compact_json({"reason": reason}) if reason is not None else None,
+                expected_cancel_generation + 1, cancel_id, now, now))
 
     # Returns an indeterminate task to the queue under the lease.
     def requeue_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement,

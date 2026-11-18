@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
-from gateway.hosted_room_lead import LOST_ROUTING_CANCEL_PREFIX
+from gateway.hosted_room_lead import LOST_ROUTING_CANCEL_PREFIX, LOST_ROUTING_REASON
 from tui_gateway.hosted_room_lease_keeper import LeaseKeeper
 from persistence.gateway.hosted_rooms import (
     AuthorityChangedError,
@@ -1373,7 +1373,7 @@ class HostedRoomRuntime:
         if lost_routing:
             given_up = self._fenced(
                 state.resolve_indeterminate_cancellation, None, task, lease,
-                cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}")
+                cancel_id=f"{LOST_ROUTING_CANCEL_PREFIX}{task['execution_generation']}", reason=LOST_ROUTING_REASON)
         else:
             given_up = self._fenced(
                 state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")

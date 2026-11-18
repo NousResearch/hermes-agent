@@ -755,7 +755,7 @@ class HostedRoomDriverRepository(Protocol):
         """Settle an indeterminate task from reconciled evidence."""
         ...
 
-    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, now: float | None = None) -> Mapping[str, JsonValue]:
+    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         """Cancel an indeterminate task with a cancellation proof."""
         ...
 

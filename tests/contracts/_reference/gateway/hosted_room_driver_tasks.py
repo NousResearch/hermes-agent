@@ -279,9 +279,9 @@ class DriverTaskMixin:
         replay, changes = _settlement(settlement_id, status, result, now)
         return self._generation_transition(placement, identity, lease, "resolve", expected_execution_generation, expected_cancel_generation, now=now, replay=replay, changes=changes)
 
-    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, now: float | None = None) -> Mapping[str, JsonValue]:
+    def resolve_indeterminate_cancellation(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, cancel_id: str, reason: str | None = None, now: float | None = None) -> Mapping[str, JsonValue]:
         now = rules.clock(now)
-        changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
+        changes = {"status": "cancelled", "result_json": compact_json({"reason": reason}) if reason is not None else None, "cancel_generation": expected_cancel_generation + 1, "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._generation_transition(placement, identity, lease, "resolve_cancel", expected_execution_generation, expected_cancel_generation, now=now, replay=_cancel_replay(cancel_id), changes=changes)
 
     def requeue_indeterminate_task(self, identity: HostedTaskIdentity, lease: DriverLease, *, placement: HostedPlacement, expected_execution_generation: int, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:

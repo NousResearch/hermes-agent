@@ -122,6 +122,12 @@ Contracts that do not change with the shell:
   settings page can switch the agent half for that agent alone.
 - Your plugin's own strings can carry a [redesign wording layer](#plugin-strings).
 
+To make a plugin page read as the redesign, open **Design system** from ⌘K (the
+`/design-system` route, redesign only): it lists every redesign token with its value
+in the current theme and renders the shared primitives in their variants, both from
+the app's own source. The page's path is a built-in route, so a `routes`
+contribution cannot claim it.
+
 ## Quick start — your first plugin
 
 Create `$HERMES_HOME/desktop-plugins/hello/plugin.js` (that's `~/.hermes/...`

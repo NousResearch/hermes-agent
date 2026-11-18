@@ -29,7 +29,7 @@ import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
 import { SplashCoveredRoutes } from '../discovery/splash-layer'
 import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
-import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
+import { ArtifactsView, CapabilitiesView, DesignSystemView, MessagingView } from '../page-views'
 import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
 import { PortalStatusBarItems, PortalSystemStatus } from '../redesign/portal-status-bar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
@@ -279,6 +279,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
         element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />, 'library')}
         path="artifacts"
       />
+      <Route element={page(<DesignSystemView />, 'page')} path="design-system" />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
       <Route element={null} path="cron" />

@@ -383,17 +383,6 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_safe_sync_slash_commands_only_mutates_diffs():
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-    class _DesiredCommand:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def to_dict(self, tree):
-            assert tree is not None
-            return dict(self._payload)
-
-
     desired_same = {
         "name": "status",
         "description": "Show Hermes session status",
@@ -442,24 +431,9 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
         },
     )
 
-    fake_tree = SimpleNamespace(
-        get_commands=lambda: [
-            _DesiredCommand(desired_same),
-            _DesiredCommand(desired_updated),
-            _DesiredCommand(desired_created),
-        ],
-    )
-    fake_http = SimpleNamespace(
-        get_global_commands=AsyncMock(return_value=[existing_same, existing_updated, existing_deleted]),
-        upsert_global_command=AsyncMock(),
-        edit_global_command=AsyncMock(),
-        delete_global_command=AsyncMock(),
-    )
-    adapter._client = SimpleNamespace(
-        tree=fake_tree,
-        http=fake_http,
-        application_id=999,
-        user=SimpleNamespace(id=999),
+    adapter, fake_http = _sync_adapter(
+        [desired_same, desired_updated, desired_created],
+        [existing_same, existing_updated, existing_deleted],
     )
 
     summary = await adapter._safe_sync_slash_commands()

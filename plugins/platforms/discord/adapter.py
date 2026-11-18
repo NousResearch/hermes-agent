@@ -1182,10 +1182,11 @@ from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, 
 
 
 def _app_command_scopes(app_info: Any) -> Optional[tuple[Any, Any]]:
-    """Tree-wide install types and contexts allowed by the app's Installation settings, or None.
+    """Tree-wide install types and contexts allowed by the app's Installation settings.
 
     Discord rejects a command install type the app does not enable, and ``private_channel``
-    needs user install. Left unset, a command keeps the install types it was created with.
+    needs user install. Returns None when the settings are unavailable; the tree then keeps
+    its current scopes.
     """
     guild = getattr(app_info, "guild_integration_config", None) is not None
     user = getattr(app_info, "user_integration_config", None) is not None
@@ -1225,6 +1226,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
+        # Last application_info() read for the current client; a newer login snapshot replaces it.
+        self._app_info: Optional[tuple[Any, Any]] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
@@ -2332,11 +2335,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
             try:
-                app_info = await self._client.application_info()
+                app_info = await asyncio.wait_for(self._client.application_info(), timeout=15)
+                self._app_info = (self._client, app_info)
             except Exception:
-                # The login-time snapshot can predate an Installation-settings change.
                 logger.warning("[%s] Could not refresh Discord application info", self.name, exc_info=True)
-                app_info = getattr(self._client, "application", None)
+                client, app_info = self._app_info or (None, None)
+                if client is not self._client:
+                    app_info = getattr(self._client, "application", None)
             scopes = _app_command_scopes(app_info)
             if scopes is not None:
                 self._client.tree.allowed_installs, self._client.tree.allowed_contexts = scopes

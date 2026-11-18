@@ -91,9 +91,7 @@ import {
 import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $setupGuideOnboarding } from '@/store/shell-policy'
-import { usePortalShell } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -160,7 +158,7 @@ import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
-import { useBandHiddenTools } from '../shell/band-tools'
+import { useTitlebarClusterCounts } from '../shell/band-tools'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
@@ -1294,21 +1292,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
-  const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
   const shownTool = shownInMode(interfaceMode)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-
-  const bandHidden = useBandHiddenTools()
-
-  const clusters = titlebarAppActionsClusterCounts(
-    appActionsSide,
-    leftExtraCount,
-    0,
-    interfaceMode,
-    usePortalShell() ? bandHidden : undefined
-  )
+  const clusters = useTitlebarClusterCounts(leftExtraCount, interfaceMode)
 
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 

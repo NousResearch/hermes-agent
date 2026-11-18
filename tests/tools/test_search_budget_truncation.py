@@ -6,7 +6,7 @@ import pytest
 from tools import file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ExecuteResult, ShellFileOperations
-from tools.file_operations_search import _search_stdout_and_limit
+from tools.file_operations_search import _FILE_ROW_MARK, _search_stdout_and_limit
 
 
 TIMEOUT = "[Command timed out after 60s]"
@@ -48,7 +48,9 @@ def test_timeout_helper_strips_only_trailing_marker():
     ("target", "output_mode", "raw", "expected"),
     [
         ("files", "content", timeout_output("src/a.py", "src/b.py"), ["src/a.py", "src/b.py"]),
-        ("content", "files_only", timeout_output("src/a.py", "src/b.py"), ["src/a.py", "src/b.py"]),
+        # files_only rows come back marked by the pipeline (stderr and banners never are).
+        ("content", "files_only", timeout_output(f"{_FILE_ROW_MARK}src/a.py", f"{_FILE_ROW_MARK}src/b.py"),
+         ["src/a.py", "src/b.py"]),
         ("content", "content", timeout_output("src/a.py:10:foo", "src/b.py:20:foo"), ["src/a.py", "src/b.py"]),
     ],
 )

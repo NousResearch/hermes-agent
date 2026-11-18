@@ -1210,7 +1210,7 @@ def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, 
     else:
         visible = {m.path for m in result.matches}
         shown = f"{result.total_count} result rows in "  # context rows count as rows
-    note = f"Complete: {shown}{len(visible)} files; every file under {path} was searched"
+    note = f"Complete: {shown}{len(visible)} files in the requested search scope under {path}"
     try:
         everywhere = file_ops.hidden_match_counts(pattern, path, file_glob)
     except (OSError, RuntimeError):  # optional check: the primary result still stands
@@ -1221,7 +1221,7 @@ def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, 
         skipped = sorted(p for p in everywhere if p not in visible)
         note += (" (hidden and gitignored files checked too, except dependency/build trees such as "
                  ".git, node_modules, .venv, build, dist, vendor): "
-                 + ("none match, so grep finds the same lines." if not skipped else
+                 + ("none match among the additional files checked." if not skipped else
                     f"{len(skipped)} more file(s) match there, not shown: "
                     + ", ".join(skipped[:5]) + (" (+more)" if len(skipped) > 5 else "")))
     result_dict["complete"] = note

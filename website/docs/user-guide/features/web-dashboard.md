@@ -466,6 +466,48 @@ install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.l
 that are enabled but not running are listed only when they are named `hermes-serve*`,
 `hermes-dashboard*` or `hermes-backend*`.
 
+### Planning a move to the gateway (dry run)
+
+```bash
+hermes gateway migrate --backends --apply --dry-run          # the plan and every blocker
+hermes gateway migrate --backends --apply --dry-run --json   # the same plan as JSON
+```
+
+The dry run prints what moving this home's old `hermes dashboard` / `hermes serve` backend onto the
+gateway's Webapp would do. The command itself changes nothing: no file, unit, plist, config, `.env` or
+process. It sends the old backend one `GET /api/status`, the same request Desktop and the dashboard
+page poll; on its first call ever that endpoint creates the home's `install_id` file, which a running
+backend has normally created already. The move itself is not available in this version; `--apply`
+without `--dry-run` exits 2.
+
+The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
+take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
+stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
+copied into `.env` (names only; values are never printed), the public URL it would copy into
+`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
+state of the gateway service and the
+Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
+out it reads `GET /api/status` from the old backend on its address, `systemctl show` / `launchctl`
+and `/proc`; normal Hermes startup runs first, as for the report. Options: `--address HOST:PORT` (plan
+for one backend when several serve this home), `--keep-webapp-address` (keep an already enabled Webapp
+where it is), `--force-interrupt` (plan the move although a turn is running), `--json`.
+
+Exit codes: 0 the move could run, or no old backend serves this home; 2 invalid invocation; 3 blocked
+(the blockers are listed, for example a running turn, an address that matches no backend, a bind the
+gateway would refuse, a public URL it would refuse, or the Webapp already enabled on another address);
+6 this kind of backend cannot be migrated automatically (Nix, s6 or another container, a systemd
+system unit, or a host where the gateway cannot be a service). Exit 6 prints the steps to do it by
+hand, one per line, each `hermes` command naming this home (`hermes -p PROFILE ...`, and `hermes -p default ...` for the default home, so a profile chosen with `hermes profile use` does not redirect it). A stopped systemd unit counts as this home's only by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`, later wins); when a file it needs cannot be read, the dry run is blocked instead of guessing. A backend whose address cannot be read shows no address and no steps that depend on one.
+They stop the old backend first, then install, start or restart the gateway by what `hermes gateway
+status` says, and end with `hermes webapp --status`. For a system unit only one line, `sudo systemctl
+disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix and
+containers the steps say what to change in the Nix configuration or the container definition instead
+(Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where the
+gateway cannot be a service, the last step is `hermes gateway run`, for the supervisor you use. A
+stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
+`HERMES_HOME`; a backend whose command line cannot be read gets steps without an address rather than a
+guessed one. On macOS a LaunchAgent is planned like a systemd user unit.
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:

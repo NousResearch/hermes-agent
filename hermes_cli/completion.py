@@ -72,7 +72,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
 #   eval "$(hermes completion bash)"
 
 _hermes_profiles() {{
-    local profiles_dir="$HOME/.hermes/profiles"
+    local profiles_dir="${{HERMES_HOME:-$HOME/.hermes}}/profiles"
     local profiles="default"
     if [ -d "$profiles_dir" ]; then
         for f in "$profiles_dir"/*/; do
@@ -160,8 +160,8 @@ def generate_zsh(parser: argparse.ArgumentParser) -> str:
 _hermes_profiles() {{
     local -a profiles
     profiles=(default)
-    if [[ -d "$HOME/.hermes/profiles" ]]; then
-        profiles+=($HOME/.hermes/profiles/*(N/:t))
+    if [[ -d "${{HERMES_HOME:-$HOME/.hermes}}/profiles" ]]; then
+        profiles+=(${{HERMES_HOME:-$HOME/.hermes}}/profiles/*(N/:t))
     fi
     _describe 'profile' profiles
 }}
@@ -208,8 +208,10 @@ def generate_fish(parser: argparse.ArgumentParser) -> str:
         "# Helper: list available profiles",
         "function __hermes_profiles",
         "    echo default",
-        "    if test -d $HOME/.hermes/profiles",
-        "        for d in $HOME/.hermes/profiles/*/",
+        "    set -l root $HOME/.hermes",
+        "    set -q HERMES_HOME; and set root $HERMES_HOME",
+        "    if test -d $root/profiles",
+        "        for d in $root/profiles/*/",
         "            basename $d",
         "        end",
         "    end",

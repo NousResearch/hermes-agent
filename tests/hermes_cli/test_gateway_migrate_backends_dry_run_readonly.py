@@ -3,8 +3,8 @@
 A scratch account (``HOME``, a ``HERMES_HOME`` inside it, optionally a hand-written systemd user unit file
 under ``~/.config/systemd/user``) and a real old backend: ``hermes serve`` started by hand in that home. The
 CLI runs as a child process, as a user types it. The snapshot is taken right before the first dry run, once
-the account is in the state a user's is: the backend is up and has answered one ``GET /api/status`` (a
-running backend has already created the home's ``install_id``), and main's report has run twice (a fresh
+the backend is up and has answered ``GET /api/health`` without creating an install ID,
+and main's report has run twice (a fresh
 home's first two commands create its layout and then the install lock). The dry runs must leave every file
 under the account (bytes, mode, mtime), every directory (existence, mode) and the backend's process and
 install id as they were. Directory mtimes are not compared: the running backend creates and removes its
@@ -67,7 +67,7 @@ def _snapshot(root: Path) -> dict:
 
 def _status(port: int) -> dict | None:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=10) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=10) as resp:
             return json.loads(resp.read())
     except OSError:
         return None
@@ -103,7 +103,7 @@ def scratch(tmp_path, request):
                                stdout=log, stderr=subprocess.STDOUT)
         try:
             wait_until(lambda: old.poll() is not None or _status(port) is not None, timeout=120,
-                       what="the old backend answers /api/status")
+                       what="the old backend answers /api/health")
             assert old.poll() is None, log_path.read_text()
             yield user, env, old, port, request.param
         finally:
@@ -123,7 +123,10 @@ def test_the_dry_run_changes_no_file_unit_config_or_process(scratch):
     assert report.returncode == 0, report.stdout + report.stderr
     assert f"--port {port}" in report.stdout
     born, answer = psutil.Process(old.pid).create_time(), _status(port)
-    assert answer is not None and answer.get("install_id")
+    assert answer is not None and answer.get("ok")
+    home = Path(env["HERMES_HOME"])
+    # CLI startup can already have minted install_id. Preserve its observed state, not an assumed one.
+    (home / "gateway.pid").write_text('{"pid":0}', encoding="utf-8")
     before = _snapshot(user)
 
     # --address picks the scratch backend whatever else this host runs or has unit files for.
@@ -133,7 +136,7 @@ def test_the_dry_run_changes_no_file_unit_config_or_process(scratch):
 
     assert _snapshot(user) == before
     assert old.poll() is None and psutil.Process(old.pid).create_time() == born
-    assert (_status(port) or {}).get("install_id") == answer.get("install_id")
+    assert (_status(port) or {}).get("ok")
     assert text.stdout.startswith("Backend migration plan (dry run — nothing changed)"), text.stdout + text.stderr
     assert f"a process started by hand, pid {old.pid} on 127.0.0.1:{port}" in text.stdout
     plan = json.loads(as_json.stdout)

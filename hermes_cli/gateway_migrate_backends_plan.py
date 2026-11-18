@@ -545,12 +545,13 @@ def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
         return
     status = host.http_status(plan.old_probe_host, plan.old_port)
     if status is None:
-        plan.blockers.append(f"The old backend runs but does not answer GET /api/status on "
+        plan.blockers.append(f"The old backend runs but does not return a usable GET /api/health response on "
                              f"{format_address(plan.old_probe_host, plan.old_port)}, so its working state cannot "
                              f"be recorded before a move.")
     else:
+        providers = status.get("auth_providers")
         plan.auth_before = {"auth_required": bool(status.get("auth_required")),
-                            "providers": provider_names(status.get("auth_providers"))}
+                            "providers": provider_names(providers) if isinstance(providers, list) else None}
     if plan.item and plan.item.pid:
         plan.running_turns = host.running_turns(plan.item.pid, plan.rec.get("start_time"))
     if plan.running_turns and not force_interrupt:
@@ -636,8 +637,10 @@ def _plan_body(plan: BackendPlan) -> list[str]:
            "manual": "a process started by hand"}[rec["supervisor"]]
     pid = f", pid {rec['pid']}" if rec.get("pid") else ", not running"
     auth = plan.auth_before
-    signin = ("required (providers: " + ", ".join(auth["providers"]) + ")" if auth and auth["auth_required"]
-              else "not required" if auth else "unknown (backend not running)")
+    choices = (", ".join(auth["providers"]) or "none") if auth and auth["providers"] is not None else "unknown"
+    signin = (f"required (interactive providers: {choices})" if auth and auth["auth_required"]
+              else "not required" if auth
+              else "unknown (health probe failed)" if rec.get("was_active") else "unknown (backend not running)")
     copy = ", ".join(sorted(plan.carry)) or "none needed"
     old = format_address(plan.old_host, plan.old_port) if plan.old_host is not None else \
         "an address that could not be read"

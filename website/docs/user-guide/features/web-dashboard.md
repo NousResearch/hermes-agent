@@ -479,9 +479,9 @@ hermes gateway migrate --backends --apply --dry-run --json   # the same plan as 
 
 The dry run prints what moving this home's old `hermes dashboard` / `hermes serve` backend onto the
 gateway's Webapp would do. The command itself changes nothing: no file, unit, plist, config, `.env` or
-process. It sends the old backend one `GET /api/status`, the same request Desktop and the dashboard
-page poll; on its first call ever that endpoint creates the home's `install_id` file, which a running
-backend has normally created already. The move itself is not available in this version; `--apply`
+process. It reads `GET /api/health` and, when sign-in is required, `GET /api/auth/providers` for
+interactive sign-in choices. A failed provider-list read leaves those choices unknown. The move
+itself is not available in this version; `--apply`
 without `--dry-run` exits 2.
 
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
@@ -491,7 +491,7 @@ copied into `.env` (names only; values are never printed), the public URL it wou
 `webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
-out it reads `GET /api/status` from the old backend on its address, `systemctl show` / `launchctl`
+out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
 and `/proc`; normal Hermes startup runs first, as for the report. Options: `--address HOST:PORT` (plan
 for one backend when several serve this home), `--keep-webapp-address` (keep an already enabled Webapp
 where it is), `--force-interrupt` (plan the move although a turn is running), `--json`.

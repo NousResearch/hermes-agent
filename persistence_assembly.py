@@ -256,7 +256,11 @@ def _assemble(provider: str, stores: Mapping[str, Path], *, read_only: bool = Fa
 
 
 def _sqlite_only(scope: ProfileScope) -> bool:
-    """Whether ``scope``'s configured provider is the built-in SQLite, the only one the file-level helpers answer for."""
+    """Whether ``scope``'s configured provider is the built-in SQLite, the only one the file-level helpers answer for.
+    A home not on disk holds no config naming another provider, so it answers True without loading (or creating) any
+    config: the file-level helpers answer for a home that does not exist yet, as they always have."""
+    if not scope.profile_dir.is_dir():
+        return True
     return _configured_provider(scope.profile_dir) == "sqlite"
 
 

@@ -283,3 +283,13 @@ def test_sqlite_only_helpers_refuse_for_a_plugin_provider(tmp_path, bundled_root
     sqlite_scope = persistence_assembly.profile_scope(home=configured_home(tmp_path, "sqlite", name="local"))
     assert persistence_assembly.store_location(sqlite_scope) == Path(sqlite_scope.hermes_home_key) / "state.db"
     assert persistence_assembly.store_exists(sqlite_scope) is False
+
+
+def test_store_location_of_a_home_not_on_disk_reads_no_config(tmp_path, monkeypatch):
+    """A home that does not exist yet holds no config naming another provider: the file-level helpers answer for the
+    built-in store without loading (or creating) the process config, as they did before providers were named."""
+    missing = tmp_path / "root" / "profiles" / "research"
+    monkeypatch.setenv("HERMES_HOME", str(missing))
+    scope = persistence_assembly.profile_scope(home=missing)
+    assert persistence_assembly.store_location(scope) == missing / "state.db"
+    assert not missing.exists()

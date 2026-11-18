@@ -7,6 +7,7 @@ import pytest
 from persistence import AuthorityRefusal
 from persistence.authority.admissions import GateRefusal
 from persistence.conversation.sessions import NewSession
+from persistence.core.errors import FenceStale, StaleFenceKind
 from persistence.gateway.hosted_rooms import HostedMemberGuard, HostedOwnerClaim
 
 SESSION = "room-member-session"
@@ -62,8 +63,9 @@ def test_unused_attempt_fences_delayed_submit_and_keeps_the_next_attempt_indepen
     def submit(generation):
         request_id = "hosted:" + json.dumps([asdict(task), generation])
         return _admit(store, epoch, request_id, HostedAttemptGuard(task, generation))
-    with pytest.raises(AuthorityRefusal, match="stale_generation"):
+    with pytest.raises(FenceStale) as refusal:
         submit(1)
+    assert refusal.value.kind is StaleFenceKind.STALE_GENERATION
     admitted, created = submit(2)
     assert created
     assert store.hosted_rooms.find_or_close_attempt(**lookup, generation=2) == {

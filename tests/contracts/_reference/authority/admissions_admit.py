@@ -26,7 +26,7 @@ from persistence.authority.admissions import (
 from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, admission_fingerprint
 from persistence.conversation.messages import NewMessage, ReplaceMode, RewindPlan
 from persistence.core.canonical import canonical_json
-from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CapabilityUnsupported
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CapabilityUnsupported, FenceStale, StaleFenceKind
 from persistence.core.identity import MessageId, SessionId
 from session_rules.automation import folded_payload
 
@@ -186,4 +186,4 @@ class AdmitMixin:
             raise AuthorityRefusal("permission_denied")
         closed = self._state().snapshot.get("closed_hosted_attempts", {}).get(session_id, ())
         if guard.task is not None and (guard.task.task_id, guard.generation) in closed:
-            raise AuthorityRefusal("stale_generation")
+            raise FenceStale(StaleFenceKind.STALE_GENERATION, "authority", "")

@@ -864,20 +864,50 @@ def test_a_by_hand_move_of_a_free_port_backend_prints_no_port(home, capsys):
     assert code == engine.EXIT_UNSUPPORTED and not any("webapp.port: 0" in s or "port 0" in s for s in entry["steps"])
 
 
-@pytest.mark.parametrize("supervisor", ["systemd", "container"])
-def test_a_profile_served_by_the_default_gateway_is_not_planned(tmp_path, monkeypatch, capsys, supervisor):
-    """Its webapp.* settings do not control the shared Webapp, and `hermes -p work gateway install`
-    refuses to create a second gateway: no steps that point there."""
+def _work_profile(tmp_path, monkeypatch, *, installed=False, other=None, hosts=False):
+    from hermes_cli import gateway as gw
     profile = tmp_path / ".hermes" / "profiles" / "work"
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(profile))
     (profile / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: installed)
+    monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda name=None: other)
+    monkeypatch.setattr(gw, "host_multiplexer_serving", lambda name=None: other or (object() if hosts else None))
+    return profile
+
+
+@pytest.mark.parametrize("supervisor", ["systemd", "container"])
+def test_a_profile_another_homes_gateway_serves_is_refused_naming_that_gateway(tmp_path, monkeypatch, capsys,
+                                                                                supervisor):
+    owner = SimpleNamespace(describe=lambda: "PID 42 (launched by profile 'default'; serves: default, work)")
+    profile = _work_profile(tmp_path, monkeypatch, other=owner)
 
     code, out = _plan(FakeHost(profile, supervisor=supervisor), capsys)
 
-    assert code == engine.EXIT_BLOCKED
-    assert any("served by the default profile's gateway" in b for b in out["plan"]["blockers"])
-    assert all(entry["steps"] == [] for entry in out["plan"]["unsupported"]) and out["plan"]["steps"] == []
+    assert code == engine.EXIT_BLOCKED and out["plan"]["steps"] == []
+    assert any("served by another home's gateway (PID 42 (launched by profile 'default'" in b
+               for b in out["plan"]["blockers"])
+    assert all(entry["steps"] == [] for entry in out["plan"]["unsupported"])
+
+
+@pytest.mark.parametrize("own", ["installed-service", "hosts-the-multiplexer"])
+def test_a_profile_with_its_own_gateway_is_planned_without_the_standalone_flag(tmp_path, monkeypatch, capsys, own):
+    profile = _work_profile(tmp_path, monkeypatch, installed=own == "installed-service",
+                            hosts=own == "hosts-the-multiplexer")
+
+    code, out = _plan(FakeHost(profile, host="127.0.0.1"), capsys)
+
+    assert code == engine.EXIT_OK and not out["plan"]["blockers"]
+
+
+def test_a_profile_whose_gateway_is_unknown_blocks_without_guessing_an_owner(tmp_path, monkeypatch, capsys):
+    profile = _work_profile(tmp_path, monkeypatch)
+
+    code, out = _plan(FakeHost(profile, host="127.0.0.1"), capsys)
+
+    (blocker,) = out["plan"]["blockers"]
+    assert code == engine.EXIT_BLOCKED and "Identify which gateway serves this profile" in blocker
+    assert "default" not in blocker
 
 
 # --- review round 2: no-service steps come from the selected target, and never beside a blocker

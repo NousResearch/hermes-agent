@@ -123,15 +123,30 @@ class SystemHost:
         from hermes_cli.dashboard_procs import _normalized_home_for_compare
         return _normalized_home_for_compare(path) == _normalized_home_for_compare(str(self.home))
 
-    def profile_on_shared_gateway(self) -> Optional[str]:
-        """This home's profile name when it is a named profile the default profile's gateway serves
-        (not ``gateway.standalone: true``): it never runs a gateway or Webapp of its own. Else None."""
+    def gateway_owner(self) -> tuple[str, Optional[str]]:
+        """Which gateway serves this home, answered by the gateway's own ownership checks:
+        ``("own", None)`` for the default home, a profile with its own installed service, or a profile
+        whose own process hosts the multiplexer; ``("other", description)`` when the live host gateway
+        of another home serves it; ``("unknown", None)`` otherwise. Nothing is guessed."""
         from hermes_constants import profile_name_for_home
-        from hermes_cli.profiles import profile_is_standalone
         name = profile_name_for_home(self.home)
-        if name in (None, "default") or profile_is_standalone(self.home):
-            return None
-        return name
+        if name in (None, "default"):
+            return "own", None
+        from hermes_cli import gateway as gw
+        try:
+            if gw._is_service_installed():
+                return "own", None
+            other = gw._served_by_another_host_gateway(name)
+            if other is not None:
+                return "other", other.describe()
+            if gw.host_multiplexer_serving(name) is not None:
+                return "own", None  # the live host gateway is this profile's own process
+        except Exception:  # an unreadable host record or service state: the owner is not known
+            import logging
+            logging.getLogger(__name__).debug("gateway ownership could not be read", exc_info=True)
+            return "unknown", None
+        from hermes_cli.profiles import profile_is_standalone
+        return ("own", None) if profile_is_standalone(self.home) else ("unknown", None)
 
     def default_home(self) -> bool:
         """Whether this home is the calling account's own default home: ``.hermes`` in its passwd home

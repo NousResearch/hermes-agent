@@ -1182,13 +1182,10 @@ from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, 
 
 
 def _app_command_scopes(app_info: Any) -> Optional[tuple[Any, Any]]:
-    """Install types and contexts for every Hermes command, matching the app's Installation settings.
+    """Tree-wide install types and contexts allowed by the app's Installation settings, or None.
 
-    Unset scopes make each command keep whatever Discord stamped on it at creation. A command
-    created while the app was user-install only stays ``integration_types=[1]``, and members of
-    the bot's server get "Unknown Integration". Discord rejects a command install type the app
-    does not enable, and ``private_channel`` needs user install, so derive both from the app.
-    Returns None when the app settings are unavailable.
+    Discord rejects a command install type the app does not enable, and ``private_channel``
+    needs user install. Left unset, a command keeps the install types it was created with.
     """
     guild = getattr(app_info, "guild_integration_config", None) is not None
     user = getattr(app_info, "user_integration_config", None) is not None
@@ -2334,7 +2331,13 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
-            scopes = _app_command_scopes(getattr(self._client, "application", None))
+            try:
+                app_info = await self._client.application_info()
+            except Exception:
+                # The login-time snapshot can predate an Installation-settings change.
+                logger.warning("[%s] Could not refresh Discord application info", self.name, exc_info=True)
+                app_info = getattr(self._client, "application", None)
+            scopes = _app_command_scopes(app_info)
             if scopes is not None:
                 self._client.tree.allowed_installs, self._client.tree.allowed_contexts = scopes
             if sync_policy == "bulk":
@@ -3106,7 +3109,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             if current_payload == desired_payload:
                 summary["unchanged"] += 1
                 continue
-            if self._patchable_app_command_payload(current) == self._patchable_app_command_payload(desired):
+            patched = {**current_payload, **self._patchable_app_command_payload(desired)}
+            if patched != desired_payload:
+                # A PATCH carries only name/description/options, so any other difference
+                # (install types, contexts, permissions) needs the full upsert.
                 # Upsert alone recreates the command: Discord's create endpoint
                 # overwrites the existing same-name command ("Returns 201 if a
                 # command with the same name does not already exist, or a 200

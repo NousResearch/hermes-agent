@@ -488,15 +488,6 @@ async def test_safe_sync_recreated_upserts_without_delete():
     as an existing command for your application will overwrite the old
     command"), so a lone upsert recreates the command while it stays available.
     """
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-    class _DesiredCommand:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def to_dict(self, tree):
-            return dict(self._payload)
-
     desired_model = {
         "name": "model",
         "description": "Switch the model",
@@ -508,25 +499,8 @@ async def test_safe_sync_recreated_upserts_without_delete():
     }
     # Non-patchable field differs from the live command: the safe-sync
     # "recreated" path (patchable payload equal, canonical payload unequal).
-    existing_model = _registry_entry(
-        21,
-        {**desired_model, "dm_permission": False},
-    )
-
-    fake_tree = SimpleNamespace(
-        get_commands=lambda: [_DesiredCommand(desired_model)],
-    )
-    fake_http = SimpleNamespace(
-        get_global_commands=AsyncMock(return_value=[existing_model]),
-        upsert_global_command=AsyncMock(),
-        edit_global_command=AsyncMock(),
-        delete_global_command=AsyncMock(),
-    )
-    adapter._client = SimpleNamespace(
-        tree=fake_tree,
-        http=fake_http,
-        application_id=999,
-        user=SimpleNamespace(id=999),
+    adapter, fake_http = _sync_adapter(
+        [desired_model], [_registry_entry(21, {**desired_model, "dm_permission": False})]
     )
 
     summary = await adapter._safe_sync_slash_commands()
@@ -553,15 +527,6 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
     429s — the command vanishes from the slash picker until a later fully-clean
     sync. With upsert-first, the 429 leaves the old command live (worst case:
     stale non-patchable fields) — never deleted."""
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-    class _DesiredCommand:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def to_dict(self, tree):
-            return dict(self._payload)
-
     desired_model = {
         "name": "model",
         "description": "Switch the model",
@@ -571,10 +536,8 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
         "dm_permission": True,
         "default_member_permissions": None,
     }
-    existing_model = _registry_entry(21, {**desired_model, "dm_permission": False})
-
-    fake_tree = SimpleNamespace(
-        get_commands=lambda: [_DesiredCommand(desired_model)],
+    adapter, fake_http = _sync_adapter(
+        [desired_model], [_registry_entry(21, {**desired_model, "dm_permission": False})]
     )
     calls = []
 
@@ -585,18 +548,8 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
     async def _delete(app_id, command_id):
         calls.append(f"delete:{command_id}")
 
-    fake_http = SimpleNamespace(
-        get_global_commands=AsyncMock(return_value=[existing_model]),
-        upsert_global_command=_upsert,
-        edit_global_command=AsyncMock(),
-        delete_global_command=_delete,
-    )
-    adapter._client = SimpleNamespace(
-        tree=fake_tree,
-        http=fake_http,
-        application_id=999,
-        user=SimpleNamespace(id=999),
-    )
+    fake_http.upsert_global_command = _upsert
+    fake_http.delete_global_command = _delete
 
     with pytest.raises(RuntimeError, match="429"):
         await adapter._safe_sync_slash_commands()
@@ -943,9 +896,7 @@ async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_repairs_user_install_only_command():
-    """A command stuck at user install (``[1]``) gets recreated with the app's guild install,
-    so other server members stop getting "Unknown Integration"."""
+async def test_safe_sync_upserts_user_install_only_command_with_app_scopes():
     desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
     adapter, fake_http = _sync_adapter(
         [desired],
@@ -959,7 +910,37 @@ async def test_safe_sync_repairs_user_install_only_command():
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_leaves_repaired_command_unchanged():
+async def test_safe_sync_upserts_when_description_and_install_types_both_differ():
+    # discord.py's edit_global_command sends only name/description/options.
+    desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
+    adapter, fake_http = _sync_adapter(
+        [desired],
+        [_registry_entry(42, {**desired, "description": "Old text", "integration_types": [1]})],
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+    fake_http.edit_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_patches_description_only_change():
+    desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
+    adapter, fake_http = _sync_adapter(
+        [desired], [_registry_entry(42, {**desired, "description": "Old text"})]
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["updated"] == 1
+    fake_http.edit_global_command.assert_awaited_once_with(999, 42, desired)
+    fake_http.upsert_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_leaves_matching_command_unchanged():
     desired = {**_ADMIN_COMMAND, "integration_types": [0], "contexts": [0, 1]}
     adapter, fake_http = _sync_adapter([desired], [_registry_entry(42, desired)])
 

@@ -12,7 +12,10 @@ import site
 import sys
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from hermes_cli._startup_fast import project_root_str
+
+# Pre-split logger identity, so log filtering and capture of the overlay's skips are unchanged.
+logger = logging.getLogger("gateway.run")
 
 
 def _ensure_windows_gateway_venv_imports() -> None:
@@ -21,8 +24,6 @@ def _ensure_windows_gateway_venv_imports() -> None:
     Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
     if sys.platform != "win32":
         return
-
-    from hermes_cli._startup_fast import project_root_str
 
     project_root = Path(project_root_str())
     from pm.environments import committed_venv, venv_python_version

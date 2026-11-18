@@ -302,11 +302,8 @@ def hosted_code_refusal(code_path=None, *, module: str | None = None) -> str:
     honoured even before the boot records its verdict, so the bootstrap's own loaders are
     covered) or the boot's frozen hosted verdict. A local install answers ``""`` for
     everything."""
-    if not hosted_start_flag_requested():
-        from hermes_cli.hosted_mode import hosted_verdict_frozen
-
-        if hosted_verdict_frozen() is not True:
-            return ""
+    if not hosted_start_flag_requested() and _frozen_hosted_verdict() is not True:
+        return ""
     if code_path is None:
         origin = None
         if module:
@@ -323,6 +320,15 @@ def hosted_code_refusal(code_path=None, *, module: str | None = None) -> str:
                 + "resolves outside that image, so its distribution's metadata is not "
                   "provenance and the entry point is refused")
     return _refusal_for(code_path)
+
+
+def _frozen_hosted_verdict() -> Any:
+    """The boot's frozen hosted verdict (``hosted_mode.hosted_verdict_frozen``), read without
+    importing ``hermes_cli.hosted_mode``: only that module records the verdict, so a process
+    that never imported it has none. This keeps :func:`hosted_code_refusal` inside the
+    launcher's stdlib-only startup closure (pyproject ``update-startup-files``)."""
+    mode = sys.modules.get("hermes_cli.hosted_mode")
+    return None if mode is None else mode.hosted_verdict_frozen()
 
 
 def _finder_defining_file(finder) -> str:

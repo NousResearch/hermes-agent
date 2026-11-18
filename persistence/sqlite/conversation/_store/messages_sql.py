@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 from session_rules.turns import (
     MODEL_ONLY_DISPLAY_METADATA_KEY,
 )
@@ -91,6 +91,9 @@ _SET_CODEX_REASONING_SQL = "UPDATE messages SET codex_reasoning_items = ? WHERE 
 
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
+# _insert_message_rows keeps a batch strictly increasing by this amount (epoch seconds).
+_TIMESTAMP_EPS = 1e-6
+
 
 def _coerce_timestamp(value: Any, default: float) -> float:
     """Explicit message timestamp (datetime or number) or *default* when invalid or outside the sane
@@ -102,6 +105,85 @@ def _coerce_timestamp(value: Any, default: float) -> float:
     # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
     # identity equality.
     return 0.0 if result == 0.0 else result
+
+
+def _max_active_timestamp(conn, session_id: str, exclude_ids: Optional[list[int]] = None) -> Optional[float]:
+    """MAX(timestamp) of currently active rows, skipping *exclude_ids* (rewind/clone originals)."""
+    exclude = [i for i in (exclude_ids or ()) if isinstance(i, int)]
+    sql = "SELECT MAX(timestamp) FROM messages WHERE session_id = ? AND active = 1"
+    params: list[Any] = [session_id]
+    if exclude:
+        sql += " AND id NOT IN (" + ",".join("?" for _ in exclude) + ")"
+        params.extend(exclude)
+    row = conn.execute(sql, params).fetchone()
+    return coerce_epoch(None if row is None else row[0], field="message timestamp")
+
+
+def _unstamped_summary(msg: Any) -> bool:
+    """True when *msg* is a compaction summary the insert would stamp at write time."""
+    return (
+        isinstance(msg, dict)
+        and bool(msg.get("_compressed_summary"))
+        and coerce_epoch(msg.get("timestamp"), field="message timestamp") is None
+    )
+
+
+def _summary_timestamp(
+    following_ts: Optional[float], last_summarised_ts: Optional[float], offset: int,
+) -> Optional[float]:
+    """Conversation-relative stamp for one untimestamped summary row (#156992).
+
+    Prefer just before the first later timestamped row (the carried tail). Floor at
+    the last summarised message only when that does not invert vs the tail (a previous
+    summary stamped at write-time ``now`` would). No later row: last summarised, else
+    None so insert uses ``now_ts``.
+    """
+    if following_ts is None:
+        return last_summarised_ts
+    candidate = following_ts - offset * _TIMESTAMP_EPS
+    if last_summarised_ts is not None and last_summarised_ts < following_ts:
+        candidate = max(candidate, last_summarised_ts)
+    return candidate
+
+
+def _stamp_compaction_summary_timestamps(
+    messages: list[dict[str, Any]], last_summarised_ts: Optional[float] = None,
+) -> None:
+    """Stamp untimestamped ``_compressed_summary`` rows from the window they sit in.
+
+    A carried tail keeps its original timestamp; stamping the summary at write-time
+    ``now`` put it last by timestamp while first by id (#156992). Restated in-flight
+    turns are not summaries: they stay unstamped so insert uses compaction-time
+    ``now_ts`` (#121064). A summary merged onto a tail clone already carries a
+    timestamp and is left alone.
+    """
+    if not messages:
+        return
+    following: list[Optional[float]] = [None] * len(messages)
+    next_ts: Optional[float] = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict):
+            ts = coerce_epoch(msg.get("timestamp"), field="message timestamp")
+            if ts is not None:
+                next_ts = ts
+        following[i] = next_ts
+    i = 0
+    n_messages = len(messages)
+    while i < n_messages:
+        if not _unstamped_summary(messages[i]):
+            i += 1
+            continue
+        run_end = i + 1
+        while run_end < n_messages and _unstamped_summary(messages[run_end]):
+            run_end += 1
+        following_ts = following[run_end - 1]
+        count = run_end - i
+        for k, idx in enumerate(range(i, run_end)):
+            stamped = _summary_timestamp(following_ts, last_summarised_ts, offset=count - k)
+            if stamped is not None:
+                messages[idx]["timestamp"] = stamped
+        i = run_end
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:

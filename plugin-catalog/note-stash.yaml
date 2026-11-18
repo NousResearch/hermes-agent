@@ -1,18 +1,18 @@
 name: note-stash
 repo: https://github.com/freemanconsulting/hermes-note-stash
-sha: 52750fd2206c1f693ff7ae91c02bcd6eca11ff9a
+sha: 99f1af74de592e6c3c7a74ac6bea718f35025fc7
 description: "Sticky notes and a code stash for Hermes Desktop: capture a thought or snippet without interrupting the current turn, then send it to the focused session as the next prompt. A note sent to a session that is mid-turn is queued until the turn ends instead of being injected into it. Desktop-only, SDK-only: notes stay in the plugin's own data folder, no network calls."
 maintainer: freemanconsulting
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/freemanconsulting/hermes-note-stash#readme
-version: "1.1.0"
+version: "1.1.1"
 screenshots:
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/52750fd2206c1f693ff7ae91c02bcd6eca11ff9a/docs/screenshots/capture-dialog.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/52750fd2206c1f693ff7ae91c02bcd6eca11ff9a/docs/screenshots/pane-active.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/52750fd2206c1f693ff7ae91c02bcd6eca11ff9a/docs/screenshots/pane-queued.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/52750fd2206c1f693ff7ae91c02bcd6eca11ff9a/docs/screenshots/pane-sent.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/capture-dialog.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-active.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-queued.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-sent.png
 capabilities:
   provides_tools: []
   provides_hooks: []

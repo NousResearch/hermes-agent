@@ -18,7 +18,7 @@ import pytest
 from persistence.conversation.sessions import MAX_TITLE_LENGTH
 from persistence.sqlite.admin import SQLiteProfileRepairAdmin
 from persistence_assembly import open_persistence, open_profile_repair, profile_scope
-from tests.fixtures.storage_holder import policy_key
+from tests.fixtures.storage_holder import api_binding_key, policy_key
 from tests.fixtures.storage_read import session_row, transcript_rows
 from tests.fixtures.storage_seed import seed_messages, seed_session
 
@@ -309,6 +309,47 @@ def test_legacy_main_rekey_aligns_sessions_receipts_and_routing_atomically(homes
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
 
 
+def test_legacy_main_rekey_rewrites_api_binding_receipt(homes):
+    """API resume must see the same route in the row, binding receipt and routing index."""
+    sid, legacy_key = "legacy-api", "agent:main:api_server:dm:legacy-api"
+    new_key = "agent:acme:api_server:dm:legacy-api"
+    origin = {"platform": "api_server", "chat_id": sid, "user_id": sid, "profile": "default"}
+    entry = {"session_id": sid, "session_key": legacy_key, "origin": origin}
+    receipt = {"session_id": sid, "route": legacy_key, "entry": entry}
+    acme = _store(homes["acme"])
+    try:
+        _session(acme, sid, legacy_key, profile="default", source="api_server",
+                 chat_id=sid, origin_json=json.dumps(origin))
+        acme.state_meta.set(api_binding_key(sid), json.dumps(receipt))
+        acme.routing.upsert_routing_entry(legacy_key, json.dumps(entry), routing_scope="")
+    finally:
+        acme.close()
+
+    assert open_profile_repair(profile_scope(home=homes["acme"]), read_only=False).rekey_legacy_main_sessions(
+        [sid], "acme") == 1
+    acme = _store(homes["acme"])
+    try:
+        row = session_row(acme, sid)
+        assert (row["session_key"], row["profile_name"]) == (new_key, "acme")
+        saved = json.loads(acme.state_meta.get(api_binding_key(sid)))
+        assert saved["route"] == new_key
+        assert saved["entry"]["session_key"] == new_key
+        assert saved["entry"]["origin"]["profile"] == "acme"
+        routing = acme.routing.load_routing_entries(routing_scope="")
+        assert set(routing) == {new_key}
+        assert json.loads(routing[new_key])["session_key"] == new_key
+    finally:
+        acme.close()
+
+    assert open_profile_repair(profile_scope(home=homes["acme"]), read_only=False).rekey_legacy_main_sessions(
+        [sid], "acme") == 0
+    acme = _store(homes["acme"])
+    try:
+        assert json.loads(acme.state_meta.get(api_binding_key(sid))) == saved
+    finally:
+        acme.close()
+
+
 def test_legacy_main_rekey_for_named_main_profile_is_idempotent(tmp_path, monkeypatch):
     """A profile literally named ``main`` must be marked ``agent:main~:``, never ``agent:main~~:``."""
     from hermes_cli.profiles import create_profile
@@ -346,15 +387,102 @@ def test_legacy_main_rekey_for_named_main_profile_is_idempotent(tmp_path, monkey
                 receipt = json.loads(db.state_meta.get(policy_key(sid)))
                 assert receipt["route"] == new_key and receipt["entry"]["session_key"] == new_key
                 assert receipt["entry"]["origin"]["profile"] == "main"
+            assert set(db.routing.load_routing_entries(routing_scope="")) == {
+                "agent:main~" + k[len("agent:main"):] for _, k, _ in cases}
         finally:
             db.close()
         root_db = _store(root)
         try:
-            assert set(root_db.routing.load_routing_entries(routing_scope="")) == {
-                "agent:main~" + k[len("agent:main"):] for _, k, _ in cases}
+            assert root_db.routing.load_routing_entries(routing_scope="") == {}
         finally:
             root_db.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_report_mode_does_not_relabel_named_profile_legacy_chats(homes, monkeypatch):
+    """Named-profile ``agent:main:*`` sessions (local or platform) must not be relabelled to default.
+
+    Before an explicit ``--legacy-main`` decision, a legacy ``agent:main:*`` session labelled with
+    its owning named profile would also match ``mislabelled`` (key namespace ``default`` != profile).
+    Default ``--apply`` (``--legacy-main report``) must leave ``profile_name`` intact in named
+    profile stores while still relabelling genuinely mislabelled rows in the default store.
+    """
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
+    try:
+        _session(acme, "local-chat", "agent:main:local:dm:local-chat", profile="acme", source="local",
+                 chat_id="local-chat", origin_json=_local_origin("local-chat", "acme"))
+        _session(acme, "tg-chat", "agent:main:telegram:dm:203", profile="acme", source="telegram")
+        _session(root, "root-mislabelled", ROOT_KEY, profile="acme", source="telegram")
+    finally:
+        root.close()
+        acme.close()
+
+    report = _report()
+    acme_findings = [(f["kind"], f["subject"]) for f in report["findings"] if f["store"] == "acme"]
+    assert ("legacy_main", "local-chat") in acme_findings
+    assert ("legacy_main", "tg-chat") in acme_findings
+    assert not [f for f in report["findings"] if f["kind"] == "mislabelled" and f["store"] == "acme"]
+    assert any(f["kind"] == "mislabelled" and f["subject"] == "root-mislabelled" for f in report["findings"])
+
+    assert _run(apply=True) == 0
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
+    try:
+        assert session_row(acme, "local-chat")["profile_name"] == "acme"
+        assert session_row(acme, "tg-chat")["profile_name"] == "acme"
+        assert session_row(root, "root-mislabelled")["profile_name"] == "default"
+    finally:
+        root.close()
+        acme.close()
+
+    assert _run(apply=True, legacy_main="rekey") == 0
+    acme = _store(homes["acme"])
+    try:
+        assert session_row(acme, "local-chat")["session_key"] == "agent:acme:local:dm:local-chat"
+        assert session_row(acme, "tg-chat")["session_key"] == "agent:acme:telegram:dm:203"
+        assert session_row(acme, "local-chat")["profile_name"] == "acme"
+        assert session_row(acme, "tg-chat")["profile_name"] == "acme"
+    finally:
+        acme.close()
+
+
+def test_multiplex_keeps_unscoped_local_routes_in_named_profile_store(homes, monkeypatch):
+    """Under multiplexing, ``scope=''`` local/API routes belong to the named profile's own store."""
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    (homes["default"] / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    gw_scope = str((homes["acme"] / "sessions").resolve())
+    sid, legacy_key = "acme-local", "agent:main:local:dm:acme-local"
+    entry = _receipt(sid, legacy_key, sid, "acme")
+    entry_json = json.dumps(json.loads(entry)["entry"])
+
+    acme = _store(homes["acme"])
+    try:
+        _session(acme, sid, legacy_key, profile="acme", source="local", chat_id=sid,
+                 origin_json=_local_origin(sid, "acme"))
+        acme.state_meta.set(policy_key(sid), entry)
+        acme.routing.upsert_routing_entry(legacy_key, entry_json, routing_scope="")
+        acme.routing.upsert_routing_entry(
+            ACME_KEY, json.dumps({"session_key": ACME_KEY, "session_id": "ok-acme"}), routing_scope=gw_scope)
+    finally:
+        acme.close()
+
+    report = _report()
+    strays = [f["subject"] for f in report["findings"] if f["kind"] == "routing_stray"]
+    assert strays == [f"{ACME_KEY} (scope {gw_scope!r})"]
+
+    assert _run(apply=True, legacy_main="rekey") == 0
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
+    try:
+        assert set(acme.routing.load_routing_entries(routing_scope="")) == {"agent:acme:local:dm:acme-local"}
+        assert acme.routing.load_routing_entries(routing_scope=gw_scope) == {}
+        assert root.routing.load_routing_entries(routing_scope="") == {}
+        assert set(root.routing.load_routing_entries(routing_scope=gw_scope)) == {ACME_KEY}
+    finally:
+        root.close()
+        acme.close()
 
 
 def test_standalone_profile_is_an_island_for_rekey_and_routing(tmp_path, monkeypatch):

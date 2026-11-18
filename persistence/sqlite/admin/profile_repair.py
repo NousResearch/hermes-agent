@@ -28,7 +28,7 @@ from session_rules.route_entries import _session_key_namespace
 
 from .._holder import StoreHolder
 from ..conversation._store.core import _delete_unreferenced_system_prompts
-from ..conversation._store.local import POLICY_PREFIX
+from ..conversation._store.local import API_BINDING_PREFIX, POLICY_PREFIX
 from ..gateway._local_lineage import _receipt
 from ._base import AdminFile
 
@@ -403,10 +403,11 @@ class SQLiteProfileRepairAdmin(AdminFile):
         """``agent:main:...`` -> ``agent:<profile>:...`` for every row a standalone gateway wrote
         before this store's profile was multiplexed (#113884, #143150).
 
-        The session row, its ``state_meta`` local-policy receipt and every ``gateway_routing`` row
-        are rewritten in ONE write transaction, so a crash or a lock retry can never publish a
-        session whose receipt or routing entry still names the old route. Only rows still under the
-        legacy namespace change; a ``main``-named profile gets the marked ``agent:main~:`` form.
+        The session row, its ``state_meta`` local-policy and API-binding receipts and every
+        ``gateway_routing`` row are rewritten in ONE write transaction, so a crash or a lock retry
+        can never publish a session whose receipt or routing entry still names the old route. Only
+        rows still under the legacy namespace change; a ``main``-named profile gets the marked
+        ``agent:main~:`` form.
         """
         wanted = list(ids)
         if not wanted:
@@ -428,7 +429,8 @@ class SQLiteProfileRepairAdmin(AdminFile):
                         "WHERE id = ? AND session_key = ?",
                         (new_ns + session_key[len(_LEGACY_MAIN_PREFIX):], profile,
                          _rekey_origin_json(origin_json, profile), session_id, session_key)).rowcount
-                meta_keys = [POLICY_PREFIX + sid for sid in chunk]
+                meta_keys = [prefix + sid for sid in chunk
+                             for prefix in (POLICY_PREFIX, API_BINDING_PREFIX)]
                 _rekey_meta_receipts(conn, meta_keys, new_ns, profile, legacy_routes)
             _rekey_routing_rows(conn, legacy_routes, new_ns, profile)
             return changed

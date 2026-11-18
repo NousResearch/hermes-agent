@@ -1,4 +1,5 @@
 import { hostHas } from '@/lib/host-capabilities'
+import { shellCopy } from '@/lib/shell-copy'
 
 // A remote connection refuses /browser connect|disconnect: both drive the CDP
 // connection inside the gateway process. The Webapp is always remote and has no
@@ -6,4 +7,9 @@ import { hostHas } from '@/lib/host-capabilities'
 export const remoteBrowserManageRefusal = (action: 'connect' | 'disconnect'): string =>
   hostHas('webappCopy')
     ? `/browser ${action} isn't available in the Webapp — it manages a Chromium-family browser on the machine running Hermes. Run it from Hermes Desktop or the CLI on that machine.`
-    : '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+    : shellCopy({
+        classic:
+          '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.',
+        redesign:
+          '/browser connect manages a Chromium-family browser on the machine running Hermes — only available when connected to the local machine.'
+      })

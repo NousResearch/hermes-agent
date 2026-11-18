@@ -113,9 +113,10 @@ export function readUiPreferences(file: string): UiPreferencesSnapshot {
   return readStore(file).snapshot
 }
 
-/** For the paths that must never throw (the preload's first paint, the
- *  watcher): an unreadable store is simply not known yet. */
-function tryReadUiPreferences(file: string): null | UiPreferencesSnapshot {
+/** The store, or null when it cannot be read right now. For the paths that must
+ *  never throw (the preload's first paint, the watcher, main's first window):
+ *  an unreadable store is simply not known yet. */
+export function tryReadUiPreferences(file: string): null | UiPreferencesSnapshot {
   try {
     return readUiPreferences(file)
   } catch {

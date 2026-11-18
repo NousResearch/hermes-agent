@@ -33,9 +33,11 @@ import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  simplifiedAgents: simplifiedAgentsCopy['en'],
   externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
@@ -194,7 +196,6 @@ export const en: Translations = {
       turnOffLocal: 'Turn off the local server',
       providedByPlugin: (plugin: string) => `Provided by plugin ${plugin}`,
       openPlugins: 'Open the Plugins tab',
-      // Verbatim, by decision of the design of record.
       nousLine: 'Nous apps follow your account, not the profile.',
       rulesReadOnly: 'Rules cannot be changed right now.',
       rulesAppOff: (name: string) => `Turn ${name} on to change its tools.`,
@@ -573,6 +574,8 @@ export const en: Translations = {
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
+      'nav.back': 'Go back',
+      'nav.forward': 'Go forward',
       'session.new': 'New session',
       'session.newTab': 'New session tab',
       'session.newWindow': 'New window',
@@ -659,6 +662,7 @@ export const en: Translations = {
       'profile.prev': 'Previous profile',
       'profile.toggleAll': 'Toggle all-profiles view',
       'profile.create': 'Create profile',
+      'agents.new': 'New profile (Profiles page)',
       'composer.send': 'Send message',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
@@ -901,7 +905,8 @@ export const en: Translations = {
       deleteAction: 'Remove saved item',
       otpField: 'Authenticator key',
       otpPlaceholder: 'Base32 secret or otpauth:// link',
-      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
+      otpHint:
+        'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
       twoFactorBadge: '2FA auto',
       deleteTitle: 'Delete this item?',
       deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
@@ -955,6 +960,13 @@ export const en: Translations = {
       system: { label: 'System', description: 'Follow OS appearance' }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'Tool calls',
+        toolViewDesc: 'Simple hides raw tool payloads; Technical shows full input/output.',
+        product: 'Simple',
+        introSplashTitle: 'Welcome screen',
+        embedsTitle: 'Link previews'
+      },
       chatTextScaleTitle: 'Chat Text Size',
       chatTextScaleDesc:
         'Scales conversation text and the message editor relative to UI Scale. Sidebars and controls stay the same size.',
@@ -1284,7 +1296,8 @@ export const en: Translations = {
     // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Registered gateways',
-      intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
+      intro:
+        'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
         'Every gateway stays connected. Profiles, chats, messaging, and cron jobs stay with their gateway, and Sessions can show all of them at once.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
@@ -2029,16 +2042,19 @@ export const en: Translations = {
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
         description:
-          'Copies your default browser\'s logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.',
+          "Copies your default browser's logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.",
         enabledTitle: 'Real-profile browsing on',
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
-        disabledMessage: 'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
+        disabledMessage:
+          'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
         reimportSignins: 'Re-import sign-ins',
         signinsImportedTitle: 'In-app browser sign-ins',
-        signinsImported: count => `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
-        signinsRemote: 'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
+        signinsImported: count =>
+          `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
+        signinsRemote:
+          'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
         signinsFailed: 'Could not import sign-ins into the in-app browser',
         prompt: {
           title: 'Stay signed in to your sites',
@@ -2056,6 +2072,16 @@ export const en: Translations = {
 
   skillDeepLink: enSkillDeepLink,
   skills: {
+    inventoryScopeHint:
+      'Installations are scoped to the selected agent and machine. Agent-specific tool enablement and overrides live in Agent settings. Hosted connector accounts are shared by agents using the same Nous account.',
+    agentScopeHint: 'Changes apply only to this agent. Existing conversations keep their current tools.',
+    toolSecretsHint:
+      'API keys, endpoints and providers used by this agent. Provider sign-ins can be shared across agents; hosted connector accounts are shared by agents using the same Nous account.',
+    openAgentSettings: 'Profile settings',
+    openToolLibrary: 'Browse the tool library',
+    remotePluginHint:
+      'Open this profile on its gateway to manage its plugins. Plugin installation uses the connected gateway.',
+    showAllToolsets: (count: number) => `Show all ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Configuring:',
@@ -2605,7 +2631,8 @@ export const en: Translations = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'No bot token needed',
-      intro: (platform: string) => `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
+      intro: (platform: string) =>
+        `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
       link: (platform: string) => `Link ${platform}`,
       linkAnother: (platform: string) => `Link another ${platform} account`,
       linkedAccounts: 'Linked accounts',
@@ -2626,7 +2653,8 @@ export const en: Translations = {
       managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
       managedIntro: "This agent's accounts are linked from Nous Portal.",
       openPortal: 'Link accounts in Nous Portal',
-      noNewAccount: (platform: string) => `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
+      noNewAccount: (platform: string) =>
+        `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
     },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
@@ -3334,6 +3362,7 @@ export const en: Translations = {
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',
+    browseAllSessions: 'Browse all sessions…',
     newSessionPlaceholders: [
       'What are we building?',
       'Give Hermes a task',
@@ -4114,6 +4143,8 @@ export const en: Translations = {
       daybreakFailed: 'Daybreak update failed'
     },
     gatewayMenu: {
+      connectionLabel: 'Connection',
+      inferenceLabel: 'Inference',
       gateway: 'Gateway',
       connected: 'Connected',
       connecting: 'Connecting',
@@ -4127,7 +4158,13 @@ export const en: Translations = {
       connection: label => `Connection: ${label}`,
       recentActivity: 'Recent activity',
       viewAllLogs: 'View all logs →',
-      messagingPlatforms: 'Messaging platforms'
+      messagingPlatforms: 'Messaging platforms',
+      machineStatus: (machine, status) => `${machine} status: ${status}`,
+      checkAgain: 'Check again',
+      switchToMachine: 'Switch to this gateway',
+      machineSettings: 'Gateways',
+      restartTitle: 'Restart the gateway?',
+      restartBody: 'Turns running on this gateway stop. It comes back in a few seconds and reconnects on its own.'
     },
     approvalMode: {
       title: 'Approval mode',
@@ -4305,12 +4342,9 @@ export const en: Translations = {
     terminalCloseAll: 'Close all',
     terminalNewOn: 'New terminal on…',
     terminalGatewayRemoved: 'Removed gateway',
-    terminalGatewayRemovedBody:
-      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
-    terminalGatewayNoShellBody:
-      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
-    terminalDisconnectedBody:
-      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalGatewayRemovedBody: 'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody: 'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
+    terminalDisconnectedBody: 'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
@@ -4406,6 +4440,7 @@ export const en: Translations = {
     hideStripTab: title => `Hide ${title}`,
     zoneMenuLabel: title => `Zone options for ${title}`,
     lastTabKeptTitle: 'Last tab stays',
+    resizePanes: 'Resize panes',
     lastTabKeptBody: 'This zone needs at least one visible tab. Show another tab first, or collapse the whole sidebar.',
     toggleStripTab: title => `Toggle ${title} tab`,
     minimize: 'Minimize',
@@ -4768,7 +4803,11 @@ export const en: Translations = {
 
   desktop: {
     audioReadFailed: 'Could not read recorded audio',
+    sessionOpenFailed: "Couldn't open this session",
     sessionUnavailable: 'Session unavailable',
+    sessionOwnerConflictTitle: "Couldn't open this chat",
+    sessionOwnerConflictBody:
+      'Another chat with the same ID is already open. Close it first, or open this chat in a new window.',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',

@@ -86,9 +86,14 @@ export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null):
 /** Record a first-run answer; the strip and the dialog retire as soon as the backend reports it decided. */
 export async function answerSharedMetricsOffer(
   request: SharedMetricsRequester,
-  choice: SharedMetricsChoice
+  choice: SharedMetricsChoice,
+  isCurrent?: () => boolean
 ): Promise<void> {
   const consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
+
+  if (isCurrent && !isCurrent()) {
+    return
+  }
 
   if (consent) {
     // Gate first: the consent answer is itself a first-run step, counted only when it opted in.

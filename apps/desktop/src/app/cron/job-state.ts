@@ -1,3 +1,5 @@
+import { translateNow } from '@/i18n'
+import { shellCopy } from '@/lib/shell-copy'
 import type { CronJob } from '@/types/cron'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
@@ -36,7 +38,11 @@ export function jobTitle(job: CronJob): string {
   const pick = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
   return (
-    pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
+    pick(job.name) ||
+    truncateText(pick(job.prompt), 60) ||
+    truncateText(pick(job.script), 60) ||
+    job.id ||
+    shellCopy({ classic: 'Cron job', redesign: translateNow('assistant.tool.titles.cronjob.done') })
   )
 }
 

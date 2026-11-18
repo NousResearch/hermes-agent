@@ -10,12 +10,32 @@ import type {
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  capabilityScoped,
   connectionScoped,
   getApiRequestConnection,
   hermesApi,
   profileScoped,
   STARTUP_REQUEST_TIMEOUT_MS
 } from './client'
+
+/** A routine's owner: its agent (profile) and, when pinned, the machine (connection) serving it. The
+ *  per-job calls below take one so a surface listing several agents' routines acts on each in its own
+ *  profile; without it they keep the ambient scope, exactly as before. */
+export interface CronOwnerScope {
+  connectionId?: null | string
+  profile?: null | string
+}
+
+function cronScoped(owner?: CronOwnerScope) {
+  return owner ? capabilityScoped(owner) : { ...profileScoped(), ...connectionScoped() }
+}
+
+/** `?profile=` names the owning profile for the backend (a hint it verifies for per-job calls). */
+function ownerQuery(owner: CronOwnerScope | undefined, joiner: '?' | '&' = '?'): string {
+  const profile = owner?.profile?.trim()
+
+  return profile ? `${joiner}profile=${encodeURIComponent(profile)}` : ''
+}
 
 // The cron trigger endpoint intentionally waits for the whole job so its
 // response reflects the persisted execution result. Agent jobs can run far
@@ -47,11 +67,15 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   })
 }
 
-export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
+export async function getCronJobRuns(jobId: string, limit = 20, scope?: CronOwnerScope): Promise<SessionInfo[]> {
+  // Captured before awaiting: runs belong to the source the request is pinned
+  // to, `local` included. An unpinned request rides the profile door, which can
+  // resolve to a legacy per-profile remote override, so its runs stay untagged.
+  const owner = scope?.connectionId?.trim() || getApiRequestConnection()
+
   const { runs } = await hermesApi<{ runs: SessionInfo[] }>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}${ownerQuery(scope, '&')}`
   })
 
   // Run rows are backend-returned sessions like any other page, so they carry
@@ -63,7 +87,7 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   // id-only resume and the transcript never loaded (#82527). The backend
   // stamps `profile` (the job's owning profile); this adds the connection
   // half, exactly as /api/sessions and the sidebar slices do.
-  return stampRowsWithOwningConnection(runs ?? [], getApiRequestConnection())
+  return stampRowsWithOwningConnection(runs ?? [], owner, true)
 }
 
 // The single source of truth for cron delivery targets (local + configured
@@ -79,49 +103,54 @@ export async function getCronDeliveryTargets(): Promise<CronDeliveryTarget[]> {
   return targets ?? []
 }
 
-export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
+/** The same targets for one routine owner: its own profile's gateways, on its machine. */
+export async function getOwnerCronDeliveryTargets(scope: CronOwnerScope): Promise<CronDeliveryTarget[]> {
+  const { targets } = await hermesApi<{ targets: CronDeliveryTarget[] }>({
+    ...cronScoped(scope),
+    path: `/api/cron/delivery-targets${ownerQuery(scope)}`
+  })
+
+  return targets ?? []
+}
+
+export function createCronJob(body: CronJobCreatePayload, scope?: CronOwnerScope): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: '/api/cron/jobs',
+    ...cronScoped(scope),
+    path: `/api/cron/jobs${ownerQuery(scope)}`,
     method: 'POST',
     body
   })
 }
 
-export function updateCronJob(jobId: string, updates: CronJobUpdates): Promise<CronJob> {
+export function updateCronJob(jobId: string, updates: CronJobUpdates, scope?: CronOwnerScope): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}${ownerQuery(scope)}`,
     method: 'PUT',
     body: { updates }
   })
 }
 
-export function pauseCronJob(jobId: string): Promise<CronJob> {
+export function pauseCronJob(jobId: string, scope?: CronOwnerScope): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/pause${ownerQuery(scope)}`,
     method: 'POST'
   })
 }
 
-export function resumeCronJob(jobId: string): Promise<CronJob> {
+export function resumeCronJob(jobId: string, scope?: CronOwnerScope): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/resume${ownerQuery(scope)}`,
     method: 'POST'
   })
 }
 
-export function triggerCronJob(jobId: string): Promise<CronJob> {
+export function triggerCronJob(jobId: string, scope?: CronOwnerScope): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/trigger${ownerQuery(scope)}`,
     method: 'POST',
     timeoutMs: CRON_TRIGGER_REQUEST_TIMEOUT_MS
   })
@@ -129,20 +158,18 @@ export function triggerCronJob(jobId: string): Promise<CronJob> {
 
 // Asks the job's live run to stop; the run books a 'cancelled' attempt at its next cancel
 // check (a second or two), so callers poll the job list for the ledger to settle.
-export function cancelCronJobRun(jobId: string): Promise<CronCancelResult> {
+export function cancelCronJobRun(jobId: string, scope?: CronOwnerScope): Promise<CronCancelResult> {
   return hermesApi<CronCancelResult>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/cancel`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/cancel${ownerQuery(scope)}`,
     method: 'POST'
   })
 }
 
-export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
+export function deleteCronJob(jobId: string, scope?: CronOwnerScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
-    ...connectionScoped(),
-    path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
+    ...cronScoped(scope),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}${ownerQuery(scope)}`,
     method: 'DELETE'
   })
 }
@@ -157,10 +184,12 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 // (built-ins plus that profile's plugin-registered blueprints, deliver options
 // from its gateways), and instantiate creates the job in that profile. Fetch the
 // catalog for the same profile you instantiate into. Mirrors the dashboard's api.ts.
-export function getAutomationBlueprints(profile: string): Promise<{ blueprints: AutomationBlueprint[] }> {
+export function getAutomationBlueprints(
+  profile: string,
+  connectionId?: null | string
+): Promise<{ blueprints: AutomationBlueprint[] }> {
   return hermesApi<{ blueprints: AutomationBlueprint[] }>({
-    ...profileScoped(),
-    ...connectionScoped(),
+    ...(connectionId ? capabilityScoped({ connectionId, profile }) : { ...profileScoped(), ...connectionScoped() }),
     path: `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -168,11 +197,11 @@ export function getAutomationBlueprints(profile: string): Promise<{ blueprints: 
 
 export function instantiateAutomationBlueprint(
   body: { blueprint: string; values: Record<string, string> },
-  profile: string
+  profile: string,
+  connectionId?: null | string
 ): Promise<CronJob> {
   return hermesApi<CronJob>({
-    ...profileScoped(),
-    ...connectionScoped(),
+    ...(connectionId ? capabilityScoped({ connectionId, profile }) : { ...profileScoped(), ...connectionScoped() }),
     path: `/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`,
     method: 'POST',
     body

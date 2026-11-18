@@ -12,13 +12,21 @@ let observer: MutationObserver | null = null
 
 // These root vars position chrome, not palette/font tokens. Keep every other
 // inline declaration (including arbitrary skin vars and !important) observable.
+const GEOMETRY_VARS = new Set(['--workspace-left', '--workspace-right', '--glass-rail-edge'])
+
+// Authored CSS can derive colours/fonts from geometry, but only by naming the variable. A skin
+// whose customCSS never does (the redesign's default Portal skin) must not turn every pane-resize
+// frame into a repaint.
+const derivesFromGeometry = (css: null | string | undefined): boolean =>
+  Boolean(css && [...GEOMETRY_VARS].some(name => css.includes(name)))
+
 function themeStyle(style: CSSStyleDeclaration): string {
   let snapshot = ''
 
   for (let i = 0; i < style.length; i += 1) {
     const name = style.item(i)
 
-    if (name === '--workspace-left' || name === '--workspace-right' || name === '--glass-rail-edge') {
+    if (GEOMETRY_VARS.has(name)) {
       continue
     }
 
@@ -37,11 +45,12 @@ export function onThemeRepaint(fn: () => void): () => void {
       const nextStyle = themeStyle(root.style)
       // applyTheme also writes these attributes when only customCSS changes.
       // Even same-value attribute writes must still publish that repaint.
-      // Authored CSS can derive colors/fonts from geometry variables too.
       const customCSS = document.getElementById('hermes-desktop-custom-css')?.textContent
 
       const repaint =
-        Boolean(customCSS) || nextStyle !== previousStyle || records.some(record => record.attributeName !== 'style')
+        derivesFromGeometry(customCSS) ||
+        nextStyle !== previousStyle ||
+        records.some(record => record.attributeName !== 'style')
 
       previousStyle = nextStyle
 

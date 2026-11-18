@@ -12,6 +12,8 @@ afterEach(cleanup)
 
 it.each([false, true])('restores floating geometry and collapse with keep-alive=%s', async keepAlive => {
   window.localStorage.clear()
+  // Pins the classic shell, whose layout keeps the keys asserted here.
+  window.localStorage.setItem('hermes.desktop.agentShell.v1', 'false')
   vi.resetModules()
   window.localStorage.setItem('hermes.desktop.floatingPanes.v1', JSON.stringify({ card: { x: 37, y: 71 } }))
   const { registry } = await import('@/contrib/registry')

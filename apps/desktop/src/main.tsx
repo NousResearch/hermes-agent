@@ -1,5 +1,7 @@
 // Loaded by src/entry.ts once the machine's shared UI preferences hydrated.
 import './styles.css'
+// The redesign's tokens: after styles.css, whose `:root.dark` rules they tie on specificity.
+import './app/redesign/tokens/index.css'
 // Install the loopback browser host before any store/App modules evaluate.
 // Electron preload remains authoritative when its bridge already exists.
 import './lib/browser-desktop-bridge-install'
@@ -41,6 +43,7 @@ import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
+import { installShellAttribute } from './store/shell-variant'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -52,6 +55,9 @@ installSelectionCopyColorGuard()
 installBrowserTabTitle()
 // One preferences store per machine, shared by native Desktop and its Webapp (#145213).
 startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
+// <html data-shell> gates every redesign rule, including body-portalled surfaces;
+// set it before the first render and keep it in step with runtime toggles.
+installShellAttribute()
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,

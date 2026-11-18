@@ -214,3 +214,48 @@ def test_v3_schema_accepts_exactly_the_desktop_contract_values():
         dims = by_name[metric]["properties"]["dimensions"]["properties"]
         assert {f: set(spec["enum"]) for f, spec in dims.items() if "enum" in spec} == {
             f: set(values) for f, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
+
+
+def test_simplified_sidebar_metrics_keep_consent_and_closed_reason_codes(marks):
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    assert [d["area"] for _, d, _ in _stored(contract.DESKTOP_FEATURE_USE_METRIC)] == ["simplified_sidebar"]
+    _rpc("shared_metrics.desktop_dislike", signal="feature_disabled", target="simplified_sidebar")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="missing_chats")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="private free text")
+    assert [(d["signal"], d["target"]) for _, d in marks.rows] == [
+        ("feature_disabled", "simplified_sidebar"),
+        ("sidebar_disabled_reason", "missing_chats"),
+        ("sidebar_disabled_reason", "other"),
+    ]
+    _assert_valid(marks.rows)
+    marks.policy["on"] = False
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="prefer_classic")
+    _rpc("shared_metrics.desktop_feature_use", area="classic_sidebar")
+    assert len(marks.rows) == 3
+    assert len(_stored(contract.DESKTOP_FEATURE_USE_METRIC)) == 1
+
+
+def test_ia_daily_counters_preserve_closed_codes_consent_and_replay(marks):
+    params = {
+        "day": "2026-09-26",
+        "actions": [
+            {"action": "ia.pin.pinned", "via": "state", "count": 2},
+            {"action": "ia.transition.chat_to_capabilities", "via": "state", "count": 1},
+            {"action": "ia.rail.plugin", "via": "click", "count": 1},
+            {"action": "ia.rail.private-plugin-name", "via": "click", "count": 1},
+        ],
+    }
+    marks.policy["on"] = False
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": False}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == []
+    marks.policy["on"] = True
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.pin.pinned", "ia.transition.chat_to_capabilities", "ia.rail.plugin", "other",
+    }
+    assert all(d["via"] == "state" for _, d, _ in rows if d["action"].startswith("ia.pin"))
+    assert "private-plugin" not in json.dumps(rows)
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == rows

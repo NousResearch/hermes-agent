@@ -11,11 +11,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
 import { setSessions } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
 import type { ClientSessionState } from '../../../types'
 
 import { useSessionActions } from './index'
+
+// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
+beforeEach(() => $shellChoice.set(true))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -139,4 +143,12 @@ describe('removeSession × archived view store', () => {
 
     expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
   })
+  it('deletes an uncached search result using its explicit gateway and profile', async () => {
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+    const row = archivedSession({ archived: false, profile: 'research', connection_id: 'remote-b' })
+    await act(() => handle.removeSession(row.id, row))
+    expect(deleteSession).toHaveBeenCalledWith(row.id, { connectionId: 'remote-b', profile: 'research' })
+  })
+
 })

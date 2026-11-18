@@ -85,6 +85,7 @@ _LIKE_COALESCED_COLUMN_SQL = (
 )
 
 
+_FTS_RANK_ORDER_BY = "ORDER BY rank"
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 
 
@@ -451,8 +452,8 @@ def _fts_match_sql(table: str, match_query: str, order_by_sql: str, *, limit: in
 def _rescope_ranked_fts_corruption(
     holder: StoreHolder, table: str, match_query: str, order_by_sql: str,
 ) -> Optional[Callable[[sqlite3.DatabaseError], sqlite3.DatabaseError]]:
-    """``rescope`` for a ranked MATCH read (see ``StoreHolder._read_retrying_ioerr``); None when
-    *order_by_sql* does not rank, since only FTS5's rank sorter masks the code.
+    """``rescope`` for a ranked MATCH read (see ``StoreHolder._read_retrying_ioerr``); None for any
+    other ordering: only the rank-only sort masks the code (``newest``/``oldest`` keep it).
 
     FTS5 evaluates ``ORDER BY rank`` in a nested sorter statement, and SQLite returns that
     statement's error masked to the primary code: index damage bm25 reports as
@@ -461,7 +462,7 @@ def _rescope_ranked_fts_corruption(
     that bare code, re-ask the index alone, unsorted (bm25 in the outer statement keeps the
     extended code). An index-scoped answer replaces the error; anything else — the probe
     passing, or failing some other way — keeps the original, so real damage still fails closed."""
-    if "rank" not in order_by_sql:
+    if order_by_sql != _FTS_RANK_ORDER_BY:
         return None
     # FTS5 refuses bm25() inside an aggregate, so the probe streams the rows (nothing is kept).
     probe_sql = f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?"
@@ -668,7 +669,7 @@ def _search_messages_impl(
     if not holder._fts_enabled:
         return []
 
-    order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
+    order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, _FTS_RANK_ORDER_BY)
     route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
     # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram
     # index (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
@@ -694,6 +695,7 @@ def _search_messages_impl(
             if not _enter_fts_fail_open(holder, exc):
                 raise
             matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
+    detached_before_retries = holder._fts_stale
 
     # Deferred-rebuild supplement: while the backfill is pending the FTS indexes miss
     # the (progress, high_water] gap; top up with a bounded LIKE scan so old messages
@@ -729,6 +731,13 @@ def _search_messages_impl(
             matches = _match_rows(holder, "messages_fts", relaxed, fail_open="OR-relaxed",
                                        operational_debug="OR-relaxed FTS retry failed; keeping empty result",
                                        **route) or matches
+    if not matches and holder._fts_stale and not detached_before_retries:
+        # A retry above hit index damage and detached the indexes: answer this request from canonical rows
+        # (exact terms, then any term, mirroring the FTS retries) instead of returning the empty miss.
+        for like_query in (query, _or_relaxed_query(query)):
+            if like_query is not None and not matches:
+                matches = _search_messages_like_fallback(
+                    holder, like_query, limit=limit, offset=offset, sort=sort, **filters)
     return _finalize_search_matches(holder, matches, result_fields=result_fields)
 
 

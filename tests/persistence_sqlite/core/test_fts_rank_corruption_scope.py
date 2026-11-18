@@ -123,8 +123,31 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
         reopened.close()
 
 
+def test_pre_v3_reopen_of_an_empty_realigned_store_opens(tmp_path):
+    """The realign of an emptied store runs inside a savepoint; its DDL must not commit it away."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        row_id = append_message(holder, "s", role="tool", content=CUT_TOOL_ROW, tool_name="terminal")
+        holder._execute_write(lambda conn: conn.executescript(
+            "DELETE FROM messages; INSERT OR REPLACE INTO state_meta(key, value) "
+            f"VALUES('fts_tool_full_content_high_water', '{row_id}');"))
+    finally:
+        holder.close()
+
+    reopened = _open(path)
+    try:
+        assert reopened.get_meta("fts_tool_full_content_high_water") is None
+        append_message(reopened, "s", role="user", content="indexed after the realign")
+        assert search_messages(reopened, "realign")
+    finally:
+        reopened.close()
+
+
 def test_trigram_fallback_over_orphaned_posting_fails_open(tmp_path):
-    """The zero-hit trigram retry is a ranked MATCH too: its damage must detach, not raise."""
+    """The zero-hit trigram retry is a ranked MATCH too: its damage must detach, not raise,
+    and the triggering request still answers from canonical rows."""
     path = tmp_path / "state.db"
     holder = _open(path)
     try:
@@ -139,8 +162,25 @@ def test_trigram_fallback_over_orphaned_posting_fails_open(tmp_path):
             "INSERT INTO messages_fts(messages_fts, rowid, content, tool_name, tool_calls) "
             "VALUES('delete', ?, 'xyzorphan qqkeep', NULL, NULL)", (row_id,)))  # unicode61 misses -> trigram retry
 
-        search_messages(holder, "yzorph")
+        rows = search_messages(holder, "yzorph")
 
+        assert any("xyzorphan" in (row.get("snippet") or "") for row in rows)
+        assert storage_state(path) == STORAGE_OK
+    finally:
+        holder.close()
+
+
+def test_or_relaxed_retry_over_orphaned_posting_answers_from_canonical_rows(tmp_path):
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        append_message(holder, "s", role="user", content="orphanword survives in this row")
+        _orphan_posting(holder, "s")
+
+        rows = search_messages(holder, "missingterm orphanword")
+
+        assert any("survives" in (row.get("snippet") or "") for row in rows)
         assert storage_state(path) == STORAGE_OK
     finally:
         holder.close()

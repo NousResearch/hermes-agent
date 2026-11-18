@@ -313,8 +313,9 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 
 Select `gpt-6.2-astra` or `gpt-6.2-sol` with `hermes model` under **OpenAI API**
 (API key) or **OpenAI Codex** (ChatGPT subscription). Explicit model selections are unchanged.
-When no model is configured, OpenAI API defaults to `gpt-6.2-sol` and Codex defaults to
-`gpt-6-sol`. The Codex picker shows GPT-6.2 when the account's catalog offers it.
+When no model is configured, OpenAI API defaults to `gpt-6.2-sol`. Codex can use the
+account's catalog when available, with `gpt-6-sol` as its curated offline fallback.
+The Codex picker shows GPT-6.2 when the account's catalog offers it.
 If your ChatGPT plan doesn't include GPT-6.2, select `gpt-6-sol` instead.
 
 If your plan includes GPT-6.2 but the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md)

@@ -56,13 +56,16 @@ def test_browser_vault_guide_examples_validate_clean(tmp_path):
 
 def _bundled_context(tmp_path, monkeypatch, name: str):
     """A bundled plugin's real ``PluginContext`` for the active profile (``HERMES_HOME``)."""
-    from hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_cli.plugins import PluginContext, PluginManager, get_bundled_plugins_dir
     from hermes_cli.plugins_manifest import PluginManifest
 
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    return PluginContext(PluginManifest(name=name, source="bundled"), PluginManager(scope_key=str(home)))
+    # A bundled manifest carries the bundled directory it was discovered in (the loader always
+    # sets it); the backend seams admit the bundled label only for a genuine bundled directory.
+    manifest = PluginManifest(name=name, source="bundled", path=str(get_bundled_plugins_dir() / name))
+    return PluginContext(manifest, PluginManager(scope_key=str(home)))
 
 
 def test_login_backend_subclassed_as_documented_serves_vault_item_meta_through_core(tmp_path, monkeypatch):

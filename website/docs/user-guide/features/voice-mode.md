@@ -167,7 +167,7 @@ voice:
   output_device: 3                 # used for beeps, the thinking sound and spoken replies
 ```
 
-The setting covers push-to-talk recording, barge-in listening and the full-duplex listener. Each one records at the device's own sample rate, so a microphone that refuses 16 kHz still works. If a configured name matches no device, `/voice status` shows `NOT FOUND` with the reason. The wake word has its own `wake_word.input_device`.
+The setting covers push-to-talk recording, barge-in listening and the full-duplex listener, in the classic CLI and the TUI. Each one records at the device's own sample rate, so a microphone that refuses 16 kHz still works. If a configured name matches no device, `/voice status` shows `NOT FOUND` with the reason. The wake word has its own `wake_word.input_device`.
 
 ### Silence Detection
 

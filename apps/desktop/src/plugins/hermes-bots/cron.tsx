@@ -39,7 +39,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { avatarColor, botAppearance, BotBadge } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, botSelectionKey, isActiveRosterBot } from './data'
 import { labeled } from './dialog-parts'
@@ -1259,7 +1259,7 @@ export function RoutinesPane() {
         <ScreenHero bot={owner} meta={meta} />
       </div>
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-        <BotFace color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
+        <BotBadge color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-1.5 truncate">
             <div className="truncate text-xs font-semibold">

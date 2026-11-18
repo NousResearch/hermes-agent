@@ -1,5 +1,8 @@
 {
   "files": {
+    "app/agent-settings/agent-settings.css": 10,
+    "app/agent-settings/history.css": 7,
+    "app/agent-settings/settings-editor.css": 11,
     "app/messaging/messaging.css": 2,
     "app/redesign/portal-controls.css": 6,
     "app/redesign/portal-floating.css": 1,

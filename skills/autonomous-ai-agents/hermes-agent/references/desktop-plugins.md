@@ -155,12 +155,15 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   (never throws). View/navigation actions only; `ctx.listActions()` lists them
   (`PluginAppActionId` / `PLUGIN_APP_ACTIONS`). Never dispatch a synthetic
   `KeyboardEvent` to trigger an app shortcut.
-- `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
-  to your plugin (never edit core `en.ts`). Values are literal strings or
-  interpolator functions; nested trees are addressed by dot-path. Read them
-  reactively in components with `usePluginI18n(id)` returning `t('key', ...args)`
-  (re-renders on a locale switch), or via `ctx.i18n.t` in handlers/stores.
-  Resolution follows the app's active locale, then your `en`, then the raw key.
+- `ctx.i18n.register({ en, ja, ... }, { redesign? })` — ship your OWN locale
+  bundles, scoped to your plugin (never edit core `en.ts`). Values are literal
+  strings or interpolator functions; nested trees are addressed by dot-path.
+  Read them reactively in components with `usePluginI18n(id)` returning
+  `t('key', ...args)` (re-renders on a locale or shell switch), or via
+  `ctx.i18n.t` in handlers/stores. Resolution follows the app's active locale,
+  then your `en`, then the raw key. If your copy names bots/profiles/gateways/
+  cron jobs, pass `{ redesign: { en: {...only the reworded keys} } }`: the
+  redesigned shell reads Agents/Machines/Routines there, classic your bundles.
 - `ctx.i18n.registerAppLocale('pl', { endonym: 'Polski', rtl?, translations })`
   — a LANGUAGE PACK: add or extend a language for the whole app. `translations`
   is a partial of the app catalog (nested, or flat dotted keys as in a
@@ -199,6 +202,37 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, plus `cn`
   and `icons.*`. Prefer these over hand-rolled elements so the plugin looks
   native; style with theme vars, never hardcoded colors.
+
+## Two shells
+
+The app renders one of two shells: **classic** and the **redesign** (the default;
+Settings → Appearance → Redesigned interface toggles it). The same contribution
+areas work in both; what moves is where they show up:
+
+- Sidebar nav rows (`SIDEBAR_NAV_AREA`) are nav rows in classic and buttons on the
+  redesign's 60px rail (icon = your `codicon`, tooltip = your `label`; lit on your
+  route and its sub-routes). `SIDEBAR_NAV_PREFS_AREA` hide/order applies to both;
+  on the rail Chats, Agents and Settings never move.
+- Session-row decorations render in both; in the redesign they sit INSIDE the
+  row's one button (leading before the title, trailing before the age) — keep
+  them non-interactive or `stopPropagation()` on clicks.
+- `sidebar.profileGroup.header` renders at the top of a profile group in classic
+  and under each agent's heading in the redesign's sidebar.
+- Title-bar slots unmount in classic while an overlay page (Settings, Agents, …)
+  is open, as they always have; in the redesign, where those are everyday
+  destinations, they stay mounted and are only hidden.
+- Collapsible panes leave the grid below 640px in classic and become sheets below
+  1024px in the redesign (keeping their declared width). `host.state.viewport.narrow`
+  is `true` below 640px in BOTH shells.
+- Plugin pages: the page gets a block box with a definite height in both shells
+  — size the root with `h-full`, not `flex-1`.
+- CURRENTLY LIMITED in the redesign: status-bar items (no strip; they appear only
+  in the rail's System popover, in Advanced mode) and theme CSS written against
+  classic markup. `ctx.runAction('view.toggleStatusbar')` returns
+  `{ ok: false, reason: 'unavailable' }` there.
+- Capabilities → Plugins: one switch enables a package's desktop AND agent halves
+  in both shells; in the redesign an agent's own settings can switch its half off
+  for that agent.
 
 ## Procedure
 

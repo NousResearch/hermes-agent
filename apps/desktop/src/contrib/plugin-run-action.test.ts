@@ -22,6 +22,8 @@ import { KEYBIND_ACTION_IDS } from '@/lib/keybinds/actions'
 import { isMacPlatform } from '@/lib/platform'
 import { PLUGIN_APP_ACTIONS, type PluginAppActionId, type PluginContext, type PluginRunActionResult } from '@/sdk'
 import { resetAllBindings, setBinding } from '@/store/keybinds'
+import { $shellChoice } from '@/store/shell-variant'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 const wrapper = ({ children }: { children: ReactNode }) => createElement(MemoryRouter, null, children)
 
@@ -122,6 +124,22 @@ describe('ctx.runAction — plugins run built-in app actions', () => {
       reason: 'unavailable'
     })
     expect(toggleBrowserTab).not.toHaveBeenCalled()
+  })
+
+  it('reports unavailable for an action this window’s shell has nothing to do with', () => {
+    const ctx = createPluginContext('statusbar-toggle')
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    // The redesigned shell has no status bar: the toggle must not claim it ran.
+    $shellChoice.set(true)
+    expect(ctx.runAction('view.toggleStatusbar')).toMatchObject({ ok: false, reason: 'unavailable' })
+    expect($statusbarVisible.get()).toBe(true)
+
+    $shellChoice.set(false)
+    expect(ctx.runAction('view.toggleStatusbar')).toEqual({ ok: true })
+    expect($statusbarVisible.get()).toBe(false)
+    $statusbarVisible.set(true)
+    $shellChoice.set(null)
   })
 
   it('lists exactly the allowlisted actions with labels', () => {

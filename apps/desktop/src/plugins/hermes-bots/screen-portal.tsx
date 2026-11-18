@@ -1,6 +1,6 @@
 /**
- * Screen portal — the compact "this bot's computer" box that sits above a
- * bot's routines and on a gateway/profile group in the Sessions sidebar.
+ * Screen portal — the compact "this bot's computer" box in the classic
+ * Sessions sidebar. The redesigned sidebar uses the Screen palette action.
  * One click opens the live Screen pane; the subtitle says whether the screen
  * is live and who holds it, so the user knows before opening whether they
  * are about to watch, take over, install or start.
@@ -11,11 +11,11 @@
 
 import { Codicon, host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
-import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
+import type { PaletteContribution, ProfileGroupRoute } from '@hermes/plugin-sdk'
 import { useEffect, useMemo } from 'react'
 
 import { $lastRoster } from './data'
-import { useBots } from './i18n'
+import { botsText, useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
 import {
   type DisplayLease,
@@ -208,32 +208,72 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
   )
 }
 
-/** Sessions-sidebar variant: the gateway/profile group hands us its route; find the
- *  bot that owns it, or synthesize a scoped row so a profile outside the current
- *  roster filter still gets its portal (the portal only needs a routable row). */
+type BotRoute = NonNullable<ReturnType<typeof resolveBotConnectionRoute>['route']>
+
+/** A classic sidebar group names its profile as the roster does. */
+const namesProfile = (route: BotRoute, profile: string) => route.profile === profile
+
+/** The focused chat's owner may name the profile an alias serves from. */
+const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
+
+/** The roster row that owns a route's Screen, or a scoped row synthesized for it. */
+function screenBotForRoute(
+  { connectionId, profile }: ProfileGroupRoute,
+  roster: RosterRow[],
+  matches: (route: BotRoute, profile: string) => boolean
+): RosterRow {
+  return (
+    roster.find(row => {
+      const resolved = resolveBotConnectionRoute(row)
+
+      return resolved.route
+        ? matches(resolved.route, profile) && resolved.route.connectionId === (connectionId ?? 'local')
+        : row.name === profile && connectionId === null
+    }) ??
+    (connectionId
+      ? ({
+          name: profile,
+          sourceScoped: true,
+          connectionId,
+          connectionKind: connectionId === 'local' ? 'local' : 'remote'
+        } as RosterRow)
+      : ({ name: profile } as RosterRow))
+  )
+}
+
+/** Explicit tool access follows the focused chat's complete owner, never the live socket alone. */
+export function profileScreenCommand(route: ProfileGroupRoute): Omit<PaletteContribution, 'id'> {
+  return {
+    label: botsText().screen.menu,
+    keywords: ['screen', 'computer', 'display', 'desktop'],
+    detail: () => {
+      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
+      const connectionId = route.connectionId ?? 'local'
+      // A cold roster has no label for another machine; its id is then the only name there is.
+      const machine = bot.connectionLabel || (connectionId === 'local' ? botsText().bot.thisDevice : connectionId)
+
+      return `${route.profile} · ${machine}`
+    },
+    run: async () => {
+      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
+
+      const target = (await host.profileRoutes()).find(candidate =>
+        candidate.connectionId === (route.connectionId ?? 'local') && candidate.profile === route.profile
+      )
+
+      openBotScreen(target ? { ...bot, targetProfile: target.targetProfile || target.profile } : bot, null)
+    }
+  }
+}
+
+/** A filtered-out profile still gets a scoped row: Screen only needs a routable owner. */
 export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }) {
   const roster = useValue($lastRoster)
   const { connectionId, profile } = route
 
-  // Stable row identity: the portal's effects key on `bot`, so a synthesized row
-  // rebuilt every render would re-subscribe the lease listener on every sidebar paint.
+  // Keep effects stable when a parent re-renders a synthesized, non-roster owner.
   const bot = useMemo(
-    () =>
-      roster.find(row => {
-        const resolved = resolveBotConnectionRoute(row)
-
-        return resolved.route
-          ? resolved.route.profile === profile && resolved.route.connectionId === (connectionId ?? 'local')
-          : row.name === profile && connectionId === null
-      }) ??
-      (connectionId
-        ? ({
-            name: profile,
-            sourceScoped: true,
-            connectionId,
-            connectionKind: connectionId === 'local' ? 'local' : 'remote'
-          } as RosterRow)
-        : ({ name: profile } as RosterRow)),
+    () => screenBotForRoute({ connectionId, profile }, roster, namesProfile),
     [connectionId, profile, roster]
   )
 

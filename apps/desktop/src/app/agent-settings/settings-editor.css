@@ -1,0 +1,426 @@
+.agent-settings-editor {
+  display: grid;
+  /* One column: the sections menu lives in the page sidebar panel (1036:7189) and the page takes
+     the stage's full width (x 360→1200 in the frame). */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 32px;
+  width: 100%;
+  margin-inline: 0;
+  height: 100%;
+  min-height: 0;
+  container-type: inline-size;
+}
+
+.agent-settings-navigation {
+  display: grid;
+  align-content: start;
+  gap: 24px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 32px;
+}
+.agent-settings-nav-group {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+/* Sub-nav (895:9593): 10px uppercase group labels, 32px items with 13px +1% labels at .8. */
+.agent-settings-nav-group h2 {
+  margin: 0 0.625rem 0.375rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+.agent-settings-nav-group button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--portal-radius-control);
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+  text-align: start;
+}
+/* Sub-nav counts (895:13886 "Tools 13"): 11px, quiet, right-aligned. */
+.agent-settings-nav-count {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-micro-size);
+  font-variant-numeric: tabular-nums;
+}
+.agent-settings-nav-group button:hover {
+  background: var(--portal-surface-row-hover);
+  color: var(--ui-text-primary);
+}
+.agent-settings-nav-group button[aria-current] {
+  background: var(--portal-neutral-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  color: var(--ui-text-primary);
+  font-weight: 500;
+}
+.agent-settings-nav-group button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+.agent-settings-body {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: var(--portal-page-end-space);
+  gap: 32px;
+}
+.agent-settings-body > header h2 {
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+.agent-settings-body > header p {
+  margin-top: 6px;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+/* Embedded editors size to their content: a grid item with min-height 0 would shrink under the
+   body's scroll height and paint over the next section. */
+.agent-settings-body [data-slot='settings-content'] {
+  min-height: auto;
+  overflow: visible;
+}
+.agent-settings-body [data-slot='settings-content'] > div {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
+.agent-settings-card {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+.agent-settings-card > [class~='@container'] {
+  padding-inline: 16px;
+}
+.agent-settings-main-model > .grid,
+.agent-settings-body [data-slot='settings-content'] > div > .grid {
+  padding: 12px 16px;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+.agent-settings-main-model h3 {
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 500;
+}
+/* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
+.agent-settings-group {
+  display: grid;
+  gap: 0.75rem;
+}
+.agent-settings-group > h3 {
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  line-height: 1.1;
+}
+.agent-settings-group [data-slot='settings-row'] {
+  padding-inline: 1rem;
+}
+.agent-settings-group [data-slot='settings-row'] + [data-slot='settings-row'] {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+.agent-settings-group [data-slot='settings-row'] > div {
+  min-height: 4rem;
+  column-gap: 1.25rem;
+}
+.agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:first-child {
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+.agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:nth-child(2) {
+  margin-top: 2px;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+.agent-settings-group [data-slot='settings-row'] .font-mono {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  overflow-wrap: anywhere;
+}
+.agent-settings-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-settings-subpages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-settings-instructions-section {
+  display: grid;
+  gap: 12px;
+}
+.agent-settings-instructions-section > header h3 {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 17px;
+}
+.agent-settings-instructions-section > header p {
+  margin-top: 2px;
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+:root[data-shell='portal'] .agent-settings-instructions :is(.cm-scroller, .cm-content, .cm-line) {
+  font-family: var(--portal-font-body);
+  font-size: 13px;
+  line-height: 21px;
+}
+:root[data-shell='portal'] .agent-settings-instructions .cm-scroller {
+  padding: 8px;
+}
+:root[data-shell='portal'] .agent-settings-instructions .cm-line {
+  padding: 0;
+}
+.agent-settings-instructions-meta {
+  min-width: 0;
+  margin-inline-end: auto;
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--portal-type-micro-size);
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-settings-instructions {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 322px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+.agent-settings-instructions-footer {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+.agent-settings-body > .agent-settings-capabilities,
+.agent-settings-body > .agent-settings-messaging {
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}
+/* The agent body is the one scroller: the embedded capability page grows to its content instead
+   of clipping it inside the page shell's own frame. */
+.agent-settings-body > .agent-settings-capabilities {
+  min-height: auto;
+  overflow: visible;
+}
+.agent-settings-capabilities .page-search-body {
+  flex: none;
+  overflow: visible;
+}
+
+@container (min-width: 28rem) {
+  .agent-settings-body [data-slot='settings-row']:not([data-wide]) > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    align-items: center;
+  }
+  .agent-settings-body [data-slot='settings-row']:not([data-wide]) > div > div:last-child:not(:first-child) {
+    max-width: 16rem;
+    justify-self: end;
+  }
+}
+
+/* The panel is folded away (⌘B): the menu returns to the stage, beside the page. */
+.agent-settings-editor[data-inline-navigation] {
+  grid-template-columns: 184px minmax(0, 1fr);
+}
+/* The section menu above the page on a narrow editor (see AgentSettingsSectionPicker). */
+.agent-settings-section-picker {
+  display: none;
+}
+@container agent-editor (max-width: 620px) {
+  .agent-settings-editor[data-inline-navigation] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 16px;
+  }
+  /* A capped grid hid its last groups (Runtime) below a fold with no scroll cue: like app
+     Settings at this width, one "Section ⌄" menu lists every section instead. */
+  .agent-settings-editor[data-inline-navigation] > .agent-settings-navigation {
+    display: none;
+  }
+  .agent-settings-editor[data-inline-navigation] > .agent-settings-section-picker {
+    display: flex;
+    min-width: 0;
+  }
+}
+/* Color swatches (895:9675): 24px circles, the selected one ringed in near-white ink. */
+.agent-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-color-swatches > button {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+}
+.agent-color-swatches > button[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--ui-chat-surface-background),
+    0 0 0 3.5px var(--ui-text-primary);
+}
+.agent-color-swatches > button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* The redesign's picker (895:9675): 16px dots on 32px centres; the current one inside a 24px
+   1.5px near-white ring. The dot is the button's own colour, so the ring can share the box. */
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] {
+  gap: 8px;
+}
+
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, currentColor 0 0.5rem, transparent calc(0.5rem + 0.5px));
+}
+
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button[aria-pressed='true'] {
+  box-shadow: inset 0 0 0 1.5px var(--ui-text-primary);
+}
+
+/* The default agent always wears the brand colour: the other primaries still show at full
+   strength (they say what an agent can be), they just don't take a click. */
+:root[data-shell='portal'] .agent-color-swatches[data-variant='portal'] > button:disabled {
+  cursor: not-allowed;
+}
+
+/* Profile folder (895:9683): the home-relative path, one line, beside Copy path. */
+.agent-settings-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* A set-only switch that is on: it looks on, and only its cursor says it does not toggle back. */
+.agent-settings-locked-switch {
+  cursor: default;
+}
+/* Tools › Advanced (895:23456): key rows and the toolset config fields sit directly on the
+   disclosure, under their group labels, not on a second card inside it. */
+.agent-settings-body .global-settings-disclosure-body .credential-keys-card,
+.agent-settings-body .global-settings-disclosure-body [data-slot='settings-content'] > div > .grid {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* ── The Settings tab's sidebar panel (1036:7189) ──
+   "← Back to agents" where the panel title sits on the other tabs, the agent's own row, then the
+   settings menu: 10px group labels, 32px rows, 18px between groups. */
+.page-sidebar-panel.agent-settings-panel {
+  gap: 0;
+  padding-top: 1rem;
+}
+
+/* A text row, not the panel's 40px start row. */
+.page-sidebar-panel > .agent-settings-panel-back {
+  min-height: 0;
+  padding: 0;
+}
+
+.agent-settings-panel-back {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.25rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.25rem;
+}
+
+.agent-settings-panel-back:hover {
+  color: var(--ui-text-secondary);
+}
+
+.agent-settings-panel-back:focus-visible {
+  border-radius: var(--portal-radius-chip);
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.agent-settings-panel-agent {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0.9375rem 0 1.25rem;
+  padding-inline: 0.625rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+.agent-settings-panel .agent-settings-navigation {
+  gap: 18px;
+  padding-bottom: 0;
+  overflow: visible;
+}
+
+/* Name (1036:7189): the name in a 220×36 field, r3, field fill and stroke; it opens Rename. */
+.agent-settings-name-field {
+  overflow: hidden;
+  width: 13.75rem;
+  max-width: 100%;
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--portal-field-stroke);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-field-fill);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-settings-name-field:hover {
+  border-color: color-mix(in srgb, var(--ui-base) 20%, transparent);
+}
+
+.agent-settings-name-field:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}

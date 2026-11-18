@@ -129,6 +129,7 @@ import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { Butterbar } from '../shell/butterbar'
 import { TermsButterbar } from '../shell/terms-butterbar'
 
+import { bindBotsPaneToShell } from './bots-pane-shell'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
@@ -465,6 +466,8 @@ registry.registerMany([
 registerLayoutPresets()
 
 declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
+
+bindBotsPaneToShell()
 
 // Bundled plugins load AFTER core, so a same-id contribution from a plugin
 // deliberately overrides the core default (last writer wins). Third-party

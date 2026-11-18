@@ -94,7 +94,7 @@ class GatewayHardwareCommandsMixin:
                 cwd=str(_speaker_root()),
                 stdout=asyncio.subprocess.DEVNULL if is_long_running else asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL if is_long_running else asyncio.subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=True,  # detached-spawn: ok — selected speaker actions must finish after the gateway replies
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return f"Speaker command could not start: {type(exc).__name__}."

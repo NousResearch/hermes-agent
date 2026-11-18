@@ -237,8 +237,6 @@ except ImportError as _import_exc:
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
     ContextTypes = type("_MockContextTypes", (), {"DEFAULT_TYPE": Any})
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig

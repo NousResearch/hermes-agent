@@ -159,6 +159,40 @@ describe('peer frame day settlement', () => {
     expect([...sink.accepted.values()]).toEqual([{ day: '2026-09-27', visible_ms: 3 * MINUTE, frames: [] }])
   })
 
+  it('does not publish a frozen report when a peer withdraws consent before the ownership lock returns', async () => {
+    const collector = new DesktopFrameMetrics(KEY)
+
+    collector.record(['100ms_to_250ms'])
+    vi.setSystemTime(MIDNIGHT)
+    const sink = backend()
+    let revoked: Promise<DesktopFrameRevocation> | undefined
+
+    vi.stubGlobal('navigator', { locks: {
+      request: async (_key: string, run: () => unknown) => {
+        const result = run()
+
+        if (storedKeys().some(key => key.startsWith(`${KEY}:frames:report:`)) && !revoked) {
+          immediateMetricsLocks()
+          revoked = DesktopFrameMetrics.purge(KEY)
+        }
+
+        return result
+      }
+    } })
+    await collector.flush(sink.request, current)
+    await expect(revoked).resolves.toMatchObject({ complete: true })
+    expect(sink.attempts).toEqual([])
+
+    const replacement = new DesktopFrameMetrics(KEY)
+
+    replacement.record(['50ms_to_100ms'])
+    vi.setSystemTime(MIDNIGHT + DAY)
+    await replacement.flush(sink.request, current)
+    expect([...sink.accepted.values()]).toEqual([{
+      day: '2026-09-28', visible_ms: 0, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+    }])
+  })
+
   it('retries an identical immutable snapshot after a committed report loses its ack', async () => {
     const sink = backend()
     const collector = new DesktopFrameMetrics(KEY)

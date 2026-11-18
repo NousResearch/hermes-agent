@@ -968,7 +968,20 @@ async function flushPendingDays(): Promise<void> {
       }
 
       if (dayHasDailyUse(day)) {
-        if (!(await sendDaily(requester, day)) || !settled()) {
+        const recorded = await sendDaily(requester, day).catch(() => false)
+
+        if (!settled()) {
+          return
+        }
+
+        if (!recorded) {
+          // Do not freeze a journal before its pending legacy contributions have been adopted.
+          const journalOnly = await withState(current =>
+            !current.pending.some(entry => entry.frames || entry.visibleMs), undefined, collector)
+
+          if (journalOnly) {
+            flushFrameDays(owner, requester, collector)
+          }
           return
         }
 

@@ -25,8 +25,8 @@ from persistence.conversation.sessions import NewSession
 from tests.contracts._reference import InMemoryBackend
 from tests.contracts._scopes import pinned_scope
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority
-from tests.hosted_persistence._turn_rows import flush
-from tests.hosted_persistence.test_turn_fence_lifetime import S, _contents, _turn
+from tests.persistence.hosted._turn_rows import flush
+from tests.persistence.hosted.test_turn_fence_lifetime import S, _contents, _turn
 
 
 def _unassemblable(*_a: Any, **_k: Any) -> Any:

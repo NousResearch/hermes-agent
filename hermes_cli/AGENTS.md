@@ -106,7 +106,7 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **Every `DEFAULT_CONFIG` key has a runtime reader, and every reader a registry entry.** Both drift
   modes are silent: a registered key nothing reads (a knob that does nothing) and a reader of a key
   never registered (never shown, never migrated; new roots also go in `_KNOWN_ROOT_KEYS`). For a new
-  key: `rg -n '"<key>"' hermes_cli/config_defaults.py` AND `rg -n '<key>' --glob '!tests' .` both hit,
+  key: `search_files` for `"<key>"` in `hermes_cli/config_defaults.py` AND for `<key>` outside `tests/` both hit,
   and one invariant test sets it in a temp `config.yaml` and asserts the behaviour through the loader
   the consuming surface uses. Under multiplex the process env never overrides a profile's YAML.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to

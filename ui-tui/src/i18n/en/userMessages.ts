@@ -43,6 +43,8 @@ export const userMessagesEn = {
       /** shellBackendRefused when the gateway did not name the backend (older gateways). */
       shellBackendRefusedUnnamed:
         "!commands run on the gateway host, but this session's terminal backend isn't local, so the command was not run. Ask the agent to run it instead.",
+      /** `{0}` = the JSON-RPC method name the backend does not serve. Not a version claim. */
+      methodUnavailable: (method: string) => `This Hermes backend does not provide ${method}, so that was not done.`,
       versionSkew:
         'The terminal UI and the Hermes backend are out of sync (different versions). Run /update, or exit and run `hermes update`, then start the TUI again.',
       sessionNotFound:
@@ -97,6 +99,11 @@ export const userMessagesEn = {
           title: 'The model provider rejected the request format',
           hint: 'Try /retry; if it persists, switch with /model.',
           hintNoRetry: 'Pick another model with /model; if it persists, switch with /model.'
+        },
+        localRuntimeUnavailable: {
+          title: 'The local model server is not running',
+          hint: 'Try /retry once it is up, or switch with /model.',
+          hintNoRetry: 'Start the local model server (Hermes desktop app, or `hermes model` → Local models), or switch with /model.'
         },
         modelNotFound: {
           title: 'The model provider does not know this model',

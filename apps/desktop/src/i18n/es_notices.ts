@@ -21,6 +21,8 @@ export const esNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'Este servidor no pudo confirmar el envío anterior de este mensaje, así que es posible que ya se haya ejecutado. Revisa la conversación antes de volver a enviarlo.',
+    restoredDraftAttachmentsDropped:
+      'Los adjuntos de tu mensaje no enviado no se restauraron. Vuelve a adjuntarlos antes de enviarlo.',
     mcpReloadDeferred:
       'Este chat está ocupado: el cambio de MCP se aplica cuando termine su turno y MCP se recargue de nuevo, o al volver a abrir el chat',
     mcpReloadUnavailable: servers => `No se conectó: ${servers}`,

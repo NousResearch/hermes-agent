@@ -16,8 +16,8 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { canUseHud, toggleHud } from '@/store/hud'
@@ -160,7 +160,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   const leftSideOpen = useStore($leftSideOpen)
   const narrow = useStore($narrowViewport)
   const overlayPanes = useStore($narrowOverlayPaneIds)
-  const browserHost = isBrowserHostedDesktop()
+  const browserHost = hostHas('narrowOverlayChrome')
   const overlayChrome = narrow && browserHost
   const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
 

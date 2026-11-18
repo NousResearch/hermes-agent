@@ -47,7 +47,7 @@ def test_a_manager_parked_past_the_retry_horizon_is_not_handed_to_a_reused_id(mo
     """A swept session's fence ages out at the retry horizon, after which its id may name a new
     session: that session must not adopt the previous one's provider (and its prefetched recall)."""
     import time
-    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    from persistence.authority.vocabulary import RETRY_HORIZON_S
     registry = ApiServerMemorySessions(max_size=8, idle_ttl_secs=10 * RETRY_HORIZON_S)
     monkeypatch.setattr(ApiServerMemorySessions, "_owner_home", staticmethod(lambda: ("home-a", None)))
     monkeypatch.setattr(registry, "_shutdown_async", registry._shutdown)

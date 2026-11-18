@@ -35,6 +35,17 @@ export const zhNotifications = {
       description: 'Hermes 在后台时，桌面插件发送了通知。'
     }
   },
+  browserPermission: {
+    title: '浏览器通知',
+    allow: '允许',
+    states: {
+      default: '标签页在后台时由此浏览器显示提醒。在你允许之前,只有标签页标题会闪烁。',
+      granted: '已允许。此标签页在后台时会显示提醒,标签页标题也会闪烁。',
+      denied: '已在此浏览器的网站设置中被阻止。标签页标题仍会闪烁。',
+      insecure: '需要 HTTPS,例如 Tailscale serve。使用普通 HTTP 时只有标签页标题会闪烁。',
+      unsupported: '此浏览器无法显示通知。标签页标题仍会闪烁。'
+    }
+  },
   test: '发送测试通知',
   testTitle: 'Hermes',
   testBody: '通知工作正常。',

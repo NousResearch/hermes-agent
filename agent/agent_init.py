@@ -30,15 +30,15 @@ from agent.iteration_budget import IterationBudget, normalize_budget_warning_rat
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata
+from agent.process_transport import is_local_server
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.agent_init_compression_notice import _emit_compression_summary
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.agent_init_memory_provider import resolve_memory_provider
+from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
+from agent.agent_init_session import _publish_session_id, stand_in_interface
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -47,7 +47,7 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -237,23 +237,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
         return None
     return seconds if seconds > 0 else None  # NaN compares False → None
 
-
-
-def _refuse_checkpoint_required_on_codex_app_server(
-    checkpoint_required: bool, api_mode: Optional[str]
-) -> None:
-    """Fail closed at init: the codex app-server compacts its own thread without a truthful
-    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
-    guaranteed — the compress_context() guard alone cannot cover native turns."""
-    if checkpoint_required and api_mode == "codex_app_server":
-        raise RuntimeError(
-            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
-            "agent compacts its own thread without a truthful pre-compaction "
-            "transcript boundary, so a required pre-compress checkpoint "
-            "cannot be guaranteed. Disable compression.checkpoint_required "
-            "or use a non-app-server API mode."
-        )
 
 
 def _parse_config_int(raw: Any, default: int) -> int:
@@ -507,7 +490,7 @@ _SESSION_STATE: dict[str, Any] = {
     "_session_messages": list,
     # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
     # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
-    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
+    # its own fresh blobs, so replay is disabled until the route changes (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
     "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
@@ -527,6 +510,8 @@ _SESSION_STATE: dict[str, Any] = {
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,
+    # The deprecated hermes_state.SessionDB a plugin context engine binds; opened on first need, closed with the agent.
+    "_context_engine_session_db": None,
     # Close flush and turn-start flush can overlap; the durable marker lives on each message
     # dict, so its test-and-append is serialized per agent.
     "_session_persist_lock": threading.RLock,
@@ -560,7 +545,7 @@ _STREAM_STATE: dict[str, Any] = {
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,
     "_stream_writer_dropped": 0,
-    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams on that route omit it (#9705).
     "_stream_options_unsupported": False,
     # API-facing user message override when it differs from the persisted transcript (voice).
     "_persist_user_message_idx": None,
@@ -658,7 +643,7 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
     from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.anthropic_credentials import native_anthropic_fallback_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
@@ -673,7 +658,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    effective_key = api_key or (native_anthropic_fallback_token(base_url, model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -1028,13 +1013,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
     import model_tools
     from agent.oneshot_footprint import agent_is_oneshot
-    from toolsets import agent_tool_surface, session_disabled_toolsets
+    from toolsets import agent_tool_surface, session_disabled_toolsets, tool_selection_key
     agent._configured_disabled_toolsets, disabled_toolsets = disabled_toolsets, session_disabled_toolsets(
         disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))  # pin restore reads both
     agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
+    agent._tool_snapshot_selection = tool_selection_key(enabled_toolsets, disabled_toolsets)  # tools[] freeze gate
     agent.tools = agent_tool_surface(agent, model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=agent.quiet_mode) or [])
-
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
@@ -1074,27 +1059,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
 
 
-def _publish_session_id(session_id: str) -> None:
-    """Expose the session ID to tools via ContextVar (+ legacy os.environ fallback).
-
-    If the ContextVar bridge fails to import, keep the root-agent env fallback but never let
-    delegated construction publish a child ID process-wide.
-    """
-    try:
-        from gateway.session_context import set_current_session_id
-        set_current_session_id(session_id)
-    except Exception:
-        try:
-            from agent.delegation_context import is_delegated_child_context
-            delegated_child = is_delegated_child_context()
-        except Exception:
-            delegated_child = False
-        if not delegated_child:
-            os.environ["HERMES_SESSION_ID"] = session_id
-
-
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
+    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb, persistence=None):
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
@@ -1105,14 +1071,14 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     _set_defaults(agent, _SESSION_STATE)
 
     # Filesystem checkpoint manager (transparent — not a tool)
-    from tools.checkpoint_manager import CheckpointManager
+    from agent.checkpoints.manager import CheckpointManager
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
     )
 
-    agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
+    agent._session_db, agent.persistence = session_db, persistence  # optional store and its storage interface
     agent._parent_session_id = parent_session_id
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
@@ -1148,10 +1114,10 @@ def _apply_display_config(agent, _agent_cfg, platform):
             _model_section.get("lmstudio_load_mode"),
         )
 
-    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for
-    # backends with broken streaming tool calls. Session-scoped; orthogonal to display.streaming.
+    # model.streaming=false seeds _disable_streaming (the loop's runtime fallback) for backends with broken
+    # streaming tool calls; a route change resets to this seed (route_verdicts). Orthogonal to display.streaming.
     _streaming = str(_model_section.get("streaming", "true")).strip().lower()
-    agent._disable_streaming = _streaming in {"false", "0", "no", "off"}
+    agent._disable_streaming = agent._disable_streaming_seed = _streaming in {"false", "0", "no", "off"}
     if not agent._disable_streaming and _streaming not in {"true", "1", "yes", "on"}:
         logger.warning(
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
@@ -1169,44 +1135,6 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
-def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
-    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
-    gateway status travels a different path and the indicator no-ops without it)."""
-    kwargs = {
-        "session_id": agent.session_id,
-        "platform": platform or "cli",
-        "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
-    }
-    if kwargs["platform"] == "cli":
-        kwargs["warning_callback"] = agent._emit_warning
-        kwargs["status_callback"] = agent._emit_status
-    # Session title (e.g. honcho derives chat-scoped session keys from it).
-    if agent._session_db:
-        with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
-            if _st:
-                kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
-                if _source:
-                    kwargs["session_title_source"] = _source
-    # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
-    for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
-        if _val:
-            kwargs[_ident] = _val
-    if agent.session_cwd:
-        kwargs["cwd"] = agent.session_cwd
-    # Profile identity for per-profile provider scoping
-    with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
-    return kwargs
-
-
 def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
@@ -1216,8 +1144,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    from tools.hosted_tool_policy import host_feature_enabled
+    if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):  # hosted: not the agent's memory
         agent._memory_manager = None
         return
     # skip_memory skips the external *provider*; enabled_toolsets=["memory"] still gets the
@@ -1241,6 +1169,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
+            # A fork that holds the provider only for the checkpoint gate (memory_agent_context="subagent",
+            # skip_memory=False) keeps MEMORY.md/USER.md out of its prompt, as skip_memory=True did; a
+            # requested memory toolset still gets the store, exactly as with the gate off.
+            if getattr(agent, "memory_agent_context", None) == "subagent" and not _memory_toolset_requested:
+                agent._memory_enabled = agent._user_profile_enabled = False
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 agent._memory_store = MemoryStore(
@@ -1440,9 +1373,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
     checkpoint_required = is_truthy_value(cfg.get("checkpoint_required"), default=False)
-    _refuse_checkpoint_required_on_codex_app_server(
-        checkpoint_required, getattr(agent, "api_mode", None)
-    )
+    from agent.conversation_compression_checkpoint import _refuse_checkpoint_required_on_codex_app_server
+    _refuse_checkpoint_required_on_codex_app_server(checkpoint_required, getattr(agent, "api_mode", None))
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
@@ -1870,7 +1802,8 @@ def _compressor_max_tokens(agent):
     return None
 
 
-def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
+                          persistence=None):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1914,8 +1847,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
+        from agent.conversation_compression import context_engine_persistence, context_engine_session_db
         with suppress(Exception):
-            _bind_session_state(session_db=session_db, session_id=agent.session_id)
+            _bind_session_state(session_db=context_engine_session_db(agent, session_db), session_id=agent.session_id,
+                                **context_engine_persistence(_bind_session_state, persistence))
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
@@ -1960,7 +1895,7 @@ def _enforce_minimum_context(agent):
     # A local Ollama server serves num_ctx, not the GGUF's advertised window: a Modelfile or
     # model.ollama_num_ctx at 64K+ is a usable window even when the metadata says 40K (#100437).
     # Only a local endpoint can honour num_ctx, so a stale override never admits a hosted model.
-    if agent._ollama_num_ctx and agent.base_url and is_local_endpoint(agent.base_url):
+    if agent._ollama_num_ctx and is_local_server(agent.base_url, agent.provider):
         _ctx = max(_ctx or 0, agent._ollama_num_ctx)
     _allow_lmstudio_explicit_below_floor = (
         str(agent.provider or "").strip().lower() == "lmstudio"
@@ -1970,7 +1905,7 @@ def _enforce_minimum_context(agent):
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
         floor_k = MINIMUM_CONTEXT_LENGTH // 1000
-        if agent.base_url and is_local_endpoint(agent.base_url):
+        if is_local_server(agent.base_url, agent.provider):
             # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
             # server's runtime setting, not the model's; never assume Ollama here (#87075).
             remedy = (
@@ -2135,13 +2070,13 @@ def init_agent(
     chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
     gateway_session_key: str | None = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
+    skip_background_review: bool = False, session_db=None, persistence=None, parent_session_id: str | None = None,
     iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
     fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
-    side_agent: bool = False, memory_manager=None,
+    side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
@@ -2220,10 +2155,11 @@ def init_agent(
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
+    persistence = persistence if persistence is not None else stand_in_interface(session_db)
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
-    )
+        persistence=persistence)
 
     # Load config once for memory, skills, and compression sections
     try:
@@ -2248,7 +2184,8 @@ def init_agent(
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )
-    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
+                          persistence=persistence)
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)

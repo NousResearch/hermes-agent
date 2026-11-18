@@ -1,0 +1,19 @@
+name: internship-scout
+version: "1.0.0"
+repo: https://github.com/aditkole/hermes-internship-scout
+sha: 065ebd1144eb6a332bd5e98fff243b3edeb5d023
+description: "Find internships on public Greenhouse, Lever and Ashby job boards, pre-screen each application form for blockers (cover letter, essays, how-did-you-hear, transcript, sponsorship, graduation window, pay), and track applications in a local tracker with requisition-level duplicate detection. Disclosure — read-only HTTPS GETs to boards-api.greenhouse.io, api.lever.co, jobs.lever.co and api.ashbyhq.com when a tool is called; stores the tracker (companies, roles, statuses, notes) in a plaintext SQLite database under HERMES_HOME/plugin-data/internship-scout/; never signs in, submits applications or contacts employers; no credentials, shell commands, background processes or telemetry."
+maintainer: aditkole
+tier: community
+category: tools
+requires_hermes: ">=0.20.4"
+docs_url: https://github.com/aditkole/hermes-internship-scout#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - internship_search
+    - internship_inspect
+    - internship_track
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

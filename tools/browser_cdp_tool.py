@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from tools.registry import registry, tool_error
 
@@ -134,28 +134,27 @@ def _blocked(message: str, method: str) -> str:
     return tool_error(message, method=method, cdp_docs=CDP_DOCS_URL)
 
 
-def _expression_private_target(params: dict[str, Any]) -> Optional[str]:
+def _expression_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     from tools.browser_url_policy import expression_targets_private_url
-    return expression_targets_private_url(str(params.get("expression") or ""))
+    return expression_targets_private_url(str(params.get("expression") or ""), blocked=blocked)
 
 
-def _navigate_private_target(params: dict[str, Any]) -> Optional[str]:
+def _navigate_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     """Blocked URL literal for ``Page.navigate`` params, else ``None``."""
-    from tools.browser_url_policy import url_blocked
     target_url = str(params.get("url") or "").strip()
-    return target_url if target_url and url_blocked(target_url) else None
+    return target_url if target_url and blocked(target_url) else None
 
 
-def _new_tab_private_target(params: dict[str, Any]) -> Optional[str]:
+def _new_tab_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
     """``Target.createTarget``: a blank tab (``about:blank``, Chrome's default for no url) reaches nothing, so
     it opens before scripts are installed or a page is chosen; any other url is held to ``Page.navigate``'s
     rule (``url_blocked`` refuses every other non-http scheme)."""
     if str(params.get("url") or "").strip().lower() == "about:blank":
         return None
-    return _navigate_private_target(params)
+    return _navigate_private_target(params, blocked)
 
 
-# method → (probe(params) -> blocked literal | None, error template)
+# method → (probe(params, blocked) -> blocked literal | None, error template)
 _METHOD_PARAM_GUARDS = {
     "Page.navigate": (_navigate_private_target,
                       "Blocked: CDP Page.navigate target is a private or internal address ({})."),
@@ -198,6 +197,39 @@ def _current_page_private_url(endpoint: str, target_id: Optional[str]) -> Option
     return next((u for u in page_urls if u and not u.startswith(_ORIGINLESS_PAGE_PREFIXES) and url_blocked(u)), None)
 
 
+# Input.* only types text or dispatches key/mouse events; a URL in its text is never fetched by the call.
+_TEXT_INPUT_METHOD_PREFIX = "Input."
+# Nor are these methods' URL params: blocklist / interception match patterns (wildcard hosts, often
+# naming the very hosts being blocked), dialog answer text, cookie scope URLs.
+_CDP_NON_FETCHING_METHODS = frozenset({
+    "Network.setBlockedURLs", "Network.setRequestInterception", "Fetch.enable",
+    "Page.handleJavaScriptDialog",
+    "Network.setCookie", "Network.setCookies", "Network.deleteCookies", "Storage.setCookies",
+})
+
+
+def _param_url_literals(value: Any, key: str = "") -> list[str]:
+    """Every URL a CDP call's params name: each ``url`` value whole, plus the ``http(s)://`` and
+    protocol-relative ``//host`` literals in every string at any depth (``Network.loadNetworkResource``,
+    ``Runtime.callFunctionOn`` bodies, ``Page.addScriptToEvaluateOnNewDocument`` sources, injected HTML)."""
+    from tools.browser_url_policy import url_literals
+    if isinstance(value, str):
+        return ([value.strip()] if key == "url" and value.strip() else []) + url_literals(value, protocol_relative=True)
+    if isinstance(value, dict):
+        return [u for k, v in value.items() for u in _param_url_literals(v, str(k))]
+    if isinstance(value, (list, tuple)):
+        return [u for v in value for u in _param_url_literals(v, key)]
+    return []
+
+
+def _fetched_param_urls(method: str, params: dict[str, Any]) -> list[str]:
+    """The distinct URLs a call's params could make the browser fetch (none for text input or the
+    non-fetching methods above)."""
+    if method.startswith(_TEXT_INPUT_METHOD_PREFIX) or method in _CDP_NON_FETCHING_METHODS:
+        return []
+    return list(dict.fromkeys(_param_url_literals(params)))
+
+
 def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint: str = "",
                                target_id: Optional[str] = None) -> Optional[str]:
     """Apply the browser SSRF/private-page guard to raw CDP calls.
@@ -205,15 +237,29 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     Raw CDP shares the cloud/private-network boundary of ``browser_exec``'s URL policy and must not become
     its bypass, so a page whose URL cannot be verified as public refuses page-reading methods.
     """
-    from tools.browser_url_policy import eval_ssrf_guard_active
-    if not eval_ssrf_guard_active():
-        return None
+    from tools.browser_url_policy import eval_ssrf_guard_active, literal_targets_metadata, url_blocked
+    guard_active = eval_ssrf_guard_active()
     guard = _METHOD_PARAM_GUARDS.get(method)
-    if guard is not None:
+    if guard_active and guard is not None:
         probe, template = guard
-        literal = probe(params or {})
+        literal = probe(params or {}, url_blocked)
         if literal:
             return _blocked(template.format(literal), method)
+    # The cloud-metadata floor applies with the private guard on or off, sidecar and local Chromium included,
+    # as in browser_exec's _url_policy_error (#16234), to every URL the call could fetch.
+    literals = _fetched_param_urls(method, params or {})
+    metadata = next((u for u in literals if literal_targets_metadata(u)), None)
+    if metadata:
+        return _blocked(f"Blocked: CDP {method} targets a cloud metadata endpoint ({metadata}).", method)
+    if not guard_active:
+        return None
+    if guard is None:
+        # A public page does not make an unlisted method's own URL params safe: Network.loadNetworkResource
+        # fetches its ``url`` from the browser's network position whatever page is open.
+        literal = next((u for u in literals if u.lower().startswith(("http://", "https://")) and url_blocked(u)), None)
+        if literal:
+            return _blocked(f"Blocked: CDP {method} params target a private or internal address ({literal}).",
+                            method)
     if method not in _CDP_PRIVATE_PAGE_ALLOWED_METHODS:
         blocked_url = _current_page_private_url(endpoint, target_id)
         if blocked_url == _PAGE_URL_UNVERIFIED:
@@ -267,6 +313,12 @@ async def _cdp_call(ws_url: str, method: str, params: dict[str, Any], target_id:
         return msg.get("result", {})
 
 
+def _redact_cdp_method_result(method: str, result: Any) -> Any:
+    """Redact a CDP result with ``method``'s binary-path exemptions; every success return goes through here."""
+    return _redact_cdp_output(result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
+                              flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))
+
+
 def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params: Optional[dict[str, Any]],
                                 timeout: float) -> str:
     """Route a CDP call through the live supervisor session for an OOPIF frame."""
@@ -314,7 +366,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
         return tool_error(f"CDP call via supervisor failed: {type(exc).__name__}: {exc}", cdp_docs=CDP_DOCS_URL)
 
     return json.dumps({"success": True, "method": method, "frame_id": frame_id, "session_id": child_sid,
-                       "result": result_msg.get("result", {})}, ensure_ascii=False)
+                       "result": _redact_cdp_method_result(method, result_msg.get("result", {}))}, ensure_ascii=False)
 
 
 def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id: Optional[str] = None,
@@ -374,9 +426,7 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
 
-    payload: dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
-        result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
-        flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
+    payload: dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_method_result(method, result)}
     if target_id:
         payload["target_id"] = target_id
     return json.dumps(payload, ensure_ascii=False)

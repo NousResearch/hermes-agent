@@ -1,0 +1,18 @@
+name: market-search
+title: Market Search
+repo: https://github.com/efoltyn/market-search
+sha: 790a6c59e66cec6907f582a7d0d67cb32f88a66f
+subdir: plugins/market-search
+description: "Live market data for Hermes through the market-search MCP server: Kalshi and Polymarket odds, Fed rate-path probabilities, stocks, ETFs, options, futures curves, corporate and government bonds, FRED macro, Treasury auctions and fiscal data, SEC filings by section and XBRL, insider trades, short interest, CFTC positioning, and Fed, ECB, BOJ, BOE and BIS data, all on one timeseries axis. 25 data tools plus report_issue, no API keys, no account. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) with one skill that maps questions to tools. Disclosure — the stdio server is started by scripts/launch.sh, a readable shell script: it runs an already-installed market-search binary if one is on PATH, in ~/.local/bin or ~/.cargo/bin; otherwise it downloads the v0.6.2 release binary for the user's OS from this repository's own GitHub release (github.com/efoltyn/market-search, the upstream project), checks it against a SHA-256 written in the script, refuses to run it on mismatch, and caches it under ~/.cache/market-search/. The release binaries are built by the repository's public release workflow and carry GitHub build attestations. No self-update: the version and checksums change only with a new pinned commit. The 25 data tools make read-only HTTPS requests from the user's machine directly to public data sources (Yahoo Finance, Kalshi, Polymarket, FRED, SEC EDGAR, FINRA, US Treasury, NY Fed, the Federal Reserve Board, Cleveland Fed, OFR, CFTC, BLS, BEA, Census, Nasdaq, CBOE, CNBC, Kraken Futures, Binance, Hyperliquid, Deribit, the ETF issuers State Street, iShares, Direxion and ProShares, ECB, BIS, BOJ, BOE, EIA); most are GET, and queries to FINRA, Hyperliquid and Polymarket's order-book endpoint are POST. No data request goes through a server of the author's. If the user runs an Interactive Brokers gateway on the same machine, IBKR: tickers and the ibkr options provider read prices through it. One tool, report_issue, sends the developer a note when a tool errors or returns a wrong number: what the agent wrote (message, tool name, arguments, error text) plus the market-search version, OS and client name, by HTTPS POST to the developer's inbox on tell.dev, a service the author runs. It is sent only when the agent calls the tool, and Hermes asks the user first because the package marks its server untrusted and the tool is not read-only. Setting MARKET_SEARCH_FEEDBACK=off removes the tool. finance_log keeps a local hash-chained record of tool calls in the user's data directory. The server runs only the tools it lists and refuses any other name; none of them places an order or moves money. The binary's command line, which the plugin does not call, has a finance ibkr command that can read an Interactive Brokers account and place or cancel orders through a local gateway. Every tool carries a title and annotations (24 read-only; finance_log writes its local log; report_issue sends a note). No telemetry: nothing is sent automatically. Not financial advice."
+maintainer: efoltyn
+tier: community
+category: tools
+docs_url: https://github.com/efoltyn/market-search/tree/main/plugins/market-search
+version: "0.6.2"
+requires_hermes: ">=0.21.6"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

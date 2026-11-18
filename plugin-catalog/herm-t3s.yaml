@@ -1,0 +1,17 @@
+name: herm-t3s
+repo: https://github.com/seanflynnfilm/herm-t3s
+sha: 4bae138ae055f842b9f4237c5554698e3c9e8fd1
+description: "T3 Code-style triage for the Desktop session list, SDK-only: a coloured profile badge with a hover detail card (project, branch, model, counts, tokens, cost, preview), plus Snooze and Settle buttons revealed from a small clock at the end of each row. Disclosure — reads the session list and profile names from the local Hermes backend; Snooze and Settle set a session's archived flag (session.archive), and due snoozes are un-archived by a one-minute timer while the app is open; pending snoozes live in the plugin's storage; no network calls, credentials, shell commands or telemetry."
+maintainer: seanflynnfilm
+tier: community
+category: desktop
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/seanflynnfilm/herm-t3s/blob/4bae138ae055f842b9f4237c5554698e3c9e8fd1/README.md
+version: "0.1.0"
+title: herm-t3s
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

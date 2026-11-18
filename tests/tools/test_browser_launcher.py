@@ -579,3 +579,27 @@ def test_sandbox_bypass_in_docker_unchanged(monkeypatch):
     _fake_host(monkeypatch, files={"/.dockerenv": "", "/proc/1/cgroup": "0::/\n", "/proc/self/mountinfo": _HOST_MOUNTINFO})
     assert launcher.running_in_docker() is True
     assert launcher.needs_chromium_sandbox_bypass() is True
+
+
+@pytest.mark.platforms("linux")
+def test_containerd_non_root_bypass_reaches_chromium_launch_argv(monkeypatch):
+    """#151657: containerd host detection must reach Chromium argv, not just the policy predicate."""
+    from hermes_platform.host import runtime as host_runtime
+
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(launcher, "running_in_docker", lambda: False)
+    monkeypatch.setattr(launcher, "apparmor_restricts_unprivileged_userns", lambda: False)
+    monkeypatch.setattr(host_runtime, "is_container", lambda: True)
+    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+
+    flags = set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS)
+    argv = launcher.build_chromium_argv(
+        "/opt/chrome", "/tmp/ecs-browser", packaged=True, headed=False, sandbox_bypass=True,
+    )
+    assert flags <= set(argv)
+
+    # A user-managed browser remains sandboxed when its caller opts out of the bypass.
+    user_argv = launcher.build_chromium_argv(
+        "/opt/chrome", "/tmp/ecs-browser", packaged=False, headed=False, sandbox_bypass=False,
+    )
+    assert flags.isdisjoint(user_argv)

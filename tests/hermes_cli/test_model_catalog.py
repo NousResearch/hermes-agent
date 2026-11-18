@@ -730,6 +730,42 @@ class TestManifestMatchesInRepoLists:
             ]
         assert "inclusionai/ling-3.0-flash:free" in manifest_ids
 
+    def test_retired_inkling_free_ids_are_absent_and_replacements_present(self):
+        """Retired ``thinkingmachines/inkling *:free`` ids must not be advertised anywhere.
+
+        ``thinkingmachines/inkling:free`` and ``thinkingmachines/inkling-small:free`` were
+        retired upstream, but the curated fallback list and the published manifest still
+        carried them. Anything that resolved one of them (e.g. a saved auxiliary vision
+        model) then failed with an HTTP 404 from OpenRouter instead of falling back. The
+        live ids are ``thinkingmachines/inkling-2-small:free`` and
+        ``thinkingmachines/inkling-small`` (paid tier, so it is not gated by
+        OpenRouter's ``:free`` agentic-harness rule).
+        """
+        from hermes_cli.models_catalog_static import OPENROUTER_MODELS
+
+        retired = ("thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free")
+        live = ("thinkingmachines/inkling-2-small:free", "thinkingmachines/inkling-small")
+
+        curated_ids = [mid for mid, _desc in OPENROUTER_MODELS]
+        for mid in retired:
+            assert mid not in curated_ids, f"retired id {mid} is still curated"
+        for mid in live:
+            assert mid in curated_ids, f"live id {mid} is missing from the curated list"
+
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest_ids = [
+                entry["id"]
+                for entry in json.load(fh)["providers"]["openrouter"]["models"]
+            ]
+        for mid in retired:
+            assert mid not in manifest_ids, f"retired id {mid} is still published"
+        for mid in live:
+            assert mid in manifest_ids, f"live id {mid} is missing from the manifest"
+
     def test_nous_lists_portal_served_muse_spark_but_not_contributor_twins(self):
         """The Portal serves plain muse-spark 1.2/1.3; only the -contributor twins are OpenRouter-only."""
         from hermes_cli.models_catalog_static import _PROVIDER_MODELS

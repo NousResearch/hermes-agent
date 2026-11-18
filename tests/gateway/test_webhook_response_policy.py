@@ -162,6 +162,19 @@ def test_http_dispatch_preserves_policy_and_direct_alerts(tmp_path, monkeypatch,
     asyncio.run(exercise())
 
 
+def test_trailing_own_line_silent_is_pipeline_stripped_before_the_gate():
+    """The gateway strips a marker standing alone on the final line (the model closing an
+    otherwise-complete reply) before send() — so the escalation body that survives is
+    delivered. Inline [SILENT] tokens still suppress. Pins the documented pipeline order."""
+    from gateway.response_filters import strip_trailing_silence_marker
+    from gateway.platforms.webhook_response_policy import urgent_response_allowed
+    composed = strip_trailing_silence_marker(URGENT + "\n[SILENT]")
+    assert composed.endswith("time out.")  # the marker is gone before the gate sees it
+    assert urgent_response_allowed(composed)
+    # Inline placement reaches the gate unstripped and suppresses.
+    assert not urgent_response_allowed(URGENT + "\nEvidence note: [SILENT] because this recovered.")
+
+
 def test_policy_grammar_tolerances_and_hardening():
     """Marker-wrapped, bolded, cased, fenced, and no-op variants of the contract."""
     from gateway.platforms.webhook_response_policy import urgent_response_allowed as allow

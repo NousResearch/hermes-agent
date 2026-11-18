@@ -275,13 +275,17 @@ prompt: |
 An `Action required:` value such as `none` or `no action needed` is rejected.
 Approval and clarify prompts are always delivered, even on `urgent_only` routes: they
 request human input, and suppressing them would stall the run on an answer the owner
-never saw.
+never saw. Reasoning is never prepended to a webhook final (the escalation header must
+stay on line 0; the session transcript keeps the reasoning).
 The header and `Action required:` matching is case-insensitive and tolerates markdown
 emphasis (`**Action required:** …`); fenced code blocks are not scanned for the action
-line, so a quoted runbook snippet cannot decide urgency. Any `[SILENT]` token anywhere
-in the response, or an interim-send metadata flag, suppresses urgent-only delivery —
-as do the gateway's crash/reconnect redelivery banners, which are stripped before the
-gate runs so a recovered urgent alert still pages.
+line, so a quoted runbook snippet cannot decide urgency. Any `[SILENT]` token in the
+response body, or an interim-send metadata flag, suppresses urgent-only delivery. The
+gateway's crash/reconnect redelivery banners are the opposite case: they are stripped
+before the gate runs, so a recovered urgent alert still pages. One `[SILENT]` spelling
+is handled earlier in the pipeline: a marker standing alone on the final line is the
+model closing an otherwise-complete reply, and the gateway strips it before delivery —
+an escalation body that survives that removal is delivered.
 Suppressed responses return successful delivery admission
 without contacting the target; their existing session transcripts remain intact.
 The gate checks current route configuration on every send, including late

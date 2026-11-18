@@ -1,11 +1,11 @@
 name: next-prompt
 repo: https://github.com/soymarketing/hermes-plugin-next-prompt
-sha: ce4bde680f44fafd476dfcfadb9778a2e9fa4e64
+sha: 4aae7023abd112ed90a694159ad8fa95ea96b9c2
 description: "Suggests your next message after each turn as a pill under the Desktop composer: your likely answer when the agent asks you something, or the natural next step."
 maintainer: soymarketing
 tier: community
 category: desktop
-version: "0.3.4"
+version: "0.3.5"
 requires_hermes: ">=0.21"
 docs_url: https://github.com/soymarketing/hermes-plugin-next-prompt#readme
 platforms: [windows, macos, linux]

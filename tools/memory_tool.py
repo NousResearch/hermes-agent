@@ -252,6 +252,9 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     # An omitted optional string can arrive as "" (#90468): let the new_text alias fill it.
     if not content and new_text:
         content = new_text
+    # ``or target`` keeps the static ``str`` type: the helper returns the original unchanged
+    # whenever it does not hoist, so this is a no-op except for the drift-repair case.
+    target = _hoist_uniform_nested_target(target, operations) or target
     target_error = _memory_target_error(store, target, operations)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
@@ -318,6 +321,25 @@ def check_memory_requirements() -> bool:
     return flags[0] or flags[1]
 
 
+def _hoist_uniform_nested_target(
+    target: Optional[str], operations: Optional[list[dict[str, Any]]]
+) -> Optional[str]:
+    """Repair a known model drift: some models set ``target`` inside every ``operations[]``
+    item and omit the top-level field the schema requires. When every dict op names the SAME
+    valid store, that store is unambiguous — hoist it to the top level instead of rejecting a
+    call the model clearly meant. Partial or conflicting nesting (any op missing the key, or
+    two different stores named) stays untouched: the target would be a guess, and validation
+    must reject it with the retry instruction."""
+    if target or not isinstance(operations, list) or not operations:
+        return target
+    nested = {op.get("target") for op in operations if isinstance(op, dict)}
+    if len(nested) == 1:
+        candidate = nested.pop()
+        if isinstance(candidate, str) and candidate in {"memory", "user"}:
+            return candidate
+    return target
+
+
 def _memory_target_error(
     store: MemoryStore, target: str | None, operations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
@@ -376,7 +398,8 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each "
-        "item: {action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "item: {action, content?, old_text?}). target is a TOP-LEVEL argument of the call — "
+        "never put it inside an operation item. The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/patch stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "

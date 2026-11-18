@@ -33,7 +33,14 @@ function cancel(procId: string): void {
   timers.delete(procId)
 }
 
-function schedule(procId: string, delayMs: number): void {
+function agentTabId(procId: string): string | undefined {
+  return $terminals.get().find(term => term.kind === 'agent' && term.procId === procId)?.id
+}
+
+// The close is bound to the tab that was open when it was armed. Dismissing
+// that tab and reopening it from the status row creates a NEW terminal id: the
+// user asked for it back, so the old timer must not close the replacement.
+function schedule(procId: string, delayMs: number, tabId: string | undefined = agentTabId(procId)): void {
   cancel(procId)
   timers.set(
     procId,
@@ -44,8 +51,12 @@ function schedule(procId: string, delayMs: number): void {
         return
       }
 
+      if (tabId !== undefined && agentTabId(procId) !== tabId) {
+        return
+      }
+
       if (onScreen(procId)) {
-        schedule(procId, AGENT_TAB_ON_SCREEN_RECHECK_MS)
+        schedule(procId, AGENT_TAB_ON_SCREEN_RECHECK_MS, tabId)
 
         return
       }

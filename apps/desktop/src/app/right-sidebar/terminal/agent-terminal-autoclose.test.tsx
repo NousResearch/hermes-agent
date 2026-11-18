@@ -188,6 +188,27 @@ describe('agent terminal auto-close', () => {
     expect(agentTab(store, 'proc-re')).toBeUndefined()
   })
 
+  it('a tab dismissed and reopened before the grace period ends is not closed by the old timer', async () => {
+    const store = await load()
+    store.ensureAgentTerminal('proc-swap', 'build')
+    store.observeAgentProcessState('proc-swap', 'running')
+    store.observeAgentProcessState('proc-swap', 'done')
+    const first = agentTab(store, 'proc-swap')?.id
+
+    // Dismiss it, then reopen it from the status row: a new terminal id.
+    vi.advanceTimersByTime(SUCCESS / 2)
+    store.closeAgentTerminalByProc('proc-swap')
+    store.openAgentTerminal('proc-swap', 'build')
+    const user = store.createTerminal('/repo')
+    store.selectTerminal(user)
+    const reopened = agentTab(store, 'proc-swap')?.id
+    expect(reopened).toBeDefined()
+    expect(reopened).not.toBe(first)
+
+    vi.advanceTimersByTime(FAILURE * 2)
+    expect(agentTab(store, 'proc-swap')?.id).toBe(reopened)
+  })
+
   it('an auto-closed tab is not resurfaced by the next snapshot', async () => {
     const store = await load()
     store.ensureAgentTerminal('proc-once', 'build')
@@ -216,7 +237,12 @@ describe('TerminalWorkspace wiring', () => {
     const { TerminalWorkspace } = await import('./workspace')
     const { $terminals } = await import('./terminals')
 
-    const item = (state: 'done' | 'running') => ({ id: 'proc-ws', state, title: 'npm test', type: 'background' as const })
+    const item = (state: 'done' | 'running') => ({
+      id: 'proc-ws',
+      state,
+      title: 'npm test',
+      type: 'background' as const
+    })
 
     render(<TerminalWorkspace onAddSelectionToChat={() => {}} />)
     act(() => $backgroundStatusBySession.set({ s1: [item('running')] }))

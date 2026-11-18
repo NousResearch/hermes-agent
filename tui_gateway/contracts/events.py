@@ -708,6 +708,46 @@ event("moa.progress", MoaProgressPayload, doc="MoA reference fan-out progress (n
 event("moa.phase", MoaPhasePayload, doc="MoA phase transition (currently only ``aggregator``).")
 
 
+# ── per-model-call meters (agent/model_call_events.py) ───────────────────────────────────────
+
+
+class UsageRecordedPayload(Payload):
+    """One finished model API call. ``first_token_ms`` only when the attempt streamed;
+    ``used_tokens`` / ``window_tokens`` are the context now in use and the model's window."""
+
+    call_index: int
+    api_request_id: str | None = None
+    model: str = ""
+    provider: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost_usd: float | None = None
+    first_token_ms: int | None = None
+    duration_ms: int = 0
+    used_tokens: int = 0
+    window_tokens: int | None = None
+
+
+class ModelRateLimitedPayload(Payload):
+    """The retry loop started waiting on a rate limit. ``retry_after_ms`` is the provider's own
+    cooldown (absent when it named none); ``wait_ms`` is the wait actually taken."""
+
+    api_request_id: str | None = None
+    model: str = ""
+    provider: str = ""
+    attempt: int
+    max_attempts: int
+    retry_after_ms: int | None = None
+    wait_ms: int = 0
+
+
+event("usage.recorded", UsageRecordedPayload, doc="Token, cost, latency and context-fill figures for one model API call.")
+event("model.rate_limited", ModelRateLimitedPayload, doc="The agent is backing off on a provider rate limit before retrying.")
+
+
 # ── desktop GUI (tools/desktop_ui emitters) ──────────────────────────────────────────────────
 
 
@@ -888,7 +928,7 @@ __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
     "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "GroupsChangedPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
-    "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
+    "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "ModelRateLimitedPayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
     "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
     "PreviewOpenPayload", "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus",
@@ -899,6 +939,6 @@ __all__ = [
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolProgressPayload",
     "ToolStartPayload",
-    "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
+    "TurnStatus", "UsageRecordedPayload", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

@@ -554,6 +554,27 @@ JSON-encoded), passed through forced secret redaction and then truncated to 500 
 client can tell an approval refusal (`BLOCKED: ...`) from an ordinary failure without receiving
 the unbounded tool payload.
 
+Each model API call the run makes is reported as it finishes, so a client can show per-call
+cost, time to first token and how full the context window is without waiting for
+`run.completed`:
+
+```json
+{"event": "usage.recorded", "run_id": "run_…", "timestamp": 1763400000.1,
+ "call_index": 1, "api_request_id": "…:api:1", "model": "…", "provider": "nous",
+ "input_tokens": 20, "output_tokens": 7, "cache_read_tokens": 100, "cache_write_tokens": 0,
+ "reasoning_tokens": 0, "cost_usd": 0.00004, "first_token_ms": 310, "duration_ms": 900,
+ "used_tokens": 120, "window_tokens": 128000}
+```
+
+`call_index` counts the session's model calls; `first_token_ms` is present only when the call
+streamed; `duration_ms` covers that attempt alone (not earlier retries); `used_tokens` is the
+prompt now in the context window and `window_tokens` the model's context length. When the agent
+backs off on a provider rate limit before retrying, the stream carries `model.rate_limited`
+(`attempt`, `max_attempts`, `retry_after_ms` — the provider's `Retry-After`, absent when it sent
+none — `wait_ms` actually waited, `model`, `provider`, `api_request_id`). Fields with no known
+value are omitted rather than sent as `null`. Clients that do not know these event names can
+ignore them.
+
 When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the

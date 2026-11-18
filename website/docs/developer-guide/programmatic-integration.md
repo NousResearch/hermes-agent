@@ -138,6 +138,8 @@ On a successful truncating submit against a durable session, the `prompt.submit`
 
 `message.delta`, `message.complete`, `tool.start`, `tool.generating`, `tool.complete`, `gateway.ready`, `request.cancel`, plus session lifecycle and error events.
 
+Per-model-call meters arrive whatever the display mode: `usage.recorded` after every model API call (`call_index`, `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`, `first_token_ms` when the call streamed, `duration_ms`, `used_tokens` / `window_tokens` for context fill) and `model.rate_limited` when the agent backs off on a provider rate limit (`attempt`, `max_attempts`, `retry_after_ms` from the provider's `Retry-After` when it sent one, `wait_ms`, `model`, `provider`). Fields with no known value are omitted. The same two events appear on `/v1/runs/{id}/events` (see the [API server guide](../user-guide/features/api-server.md#get-v1runsrun_idevents)).
+
 ### Server→client requests (questions the agent asks you)
 
 Approvals, clarify questions, sudo/secret prompts, vault unlock, MCP setup and the desktop read/act bridges are **JSON-RPC requests from the gateway to the client**, not events. The frame carries a string id, and the client answers with a normal JSON-RPC response bearing the same id:

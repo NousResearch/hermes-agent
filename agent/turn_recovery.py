@@ -22,6 +22,7 @@ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.model_call_events import emit_rate_limited
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
     _sanitize_messages_non_ascii,
@@ -1506,7 +1507,7 @@ def compute_error_backoff(
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
     # ``retry_after`` problem-detail body field; ignoring either turns an origin
     # outage into a retry storm.
-    _retry_after = provider_retry_after_seconds(api_error)
+    _retry_after = _declared_retry_after = provider_retry_after_seconds(api_error)
     if _retry_after is not None:
         _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
@@ -1533,6 +1534,9 @@ def compute_error_backoff(
         agent._emit_diagnostic_status(_status)
     else:
         agent._buffer_diagnostic_status(_status)
+    if is_rate_limited:
+        emit_rate_limited(agent, retry_after_s=_declared_retry_after, wait_s=wait_time,
+                          attempt=retry_count, max_attempts=max_retries)
     # The buffered line replays only if every retry fails; the live status line is transient
     # (rewritten by the next frame, cleared on recovery), so it names the wait on every retry
     # without adding transcript chatter. The reset window belongs here too: during the wait this

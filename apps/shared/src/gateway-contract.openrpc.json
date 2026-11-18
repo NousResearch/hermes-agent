@@ -25593,6 +25593,65 @@
         "title": "ModelPricing",
         "type": "object"
       },
+      "ModelRateLimitedPayload": {
+        "additionalProperties": false,
+        "description": "The retry loop started waiting on a rate limit. ``retry_after_ms`` is the provider's own\ncooldown (absent when it named none); ``wait_ms`` is the wait actually taken.",
+        "properties": {
+          "api_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Request Id"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "max_attempts": {
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "retry_after_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After Ms"
+          },
+          "wait_ms": {
+            "default": 0,
+            "title": "Wait Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "max_attempts"
+        ],
+        "title": "ModelRateLimitedPayload",
+        "type": "object"
+      },
       "ModelSaveKeyParams": {
         "additionalProperties": false,
         "properties": {
@@ -47987,6 +48046,114 @@
         "title": "UsageModel",
         "type": "object"
       },
+      "UsageRecordedPayload": {
+        "additionalProperties": false,
+        "description": "One finished model API call. ``first_token_ms`` only when the attempt streamed;\n``used_tokens`` / ``window_tokens`` are the context now in use and the model's window.",
+        "properties": {
+          "call_index": {
+            "title": "Call Index",
+            "type": "integer"
+          },
+          "api_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Request Id"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
+          },
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "default": 0,
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "default": 0,
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "reasoning_tokens": {
+            "default": 0,
+            "title": "Reasoning Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cost Usd"
+          },
+          "first_token_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Token Ms"
+          },
+          "duration_ms": {
+            "default": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "used_tokens": {
+            "default": 0,
+            "title": "Used Tokens",
+            "type": "integer"
+          },
+          "window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window Tokens"
+          }
+        },
+        "required": [
+          "call_index"
+        ],
+        "title": "UsageRecordedPayload",
+        "type": "object"
+      },
       "ValueResult": {
         "additionalProperties": false,
         "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
@@ -51869,6 +52036,18 @@
       ]
     },
     {
+      "name": "model.rate_limited",
+      "summary": "The agent is backing off on a provider rate limit before retrying.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ModelRateLimitedPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "notice",
       "summary": "Informational one-liner for the session (capabilities refreshed).",
       "params": [
@@ -52416,6 +52595,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ToolStartPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "usage.recorded",
+      "summary": "Token, cost, latency and context-fill figures for one model API call.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/UsageRecordedPayload"
           }
         }
       ]

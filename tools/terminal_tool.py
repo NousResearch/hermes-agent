@@ -180,7 +180,7 @@ TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named 
 
 Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
-Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Health-check a background server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd."""
+Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Health-check a background server in a separate call and manage jobs with process_manage. A background job has exactly ONE reader: decide before you launch — either you read the result (leave notify unset, then process_manage(action='wait')) or the completion notification delivers it (notify=true, then STOP; the notification starts a NEW TURN, so do not also poll). When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd."""
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}
@@ -1728,7 +1728,7 @@ TERMINAL_SCHEMA = {
             "command": {"type": "string"},
             "background": {
                 "type": "boolean",
-                "description": "Only for commands that must keep running after this call returns; returns a session_id.",
+                "description": "Only for commands that must keep running after this call returns; returns a session_id. A background job has exactly ONE reader, and you must decide which BEFORE you launch: either you read the result yourself (leave notify unset, then use process_manage(action='wait')) or the completion notification delivers it to you (set notify=true and then STOP — do not also poll it). notify is not a free message: it starts a NEW TURN, and you cannot un-arm it once launched.",
                 "default": False
             },
             "timeout": {
@@ -1746,7 +1746,7 @@ TERMINAL_SCHEMA = {
                 "default": False
             },
             "notify": {
-                "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons.",
+                "description": "With background=true. A background job has exactly ONE reader, and you must decide which BEFORE you launch. true: one notification on exit — but that notification STARTS A NEW TURN (it is not a passive message: the agent wakes and re-reads its context), and you cannot un-arm it once launched. Use true ONLY if you will NOT read the result yourself: then STOP after launching and let the notification BE the delivery, and do not also poll it. If you WILL read the output (or wait for it) yourself, leave this unset — arming it as well delivers the same result twice, once by you and once as a new turn. Otherwise the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons.",
                 "anyOf": [
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}

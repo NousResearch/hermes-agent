@@ -171,7 +171,7 @@ def build_gateway_parser(
     gateway_tickets.set_defaults(func=cmd_gateway_tickets)
 
     gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service")
+        "start", help="Start the installed background service (systemd, launchd or Windows Task Scheduler)")
     _add_system_flag(gateway_start)
     _flag(gateway_start, "--all",
         help="Kill ALL stale gateway processes across all profiles before starting")
@@ -203,7 +203,7 @@ def build_gateway_parser(
 
     # gateway install
     gateway_install = gateway_subparsers.add_parser(
-        "install", help="Install gateway as a systemd/launchd background service")
+        "install", help="Install gateway as a background service (systemd, launchd or Windows Task Scheduler)")
     _flag(gateway_install, "--force",
         help="Force reinstall, and install even when the default multiplexer already serves this profile")
     _flag(gateway_install, "--system",

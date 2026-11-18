@@ -7,15 +7,15 @@
 // credential-pool record in `auth.json`. Seeded verbatim, the throwaway home
 // would open a second Telegram/Discord/iMessage connection: a sidecar on a
 // fixed port reaps the user's live one and inbound messages go to the wrong
-// process. So every platform the gateway knows is pinned `enabled: false` under
-// top-level `platforms:` — an explicit disable outranks .env and auth.json
-// evidence (gateway/config_env.py `_enable_from_env`, `_enable_plugin_platform`).
+// process. Every known platform is pinned off in `platforms:` and in any
+// shorthand block that could override it. Explicit disables also outrank .env
+// and auth.json evidence (gateway/config_env.py).
 // Model and auth config stay as-is.
 
 import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { parse, stringify } from 'yaml'
+import { isAlias, isMap, parseDocument, visit } from 'yaml'
 
 // gateway/config.py `Platform` members that are messaging adapters (`local` is the CLI itself).
 const CORE_PLATFORMS = [
@@ -55,18 +55,53 @@ function bundledPluginPlatforms(repoRoot) {
     .map(entry => entry.name.toLowerCase())
 }
 
-/** `configText` with every platform in `platformNames` pinned off under top-level `platforms:`. */
-export function withPlatformsDisabled(configText, platformNames) {
-  const config = parse(configText) ?? {}
-  const platforms = config.platforms && typeof config.platforms === 'object' ? config.platforms : {}
-  for (const name of platformNames) {
-    const block = platforms[name]
-    platforms[name] = { ...(block && typeof block === 'object' ? block : {}), enabled: false }
+// Materialize an aliased mapping before editing it, leaving the anchor's other
+// consumers alone. Scalars retain their source spelling and quoting.
+function mapping(doc, parent, key) {
+  let node = parent.get(key)
+  if (isAlias(node)) {
+    node = node.resolve(doc).clone()
+    visit(node, {
+      Node: (_key, child) => {
+        if ('anchor' in child) delete child.anchor
+      }
+    })
+    parent.set(key, node)
   }
 
-  config.platforms = platforms
+  return isMap(node) ? node : null
+}
 
-  return stringify(config)
+/** Pin adapters off without re-serializing unrelated settings through JS values. */
+export function withPlatformsDisabled(configText, platformNames) {
+  const doc = parseDocument(configText, { version: '1.1', intAsBigInt: true })
+  if (doc.errors.length) throw doc.errors[0]
+  if (doc.getIn([]) == null) doc.contents = doc.createNode({})
+
+  let platforms = mapping(doc, doc, 'platforms')
+  if (!platforms) {
+    platforms = doc.createNode({})
+    doc.set('platforms', platforms)
+  }
+  const gateway = mapping(doc, doc, 'gateway')
+
+  for (const name of platformNames) {
+    let block = mapping(doc, platforms, name)
+    if (!block) {
+      block = doc.createNode({})
+      platforms.set(name, block)
+    }
+    block.set('enabled', false)
+
+    // merge_platform_sections applies gateway.<name> last; the shared-key
+    // bridge then applies an explicit top-level <name>.enabled.
+    for (const parent of [doc, gateway]) {
+      const shorthand = parent && mapping(doc, parent, name)
+      if (shorthand?.has('enabled')) shorthand.set('enabled', false)
+    }
+  }
+
+  return doc.toString()
 }
 
 export function seedConfigFrom(sourceHome, targetHome, repoRoot) {

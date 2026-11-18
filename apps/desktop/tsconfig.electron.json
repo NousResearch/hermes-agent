@@ -12,6 +12,7 @@
     "exactOptionalPropertyTypes": false,
     "ignoreDeprecations": "6.0",
     "composite": true,
+    "rewriteRelativeImportExtensions": true,
     "noEmit": false,
     "declaration": true,
     "rootDir": "..",

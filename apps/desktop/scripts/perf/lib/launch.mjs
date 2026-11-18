@@ -18,6 +18,9 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readDesktopLaunchConfig } from '../../../electron/renderer-heap-flags.ts'
+import { hasNvidiaProprietaryDriver, wslgLaunchArgs } from '../../../electron/wslg-launch.ts'
+
 import { CDP, requireDriver, sleep } from './cdp.mjs'
 import { seedConfigFrom } from './seed-home.mjs'
 
@@ -132,14 +135,19 @@ const ANTI_THROTTLE_FLAGS = [
   '--disable-features=CalculateNativeWinOcclusion'
 ]
 
-// On a Linux Wayland session electron/entry.ts relaunches itself with
-// --ozone-platform=wayland unless argv already names a platform. The relaunched
-// child cannot bind the CDP port the parent already holds, so the harness would
-// attach to a browser with no page. Naming the platform up front keeps one process.
-function linuxPlatformFlags(env = process.env) {
-  const wayland = env.XDG_SESSION_TYPE === 'wayland' || Boolean(env.WAYLAND_DISPLAY)
+// Select the normal Desktop backend before the first spawn: a relaunch cannot
+// bind the CDP port while the original Electron process is still holding it.
+function selectLaunchArgs(args, env) {
+  if (process.platform !== 'linux') return args
 
-  return process.platform === 'linux' && wayland ? ['--ozone-platform=wayland'] : []
+  let electronFlags = []
+  try {
+    electronFlags = readDesktopLaunchConfig(readFileSync(join(env.HERMES_HOME, 'config.yaml'), 'utf8')).electronFlags
+  } catch {
+    // An unseeded home may not yet have a config.
+  }
+
+  return wslgLaunchArgs(args, env, process.platform, electronFlags, hasNvidiaProprietaryDriver()) ?? args
 }
 
 /**
@@ -240,17 +248,12 @@ export async function startIsolatedInstance({
     }
 
     const spawnAt = Date.now()
-    const electron = spawn(
-      electronBin,
-      [
-        '.',
-        `--user-data-dir=${userData}`,
-        `--remote-debugging-port=${port}`,
-        ...ANTI_THROTTLE_FLAGS,
-        ...linuxPlatformFlags()
-      ],
-      { cwd: DESKTOP_DIR, stdio: ['ignore', 'inherit', 'inherit'], env }
-    )
+    const args = ['.', `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, ...ANTI_THROTTLE_FLAGS]
+    const electron = spawn(electronBin, selectLaunchArgs(args, env), {
+      cwd: DESKTOP_DIR,
+      stdio: ['ignore', 'inherit', 'inherit'],
+      env
+    })
     children.push(electron)
 
     // Wait for the renderer + perf driver. In prod the target URL is file://,

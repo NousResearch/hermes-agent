@@ -1096,6 +1096,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # Persistent sessions survive gateway restarts, but messages that arrived while the gateway was DOWN
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
+        # Watermarks set before their session existed (the cold-start turn: the gateway creates the
+        # session after this adapter hands the message over). (session_key, meta_key) -> ts; written
+        # to the session as soon as it exists (#157082).
+        self._pending_thread_watermarks: dict[tuple[str, str], str] = {}
+        self._pending_watermark_tasks: set = set()
         self._reacting_message_ids: set = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
@@ -4450,8 +4455,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             watermark_ts = await self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
-        await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
-        self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
+        written = await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        # A cold-start watermark can't be written before the session exists; leave the thread
+        # unchecked so the next turn reads the pending watermark and fetches what came in between.
+        if written or has_active_thread_session:
+            self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
     @staticmethod
@@ -5930,15 +5938,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 return (await _fmt(cached.messages, after_ts=after_ts))[0]
             return cached.content
         try:
-            result = await self._conversations_replies_with_backoff(
-                channel_id,
-                thread_ts,
-                limit + 1,
-                team_id,  # +1: includes the current message
-            )
-            if result is None:
-                return ""
-            messages = result.get("messages", [])
+            messages = await self._fetch_recent_thread_messages(
+                channel_id, thread_ts, limit + 1, team_id)  # +1: includes the current message
             if not messages:
                 return ""
             # Cache the FULL context plus raw messages so watermark-scoped
@@ -5973,14 +5974,45 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         """First message whose ``ts`` is the thread root, else None."""
         return next((m for m in messages if m.get("ts", "") == thread_ts), None)
 
+    # conversations.replies page size when walking a long thread, and the most pages read.
+    _THREAD_REPLIES_PAGE = 200
+    _THREAD_REPLIES_MAX_PAGES = 10
+
+    async def _fetch_recent_thread_messages(
+        self, channel_id: str, thread_ts: str, limit: int, team_id: str) -> list[dict]:
+        """The thread root plus its most recent ``limit`` messages. conversations.replies returns
+        oldest-first, so one page of ``limit`` would keep the oldest replies of a long thread and
+        drop the newest (#157082): walk the pages (bounded) and keep the tail."""
+        first = await self._conversations_replies_with_backoff(channel_id, thread_ts, limit, team_id)
+        if first is None:
+            return []
+        messages = list(first.get("messages", []))
+        cursor = (first.get("response_metadata") or {}).get("next_cursor", "")
+        pages = 1
+        while first.get("has_more") and cursor and pages < self._THREAD_REPLIES_MAX_PAGES:
+            page = await self._conversations_replies_with_backoff(
+                channel_id, thread_ts, self._THREAD_REPLIES_PAGE, team_id, cursor=cursor)
+            if page is None:
+                break
+            messages.extend(page.get("messages", []))
+            cursor = (page.get("response_metadata") or {}).get("next_cursor", "")
+            pages += 1
+            first = page
+        if len(messages) <= limit:
+            return messages
+        root = self._thread_root_message(messages, thread_ts)
+        tail = [m for m in messages if m is not root][-(limit - 1 if root else limit):]
+        return [root, *tail] if root else tail
+
     async def _conversations_replies_with_backoff(
-        self, channel_id: str, thread_ts: str, limit: int, team_id: str) -> Any:
+        self, channel_id: str, thread_ts: str, limit: int, team_id: str, cursor: str = "") -> Any:
         """``conversations.replies`` with 1s/2s backoff on Tier-3 rate limits (429)."""
         client = self._get_client(channel_id, team_id=team_id)
+        page = {"cursor": cursor} if cursor else {}
         for attempt in range(3):
             try:
                 return await client.conversations_replies(
-                    channel=channel_id, ts=thread_ts, limit=limit, inclusive=True)
+                    channel=channel_id, ts=thread_ts, limit=limit, inclusive=True, **page)
             except Exception as exc:
                 err_str = str(exc).lower()
                 is_rate_limit = (
@@ -6316,6 +6348,16 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             self._thread_rehydration_checked, self._THREAD_REHYDRATION_CHECKED_MAX,
             lambda e: e.split(":")[2] if e.count(":") >= 2 else "")
 
+    def _thread_watermark_keys(
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = ""
+    ) -> Optional[tuple[str, str]]:
+        """``(session_key, metadata_key)`` for a thread's watermark, or None without a session key."""
+        session_key = self._build_thread_session_key(
+            channel_id, thread_ts, user_id, team_id=team_id)
+        if not session_key:
+            return None
+        return session_key, f"slack_thread_watermark:{channel_id}:{thread_ts}"
+
     def _thread_watermark_io(
         self, method: str, channel_id: str, thread_ts: str, user_id: str, team_id: str, *args: Any
     ) -> Any:
@@ -6324,38 +6366,93 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         session_store = getattr(self, "_session_store", None)
         if not session_store or not hasattr(session_store, method):
             return None
-        session_key = self._build_thread_session_key(
-            channel_id, thread_ts, user_id, team_id=team_id)
-        if not session_key:
+        keys = self._thread_watermark_keys(channel_id, thread_ts, user_id, team_id)
+        if not keys:
             return None
-        meta_key = f"slack_thread_watermark:{channel_id}:{thread_ts}"
-        return getattr(session_store, method)(session_key, meta_key, *args)
+        return getattr(session_store, method)(*keys, *args)
 
     async def _get_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
         """Return the last Slack thread ts this session consumed (persisted). Read in a worker: the
         store's lock is held across its state.db writes, which must not stall the event loop."""
         try:
-            return str(await asyncio.to_thread(
+            stored = str(await asyncio.to_thread(
                 self._thread_watermark_io, "get_session_metadata", channel_id, thread_ts, user_id,
                 team_id, "") or "")
         except Exception:
             return ""
+        if stored:
+            return stored
+        # Set on the cold-start turn, before the session existed: write it now that it may.
+        keys = self._thread_watermark_keys(channel_id, thread_ts, user_id, team_id)
+        pending = self._pending_thread_watermarks.get(keys) if keys else None
+        if pending:
+            await self._persist_pending_thread_watermark(keys)
+            return pending
+        return ""
 
     async def _set_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = ""
-    ) -> None:
+    ) -> bool:
         """Persist the latest thread ts seen (session metadata, survives restarts). A full
         routing-index save (state.db + the fsynced sessions.json mirror): in a worker, never on
-        the event loop."""
+        the event loop. True when it was written. When the session doesn't exist yet (the
+        cold-start turn), the ts is kept as pending and written once the session appears."""
         if not watermark_ts:
-            return
+            return False
         try:
-            await asyncio.to_thread(
+            written = await asyncio.to_thread(
                 self._thread_watermark_io,
                 "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts)
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
+            return False
+        keys = self._thread_watermark_keys(channel_id, thread_ts, user_id, team_id)
+        if not keys:
+            return False
+        if written is False:
+            self._pending_thread_watermarks[keys] = watermark_ts
+            self._schedule_pending_watermark_flush(keys)
+            return False
+        self._pending_thread_watermarks.pop(keys, None)
+        return written is not None
+
+    # Seconds between tries to write a pending watermark: the gateway creates the session moments
+    # after the cold-start turn, and writing it soon also covers a restart before the next turn.
+    _PENDING_WATERMARK_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+
+    async def _persist_pending_thread_watermark(self, keys: tuple[str, str]) -> bool:
+        """Write a pending watermark if its session exists now. True once written (or gone)."""
+        pending = self._pending_thread_watermarks.get(keys)
+        session_store = getattr(self, "_session_store", None)
+        if not pending:
+            return True
+        if not session_store or not hasattr(session_store, "set_session_metadata"):
+            return False
+        try:
+            written = await asyncio.to_thread(session_store.set_session_metadata, *keys, pending)
+        except Exception:
+            logger.debug("[Slack] Failed to persist pending thread watermark", exc_info=True)
+            return False
+        if written is False:
+            return False
+        if self._pending_thread_watermarks.get(keys) == pending:
+            del self._pending_thread_watermarks[keys]
+        return True
+
+    def _schedule_pending_watermark_flush(self, keys: tuple[str, str]) -> None:
+        """Retry writing a pending watermark in the background until its session exists."""
+        async def _flush() -> None:
+            for delay in self._PENDING_WATERMARK_RETRY_DELAYS:
+                await asyncio.sleep(delay)
+                if await self._persist_pending_thread_watermark(keys):
+                    return
+        try:
+            task = asyncio.get_running_loop().create_task(_flush())
+        except RuntimeError:
+            return
+        self._pending_watermark_tasks.add(task)
+        task.add_done_callback(self._pending_watermark_tasks.discard)
 
     def _has_active_session_for_thread(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,

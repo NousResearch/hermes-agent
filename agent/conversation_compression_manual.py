@@ -144,6 +144,9 @@ def compress_now(
             defer_context_engine_notification=True, **({"trigger": trigger} if trigger else {}),
             **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
+            # The split above already chose the verbatim tail: the head must not re-protect the
+            # default tail window, or `here N` keeps summarizing nothing (#144423).
+            **({"protect_last_n_override": 0} if request.partial else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)

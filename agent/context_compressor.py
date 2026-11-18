@@ -4571,7 +4571,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_tail_cut_by_tokens(
         self, messages: list[dict[str, Any]], head_end: int, token_budget: int | None = None,
-        *, allow_split_turn: bool = True,
+        *, allow_split_turn: bool = True, protect_last_n: int | None = None,
     ) -> int:
         """Walk backward accumulating tokens until the budget; return the tail start index.
         Optional rows are bounded by a 1.5x soft ceiling. Required last-user/last-assistant (and
@@ -4582,9 +4582,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             token_budget = self.tail_token_budget
         n = len(messages)
         # Bounded recent-message floor: protect_last_n is a minimum up to a cap so bulky tool runs
-        # aren't all kept.
+        # aren't all kept. A caller-chosen boundary (/compress here N) passes its own count (#144423).
+        effective_protect_last_n = self.protect_last_n if protect_last_n is None else protect_last_n
         available_tail = max(0, n - head_end - 1)
-        min_tail_floor = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+        min_tail_floor = max(3, min(effective_protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
@@ -5021,6 +5022,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def compress(
         self, messages: list[dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
+        protect_last_n_override: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
         token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
@@ -5060,7 +5062,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         canonical_messages = self._drop_blank_echoes(messages)
         # Phases 1-2: prune (cheap, no LLM call), drop blank echoes, determine boundaries on the pruned
         # copy so a pressure-demoted tail can compress (#61932)
-        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(messages)
+        messages, pruned_count, compress_start, compress_end = self._plan_compaction_window(
+            messages, protect_last_n=protect_last_n_override,
+        )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
         n_messages = len(messages)

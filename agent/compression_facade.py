@@ -229,6 +229,7 @@ class CompressionFacadeMixin:
         focus_topic: str | None = None, force: bool = False, bypass_cooldown: bool = False,
         defer_context_engine_notification: bool = False, commit_fence=None, verbatim_tail: list | None = None,
         trigger: str | None = None, snapshot_is_current=None, overflow_reason: str | None = None,
+        protect_last_n_override: int | None = None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
@@ -289,7 +290,7 @@ class CompressionFacadeMixin:
                     bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                     verbatim_tail=verbatim_tail, trigger=trigger, snapshot_is_current=snapshot_is_current,
-                    overflow_reason=overflow_reason,
+                    overflow_reason=overflow_reason, protect_last_n_override=protect_last_n_override,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

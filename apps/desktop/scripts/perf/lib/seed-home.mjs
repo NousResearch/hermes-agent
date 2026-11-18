@@ -102,7 +102,8 @@ function mapping(doc, parent, key) {
 
 /** Pin adapters off without re-serializing unrelated settings through JS values. */
 export function withPlatformsDisabled(configText, platformNames) {
-  const doc = parseDocument(configText, { version: '1.1', intAsBigInt: true })
+  // merge: a %YAML 1.2 directive overrides the version, and a real merge key must not parse as a string.
+  const doc = parseDocument(configText, { version: '1.1', intAsBigInt: true, merge: true })
   if (doc.errors.length) throw doc.errors[0]
   if (doc.getIn([]) == null) doc.contents = doc.createNode({})
 

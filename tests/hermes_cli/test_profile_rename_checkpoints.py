@@ -8,9 +8,9 @@ import pytest
 from hermes_cli.profile_identity import migrate_profile_identity
 from hermes_cli.profiles import create_profile, rename_profile
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-import tools.checkpoint_manager as cm
-from tools.checkpoint_manager import CheckpointManager
-from tools import checkpoint_maintenance as maintenance
+import agent.checkpoints.manager as cm
+from agent.checkpoints.manager import CheckpointManager
+from agent.checkpoints import maintenance
 
 
 @pytest.fixture()

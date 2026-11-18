@@ -10,6 +10,9 @@ import psutil
 import pytest
 
 from hermes_cli.process_identity import worker_birth
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
@@ -18,16 +21,15 @@ async def test_worker_register_requires_the_owners_launched_worker(tmp_path, mon
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_worker import worker_request
-    from hermes_state import SessionDB
-    from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('owned', 'telegram')
+    db = storage_handle(tmp_path)
+    seed_session(db, 'owned', 'telegram')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner',
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'), persistence=db)
     authority.sessions['owned'] = LiveSession(SimpleNamespace(platform=Platform.TELEGRAM, user_id='human'), 'route')
     ref = SessionRef('p', 'owned')
     child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately
@@ -41,9 +43,9 @@ async def test_worker_register_requires_the_owners_launched_worker(tmp_path, mon
     worker = SimpleNamespace(authority=authority, actor=SessionActor('human', 'p', frozenset({'worker:adopt'}), 't'))
     try:
         # A default interactive ticket, even naming a live process of the same user.
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             await worker_request(interactive, ref, scope(child.pid), operation='register')
-        assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
+        assert raw_holder(db)._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
         registered = await worker_request(worker, ref, scope(child.pid), operation='register')
         assert registered['status'] == 'registered'
     finally:

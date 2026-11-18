@@ -9,6 +9,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from persistence_assembly import profile_scope
+
 
 def _write_profile(home, model):
     (home / 'config.yaml').write_text(json.dumps({'model': {
@@ -31,7 +33,7 @@ def test_switched_room_member_is_not_evicted_as_a_fallback(tmp_path, monkeypatch
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner._session_model_overrides = {}
-    runner.session_authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / 'state.db'))  # type: ignore[attr-defined]
+    runner.session_authority = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)))  # type: ignore[attr-defined]
     runner._evict_cached_agent = MagicMock()
     source = SessionSource(platform=Platform.LOCAL, user_id='u', chat_id='member', chat_type='dm')
     ctx = TurnContext(source=source, session_key='agent:main:local:dm:member')

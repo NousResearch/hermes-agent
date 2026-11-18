@@ -751,8 +751,19 @@ def execute_code(
     # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
     from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
-    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    from tools.terminal_tool import (
+        _PRE_EXEC_GUARD_MAX_TIMEOUT_S,
+        _PRE_EXEC_GUARD_MIN_TIMEOUT_S,
+    )
+
+    # Same floor/ceiling as the terminal guard (#741). The cell timeout is a *work* budget,
+    # not a probe budget: a lifecycle verdict that has not rendered in 90s is a wedged probe
+    # (the psutil create_time query documented at #111922), and waiting out a 300s cell
+    # timeout buys nothing but a parked thread and a longer stall before the identical
+    # refusal. Uncapped here, this call site would keep the class alive on the one path the
+    # terminal cap cannot cover.
     _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+    _probe_timeout = min(_probe_timeout, _PRE_EXEC_GUARD_MAX_TIMEOUT_S)
     _probe = run_bounded_sync(
         _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
     )

@@ -282,3 +282,30 @@ def test_discovery_counters_keep_their_codes_and_collapse_anything_else(marks):
         "ia.alias_search.cron", "other",
     }
     assert "secret" not in json.dumps(rows) and "private" not in json.dumps(rows)
+
+
+def test_first_time_counters_keep_their_codes_and_collapse_anything_else(marks):
+    """The first-time splash, starter ideas, sign up and theme picks report closed codes only: a chip,
+    a colour or an entry point the client invented is ``other``, never its own row or its text."""
+    params = {
+        "day": "2026-09-27",
+        "actions": [
+            {"action": "ia.splash.first_time_shown", "via": "state", "count": 1},
+            {"action": "ia.splash.first_time_closed_signup", "via": "click", "count": 1},
+            {"action": "ia.splash_row.first_time_theme", "via": "state", "count": 1},
+            {"action": "ia.starter_chip.clean_inbox", "via": "click", "count": 1},
+            {"action": "ia.starter_chips.hidden_auto", "via": "state", "count": 1},
+            {"action": "ia.sign_up.chat", "via": "click", "count": 1},
+            {"action": "ia.theme_pick.color_green", "via": "click", "count": 1},
+            {"action": "ia.starter_chip.Plan my trip to Lisbon", "via": "click", "count": 1},
+            {"action": "ia.theme_pick.color_teal", "via": "click", "count": 1},
+        ],
+    }
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.splash.first_time_shown", "ia.splash.first_time_closed_signup", "ia.splash_row.first_time_theme",
+        "ia.starter_chip.clean_inbox", "ia.starter_chips.hidden_auto", "ia.sign_up.chat",
+        "ia.theme_pick.color_green", "other",
+    }
+    assert "Lisbon" not in json.dumps(rows) and "teal" not in json.dumps(rows)

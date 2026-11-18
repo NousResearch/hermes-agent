@@ -38,9 +38,16 @@ DESKTOP_IA_ACTIONS = {
     "new_session": ('sidebar', 'command', 'agent_row', 'picker_opened', 'picker_on_new', 'specific', 'default', 'dismissed'),
     "gateway": ('popover_open', 'popover_connecting', 'popover_offline', 'system', 'logs', 'reconnect', 'offline_agent'),
     "splash": ('rename_shown', 'rename_reopened', 'rename_dismissed_nav', 'rename_dismissed_button',
-               'rename_dismissed_escape'),
+               'rename_dismissed_escape', 'first_time_shown', 'first_time_reopened', 'first_time_closed_nav',
+               'first_time_closed_close', 'first_time_closed_escape', 'first_time_closed_signup'),
     "splash_row": ('rename_chats', 'rename_agents', 'rename_library', 'rename_routines', 'rename_machines',
-                   'rename_notifications'),
+                   'rename_notifications', 'first_time_chats', 'first_time_routines', 'first_time_agents',
+                   'first_time_library', 'first_time_theme'),
+    "starter_chip": ('morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'),
+    "starter_chips": ('hidden_auto', 'hidden_user', 'shown_again'),
+    "sign_up": ('splash', 'tray', 'chat'),
+    "theme_pick": ('mode_light', 'mode_dark', 'color_blue', 'color_violet', 'color_green', 'color_orange',
+                   'color_pink'),
     "alias_search": ('sessions', 'profiles', 'artifacts', 'cron', 'gateways'),
 }
 DESKTOP_IA_AREAS = (

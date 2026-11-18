@@ -1219,6 +1219,11 @@ export default function SessionsPage() {
         try {
           await api.deleteSession(id, rowProfile(id));
           setSessions((prev) => prev.filter((s) => s.id !== id));
+          // The Overview tab renders its own recent-cards array; evict there too
+          // or the deleted card lingers until the 5s poll (#156056 review).
+          setOverviewSessions((prev) => prev.filter((s) => s.id !== id));
+          // The Overview tab renders its own recent-cards array; evict there too
+          // or the deleted card lingers until the 5s poll (#156056 review).
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
           // Drop the deleted ID from any active bulk-select set — it

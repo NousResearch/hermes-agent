@@ -122,8 +122,8 @@ _which_store() {
 # it (setup-hermes.sh cd's there first): every symlink followed, dangling ones
 # too, a `..` taken after the link it follows, a missing part kept as written.
 # `-ef` alone stats the literal path, so `<store>/missing/..` would not match
-# <store>. Status 1 past the kernel's 40-link limit, where Path.resolve() stops
-# following and no store can be told apart.
+# <store>. Status 1 past 40 links (the kernel's limit): Path.resolve() keeps
+# going there, but refusing is the stricter choice.
 _resolved_path() {
   local resolved="" rest="$1" part target hops=0
   case "$rest" in /*) ;; *) resolved="$(cd -P "$REPO_ROOT" && pwd)"; resolved="${resolved%/}" ;; esac
@@ -136,7 +136,10 @@ _resolved_path() {
       *) if [ -L "$resolved/$part" ]; then
            hops=$((hops + 1))
            [ "$hops" -le 40 ] || return 1
-           target="$(readlink "$resolved/$part")"
+           # $(...) strips every trailing newline; keep the target's own.
+           target="$(readlink "$resolved/$part"; printf x)"
+           target="${target%x}"
+           target="${target%$'\n'}"
            case "$target" in /*) resolved="" ;; esac
            rest="$target${rest:+/$rest}"
          else

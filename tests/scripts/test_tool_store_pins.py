@@ -312,6 +312,23 @@ def test_runtime_dir_through_a_link_into_the_account_store_is_recognised(tmp_pat
 
 
 @pytest.mark.platforms("posix")
+def test_link_target_ending_in_a_newline_is_followed_as_named(tmp_path):
+    """A link target is a name, trailing newline included: ``fakehome/x\\n`` (a link to the account's
+    store) is not the real directory ``fakehome/x`` beside it."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    home.mkdir()
+    (home / "x").mkdir()
+    (home / "x\n").symlink_to(store)
+    (home / "rt").symlink_to(f"{home / 'x'}\n")
+    assert (home / "rt").resolve() == store.resolve(), "control: pm reads the path as the account's store"
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(home / "rt")})
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("named_by", ["HERMES_RUNTIME_DIR", "HERMES_HOME"])
 def test_relative_store_is_read_from_the_checkout_like_setup_reads_it(tmp_path, named_by):
     """setup-hermes.sh changes to the checkout before pm reads the environment, so a relative value

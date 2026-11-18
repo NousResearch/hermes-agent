@@ -7,12 +7,15 @@ const write = (term: Terminal, data: string) => new Promise<void>(resolve => ter
 const row = (term: Terminal, y: number) => term.buffer.active.getLine(y)?.translateToString(true) ?? ''
 
 describe('PTY terminal line discipline', () => {
-  it('keeps the column on a bare LF, as a cursor-addressed redraw expects', async () => {
+  it('keeps the caret at the input column through a ConPTY spinner frame (#157373)', async () => {
     const term = new Terminal({ ...PTY_TERMINAL_LINE_OPTIONS, allowProposedApi: true, cols: 40, rows: 6 })
 
-    await write(term, '\x1b[2;3H\x1b[K\n')
+    // Windows ConPTY re-encodes the classic CLI's spinner tick (cursor up, glyph, cursor down)
+    // as: hide caret, address the spinner cell, glyph, bare LF back to the input row, show caret.
+    await write(term, '\x1b[2;5H')
+    await write(term, '\x1b[?25l\x1b[1;4H⠙\n\x1b[?25h')
 
-    expect(term.buffer.active.cursorX).toBe(2)
+    expect([term.buffer.active.cursorX, term.buffer.active.cursorY]).toEqual([4, 1])
     term.dispose()
   })
 

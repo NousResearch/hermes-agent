@@ -2679,6 +2679,8 @@
     "promptNotices.sessionCommands.steerQueued",
     "promptNotices.sessionCommands.steerRejected",
     "promptNotices.sessionCommands.steerUsage",
+    "promptNotices.sessionCommands.titleCleared",
+    "promptNotices.sessionCommands.titleSet",
     "promptNotices.sessionCommands.undidOne",
     "promptNotices.sessionCommands.undidOther",
     "promptNotices.sessionCommands.undoNothing",

@@ -10,6 +10,7 @@ here — keep walking the ladder". The ladder ORDER is behavior (see ``_LADDER``
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from difflib import get_close_matches
@@ -17,6 +18,8 @@ from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
 from hermes_constants import openrouter_variant_base
+
+logger = logging.getLogger(__name__)
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -569,6 +572,20 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
+def _managed_refusal(model_id_lower: str) -> str:
+    """The launch planner's refusal reason for a staged model (matched case-insensitively), or ""
+    when it isn't refused or the preset record can't be read (fail open: never block on a bad read)."""
+    try:
+        from hermes_cli.local_runtime.presets import read_preset_decisions
+
+        for model_id, entry in read_preset_decisions().items():
+            if model_id.lower() == model_id_lower and entry.refusal:
+                return entry.refusal
+    except Exception:
+        logger.debug("preset refusal lookup failed", exc_info=True)
+    return ""
+
+
 def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     """The managed llama.cpp runtime: the staged library on disk is the source of truth, not the
     live listing. The router's model list is spawn-only (a GGUF landed after its start is
@@ -577,11 +594,20 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     and the composer picker could never succeed for a non-catalog model. A staged id accepts
     (case-insensitive: typing matches the file name, the router registers the preset id);
     anything else falls through to the live listing, which stays authoritative for ids that
-    were never downloaded here."""
+    were never downloaded here.
+
+    A staged file the launch planner REFUSED (it can't fit this machine — recorded in the preset
+    INI) is on disk but not served: the router never registers it, so every request for it 400s
+    ``model '<id>' not found``. Accepting it would persist a default that can never answer, so it
+    is rejected here with the planner's own reason."""
     from hermes_cli.local_runtime.bootstrap import staged_model_ids
 
     staged = {sid.lower() for sid in staged_model_ids()}
-    if req.lookup.strip().lower() in staged:
+    wanted = req.lookup.strip().lower()
+    if wanted in staged:
+        refusal = _managed_refusal(wanted)
+        if refusal:
+            return _reject(f"`{req.requested}` can't run on this machine: {refusal}")
         return _accept_with_note(
             f"Note: `{req.requested}` was not found in the live /v1/models listing "
             "but is downloaded in the managed local-models library — accepted."

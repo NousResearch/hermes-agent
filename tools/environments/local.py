@@ -994,6 +994,42 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _trace_kill_decision(pgid, expected_start, current_start, verdict: str) -> None:
+    """Append one line about a process-group kill decision when ``HERMES_KILL_TRACE=1``.
+
+    A ``killpg`` from userspace leaves no trace in any system log, which is why a recycled PGID
+    killing a newborn child looked like an act of god. With tracing on, every decision records the
+    number, the fingerprint we recorded, the fingerprint we just read and what we decided, so a
+    mismatched victim is evidence rather than a guess. Off by default; nothing else reads the file.
+    Enabled by ``HERMES_KILL_TRACE=1`` or by a ``kill-trace.enabled`` flag file sitting in the
+    Hermes home beside the ``logs/kill-trace.log`` it writes to.
+    """
+    if os.environ.get("HERMES_KILL_TRACE") != "1":
+        try:
+            # The Desktop backend is launched by the app (over SSH), so an env var cannot be
+            # injected into it: a flag file turns tracing on for it the same way. It lives in the
+            # active Hermes home, next to the log; the default ``~/.hermes`` is honoured too so one
+            # machine-wide switch covers every profile.
+            from hermes_constants import get_hermes_home
+            if not ((get_hermes_home() / "kill-trace.enabled").exists()
+                    or (Path.home() / ".hermes" / "kill-trace.enabled").exists()):
+                return
+        except Exception:
+            return
+    try:
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "logs" / "kill-trace.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"{time.strftime('%Y-%m-%dT%H:%M:%S')} pid={os.getpid()} "
+                f"pgid={pgid} expected={expected_start!r} current={current_start!r} "
+                f"verdict={verdict}\n"
+            )
+    except Exception:
+        pass
+
+
 def _leader_is_ours(pgid, expected_start) -> bool:
     """The setsid group leader's PID == its PGID.  Confirm it is still the process we
     spawned before signalling the whole group, so a recycled PID/PGID can never take
@@ -1001,27 +1037,41 @@ def _leader_is_ours(pgid, expected_start) -> bool:
     come from the same host at different times, so they go through the drift-tolerant
     fingerprint comparator — same-host readings drift ~1 s on macOS (#117505), and
     exact equality made the guard refuse to kill live, legitimately-owned groups.
-    When no baseline was captured, or the current reading is unreadable, keep the
-    legacy best-effort behaviour rather than refusing to kill: only a LIVE leader with
-    a different start time proves recycling."""
+    When no baseline was captured, ownership cannot be proven, so the group is
+    not signalled at all: POSIX hands a freed PGID to the next process that
+    spawns, and a group killed on no evidence can be a child born milliseconds
+    ago.  An unreadable current reading keeps the legacy best-effort behaviour —
+    only a LIVE leader with a different start time proves recycling."""
     if pgid is None:
         return False
     if expected_start is None:
-        return True
+        # No spawn-time baseline: ownership cannot be proven, and an unproven PGID is exactly the
+        # case that kills a stranger — POSIX hands the number to whoever spawns next, so a group
+        # killed here can be a child that was born milliseconds ago. Refuse the group signal and
+        # fall back to the identity-checked descendant sweep below ("a rare orphaned grandchild may
+        # leak, which is strictly preferable to killing a stranger"); the old permissive branch is
+        # what turned a missing fingerprint into an unguarded killpg().
+        _trace_kill_decision(pgid, expected_start, None, "no-baseline")
+        return False
     from gateway.status import get_process_start_time, start_time_fingerprints_match
     try:
         current = get_process_start_time(pgid)
     except Exception:
+        _trace_kill_decision(pgid, expected_start, None, "unreadable-error")
         return True
     if current is None:
         # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
         # member of the group lives, so the group (if it still exists) is ours and its
         # reparented grandchildren still need the signal; an empty group is just ESRCH.
+        _trace_kill_decision(pgid, expected_start, None, "unreadable-none")
         return True
     try:
-        return start_time_fingerprints_match(expected_start, current)
+        match = start_time_fingerprints_match(expected_start, current)
     except (TypeError, ValueError):  # junk fingerprints: best-effort, never break signalling
+        _trace_kill_decision(pgid, expected_start, current, "junk-fingerprint")
         return True
+    _trace_kill_decision(pgid, expected_start, current, "ours" if match else "recycled")
+    return match
 
 
 def _kill_process_group_posix(proc) -> None:

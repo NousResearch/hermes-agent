@@ -1324,6 +1324,7 @@ export const deOverrides = {
         maxIterations: 'Subagent-Rundenlimit',
         maxConcurrentChildren: 'Parallele Subagenten',
         childTimeoutSeconds: 'Subagent-Timeout',
+        autoResume: 'Subagenten automatisch fortsetzen',
         reasoningEffort: 'Subagent-Denkanstrengung'
       },
       updates: {

@@ -535,6 +535,7 @@ export const arSettings = {
       'delegation.maxIterations': 'حد دورات الوكيل الفرعي',
       'delegation.maxConcurrentChildren': 'الوكلاء الفرعيون المتوازيون',
       'delegation.childTimeoutSeconds': 'مهلة الوكيل الفرعي',
+      'delegation.autoResume': 'استئناف عمل الوكلاء الفرعيين تلقائيًا',
       'delegation.reasoningEffort': 'جهد تفكير الوكيل الفرعي',
       'updates.nonInteractiveLocalChanges': 'تغييرات التحديث داخل التطبيق'
     },

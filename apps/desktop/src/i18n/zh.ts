@@ -1044,6 +1044,7 @@ export const zhOverrides = {
         maxIterations: '子智能体轮次上限',
         maxConcurrentChildren: '并行子智能体',
         childTimeoutSeconds: '子智能体超时',
+        autoResume: '自动恢复子智能体',
         reasoningEffort: '子智能体推理强度'
       },
       updates: {

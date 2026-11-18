@@ -597,7 +597,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxIterations: 'Subagent Turn Limit',
     maxConcurrentChildren: 'Parallel Subagents',
     childTimeoutSeconds: 'Subagent Timeout',
-    reasoningEffort: 'Subagent Reasoning Effort'
+    reasoningEffort: 'Subagent Reasoning Effort',
+    autoResume: 'Automatically resume subagents'
   },
   updates: {
     nonInteractiveLocalChanges: 'In-App Update Local Changes'
@@ -720,7 +721,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort'
+      'delegation.reasoning_effort',
+      'delegation.auto_resume'
     ]
   },
   {

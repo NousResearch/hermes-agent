@@ -1325,6 +1325,7 @@ export const esOverrides = {
         maxIterations: 'Límite de turnos del subagente',
         maxConcurrentChildren: 'Subagentes paralelos',
         childTimeoutSeconds: 'Tiempo límite del subagente',
+        autoResume: 'Reanudar subagentes automáticamente',
         reasoningEffort: 'Esfuerzo de razonamiento del subagente'
       },
       updates: {

@@ -326,9 +326,10 @@ def _frozen_hosted_verdict() -> Any:
     """The boot's frozen hosted verdict (``hosted_mode.hosted_verdict_frozen``), read without
     importing ``hermes_cli.hosted_mode``: only that module records the verdict, so a process
     that never imported it has none. This keeps :func:`hosted_code_refusal` inside the
-    launcher's stdlib-only startup closure (pyproject ``update-startup-files``)."""
-    mode = sys.modules.get("hermes_cli.hosted_mode")
-    return None if mode is None else mode.hosted_verdict_frozen()
+    launcher's stdlib-only startup closure (pyproject ``update-startup-files``). A module another
+    thread is still initialising has bound no reader yet, and has recorded no verdict either."""
+    reader = getattr(sys.modules.get("hermes_cli.hosted_mode"), "hosted_verdict_frozen", None)
+    return None if reader is None else reader()
 
 
 def _finder_defining_file(finder) -> str:

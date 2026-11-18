@@ -29,3 +29,15 @@ def test_a_local_refusal_check_imports_only_the_startup_closure(tmp_path):
     done = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(tree)!r})\n{probe}",
                            str(tmp_path)], capture_output=True, text=True, timeout=60, cwd=tmp_path, check=False)
     assert done.returncode == 0, done.stderr
+
+
+def test_a_hosted_mode_still_initialising_reads_as_no_frozen_verdict(tmp_path, monkeypatch):
+    """Another thread importing ``hosted_mode`` leaves it in ``sys.modules`` before its reader
+    is bound; the import it replaced would have waited and read no verdict there either."""
+    import types
+
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    monkeypatch.setitem(sys.modules, "hermes_cli.hosted_mode", types.ModuleType("hermes_cli.hosted_mode"))
+    monkeypatch.setattr(sys, "argv", ["hermes"])
+    assert hosted_code_refusal(tmp_path) == ""

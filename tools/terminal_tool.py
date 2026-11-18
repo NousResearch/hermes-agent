@@ -176,7 +176,7 @@ from tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and env persist between calls: activate a virtualenv or export once. Output is truncated, full text saved to a file; never pipe through head/tail.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and env persist between calls: activate a virtualenv or export once. Output is truncated, full text saved to a file; never pipe through head/tail just to shorten output.
 
 Foreground (default) returns when done; to wait a fixed time, sleep in the foreground, never a background or polling loop. Health-check background servers separately; use process_manage for jobs. Trust the result's "cwd" after a cd."""
 

@@ -90,6 +90,7 @@ class Receiver:
         self.requests: list[Seen] = []
         self.replies: list[Reply] = []
         self.goodbye_arrived = threading.Event()
+        self.answered = 0  # requests that got their reply, error or timeout
 
     def reply_with(self, *replies: Reply) -> None:
         self.replies.extend(replies)
@@ -101,6 +102,12 @@ class Receiver:
         if body.get("kind") == "goodbye":
             self.goodbye_arrived.set()
         reply = self.replies.pop(0) if self.replies else Reply()
+        try:
+            return self._answer(request, reply)
+        finally:
+            self.answered += 1
+
+    def _answer(self, request, reply: Reply):
         if reply.hang is not None:
             reply.hang.wait()
             raise TimeoutError("timed out")

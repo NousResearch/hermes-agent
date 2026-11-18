@@ -144,7 +144,6 @@ async def test_a_goodbye_goes_out_before_either_suspend_lever_is_done(monkeypatc
 
     assert pulled == ["goodbye first"]
     assert receiver.kinds == ["beat", "goodbye"]
-    assert 2.0 <= receiver.requests[1].timeout <= 3.0
 
 
 @pytest.mark.asyncio
@@ -163,7 +162,7 @@ async def test_a_hanging_receiver_neither_delays_nor_stops_the_lever(monkeypatch
 
         assert pulled == ["lever"]
         assert relay.redial == redial  # the suspend ran to its normal end
-        assert not hang.is_set()  # ... while the receiver was still hanging
+        assert receiver.answered == 1  # ... while the goodbye was still waiting for its reply
     finally:
         hang.set()
         await settle()

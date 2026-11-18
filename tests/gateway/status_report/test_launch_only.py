@@ -74,7 +74,7 @@ def test_the_env_writers_refuse_the_key(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="writer denylist"):
         save_env_value(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
 
     assert not (home / ".env").exists() or STATUS_REPORT_URL_ENV not in (home / ".env").read_text(encoding="utf-8")

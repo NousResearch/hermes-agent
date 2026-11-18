@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import http.client
 import http.server
-import socket
 import threading
 import urllib.error
 
@@ -61,9 +60,8 @@ def test_a_retry_after_too_long_to_be_a_wait_is_ignored_and_never_raises():
     [
         urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")),
         TimeoutError("timed out"),
-        ConnectionResetError(54, "Connection reset by peer"),
-        http.client.RemoteDisconnected("Remote end closed connection without response"),
-        socket.gaierror(8, "nodename nor servname provided, or not known"),
+        http.client.IncompleteRead(b""),
+        ValueError("Invalid header value"),
     ],
     ids=lambda error: type(error).__name__,
 )

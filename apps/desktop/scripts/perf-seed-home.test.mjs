@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -31,6 +31,17 @@ model:
   provider: openai-codex
 discord:
   require_mention: true
+telegram:
+  enabled: true
+  require_mention: true
+gateway:
+  platforms:
+    slack:
+      enabled: true
+  photon:
+    enabled: true
+  streaming:
+    enabled: true
 platforms:
   photon:
     enabled: true
@@ -48,7 +59,37 @@ platforms:
     expect(config.platforms.discord).toEqual({ enabled: false })
     expect(config.platforms.slack).toEqual({ enabled: false })
     expect(config.discord).toEqual({ require_mention: true })
+    expect(config.telegram).toEqual({ enabled: false, require_mention: true })
+    expect(config.gateway.photon.enabled).toBe(false)
+    expect(config.gateway.streaming.enabled).toBe(true)
     expect(config.model.provider).toBe('openai-codex')
+  })
+
+  it('preserves model and auth scalar values for YAML 1.1 and 1.2 consumers', () => {
+    const untouched =
+      '# model and auth settings\nmodel:\n  default: "no"\n  provider: y\n' +
+      'auth:\n  mode: "off"\n  FLAG: "on"\n  mask: 0755\n  channel: 1234567890123456789\n'
+
+    const seeded = withPlatformsDisabled(untouched, ['telegram'])
+    for (const version of ['1.1', '1.2']) {
+      const options = { version, intAsBigInt: true }
+      expect(parse(seeded, options)).toMatchObject(parse(untouched, options))
+    }
+  })
+
+  it('pins aliased platform blocks without changing their shared defaults', () => {
+    const config = parse(
+      withPlatformsDisabled(
+        'defaults: &bot {enabled: true, token: "on", label: n}\n' +
+          'telegram: *bot\ngateway:\n  discord: *bot\nplatforms:\n  photon: *bot\n',
+        ['telegram', 'discord', 'photon']
+      )
+    )
+
+    expect(config.defaults).toEqual({ enabled: true, token: 'on', label: 'n' })
+    for (const block of [config.telegram, config.gateway.discord, config.platforms.photon]) {
+      expect(block).toEqual({ enabled: false, token: 'on', label: 'n' })
+    }
   })
 
   it('seeds the isolated home with bundled plugin platforms pinned off and credentials copied', () => {
@@ -58,6 +99,7 @@ platforms:
 
     mkdirSync(join(repo, 'plugins', 'platforms', 'photon'), { recursive: true })
     writeFileSync(join(repo, 'plugins', 'platforms', 'photon', '__init__.py'), '')
+    mkdirSync(join(repo, 'plugins', 'platforms', 'not_a_platform'))
     writeFileSync(join(source, 'config.yaml'), 'platforms:\n  photon:\n    enabled: true\n')
     writeFileSync(join(source, '.env'), 'TELEGRAM_BOT_TOKEN=x\n')
     writeFileSync(join(source, 'auth.json'), '{}')
@@ -68,7 +110,20 @@ platforms:
 
     expect(platforms.photon.enabled).toBe(false)
     expect(platforms.telegram.enabled).toBe(false)
+    expect(platforms).not.toHaveProperty('not_a_platform')
     expect(readFileSync(join(target, '.env'), 'utf8')).toBe('TELEGRAM_BOT_TOKEN=x\n')
     expect(readFileSync(join(target, 'auth.json'), 'utf8')).toBe('{}')
+  })
+
+  it('pins core adapters with credentials only and no bundled package tree', () => {
+    const source = tempDir()
+    const target = tempDir()
+    writeFileSync(join(source, '.env'), 'TELEGRAM_BOT_TOKEN=x\n')
+
+    seedConfigFrom(source, target, tempDir())
+
+    expect(parse(readFileSync(join(target, 'config.yaml'), 'utf8')).platforms.telegram.enabled).toBe(false)
+    expect(readFileSync(join(target, '.env'), 'utf8')).toBe('TELEGRAM_BOT_TOKEN=x\n')
+    expect(readdirSync(target).sort()).toEqual(['.env', 'config.yaml'])
   })
 })

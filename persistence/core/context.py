@@ -14,7 +14,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__all__ = ["ProfileScope", "StorePin", "canonical_home_key"]
+__all__ = ["ProfileScope", "StorePin", "bound_store_pin", "canonical_home_key"]
 
 
 def _canonical_dir(path: Path) -> Path:
@@ -48,6 +48,23 @@ class StorePin:
     def key(self) -> str:
         """The pin's store key: distinct from every local ``hermes_home_key`` and from every other pin."""
         return f"pin:{len(self.tenant)}:{self.tenant}/{self.agent}"
+
+
+_current_scope = None  # ``hermes_scope.current_scope``, imported on first use
+
+
+def bound_store_pin() -> StorePin | None:
+    """The pin of the bound hosted ``hermes_scope.Scope`` (its tenant is not the local one), else None. Hosted mode, for
+    persistence, is exactly a non-None answer. Outside it this costs one context-variable read."""
+    global _current_scope
+    if _current_scope is None:
+        from hermes_scope import current_scope
+
+        _current_scope = current_scope
+    scope = _current_scope()
+    if scope is None or scope.is_local:
+        return None
+    return StorePin(scope.tenant, scope.agent)
 
 
 @dataclass(frozen=True, slots=True, eq=False)

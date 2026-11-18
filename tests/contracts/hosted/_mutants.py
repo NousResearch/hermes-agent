@@ -17,6 +17,7 @@ import dataclasses
 import functools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional
 from unittest import mock
 
@@ -28,6 +29,7 @@ from tests.contracts._reference import InMemoryBackend
 from tests.contracts._reference import _turn_fence as reference_fence
 from tests.contracts._scopes import pinned_scope, profile_scope
 from tests.contracts.hosted import (
+    test_hosted_activity_contract as activity,
     test_pinned_housekeeping_contract as housekeeping,
     test_scope_pinning_contract as pinning,
     test_turn_fence_contract as turn_fence,
@@ -220,6 +222,31 @@ class _FenceAfterWrite(InMemoryBackend):
         return reference_fence.fenced(store, attribute, name, method, refusing=_refused_after_writing)
 
 
+class _BoundPinUnchecked(InMemoryBackend):
+    """A verb runs whatever hosted scope is bound: a kept repository serves another pin's activity, or a local store a
+    hosted one."""
+
+    def check_bound_pin(self, scope: ProfileScope) -> None:
+        return None
+
+
+class _SharedPlacementUnpinned(InMemoryBackend):
+    """The ``'shared'`` hosted-room placement is chosen by the scope's folder, not its pin: every pin built in one
+    folder shares it."""
+
+    def shared_file_store(self, scope: ProfileScope, path: Path) -> dict[str, Any]:
+        return self.file_store(path)
+
+
+class _FenceMissesSharedFiles(InMemoryBackend):
+    """The fence undoes and refuses only what a verb changed in the store's own namespace: a write to the ``'shared'``
+    placement (a store file outside it) lands after the turn lost its lease."""
+
+    def fence_verb(self, store: Any, attribute: str, name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+        return reference_fence.fenced(store, attribute, name, method,
+                                      refusing=functools.partial(reference_fence._refusing_writes, files=False))
+
+
 class _LeaseRenewalBroken(InMemoryBackend):
     """An append by the holder of an expired turn lease lands but no longer renews the lease."""
 
@@ -286,6 +313,10 @@ def _sqlite_owner_only_skips_epoch() -> ContextManager[Any]:
     return _sqlite(check_turn_fence=check)
 
 
+def _sqlite_serves_hosted_activity() -> ContextManager[Any]:
+    return _sqlite(refuse_hosted_activity=lambda: None)
+
+
 def _sqlite_store_key_ignored() -> ContextManager[Any]:
     return _sqlite(turn_fence_for=lambda holder: _fence_of_any_store(""))
 
@@ -350,6 +381,19 @@ MUTANTS: dict[str, Mutant] = {mutant.name: mutant for mutant in (
            (Killer(turn_fence.test_append_after_newer_claim_is_refused_and_lands_nothing),
             *_families("append_batch", "replace_transcript", "rewrite_pruned_rows", "compression_continuation",
                        "auxiliary_usage", "delegation_completion"))),
+    Mutant("bound_pin_unchecked", "in_memory", "the bound hosted scope's pin checked at each verb",
+           lambda: _opened(_BoundPinUnchecked),
+           (Killer(activity.test_a_pinned_handle_serves_only_its_bound_pin),
+            Killer(activity.test_a_local_store_serves_no_hosted_activity))),
+    Mutant("sqlite_serves_hosted_activity", "sqlite", "the refusal of every read and write while a hosted scope is bound",
+           _sqlite_serves_hosted_activity,
+           (Killer(activity.test_a_local_store_serves_no_hosted_activity),)),
+    Mutant("shared_placement_unpinned", "in_memory", "the pin choosing the 'shared' hosted-room placement",
+           lambda: _opened(_SharedPlacementUnpinned),
+           (Killer(activity.test_pinned_shared_rooms_are_never_visible_across_pins),)),
+    Mutant("fence_misses_shared_files", "in_memory", "the fence's undo of store files outside the store's namespace",
+           lambda: _opened(_FenceMissesSharedFiles),
+           (Killer(activity.test_a_shared_placement_write_is_fenced_after_takeover),)),
     Mutant("lease_holder_renewal_broken", "in_memory", "the renewal of an expired turn lease its holder's append owns",
            lambda: _opened(_LeaseRenewalBroken),
            (Killer(lease_holder.test_an_append_by_the_holder_renews_its_expired_lease),)),

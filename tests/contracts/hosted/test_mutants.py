@@ -31,7 +31,8 @@ REQUIRED = {
     "pin_ignored", "pin_accepted_without_scope_pinning", "foreign_row_visible", "foreign_write_applied",
     "assert_isolating_always_passes", "fence_skipped_on_append", "fence_skipped_on_compression_continuation",
     "owner_only_checks_generation", "owner_only_skips_epoch", "store_key_filter_dropped", "fence_checked_after_write",
-    "lease_holder_renewal_broken",
+    "lease_holder_renewal_broken", "bound_pin_unchecked", "sqlite_serves_hosted_activity", "shared_placement_unpinned",
+    "fence_misses_shared_files",
 }
 
 # What a mutant raising these means: the mutant (or the harness) is broken, not that a contract case caught it.

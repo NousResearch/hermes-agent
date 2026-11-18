@@ -5,9 +5,11 @@ The reference has no write transaction of its own beyond its backend-wide lock: 
 verb, the bound claimed turn's fence (``persistence.core.fences.current_turn_fence`` for the handle's
 ``ProfileScope.store_key``) is checked against the store's authority state (the authority epoch and the session's
 execution generation the admission claim stamped) before the verb runs. While the fence holds the verb runs as
-before. Once it no longer holds, the verb still runs, so a read answers as usual, but a verb that changed any of the
-store's state is undone and refused with ``persistence.TurnFenceSuperseded``: nothing of it lands, as in a backend
-that checks the fence inside the write's own transaction.
+before. Once it no longer holds, the verb still runs, so a read answers as usual, but a verb that changed any state it
+can reach is undone and refused with ``persistence.TurnFenceSuperseded``: nothing of it lands, as in a backend that
+checks the fence inside the write's own transaction. What a verb can reach is the store's own namespace and every
+store file outside it (``backend._files``: the ``'shared'`` hosted-room placement and its attachment files), so a
+write through a placement argument is fenced like any other.
 
 The holder-qualified lease releases are not fenced: they drop only the caller's own row, so a turn that lost its
 lease still releases it (as the SQLite backend does).
@@ -79,20 +81,33 @@ def _empty(value: Any) -> bool:
     return isinstance(value, (dict, list, set, tuple)) and not value
 
 
-def _refusing_writes(store: InMemoryStore, fence: TurnFence, method: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
-    """Run a verb of a superseded turn: its answer when it changed nothing, else the change undone and refused."""
+def _pruned(value: Any) -> Any:
+    """``value`` with every empty mapping dropped, recursively: a read creates the files and tables it reads on first
+    touch (``setdefault``), and an empty one is no write."""
+    if isinstance(value, dict):
+        kept = {key: _pruned(item) for key, item in value.items()}
+        return {key: item for key, item in kept.items() if not (isinstance(item, dict) and not item)}
+    return value
+
+
+def _refusing_writes(store: InMemoryStore, fence: TurnFence, method: Callable[..., Any], args: tuple, kwargs: dict, *,
+                     files: bool = True) -> Any:
+    """Run a verb of a superseded turn: its answer when it changed nothing, else the change undone and refused.
+    ``files`` covers the store files outside the store's namespace (``backend._files``) too."""
     namespace = store.backend.scope_store(store.scope)
+    shared = store.backend._files if files else {}
     authority = namespace.get(_AUTHORITY_KEY)
     saved = {key: copy.deepcopy(value) for key, value in namespace.items() if key != _AUTHORITY_KEY}
+    saved_files = copy.deepcopy(shared)
     saved_committed = None if authority is None else copy.deepcopy(authority.snapshot)
-    before = repr((saved, saved_committed))
+    before = repr((saved, saved_committed, _pruned(saved_files)))
 
     def changed() -> bool:
         now = namespace.get(_AUTHORITY_KEY)
         # A read creates the tables it reads on first touch (``setdefault``); an empty new table is no write.
         current = {key: value for key, value in namespace.items()
                    if key != _AUTHORITY_KEY and (key in saved or not _empty(value))}
-        return now is not authority or repr((current, None if now is None else now.snapshot)) != before
+        return now is not authority or repr((current, None if now is None else now.snapshot, _pruned(shared))) != before
 
     def restore() -> None:
         namespace.clear()
@@ -100,6 +115,8 @@ def _refusing_writes(store: InMemoryStore, fence: TurnFence, method: Callable[..
         if authority is not None:
             namespace[_AUTHORITY_KEY] = authority
             authority._committed = saved_committed
+        shared.clear()
+        shared.update(saved_files)
 
     refusal = TurnFenceSuperseded(
         SessionId(fence.session_id),

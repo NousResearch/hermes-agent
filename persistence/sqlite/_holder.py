@@ -58,7 +58,8 @@ from persistence.sqlite._state.dbfile import (
 )
 from persistence.sqlite._state.repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from persistence.conversation.messages import ReadCheck
-from persistence.core.errors import CompressionInProgress
+from persistence.core.context import bound_store_pin
+from persistence.core.errors import CompressionInProgress, ScopePinRefused
 from persistence.core.fences import writes_as, writing_turn
 from sqlite_support import _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback
 from storage_errors import is_malformed_db_error, is_sqlite_lock_error
@@ -230,6 +231,15 @@ def _apply_token_delta(holder: "StoreHolder", session_id: str, kwargs: dict[str,
     if _token_delta_applier is None:
         raise RuntimeError("no usage delta applier is registered for the accounting queue")
     _token_delta_applier(holder, session_id, kwargs)
+
+
+def refuse_hosted_activity() -> None:
+    """Refuse (``ScopePinRefused``) a read or write of a local ``state.db`` while a hosted scope is bound: the built-in
+    SQLite serves no hosted activity, however it reached the store (a repository or ``aio`` view kept from a handle
+    opened before the scope was bound). Outside hosted mode it costs one context-variable read."""
+    if bound_store_pin() is not None:
+        raise ScopePinRefused("the SQLite backend serves local profiles only; a hosted activity reads and writes no "
+                              "local store")
 
 
 def _queued(entry: tuple[Any, ...]) -> tuple[str, dict[str, Any], Any]:
@@ -660,6 +670,7 @@ class StoreHolder:
         writer (an optional reader must not hold a home that is being deleted). Inside this thread's
         ``transcript_read_snapshot``: its connection, so every read there sees one generation.
         ``pooled_only``: None instead of the writer connection when no pooled reader is available."""
+        refuse_hosted_activity()
         pinned = self._pinned_read_conn()
         if pinned is not None:
             yield pinned
@@ -822,7 +833,9 @@ class StoreHolder:
         transaction (``_turn_fence``): a turn that lost its lease writes nothing.
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
-        and the WHOLE callback retried — *fn* must stay idempotent under retry."""
+        and the WHOLE callback retried — *fn* must stay idempotent under retry.
+        While a hosted scope is bound it refuses (``refuse_hosted_activity``) before touching the file."""
+        refuse_hosted_activity()
         self._log_reopen_notice("write")
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
@@ -1461,7 +1474,8 @@ class StoreHolder:
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
-        synchronous path and may raise."""
+        synchronous path and may raise. Refused while a hosted scope is bound (``refuse_hosted_activity``)."""
+        refuse_hosted_activity()
         if _token_delta_applier is None:
             from . import SQLiteBackend  # loads the repositories; the usage family registers the applier
         # The delta carries the claimed turn it was queued under: the writer applies it as that turn's write, so a

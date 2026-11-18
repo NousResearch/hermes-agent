@@ -1,6 +1,6 @@
 """Assembly and profile-keyed storage for the in-memory reference backend.
 
-``InMemoryBackend`` is the reference's file system: it holds every profile's store, keyed by the scope's ``store_key`` (a local profile's ``hermes_home_key``, a pinned scope's pin), under one tree rooted at ``root``; each pin is its own isolated store, never the store of the folder its scope was built in. ``open(scope)`` (``PersistenceBackend.open``) returns the ``InMemoryStore`` handle bound to that one profile, with one named repository attribute per registered capability, and no verb takes a scope. Two handles on one profile see the same store. Each public repository method runs under one backend-wide reentrant lock, so a verb is one atomic step (the reference's transaction) whichever thread calls it; ``executor`` is the backend's pool behind each handle's default awaitable view ``aio``.
+``InMemoryBackend`` is the reference's file system: it holds every profile's store, keyed by the scope's ``store_key`` (a local profile's ``hermes_home_key``, a pinned scope's pin), under one tree rooted at ``root``; each pin is its own isolated store, never the store of the folder its scope was built in. ``open(scope)`` (``PersistenceBackend.open``) returns the ``InMemoryStore`` handle bound to that one profile, with one named repository attribute per registered capability, and no verb takes a scope. Two handles on one profile see the same store. While a hosted scope is bound, each outermost public verb first checks that its handle's pin is exactly the bound scope's (``check_bound_pin``): another pin's handle, or a local one, refuses with ``ScopePinRefused``, so a repository or ``aio`` view kept from a handle is held to its pin at execution; with no hosted scope bound (a worker thread that did not inherit the activity's context) a handle serves its own store as before. Each public repository method runs under one backend-wide reentrant lock, so a verb is one atomic step (the reference's transaction) whichever thread calls it; ``executor`` is the backend's pool behind each handle's default awaitable view ``aio``.
 
 Extension is append-only with no shared hotspot: add ONE capability module in this package that calls ``register_repository`` at import time; the package ``__init__`` auto-imports modules in its subpackages, so nobody edits this file, the package ``__init__``, or another capability's module. Capability flags earned by a repository ride on its registration; the base declaration keeps every earnable flag False so the assembled declaration never promises behavior no registered repository executes.
 """
@@ -17,9 +17,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 
-from persistence import AwaitableStore, CapabilityUnsupported, PermanentStoreError, PersistenceCapabilities, ProfileScope, StoreReplaced
+from persistence import AwaitableStore, CapabilityUnsupported, PermanentStoreError, PersistenceCapabilities, ProfileScope, ScopePinRefused, StoreReplaced
 from persistence.core.admin import PHYSICAL_ADMIN, AdminUnsupported
-from persistence.core.context import canonical_home_key
+from persistence.core.context import bound_store_pin, canonical_home_key
 
 __all__ = ["REFERENCE_ROOT", "InMemoryBackend", "InMemoryStore", "open_reference_backend", "register_repository"]
 
@@ -151,6 +151,20 @@ class InMemoryBackend:
             raise RuntimeError("backend used after teardown")
         return self._files.setdefault(str(path), {})
 
+    def shared_file_store(self, scope: ProfileScope, path: Path) -> dict[str, Any]:
+        """The namespace of the install's shared store file ``path`` as ``scope`` reaches it: the file's own for a local scope, the pin's own copy for a pinned one (each pin its own shared namespace, whatever folder its scope was built in), created on first touch."""
+        if scope.pin is None:
+            return self.file_store(path)
+        if self._closed:
+            raise RuntimeError("backend used after teardown")
+        return self._files.setdefault(f"{scope.pin.key}#{path.name}", {})
+
+    def check_bound_pin(self, scope: ProfileScope) -> None:
+        """Refuse a verb of ``scope``'s handle while a hosted scope with another pin is bound (a local scope has none): ``ScopePinRefused``. With no hosted scope bound every handle serves its own store."""
+        bound = bound_store_pin()
+        if bound is not None and scope.pin != bound:
+            raise ScopePinRefused("a hosted activity may use only the store pinned to its bound scope")
+
     def begin_epoch(self, scope: ProfileScope, instance_id: str) -> int:
         """Begin an authority epoch on ``scope``'s store, the suites' epoch seam: the reference's authority state advances it."""
         from ._authority import authority_state  # _authority imports this module
@@ -228,7 +242,7 @@ class InMemoryStore:
             repository = factory(self)
             for name, method in inspect.getmembers(repository, inspect.ismethod):
                 if not name.startswith("_"):
-                    setattr(repository, name, _serialized(backend, backend.fence_verb(self, attribute, name, method)))
+                    setattr(repository, name, _serialized(backend, self, backend.fence_verb(self, attribute, name, method)))
             setattr(self, attribute, repository)
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:
@@ -244,10 +258,12 @@ class InMemoryStore:
                 and other.scope.store_key == self.scope.store_key)
 
 
-def _serialized(backend: InMemoryBackend, method: Callable[..., Any]) -> Callable[..., Any]:
+def _serialized(backend: InMemoryBackend, store: InMemoryStore, method: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(method)
     def call(*args: Any, **kwargs: Any) -> Any:
         with backend._lock:
+            if not backend._depth:
+                backend.check_bound_pin(store.scope)
             return backend.run_verb(method, *args, **kwargs)
 
     return call

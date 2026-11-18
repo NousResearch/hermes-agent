@@ -200,7 +200,8 @@ def test_an_interrupted_realign_keeps_the_old_index_and_the_marker(tmp_path, mon
 
     def ddl_then_crash(cursor, ddl):
         real_ddl(cursor, ddl)
-        raise RuntimeError("interrupted realign")
+        if ddl == schema.FTS_SQL:
+            raise RuntimeError("interrupted realign")
 
     monkeypatch.setattr(schema, "_execute_ddl_script_transactional", ddl_then_crash)
     with pytest.raises(RuntimeError, match="interrupted realign"):
@@ -259,6 +260,41 @@ def test_or_relaxed_retry_over_orphaned_posting_answers_from_canonical_rows(tmp_
         for _ in range(2):  # the triggering request and the next, already-detached one agree
             rows = search_messages(holder, "missingterm orphanword")
             assert any("survives" in (row.get("snippet") or "") for row in rows)
+        assert storage_state(path) == STORAGE_OK
+    finally:
+        holder.close()
+
+
+def test_a_transient_ioerr_in_the_rank_probe_replays_the_read(tmp_path, monkeypatch):
+    """A probe that hits a disk I/O error proves nothing: the read is retried, not latched."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        append_message(holder, "s", role="user", content="orphanword survives in this row")
+        _orphan_posting(holder, "s")
+        original = holder._read_retrying_ioerr
+        probe_failures = []
+
+        class FlakyProbe:
+            def __init__(self, conn):
+                self._conn = conn
+
+            @property
+            def in_transaction(self):
+                return self._conn.in_transaction
+
+            def execute(self, sql, *args):
+                if sql.startswith("SELECT bm25(") and not probe_failures:
+                    probe_failures.append(sql)
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self._conn.execute(sql, *args)
+
+        monkeypatch.setattr(holder, "_read_retrying_ioerr", lambda fn: original(lambda conn: fn(FlakyProbe(conn))))
+        rows = search_messages(holder, "orphanword")
+
+        assert probe_failures
+        assert any("survives" in (row.get("snippet") or "") for row in rows)
         assert storage_state(path) == STORAGE_OK
     finally:
         holder.close()

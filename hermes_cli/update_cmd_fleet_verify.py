@@ -487,6 +487,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)
 
+    # Read-only, and only when this update saw a serve/dashboard backend: names it and the plan command.
+    from hermes_cli.update_backend_notice import print_old_backend_notice
+    print_old_backend_notice(_pre_update_plan, restart)
     if restart.incomplete:
         return
     fleet._clear_fleet_restart_pending_marker()

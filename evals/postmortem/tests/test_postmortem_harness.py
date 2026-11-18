@@ -5,7 +5,9 @@ a compression-rollover child is excluded, pricing is fitted, and each lane write
 """
 import json
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -86,3 +88,21 @@ def test_runner_lists_a_probe_per_pr(harness_path):
     prs = {p[4] for p in runner.PROBES}
     assert {"#103492", "#103513", "#103549", "#103476", "#103551", "#103526", "#103534"} <= prs
     assert sys.version_info >= (3, 10)
+
+
+def test_runner_removes_probe_home(tmp_path, harness_path, monkeypatch):
+    from evals.postmortem import run as runner
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    homes = []
+
+    def fake_run(command, **kwargs):
+        home = Path(kwargs["env"]["HERMES_HOME"])
+        assert home.is_dir()
+        homes.append(home)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    assert runner.run_probe("live_ab/hardline_scanner_matrix.py", [], str(harness_path.parent)) == (0, "ok\n")
+    assert len(homes) == 1 and not homes[0].exists()

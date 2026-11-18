@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { registry } from '@/contrib/registry'
+import { modelDisplayParts } from '@/lib/model-status-label'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -536,6 +537,19 @@ describe('the catalog owns favorite models', () => {
 })
 
 describe('the current model the catalog omits (#57534)', () => {
+  it.each([false, true])('shows the current Codex model in the menu only when listed (%s)', async listed => {
+    const model = 'gpt-6.2-sol'
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: listed ? ['gpt-6-sol', model] : ['gpt-6-sol'], name: 'OpenAI Codex', slug: 'openai-codex' }]
+    })
+
+    renderMenu({ model, provider: 'openai-codex' })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(Boolean(screen.queryByText(modelDisplayParts(model).name)?.closest('[role="menuitem"]'))).toBe(listed)
+  })
+
   it('renders the current model as a selectable row when the provider catalog lacks it', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
@@ -548,6 +562,29 @@ describe('the current model the catalog omits (#57534)', () => {
     const row = (await screen.findByText('Qwen 2.5 72B Instruct')).closest('[role="menuitem"]')!
 
     expect(row.textContent).toContain('Qwen 2.5 72B Instruct')
+  })
+
+  it.each(['openai-codex', 'review-proxy'])('keeps the current model for a custom endpoint named %s', async slug => {
+    const model = 'gpt-6.2-sol'
+    const provider = `custom:${slug}`
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          aliases: [provider],
+          api_url: 'https://proxy.example/v1',
+          is_user_defined: true,
+          models: ['gpt-6-sol'],
+          name: 'Proxy',
+          slug
+        }
+      ]
+    })
+
+    renderMenu({ model, provider })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(screen.getByText(modelDisplayParts(model).name).closest('[role="menuitem"]')).not.toBeNull()
   })
 
   it('does not inject the current model into a provider that is not the current one', async () => {

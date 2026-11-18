@@ -11,6 +11,8 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+from persistence.conversation.messages import NewMessage
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture(autouse=True)
@@ -1698,10 +1700,8 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     (as the original PR did) makes the flush treat the already-persisted
     compacted dicts as new and append them a second time — doubling the active
     context and retriggering compression. This guards that regression with a
-    REAL SessionDB and the REAL archive_and_compact path (no persist stubs).
+    REAL store and the REAL compaction commit (no persist stubs).
     """
-    from hermes_state import SessionDB
-
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = _build_agent(monkeypatch)
     # _build_agent stubs _persist_session; restore the real one so the flush
@@ -1712,7 +1712,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     agent.context_compressor.context_length = 20_000
     agent.context_compressor.threshold_tokens = 20_000
 
-    agent._session_db = SessionDB()
+    agent._session_db = agent.persistence = storage_handle(tmp_path)
     agent._ensure_db_session()
 
     responses = [
@@ -1740,7 +1740,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
         # the in_place branch in conversation_compression.py do.
         agent._last_compaction_in_place = True
         compacted = [{"role": "user", "content": "[summary of prior tool-heavy work]"}]
-        agent._session_db.archive_and_compact(agent.session_id, compacted)
+        agent._session_db.messages.compact(agent.session_id, [NewMessage.from_live(m) for m in compacted])
         agent._flushed_db_message_ids = set()
         return compacted, "You are Hermes."
 
@@ -1752,7 +1752,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
 
     # The compacted summary row must appear exactly once in the active
     # transcript that a resume would reload.
-    active = agent._session_db.get_messages(agent.session_id)
+    active = [row.as_wire_row() for row in agent._session_db.messages.read_transcript(agent.session_id)]
     summary_rows = [
         m for m in active
         if isinstance(m.get("content"), str)

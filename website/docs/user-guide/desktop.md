@@ -480,7 +480,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)'s **Install in Hermes** buttons open source-qualified `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -941,6 +941,18 @@ desktop:
 ```
 
 Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
+
+### SSH remote: the connection times out on a slow link
+
+The app gives SSH 15 seconds to connect and 15 seconds to set up its port forward. It passes the connect limit to `ssh` on the command line, so a `ConnectTimeout` in `~/.ssh/config` does not raise it. If your network needs longer (a VPN that takes a while to come up, a jump host, a lossy link) and boot keeps failing with `ssh timed out after 15000ms`, raise the limits in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_connect_timeout: 60
+  ssh_forward_timeout: 60
+```
+
+Both take a whole number of seconds, up to 120. Anything else (`60s`, `1.5`, `0`) is ignored and the app logs `desktop.ssh_connect_timeout was ignored` at startup. The keys go two spaces under `desktop:`, like the launch keys above.
 
 ### "The host key has CHANGED since you last connected" (SSH remote)
 

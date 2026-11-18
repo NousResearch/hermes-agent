@@ -77,17 +77,17 @@ def configured_password(monkeypatch):
 # --- 1. askpass form through _prepare_command / execute -----------------------------------------
 
 
-@pytest.mark.parametrize(("command", "count"), [
-    ("sudo id -u", 1),
-    ("sudo id -u && /usr/bin/sudo whoami; env FOO=1 sudo true", 3),
+@pytest.mark.parametrize(("command", "count", "words"), [
+    ("sudo id -u", 1, ("sudo",)),
+    ("sudo id -u && /usr/bin/sudo whoami; env FOO=1 sudo true", 3, ("sudo", "/usr/bin/sudo")),
 ])
-def test_askpass_form_prologue_plus_rewrite_and_one_password_line(configured_password, command, count):
+def test_askpass_form_prologue_plus_rewrite_and_one_password_line(configured_password, command, count, words):
     env = _RecordingEnv()
     exec_command, sudo_stdin = env._prepare_command(command)
 
     rewritten = command.replace("sudo", f"{PRE}sudo {OPT}")
     rewritten = rewritten.replace(f"/usr/bin/{PRE}sudo {OPT}", f"{PRE}/usr/bin/sudo {OPT}")
-    assert exec_command == askpass.build_prologue(count, TOKEN, False) + rewritten
+    assert exec_command == askpass.build_prologue(count, TOKEN, False, sudo_words=words) + rewritten
     assert f"__hermes_sudo_n={count}\n" in exec_command
     assert PW not in exec_command
     assert sudo_stdin == (PW + "\n") * count
@@ -419,6 +419,8 @@ def live_env(tmp_path, monkeypatch):
     fake = _write_fake_sudo(tmp_path / "bin")
     monkeypatch.setenv("TERMINAL_TEMP_DIR", str(temp_dir))
     env = LocalEnvironment(cwd=str(tmp_path), timeout=10, env={"TMPDIR": str(temp_dir)})
+    # The prologue checks ``sudo -A -V`` on PATH at run time: the fake answers it, not a host sudo.
+    env.execute(f"export PATH={fake.parent}:$PATH")
     terminal_tool_sudo._set_cached_sudo_password(PW)
     # The probe itself is covered by test_capability_probe_live_*; pin the answer here so the
     # result does not depend on which sudo the host has.
@@ -533,6 +535,11 @@ def test_live_snapshot_holds_neither_password_nor_prologue_names(live_env):
 # --- live: prologue hardening and the capability probe ------------------------------------------------
 
 
+def _fake_path(sudo: Path) -> str:
+    """PATH with the fake sudo first, so the prologue's ``sudo -A -V`` check asks the fake."""
+    return f"{sudo.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
 def _bash(script, stdin="", env_vars=None, timeout=20):
     return subprocess.run(["bash", "-c", script], input=stdin, capture_output=True, text=True, check=False,
                           env={**os.environ, **(env_vars or {})}, timeout=timeout)
@@ -547,7 +554,7 @@ def test_live_prologue_ignores_aliases_and_functions_for_its_commands(tmp_path):
               "alias command=false builtin=false exec=false test=false printf=false mktemp=false\n"
               "mkfifo() { return 1; }\nmktemp() { return 1; }\nchmod() { return 1; }\n")
     escaped = body.replace("'", "'\\''")
-    proc = _bash(shadow + f"eval '{escaped}'", stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    proc = _bash(shadow + f"eval '{escaped}'", stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == str(os.getuid())
 
@@ -560,11 +567,11 @@ def test_live_temp_path_with_quote_special_char_is_setup_failure(tmp_path, speci
     odd.mkdir()
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(f"{sudo} id -u", askpass=True)
-    proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(odd)})
+    proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(odd), "PATH": _fake_path(sudo)})
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == str(os.getuid())
     assert list(odd.iterdir()) == []
-    assert _bash(askpass.CAPABILITY_PROBE, env_vars={"TMPDIR": str(odd)}).returncode == 1
+    assert _bash(askpass.CAPABILITY_PROBE, env_vars={"TMPDIR": str(odd), "PATH": _fake_path(sudo)}).returncode == 1
 
 
 @_needs_posix_shell
@@ -572,7 +579,7 @@ def test_live_sudo_after_watchdog_timeout_is_served_while_the_command_runs(tmp_p
     """A command yielded to the background outlives its timeout; its later sudo still authenticates."""
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(f"sleep 3; {sudo} id -u", askpass=True)
-    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == str(os.getuid())
     wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
@@ -586,7 +593,7 @@ def test_live_every_counted_sudo_that_asks_is_served(tmp_path):
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(
         f"{sudo} id -u; {drop}; {sudo} id -u; {drop}; {sudo} id -u", askpass=True)
     assert count == 3
-    proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.split() == [str(os.getuid())] * 3
     wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
@@ -603,7 +610,7 @@ def test_live_sudos_that_ask_at_the_same_time_are_each_served(tmp_path):
     assert count == 4
     for _ in range(5):
         proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n",
-                     env_vars={"TMPDIR": str(tmp_path)})
+                     env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
         assert sorted(proc.stdout.split()) == ["OK0", "OK1", "OK2", "OK3"], proc.stderr
     wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
 
@@ -635,7 +642,7 @@ def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
     body = f"( sleep 3; {sudo} id -u > {out} 2>&1 ) &"
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(body, askpass=True)
     assert askpass.has_background_sudo(body)
-    proc = _bash(askpass.build_prologue(count, "20", True) + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    proc = _bash(askpass.build_prologue(count, "20", True) + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
     assert proc.returncode == 0, proc.stderr
     wait_until(lambda: out.exists() and out.read_text().strip() == str(os.getuid()), timeout=10,
                what="backgrounded sudo authenticated")
@@ -690,7 +697,7 @@ def test_live_orphan_holding_fd_19_does_not_keep_the_writer_past_the_timeout(tmp
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(
         f"sleep 8 >/dev/null 2>&1 & false && {sudo} true", askpass=True)
-    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path), "PATH": _fake_path(sudo)})
     assert proc.returncode == 1, proc.stderr
     wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
 
@@ -739,3 +746,39 @@ def test_capability_probe_live_fails_without_sudo(tmp_path, configured_password)
     if shutil.which("sudo", path=f"{empty}:/usr/bin:/bin"):
         pytest.skip("a sudo binary is on the fixed PATH")
     assert env._prepare_command("sudo id -u") == ("sudo -S -p '' id -u", PW + "\n")
+
+
+# --- noclobber: the session's ``set -C`` must not turn the askpass form into the stdin form ------
+
+
+@_needs_posix_shell
+def test_live_noclobber_session_keeps_the_askpass_form(configured_password, tmp_path):
+    fake = _write_fake_sudo(tmp_path / "bin")
+    command, stdin = _RecordingEnv()._prepare_command('read -r p; echo "got:$p"; sudo id -u')
+    command = askpass.fill_timeout_token(command, 10)
+    done = subprocess.run(["bash", "-C", "-c", command], input=stdin + "rest\n", text=True,
+                          capture_output=True, timeout=15, check=False,
+                          env={"PATH": f"{fake.parent}:/usr/bin:/bin", "TMPDIR": str(tmp_path)})
+    assert done.returncode == 0, (done.stdout, done.stderr)
+    assert done.stdout.split() == ["got:rest", str(os.getuid())], (done.stdout, done.stderr)
+    assert PW not in done.stdout + done.stderr
+
+
+@_needs_posix_shell
+def test_live_local_backend_noclobber_startup_keeps_caller_input(configured_password, tmp_path, monkeypatch):
+    from tools.environments.local import LocalEnvironment
+
+    fake = _write_fake_sudo(tmp_path / "bin")
+    startup = tmp_path / "bash-env"
+    startup.write_text("set -C\n")
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    monkeypatch.setenv("TERMINAL_TEMP_DIR", str(temp))
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10, env={"TMPDIR": str(temp), "BASH_ENV": str(startup)})
+    try:
+        assert env.execute(f"export PATH={fake.parent}:$PATH")["returncode"] == 0
+        result = env.execute('read -r p; echo "got:$p"; sudo true', stdin_data="rest\n")
+    finally:
+        env.cleanup()
+    assert result["returncode"] == 0, result
+    assert result["output"].split() == ["got:rest"], result

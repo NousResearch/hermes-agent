@@ -6,7 +6,7 @@ import time
 import pytest
 
 from gateway.session_policy import policy_scope
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 
@@ -24,7 +24,7 @@ def test_editor_manifest_stays_frozen_across_live_refresh(server_spec, tmp_path)
         # response is not allowed to republish schemas even when explicitly refreshed.
         server._tools[0].description = 'changed after first discovery'
         from tools.mcp_tool_registration import _register_server_tools
-        with pytest.raises(RuntimeStoreError, match='acp_mcp_schema_changed'):
+        with pytest.raises(AuthorityRefusal, match='acp_mcp_schema_changed'):
             _register_server_tools(server.name, server, server._config)
         assert schemas == {n: registry.get_schema(n) for n in names}
         _run_on_mcp_loop(server._refresh_tools, timeout=10)
@@ -33,7 +33,7 @@ def test_editor_manifest_stays_frozen_across_live_refresh(server_spec, tmp_path)
     # but must not replace the session's selected schema on the next execution.
     script = tmp_path / 'owned_mcp.py'
     script.write_text(script.read_text().replace('owned echo', 'changed live schema'))
-    with pytest.raises(RuntimeStoreError, match='acp_mcp_schema_changed'):
+    with pytest.raises(AuthorityRefusal, match='acp_mcp_schema_changed'):
         with policy_scope(p, authority=authority):
             pass
 
@@ -61,7 +61,7 @@ def test_editor_freeze_follows_the_connection_owner_not_the_callers_scope(server
             try:
                 _register_server_tools(server.name, server, server._config)
                 outcome.append('registered')
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 outcome.append(exc.reason)
             finally:
                 reset_multiplex_context(token)

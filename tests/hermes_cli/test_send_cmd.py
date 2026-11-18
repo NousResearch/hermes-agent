@@ -27,7 +27,7 @@ def _parse(argv):
     return parser.parse_args(["send", *argv])
 
 class _FakeTool:
-    """Replacement for ``tools.send_message_tool.send_message_tool``."""
+    """Replacement for ``gateway.outbound.send.send_message_tool``."""
 
     def __init__(self, payload):
         self.payload = payload
@@ -45,12 +45,12 @@ def fake_tool(monkeypatch):
 
     fake = _FakeTool({"success": True, "message_id": "m123"})
 
-    mod = types.ModuleType("tools.send_message_tool")
+    mod = types.ModuleType("gateway.outbound.send")
     mod.send_message_tool = fake
-    # Register the stub so ``from tools.send_message_tool import ...`` inside
+    # Register the stub so ``from gateway.outbound.send import ...`` inside
     # cmd_send resolves to our fake. Also patch the parent ``tools`` package
     # entry so attribute lookup works.
-    monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
+    monkeypatch.setitem(sys.modules, "gateway.outbound.send", mod)
     return fake
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def whatsapp_bridge(monkeypatch):
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
-    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr("gateway.outbound.send._mirror_sent_message", lambda *_args: False)
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 
@@ -299,6 +299,24 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
 
     assert os.environ.get("SOME_TOKEN") == "abc123"
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
+
+
+def test_load_hermes_env_ignores_launch_only_keys_in_config_yaml(tmp_path, monkeypatch):
+    """A user-writable config.yaml must not repoint managed scope via ``hermes send`` (#135200)."""
+    import os
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"HERMES_MANAGED_DIR: {tmp_path}\nTELEGRAM_HOME_CHANNEL: '5550001111'\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    send_cmd._load_hermes_env()
+
+    assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
+    assert "HERMES_MANAGED_DIR" not in os.environ
 
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not mangle the first .env key name.

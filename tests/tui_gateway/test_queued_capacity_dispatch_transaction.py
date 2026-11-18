@@ -7,7 +7,9 @@ import types
 import pytest
 
 from hermes_cli import active_sessions
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
 from tui_gateway import server
 from tests.tui_gateway.test_queued_capacity_recovery import make_poller_tick
 
@@ -21,7 +23,7 @@ def poller_tick(monkeypatch):
 def dispatch_env(monkeypatch, tmp_path, request):
     execution = request.param
     cfg = {"max_concurrent_sessions": 1}
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
     monkeypatch.setattr(server, "_canonical_ledger_refusal", lambda session: None)
@@ -102,7 +104,7 @@ def test_second_activation_refusal_restores_identical_fifo_then_poller_recovers(
     env, session = dispatch_env, dispatch_env.session
     head, tail = _accepted_pair(env)
     accepted = copy.deepcopy([head, tail])
-    durable = env.db.get_messages_as_conversation(session["session_key"], include_inactive=True, include_row_ids=True)
+    durable = conversation(env.db, session["session_key"], ConversationRequest(view=TranscriptView.ALL, include_row_ids=True))
     activate = server._activate_active_session_slot
     at_second, refuse = threading.Event(), threading.Event()
     calls = []
@@ -127,8 +129,7 @@ def test_second_activation_refusal_restores_identical_fifo_then_poller_recovers(
     assert [head, tail] == accepted
     assert session.get("_queued_prompt_capacity_wait") == {"rid": "settled", "generation": 0}
     assert not session["running"] and env.started() == 0
-    assert env.db.get_messages_as_conversation(
-        session["session_key"], include_inactive=True, include_row_ids=True) == durable
+    assert conversation(env.db, session["session_key"], ConversationRequest(view=TranscriptView.ALL, include_row_ids=True)) == durable
     lease = session["active_session_lease"]
     assert next(entry for entry in active_sessions.active_session_registry_snapshot()
                 if entry["lease_id"] == lease.lease_id)["capacity_active"] is False
@@ -242,7 +243,7 @@ def test_idle_rpc_capacity_refusal_uses_canonical_formatter(monkeypatch, dispatc
         assert response["error"]["data"]["reason"] == active_sessions.MAX_CONCURRENT_SESSIONS
         assert not session["running"] and env.started() == 0
         assert not session.get("queued_prompt") and not session.get("inflight_turn")
-        assert env.db.get_messages_as_conversation(session["session_key"]) == []
+        assert conversation(env.db, session["session_key"]) == []
     finally:
         blocker.release()
 

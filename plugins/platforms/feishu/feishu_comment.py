@@ -491,11 +491,9 @@ def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
 def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt; empty string on failure. *session_key*, if given, loads/saves history for cross-card memory in the same document."""
     from run_agent import AIAgent
-    from tools import feishu_doc_tool, feishu_drive_tool
-    logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
-    tool_mods = (feishu_doc_tool, feishu_drive_tool)
-    for mod in tool_mods:
-        mod.set_client(client)
+    from tools.feishu_lark import current_client
+    logger.info("[Feishu-Comment] _run_comment_agent: binding lark client for the agent's tool calls")
+    client_token = current_client.set(client)
     try:
         model, runtime_kwargs = _resolve_model_and_runtime()
         logger.info("[Feishu-Comment] _run_comment_agent: model=%s provider=%s base_url=%s", model, runtime_kwargs.get("provider"), (runtime_kwargs.get("base_url") or "")[:50])
@@ -526,8 +524,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         logger.exception("[Feishu-Comment] _run_comment_agent: agent failed: %s", e)
         return ""
     finally:
-        for mod in tool_mods:
-            mod.set_client(None)
+        current_client.reset(client_token)
 
 
 def _last_index_where(timeline: Timeline, pred) -> Optional[tuple[str, int]]:

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.file_safety import HOME_CREDENTIAL_DIRS
+from agent.file_safety import HOME_CREDENTIAL_DIRS, deny_key, deny_path_under
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
@@ -499,8 +499,19 @@ async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str
 
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
-    docs = json.loads(await web_extract_tool([url], format="markdown")).get("results", [])
-    return str(docs[0].get("content") or docs[0].get("raw_content") or "").strip() if docs else ""
+    payload = json.loads(await web_extract_tool([url], format="markdown"))
+    docs = payload.get("results", [])
+    if not docs:
+        if payload.get("error"):  # refused before any fetch (secret in the URL, no backend)
+            raise ValueError(payload["error"])
+        return ""
+    page = docs[0]
+    if page.get("blocked_by_policy"):
+        raise ValueError(page.get("error") or "Blocked by website policy")
+    content = str(page.get("content") or page.get("raw_content") or "").strip()
+    if not content and page.get("error"):  # SSRF refusal or a failed fetch
+        raise ValueError(page["error"])
+    return content
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -565,9 +576,10 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
     blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
-    if path in blocked_exact:
+    # deny_key: macOS/Windows open ~/.ssh for ~/.SSH while resolve() keeps the typed case (#51474).
+    if deny_key(path) in {deny_key(p) for p in blocked_exact}:
         raise ValueError("path is a sensitive credential file and cannot be attached")
-    if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):
+    if any(deny_path_under(path, blocked_dir) for blocked_dir in blocked_dirs):
         raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
     # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error): the
     # narrow list above never caught auth.json, .anthropic_oauth.json, mcp-tokens/, webhook

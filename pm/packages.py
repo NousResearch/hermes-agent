@@ -536,7 +536,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import build_member_dirs, lock_and_sync
+        from pm.workspace import CORE_LOCK_RECORD, build_member_dirs, core_lock_upgrades, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -569,10 +569,15 @@ class Venv(StatePackage):
                 replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
+            upgrade = (core_lock_upgrades(project / "uv.lock", seed, python=environment.python)
+                       if seed != project / "uv.lock" else [])
             lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
-                          source=project, environment=environment)
+                          source=project, environment=environment, upgrade=upgrade)
             resolved_lock = generation / "workspace" / "uv.lock"
+            if replay is None:
+                # What core's lock held for this build: the next one moves only the pins core moves.
+                shutil.copyfile(project / "uv.lock", resolved_lock.with_name(CORE_LOCK_RECORD))
             environment.check(resolved_lock)
             if repair:
                 from pm.environments import venv_command
@@ -861,9 +866,13 @@ class Git(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         tag, build = version.split("+")
         arch = "arm64" if target.endswith("arm64") else "64-bit"
+        # Git for Windows drops the revision from the artifact name on the
+        # first build of a tag (PortableGit-2.56.0, not 2.56.0.1); the
+        # release directory keeps it (v2.56.0.windows.1).
+        file_rev = "" if build == "1" else f".{build}"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
+            f"v{tag}.windows.{build}/PortableGit-{tag}{file_rev}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:

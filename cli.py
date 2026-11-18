@@ -72,7 +72,6 @@ from hermes_cli.cli_shutdown import (
     _wait_for_oneshot_background_completions,
 )
 from hermes_cli.cli_auto_maintenance import (
-    _run_checkpoint_auto_maintenance,
     _run_state_db_auto_maintenance,
 )
 from hermes_cli.cli_render import (
@@ -241,6 +240,7 @@ except Exception:
     pass
 import threading
 import queue
+from hermes_cli._startup_fast import project_root_str
 
 
 def _lazy_shim(module: str, name: str, alias: str | None = None):
@@ -337,7 +337,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
-_project_env = Path(__file__).parent / '.env'
+_project_env = Path(project_root_str()) / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
@@ -1653,7 +1653,8 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     def _create_worktree() -> None:
         try:
             # The session freezes this cwd: recorded so a resume recreates the tree quit removed (N8).
-            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=get_hermes_home() / "state.db")
+            from hermes_cli.worktree_ops import _retention_store
+            _wt_result["info"] = _setup_worktree(sync_base=_sync_base, retain_db=_retention_store())
         except Exception:
             logger.debug("worktree setup failed", exc_info=True)
             _wt_result["info"] = None

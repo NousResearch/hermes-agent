@@ -246,7 +246,8 @@ export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
 
 /**
  * Tell the backend a voice-input session started (`active: true`) so it can
- * warm the STT engine, or ended (`active: false`) to drop the lease.
+ * warm the STT engine, or ended (`active: false`), which the backend only
+ * acknowledges: the model stays loaded.
  * `lease` names the session — `desktop:voice-input:<renderer>`. `owner` is
  * the voice operation's owner, resolved once when it started, so a queued call
  * is never re-routed by a later gateway/profile switch.
@@ -309,7 +310,7 @@ export function runDebugShare(owner: ResolvedOwner): Promise<DebugShareResponse>
     method: 'POST',
     // Only called after the user confirmed the upload; the backend refuses a missing consent.
     body: { consent: true },
-    // Synchronous upload of report + logs to the paste service.
+    // Synchronous upload of the allowlisted summary to the public paste service.
     timeoutMs: 120_000
   })
 }

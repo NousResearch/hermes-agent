@@ -11,7 +11,9 @@ import types
 import pytest
 
 from hermes_cli import active_sessions
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
 from tui_gateway import server
 
 
@@ -79,7 +81,7 @@ def test_accepted_fifo_recovers_after_capacity_refusal(
     monkeypatch, tmp_path, execution, initial_refusal, poller_tick
 ):
     cfg = {"max_concurrent_sessions": 1}
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
     monkeypatch.setattr(server, "_canonical_ledger_refusal", lambda session: None)
@@ -122,7 +124,7 @@ def test_accepted_fifo_recovers_after_capacity_refusal(
         head, tail = session["queued_prompt"], session["queued_prompts"][0]
         accepted_envelopes = copy.deepcopy([head, tail])
         key = session["session_key"]
-        durable_before = db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
+        durable_before = conversation(db, key, ConversationRequest(view=TranscriptView.ALL, include_row_ids=True))
         with monkeypatch.context() as initial:
             if initial_refusal != "capacity":
                 refusal = (active_sessions.ActiveSessionRefusal(
@@ -136,7 +138,7 @@ def test_accepted_fifo_recovers_after_capacity_refusal(
         assert session.get("queued_prompts") == [tail]
         assert [head, tail] == accepted_envelopes
         assert not session["running"] and not workers and not frames and not attached
-        assert db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True) == durable_before
+        assert conversation(db, key, ConversationRequest(view=TranscriptView.ALL, include_row_ids=True)) == durable_before
         # Repeated scheduler ticks under the same refusal neither mutate rows nor
         # churn IDs, enter the executor, or advance the FIFO.
         stop = poller_tick(sid, session)
@@ -144,7 +146,7 @@ def test_accepted_fifo_recovers_after_capacity_refusal(
         assert session["queued_prompt"] is head
         assert not workers and not frames and not attached
         assert [head, tail] == accepted_envelopes
-        assert db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True) == durable_before
+        assert conversation(db, key, ConversationRequest(view=TranscriptView.ALL, include_row_ids=True)) == durable_before
         # An idle-but-capacity-waiting queue is still busy for newly arriving
         # sends, even when the user's configured busy mode normally steers.
         session["attached_images"] = ["q3.png"]
@@ -188,7 +190,7 @@ def test_accepted_fifo_recovers_after_capacity_refusal(
         assert server._drain_queued_prompt("settled-request", sid, session) is False
         assert server._retry_capacity_queued_prompt(sid, session) is False
         assert len(workers if execution == "inline" else frames) == 3
-        active_rows = db.get_messages_as_conversation(key, include_row_ids=True)
+        active_rows = conversation(db, key, ConversationRequest(include_row_ids=True))
         if execution == "inline":
             assert [row["content"] for row in active_rows] == ["Q1", "Q2", "Q3"]
             assert len({row["_row_id"] for row in active_rows}) == 3

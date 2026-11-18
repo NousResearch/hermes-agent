@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-HERMES_CLI = Path(__file__).resolve().parents[2] / "hermes_cli"
+from hermes_agent.compat.paths import current_path
+
+HERMES_CLI = Path(__file__).resolve().parents[2] / current_path("hermes_cli")
 
 
 def _iter_call_text_nodes(tree: ast.AST) -> list[ast.Call]:

@@ -1,6 +1,6 @@
 """``session.list`` must forward the durable lineage root. Regression for #66663.
 
-``hermes_state.list_sessions_rich`` already returns ``_lineage_root_id`` on projected
+``sessions.list_sessions`` already returns ``_lineage_root_id`` on projected
 compression rows, and the REST ``/api/sessions`` path projects it
 (``gateway/platforms/api_server.py::_session_response``). The ``session.list`` RPC row
 summary dropped the field, so RPC consumers could not group a compressed conversation
@@ -14,12 +14,14 @@ import pytest
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    database = SessionDB(tmp_path / "state.db")
+    database = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(srv, "_get_db", lambda: database)
     try:
         yield database
@@ -34,17 +36,17 @@ def _call(method: str, params: dict) -> dict:
 def _seed_compressed_conversation(db) -> None:
     """``root1`` (compression-ended) -> ``tip1`` live continuation, both with messages."""
     t0 = time.time() - 3600
-    db.create_session("root1", "cli")
-    db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
-    db.append_message("root1", "user", "help me refactor auth")
-    db._conn.execute(
+    holder = raw_holder(db)
+    seed_session(db, "root1", "cli")
+    holder._execute_write(lambda conn: conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1")))
+    seed_messages(db, "root1", {"role": "user", "content": "help me refactor auth"})
+    holder._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
         (t0 + 1800, "compression", "root1"),
-    )
-    db.create_session("tip1", "cli", parent_session_id="root1")
-    db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "tip1"))
-    db.append_message("tip1", "user", "continuing")
-    db._conn.commit()
+    ))
+    seed_session(db, "tip1", "cli", parent_session_id="root1")
+    holder._execute_write(lambda conn: conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "tip1")))
+    seed_messages(db, "tip1", {"role": "user", "content": "continuing"})
 
 
 def test_session_list_projects_lineage_root_id(db):

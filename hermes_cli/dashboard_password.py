@@ -115,6 +115,11 @@ def _read_password(args) -> str:
 
 def _current_username() -> str:
     from hermes_cli.config import load_config_readonly
+    from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_constants import get_hermes_home
+    local_username = resolve_home_dotenv(get_hermes_home()).get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "").strip()
+    if local_username:
+        return local_username
     section = ((load_config_readonly().get("dashboard") or {}).get("basic_auth") or {})
     return str(section.get("username") or "").strip() if isinstance(section, dict) else ""
 
@@ -122,12 +127,18 @@ def _current_username() -> str:
 def _shadow_refusal() -> Optional[str]:
     """Why the overriding names cannot be cleared (an administrator-pinned one), or None. Asked before
     config.yaml is written: ``remove_env_value`` refuses by returning False."""
-    from hermes_cli.config import require_env_writable
+    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name, load_env, read_raw_config, require_env_writable
     for name in SHADOWING_ENV:
         try:
             require_env_writable(name, "remove")
         except ValueError as exc:
             return f"{exc} It overrides config.yaml"
+    raw = ((read_raw_config().get("dashboard") or {}).get("basic_auth") or {})
+    raw_user = raw.get("username") if isinstance(raw, dict) else None
+    if isinstance(raw_user, str):
+        removing = set(load_env()).intersection(SHADOWING_ENV)
+        if any(_env_ref_var_name(ref.strip()) in removing for ref in _ENV_REF_RE.findall(raw_user)):
+            return "Set dashboard.basic_auth.username to a literal first: it references an override this command removes"
     return None
 
 

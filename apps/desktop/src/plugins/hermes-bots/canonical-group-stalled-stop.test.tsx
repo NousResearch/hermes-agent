@@ -184,3 +184,19 @@ it('explains a worker refusal inside the Stop confirmation', async () => {
   fireEvent.click(within(dialog).getByRole('button', { name: labels.stopGroup }))
   await within(dialog).findByText(labels.driverUnavailable)
 })
+
+it.each(['original', 'newer'] as const)('checks which message still needs preparation after Stop (%s)', async source => {
+  const after = source === 'original' ? wire.afterStop : wire.working
+  const pending = { ...after, state: { ...after.state, driver_status: wire.stalled.state.driver_status } }
+  const { update } = await open('stalled', async () => { update(pending); return wire.stop })
+  fireEvent.click(screen.getByRole('button', { name: labels.stopGroup }))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: labels.stopGroup }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  if (source === 'original') {
+    await screen.findByText(labels.stopStillPending)
+  } else {
+    expect(screen.queryByText(labels.stopStillPending)).toBeNull()
+  }
+  expect(stops()).toHaveLength(1)
+})

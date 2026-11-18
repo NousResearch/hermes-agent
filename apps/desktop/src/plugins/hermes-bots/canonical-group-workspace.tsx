@@ -29,6 +29,12 @@ interface RoomDriverStatus extends CanonicalDriverStatus<CanonicalPendingAction>
   max_continues?: number
   routing_modes?: string[]
 }
+// A preparation Retry is keyed by room. Its last user event distinguishes this stall from a later Send.
+const stalledMessage = (driver: RoomDriverStatus | undefined, log: readonly RoomEvent[]) =>
+  driver?.pending_actions?.some(action => action.kind === 'retry' && action.task_id.startsWith('prepare:'))
+    ? log.findLast(event => event.kind === 'message.user')?.event_id : undefined
+
+interface StopIntent { id: string; stalledMessage?: string }
 interface Words { text: string; attachments: Attachment[] }
 interface SendRun { stopped: boolean; posted: boolean; settled: Promise<boolean> }
 interface RoomState {
@@ -132,8 +138,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const [stopping, setStopping] = useState(false)
   const stopPending = useRef(false)
   // One cancellation intent survives uncertain replies until new work starts or Stop is confirmed.
-  const stopIntent = useRef<string | null>(null)
-  const [notice, setNotice] = useState<'' | 'stopped'>('')
+  const stopIntent = useRef<StopIntent | null>(null)
+  const confirmedStall = useRef<string | undefined>(undefined)
+  const [notice, setNotice] = useState<'' | 'stopped' | 'stopStillPending'>('')
   const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
@@ -287,9 +294,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       setState(snapshot)
 
       // The stop notice tells people to use Retry or Discard on kept turns: it stays while any wait.
-      if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping &&
-        !snapshot.driver_status.pending_actions?.length) {
-        setNotice(current => current === 'stopped' ? '' : current)
+      if (snapshot.driver_status) {
+        const sameStall = confirmedStall.current && confirmedStall.current === stalledMessage(snapshot.driver_status, log)
+        if (sameStall) {
+          setNotice('stopStillPending')
+        } else {
+          confirmedStall.current = undefined
+          const idle = !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping && !snapshot.driver_status.pending_actions?.length
+          setNotice(current => idle || current === 'stopStillPending' ? '' : current)
+        }
       }
 
       setEvents(log)
@@ -543,15 +556,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const requestStop = async (fresh = false) => {
     if (fresh) {stopIntent.current = null}
-    const cancelId = stopIntent.current ??= randomUuid()
-    const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: cancelId })
+    const intent = stopIntent.current ??= { id: randomUuid(), stalledMessage: stalledMessage(state?.driver_status, events) }
+    const result = await canonicalGroupRequest<{ cancelled?: unknown } | undefined>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: intent.id })
     const cancelled = result?.cancelled
 
     if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
 
-    if (stopIntent.current === cancelId) {stopIntent.current = null}
-
-    return cancelled
+    confirmedStall.current = intent.stalledMessage
+    if (stopIntent.current === intent) {stopIntent.current = null}
   }
 
   // Stop has its own busy state: it stays available while a Send is in flight, and covers it. A

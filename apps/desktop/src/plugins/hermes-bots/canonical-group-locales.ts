@@ -63,6 +63,7 @@ export interface CanonicalGroupMessages extends GroupReasonMessages {
   stopGroup: string
   stopWaitingTitle: string
   stopWaitingDescription: string
+  stopStillPending: string
   pendingApproval: string
   pendingRetry: string
   pendingDiscard: string
@@ -227,6 +228,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Stop the group',
     stopWaitingTitle: 'Stop the group?',
     stopWaitingDescription: 'Waiting messages won’t be answered, but a reply already on its way may still appear. This doesn’t fix why a bot couldn’t start.',
+    stopStillPending: 'This message is still waiting. Update the gateway and try Stop again.',
     pendingApproval: '{name} is asking for approval. You decide.',
     pendingRetry: '{name}’s turn has not finished. Retry it?',
     pendingDiscard: 'Discard {name}’s turn? Work already done will not be undone.',
@@ -388,6 +390,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'グループを停止',
     stopWaitingTitle: 'グループを停止しますか？',
     stopWaitingDescription: '待機中のメッセージには返信されません。ただし、すでに作成が始まっている返信が後から届くことはあります。botが開始できなかった原因は解決されません。',
+    stopStillPending: 'このメッセージはまだ待機中です。ゲートウェイを更新し、もう一度停止してください。',
     pendingApproval: '{name} が承認を求めています。判断してください。',
     pendingRetry: '{name} のターンはまだ完了していません。再試行しますか？',
     pendingDiscard: '{name} のターンを破棄しますか？すでに行われた作業は元に戻りません。',
@@ -549,6 +552,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: '停止群组',
     stopWaitingTitle: '停止群组？',
     stopWaitingDescription: '等待中的消息不会收到回复，但已经在准备的回复仍可能稍后出现。这不会解决bot无法启动的问题。',
+    stopStillPending: '此消息仍在等待中。请更新网关，然后重试停止操作。',
     pendingApproval: '{name} 正在请求批准，由你决定。',
     pendingRetry: '{name} 的回合尚未完成。要重试吗？',
     pendingDiscard: '丢弃 {name} 的回合？已经完成的工作不会被撤销。',
@@ -710,6 +714,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: '停止群組',
     stopWaitingTitle: '停止群組？',
     stopWaitingDescription: '等待中的訊息不會收到回覆，但已經在準備的回覆仍可能稍後出現。這不會解決bot無法啟動的問題。',
+    stopStillPending: '這則訊息仍在等候中。請更新閘道，再試一次停止操作。',
     pendingApproval: '{name} 正在請求核准，由你決定。',
     pendingRetry: '{name} 的回合尚未完成。要重試嗎？',
     pendingDiscard: '捨棄 {name} 的回合？已完成的工作不會被復原。',
@@ -871,6 +876,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'إيقاف المجموعة',
     stopWaitingTitle: 'إيقاف المجموعة؟',
     stopWaitingDescription: 'لن يُرَدّ على الرسائل المنتظرة، لكن قد يظهر ردّ كان في طريقه بالفعل. وهذا لا يحل المشكلة التي منعت الروبوت من البدء.',
+    stopStillPending: 'لا تزال هذه الرسالة قيد الانتظار. حدّث البوابة ثم حاول الإيقاف مجددًا.',
     pendingApproval: '{name} يطلب موافقة. القرار لك.',
     pendingRetry: 'لم ينتهِ دور {name} بعد. هل تعيد المحاولة؟',
     pendingDiscard: 'هل تريد تجاهل دور {name}؟ لن يتم التراجع عن العمل الذي أُنجز بالفعل.',
@@ -1035,6 +1041,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Остановить группу',
     stopWaitingTitle: 'Остановить группу?',
     stopWaitingDescription: 'Ожидающие сообщения останутся без ответа, но ответ, который уже в пути, ещё может появиться. Это не устранит причину, по которой бот не смог запуститься.',
+    stopStillPending: 'Это сообщение всё ещё в очереди. Обновите шлюз и попробуйте остановить группу ещё раз.',
     pendingApproval: '{name} просит одобрения. Решать вам.',
     pendingRetry: 'Ход {name} ещё не завершён. Повторить?',
     pendingDiscard: 'Отбросить ход {name}? Уже выполненная работа не будет отменена.',
@@ -1198,6 +1205,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Arrêter le groupe',
     stopWaitingTitle: 'Arrêter le groupe ?',
     stopWaitingDescription: 'Les messages en attente n’auront pas de réponse, mais une réponse déjà en route peut encore s’afficher. Cela ne règle pas ce qui a empêché un bot de démarrer.',
+    stopStillPending: 'Ce message est toujours en attente. Mettez la passerelle à jour et réessayez d’arrêter le groupe.',
     pendingApproval: '{name} demande une approbation. À vous de décider.',
     pendingRetry: 'Le tour de {name} n’est pas terminé. Réessayer ?',
     pendingDiscard: 'Abandonner le tour de {name} ? Le travail déjà effectué ne sera pas annulé.',
@@ -1362,6 +1370,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Gruppe stoppen',
     stopWaitingTitle: 'Gruppe stoppen?',
     stopWaitingDescription: 'Wartende Nachrichten bekommen keine Antwort, aber eine Antwort, die schon unterwegs ist, kann noch erscheinen. Das löst nicht das Problem, das einen Bot am Starten gehindert hat.',
+    stopStillPending: 'Diese Nachricht wartet noch. Aktualisiere das Gateway und versuche erneut, die Gruppe zu stoppen.',
     pendingApproval: '{name} bittet um Freigabe. Du entscheidest.',
     pendingRetry: 'Der Turn von {name} ist noch nicht abgeschlossen. Erneut versuchen?',
     pendingDiscard: 'Den Turn von {name} verwerfen? Bereits ausgeführte Arbeit wird nicht rückgängig gemacht.',
@@ -1525,6 +1534,7 @@ export const CANONICAL_GROUP_LOCALES = {
     stopGroup: 'Detener el grupo',
     stopWaitingTitle: '¿Detener el grupo?',
     stopWaitingDescription: 'Los mensajes en espera no recibirán respuesta, pero una respuesta que ya está en camino aún puede aparecer. Esto no soluciona el problema que impidió que un bot empezara.',
+    stopStillPending: 'Este mensaje sigue en espera. Actualiza la puerta de enlace e intenta detener el grupo otra vez.',
     pendingApproval: '{name} pide aprobación. Tú decides.',
     pendingRetry: 'El turno de {name} no ha terminado. ¿Reintentar?',
     pendingDiscard: '¿Descartar el turno de {name}? El trabajo ya realizado no se deshará.',

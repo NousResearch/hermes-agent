@@ -1,27 +1,34 @@
 name: neocore
 title: NeoCore
 repo: https://github.com/VincentPorquet777/neocore
-sha: 40c09980fd1121354bfae4be3a0a836fe64e8121
+sha: 3e3db730a87b4823849168f945b02b5480575c7d
 subdir: integrations/hermes
-version: "0.1.0"
+version: "0.2.0"
 description: >-
   Governed long-term memory provider: every turn is kept verbatim in one SQLite file per profile,
   and dated excerpts are recalled before each turn with zero model calls (BM25 plus a local
-  bge-small embedding model on CPU). Each messaging chat keeps its own memory by default, and the
-  provider adds neocore_search and neocore_forget tools. Disclosure — local only: reads and writes
-  $HERMES_HOME/neocore/ (memory.db holds each turn's user and assistant text after Hermes's and
-  NeoCore's secret scrubbing and, in shared chats, the author's display name and platform id;
-  config.json; models/). With dense_recall on (the default), the first start downloads
-  bge-small-en-v1.5-onnx-Q (three files, about 65 MB) from huggingface.co/Qdrant in a background
-  thread, and each file is refused unless its SHA-256 matches the hash pinned in neocore-memory.
-  Nothing else touches the network. One background writer thread per provider instance; no
-  subprocesses, telemetry, model calls or credentials. Subagent, cron and flush contexts never
-  write. neocore_forget deletes a message's text and keeps an audit tombstone (hash, time, reason).
+  bge-small embedding model). On a machine with an NVIDIA graphics card or Apple silicon,
+  NeoSift, NeoCore's own 32M relevance model, scores the recalled memories against the turn
+  locally and keeps only the ones that help. Each messaging chat keeps its own memory by default,
+  and the provider adds neocore_search and neocore_forget tools. Disclosure — local only: reads
+  and writes $HERMES_HOME/neocore/ (memory.db holds each turn's user and assistant text after
+  Hermes's and NeoCore's secret scrubbing and, in shared chats, the author's display name and
+  platform id; config.json; models/). With dense_recall on (the default), the first start
+  downloads bge-small-en-v1.5-onnx-Q (three files, about 65 MB) from huggingface.co/Qdrant, each
+  refused unless its SHA-256 matches the hash pinned in neocore-memory. With neosift: auto (the
+  default) and a graphics card, it installs NeoSift once in a background thread into
+  ~/.neocore/sift (or $NEOCORE_HOME/sift): a Python venv with torch (download.pytorch.org) and
+  transformers from PyPI, about 2-3 GB, plus the pinned model (about 120 MB, SHA-256 checked)
+  from the NeoCore GitHub release; it is switched on only if a speed check passes, and it runs a
+  local scoring server on 127.0.0.1:8796 that keeps nothing (if it does not answer in time the
+  turn gets unfiltered recall). neosift: off disables all of this. No telemetry, model API calls
+  or credentials. Subagent, cron and flush contexts never write. neocore_forget deletes a
+  message's text and keeps an audit tombstone (hash, time, reason).
 maintainer: VincentPorquet777
 tier: community
 category: memory
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/VincentPorquet777/neocore/blob/40c09980fd1121354bfae4be3a0a836fe64e8121/integrations/hermes/README.md
+docs_url: https://github.com/VincentPorquet777/neocore/blob/3e3db730a87b4823849168f945b02b5480575c7d/integrations/hermes/README.md
 capabilities:
   provides_tools: []
   provides_hooks: []

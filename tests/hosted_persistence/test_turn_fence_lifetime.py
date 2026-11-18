@@ -25,12 +25,14 @@ from hermes_scope import Fence, current_turn
 from persistence import FenceStale, SessionId, TurnFenceSuperseded
 from persistence.conversation.messages import NewMessage
 from persistence.conversation.sessions import NewSession
-from persistence.conversation.usage import TokenCounts, UsageDelta
+from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
 from persistence.core.fences import writing_turn
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_holder import raw_holder
 
 S = SessionId("fence-life")
+_ROUTES = (BillingRoute(model="model-a", billing_provider="prov-a", billing_base_url="https://a.example", billing_mode="plan"),
+           BillingRoute(model="model-b", billing_provider="prov-b", billing_base_url="https://b.example", billing_mode="included"))
 
 
 def _elsewhere(fn, *args, **kwargs):
@@ -172,6 +174,26 @@ def test_writes_outside_a_claimed_turn_or_to_another_store_are_unaffected(claime
     finally:
         other.close()
     assert _contents(store) == ["outside", "no store named", "owner"]
+    # Queued usage from two writer threads outside any turn, and from the owner's own work in a turn's context, after
+    # the lease moved: every delta lands and both flushes report success (local usage accounting is unchanged).
+    before = store.sessions.get(S).input_tokens
+    results: list = []
+
+    def caller(lane: int, fenced_context: bool) -> None:
+        with (_turn(store, row) if fenced_context else nullcontext()), (owner_operation() if fenced_context else nullcontext()):
+            for i in range(10):
+                route = _ROUTES[0] if i % 2 == lane else _ROUTES[1]  # nothing merges: every delta is its own write
+                store.usage.queue_usage(S, UsageDelta(tokens=TokenCounts(input_tokens=1), api_call_count=1, route=route))
+            results.append(store.usage.flush_usage())
+
+    threads = [threading.Thread(target=_elsewhere, args=(caller, lane, lane == 1)) for lane in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert results == [True, True]
+    assert store.usage.flush_usage()
+    assert store.sessions.get(S).input_tokens == before + 20
 
 
 def test_a_transient_io_error_in_the_fence_check_is_retried_like_begin(claimed, monkeypatch):

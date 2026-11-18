@@ -176,11 +176,9 @@ from tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The working directory, files and exported variables persist between calls: activate a virtualenv or export once, not before every command.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and exported variables persist between calls: activate a virtualenv or export once. Output is truncated with the full text saved to a file; never pipe it through head/tail.
 
-Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
-
-Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Health-check a background server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd."""
+Foreground (default) returns when the command finishes; to wait a fixed time, run the wait in the foreground, never background a sleep or polling loop. Health-check background servers separately; manage jobs with process_manage. After a cd, trust the result's "cwd" instead of repeating the cd. Do not use it to read, search or edit files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked."""
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}

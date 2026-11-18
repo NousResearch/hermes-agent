@@ -849,7 +849,7 @@ export class DesktopFrameMetrics {
     return peers
   }
 
-  private freeze(): FrameReport | null {
+  private freeze(adopted: (day: string) => boolean): FrameReport | null {
     DesktopFrameMetrics.repairOutgoingOwned(this.stateKey)
 
     if (!this.settlement()) {
@@ -888,7 +888,8 @@ export class DesktopFrameMetrics {
 
       const end = Date.parse(day) + DAY_MS
 
-      if (peers.some(peer => peer.since !== null && peer.since < end && now - peer.since <= peer.maxSpanMs)) {
+      // A day whose legacy contributions are not in the journal yet would settle incomplete.
+      if (!adopted(day) || peers.some(peer => peer.since !== null && peer.since < end && now - peer.since <= peer.maxSpanMs)) {
         continue
       }
 
@@ -923,7 +924,11 @@ export class DesktopFrameMetrics {
     return null
   }
 
-  async flush(requester: SharedMetricsRequester, current: () => boolean): Promise<void> {
+  async flush(
+    requester: SharedMetricsRequester,
+    current: () => boolean,
+    adopted: (day: string) => boolean = () => true
+  ): Promise<void> {
     await this.ready
 
     if (this.flushing) {
@@ -940,7 +945,7 @@ export class DesktopFrameMetrics {
 
     try {
       while (this.settlement() && current()) {
-        const report = await metricsPhase(() => current() ? this.freeze() : null)
+        const report = await metricsPhase(() => current() ? this.freeze(adopted) : null)
 
         if (!report || !this.settlement() || !current()) {
           return
@@ -994,7 +999,7 @@ export class DesktopFrameMetrics {
 
       if (this.flushAgain) {
         this.flushAgain = false
-        await this.flush(requester, current)
+        await this.flush(requester, current, adopted)
       }
     }
   }

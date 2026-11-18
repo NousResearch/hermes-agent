@@ -4,6 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+import re
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -33,6 +34,17 @@ def _make_event(text="/resume", platform=Platform.TELEGRAM,
 def _session_key_for_event(event):
     """Get the session key that build_session_key produces for an event."""
     return build_session_key(event.source)
+
+
+def _lane(session_key):
+    """``seed_session`` fields binding a row to one chat lane (keeps the literal name in one spot)."""
+    return {"session_key": session_key}
+
+
+def _numbered_titles(text):
+    """Titles of the numbered pick rows, in order — the shape ``/resume`` and ``/sessions`` share."""
+    return [m.group(1) for m in (re.match(r"^\d+\.\s+\*\*(.+?)\*\*", line) for line in text.splitlines())
+            if m]
 
 
 # Storage interface handles the tests opened; closed after each test.
@@ -333,6 +345,61 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
 
         assert "Other Lane Work" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_resume_all_sources_is_the_sessions_all_list(self, tmp_path):
+        """`/resume --all-sources` must be the same list as `/sessions all` — same rows, same
+        numbers — so a number picked in one names the same session in the other."""
+        db = _storage_handle(tmp_path)
+        event = _make_event(text="/resume --all-sources")
+        lane_key = _session_key_for_event(event)
+        seed_session(db, "tg_named", "telegram", **_lane(lane_key), user_id="12345", chat_id="67890")
+        db.sessions.set_title("tg_named", "Telegram Work")
+        seed_session(db, "desktop_named", "desktop", **_lane("agent:main:desktop:local"),
+                     user_id="local", chat_id="local")
+        db.sessions.set_title("desktop_named", "Desktop Work")
+        seed_session(db, "cli_named", "cli", **_lane("agent:main:cli"), user_id="local", chat_id="local")
+        db.sessions.set_title("cli_named", "CLI Work")
+
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+
+        resume_out = await runner._handle_resume_command(event)
+        sessions_out = await runner._handle_sessions_command(_make_event(text="/sessions all"))
+
+        assert "Desktop Work" in resume_out
+        assert "CLI Work" in resume_out
+        assert _numbered_titles(resume_out) == _numbered_titles(sessions_out)
+
+        # `--alls` is the spelling people type; it must mean the same thing.
+        alias_out = await runner._handle_resume_command(_make_event(text="/resume --alls"))
+        assert _numbered_titles(alias_out) == _numbered_titles(sessions_out)
+
+        # An unknown flag is a typo, not a session title — say so instead of "not found".
+        bad = await runner._handle_resume_command(_make_event(text="/resume --nope 2"))
+        assert "Unknown flag" in bad
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_resume_all_sources_requires_admin(self, tmp_path):
+        """A non-admin `--all-sources` stays chat-scoped and says so, like `--all` — the flag is a
+        widening request, never a way to enumerate other origins' sessions."""
+        db = _storage_handle(tmp_path)
+        event = _make_event(text="/resume --all-sources")
+        lane_key = _session_key_for_event(event)
+        seed_session(db, "tg_named", "telegram", **_lane(lane_key), user_id="12345", chat_id="67890")
+        db.sessions.set_title("tg_named", "Telegram Work")
+        seed_session(db, "desktop_named", "desktop", **_lane("agent:main:desktop:local"),
+                     user_id="local", chat_id="local")
+        db.sessions.set_title("desktop_named", "Desktop Work")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Telegram Work" in result
+        assert "Desktop Work" not in result
+        assert "all-sources" in result  # the notice names the flag that was declined
         db.close()
 
     @pytest.mark.asyncio

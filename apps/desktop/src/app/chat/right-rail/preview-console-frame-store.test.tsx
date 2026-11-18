@@ -59,6 +59,7 @@ describe('preview console frame coalescing', () => {
     vi.stubGlobal('cancelAnimationFrame', () => {})
     const consoleState = createPreviewConsoleState()
     consoleState.append(entry(1))
+
     const view = render(
       <I18nProvider configClient={null} initialLocale="en">
         <PreviewConsolePanel

@@ -407,13 +407,9 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     if legacy or not base_index_recognised(cursor):
         return
     stale_view = base_source_view_is_stale(cursor)
-    if not stale_view and not _fts_index_is_misaligned_source(cursor):
-        if not _retired_tool_high_water_reinstated(cursor):
-            return
-        logger.warning(
-            "A Hermes release older than FTS storage v%d reopened %s and reinstated its tool-row high-water "
-            "triggers; rebuilding messages_fts from the aligned projection so deletes stop leaving index tokens behind.",
-            FTS_STORAGE_VERSION, holder.db_path)
+    reopened_by_older_release = not stale_view and not _fts_index_is_misaligned_source(cursor)
+    if reopened_by_older_release and not _retired_tool_high_water_reinstated(cursor):
+        return
     has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
     def do_align() -> None:
@@ -443,7 +439,15 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
                         cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
         cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
+        if reopened_by_older_release and has_messages:
+            # Logged once the rebuild has run (a deferred open logs the deferral instead). Each open of
+            # this store by a pre-v3 release re-stamps the marker, so a downgrade-and-back pays this again.
+            logger.warning(
+                "A Hermes release older than FTS storage v%d had reopened %s and reinstated triggers that leave "
+                "index tokens behind on delete; rebuilt messages_fts from the aligned projection in %.1fs. "
+                "Downgrading is unsupported.", FTS_STORAGE_VERSION, holder.db_path, time.monotonic() - started)
 
+    started = time.monotonic()
     if not has_messages:
         # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
         cursor.execute("SAVEPOINT fts_align_empty")

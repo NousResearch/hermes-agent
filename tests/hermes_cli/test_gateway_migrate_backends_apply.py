@@ -712,3 +712,46 @@ def test_an_existing_refused_webapp_public_url_blocks_the_move(home, capsys, man
     assert any("After the move the gateway would still refuse the Webapp: webapp.public_url" in b
                for b in out["plan"]["blockers"])
     assert "user:pw" not in json.dumps(out)
+
+
+# --- review round 1: the public URL the old backend really serves (env first, resolved config)
+
+
+def _url_plan(home, capsys, monkeypatch, config, env=None, managed=None, shell=None):
+    from hermes_cli import managed_scope
+    monkeypatch.setattr(managed_scope, "load_managed_config", lambda **_: dict(managed or {}))
+    for k, v in (shell or {}).items():
+        monkeypatch.setenv(k, v)
+    (home / "config.yaml").write_text("model:\n  default: fake-model\n" + config, encoding="utf-8")
+    host = FakeHost(home, host="127.0.0.1")
+    base = host.process_env(_BACKEND_PID)
+    host.process_env = lambda pid: {**base, **(env or {})}
+    return _plan(host, capsys)
+
+
+def test_the_backends_environment_url_wins_over_config_like_the_backend(home, capsys, monkeypatch):
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: https://old.example\n",
+                          env={"HERMES_DASHBOARD_PUBLIC_URL": "https://live.example"})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://live.example"
+
+
+def test_a_blank_environment_url_falls_back_to_config_like_the_backend(home, capsys, monkeypatch):
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: https://cfg.example\n",
+                          env={"HERMES_DASHBOARD_PUBLIC_URL": "  "})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://cfg.example"
+
+
+def test_the_config_url_is_read_after_var_expansion(home, capsys, monkeypatch):
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: ${DASH_URL}\n",
+                          shell={"DASH_URL": "https://expanded.example"})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://expanded.example"
+
+
+def test_the_config_url_includes_the_managed_overlay(home, capsys, monkeypatch):
+    code, out = _url_plan(home, capsys, monkeypatch, "",
+                          managed={"dashboard": {"public_url": "https://managed.example"}})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://managed.example"

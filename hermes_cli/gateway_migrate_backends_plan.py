@@ -387,7 +387,7 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
         if item is not None and item.pid and (turns := host.running_turns(item.pid, host.start_time(item.pid))):
             why += f" {turns} turn(s) are running on it now: stopping it interrupts them, so let them finish first."
         return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home),
-                                        public_url=resolve_public_url(host.read_config(), env))
+                                        public_url=resolve_public_url(host.effective_config(), env))
     keys: list[str] = []
     env: dict = {}
     if item is not None and item.supervisor == "systemd" and item.unit and item.scope:
@@ -396,7 +396,7 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
         keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
     elif item is not None and item.pid:
         env = host.process_env(item.pid) or {}
-    url = resolve_public_url(host.read_config(), env)
+    url = resolve_public_url(host.effective_config(), env)
     return item, why, manual_steps(old_host, old_port, item, env_keys=keys, home=str(host.home), public_url=url)
 
 
@@ -474,19 +474,23 @@ def _credentials(plan: BackendPlan, env: Optional[dict], host, cfg: dict) -> Non
 
 
 def resolve_public_url(cfg: dict, env: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
-    """``(url, problem)``: the old backend's public URL (``dashboard.public_url``, else the launcher's
-    ``HERMES_DASHBOARD_PUBLIC_URL``) when ``webapp.public_url`` is unset and the gateway accepts it
-    (``webapp.public_url`` rules), else ``problem`` names where the refused value is. The refused value is
-    never returned: it may carry ``user:password@``."""
+    """``(url, problem)``: the public URL the old backend serves, picked the way the backend picks it
+    (``dashboard_auth.prefix.resolve_public_url``: its ``HERMES_DASHBOARD_PUBLIC_URL`` first, blank or
+    malformed counting as unset, then ``dashboard.public_url`` of the resolved *cfg*), when
+    ``webapp.public_url`` is unset and the gateway accepts it (``webapp.public_url`` rules). Otherwise
+    ``problem`` names where the refused value is. The refused value is never returned: it may carry
+    ``user:password@``."""
     from gateway.webapp_listener import _public_url as accepted_public_url
+    from hermes_cli.dashboard_auth.prefix import _normalise_public_url
     webapp, dashboard = cfg.get("webapp"), cfg.get("dashboard")
     if isinstance(webapp, dict) and webapp.get("public_url"):
         return None, None
+    from_env = _normalise_public_url((env or {}).get("HERMES_DASHBOARD_PUBLIC_URL"))
     configured = dashboard.get("public_url") if isinstance(dashboard, dict) else None
-    source = "dashboard.public_url" if configured else "HERMES_DASHBOARD_PUBLIC_URL"
-    value = configured or (env or {}).get("HERMES_DASHBOARD_PUBLIC_URL") or None
+    value = from_env or _normalise_public_url(str(configured) if configured else "")
     if not value:
         return None, None
+    source = "HERMES_DASHBOARD_PUBLIC_URL" if from_env else "dashboard.public_url"
     url = accepted_public_url(value)
     return (url, None) if url else (None, f"The old backend's public URL ({source})")
 
@@ -623,7 +627,7 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
     plan.item = plan.candidates[0]
     plan.rec, env = _record(plan.item, host)
     plan.old_argv = _argv_of(plan.item, host)
-    cfg = host.read_config()
+    cfg = host.effective_config()
     _address(plan, host, keep_webapp)
     if plan.old_host is None:
         return plan

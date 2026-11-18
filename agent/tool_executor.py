@@ -869,7 +869,9 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # one run).
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
-_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
+# ``a2a_call`` waits on its per-peer HTTP socket timeout and returns structured recovery metadata
+# (``task_id`` / ``context_id``) when the socket wait expires.
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections", "a2a_call"})
 
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:

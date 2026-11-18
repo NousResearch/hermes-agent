@@ -92,6 +92,52 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     return base_url.rstrip("/")
 
 
+_GET_TASK_PROBE_TIMEOUT_S = 30
+
+
+class _A2ACallTimeout(Exception):
+    """Raised when synchronous SendMessage times out after minting task/context ids."""
+
+    def __init__(self, agent_label: str, task_id: str, context_id: str, timeout: int, reply: Optional[str] = None) -> None:
+        self.agent_label = agent_label
+        self.task_id = task_id
+        self.context_id = context_id
+        self.timeout = timeout
+        self.reply_if_already_available = reply
+        super().__init__(f"timed out after {timeout}s (task_id={task_id}, context_id={context_id})")
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or (
+        isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+    )
+
+
+def _probe_task_once(
+    rpc_url: str, headers: dict, task_id: str, timeout: int, tenant: str = ""
+) -> Optional[str]:
+    """Single bounded GetTask probe (<=30s) on timeout to recover an already-persisted reply."""
+    params: dict[str, Any] = {"id": task_id}
+    if tenant:
+        params["tenant"] = tenant
+    probe_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "GetTask", "params": params}
+    probe_timeout = max(1, min(int(timeout), _GET_TASK_PROBE_TIMEOUT_S))
+    try:
+        resp = _http_post_json(rpc_url, probe_body, headers, probe_timeout)
+    except Exception:
+        return None
+    if not isinstance(resp, dict) or "error" in resp:
+        return None
+    payload = protocol.unwrap_send_message_response(resp.get("result"))
+    if not isinstance(payload, dict):
+        return None
+    state = (payload.get("status") or {}).get("state", "")
+    has_artifacts = bool(payload.get("artifacts"))
+    if not has_artifacts and state not in protocol.TERMINAL_STATES and state != protocol.STATE_INPUT_REQUIRED:
+        return None
+    return _reply_text_from_result(payload) or None
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
     ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
@@ -111,10 +157,19 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
     if tenant:
         rpc_body["params"]["tenant"] = tenant
+    rpc_url = _rpc_url(base_url, card)
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    try:
+        resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
+    except Exception as e:
+        if _is_timeout_error(e):
+            reply = _probe_task_once(rpc_url, headers, rpc_body["id"], timeout, tenant=tenant)
+            if reply:
+                protocol.persist_message(ctx, "agent", reply, rpc_body["id"])
+            raise _A2ACallTimeout(agent_label, rpc_body["id"], ctx, timeout, reply=reply) from e
+        raise
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
@@ -182,6 +237,17 @@ def a2a_call(args: dict, **_: Any) -> str:
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+    except _A2ACallTimeout as e:
+        return json.dumps({
+            "status": "accepted",
+            "task_id": e.task_id,
+            "context_id": e.context_id,
+            "reply_if_already_available": e.reply_if_already_available,
+            "hint": (
+                f"Call to '{agent}' timed out after {e.timeout}s; "
+                f"fetch later via GetTask (task_id '{e.task_id}') or a2a_history (context_id '{e.context_id}')."
+            ),
+        })
     except urllib.error.HTTPError as e:
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:

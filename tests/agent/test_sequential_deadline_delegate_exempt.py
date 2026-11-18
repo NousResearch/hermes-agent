@@ -3,5 +3,10 @@ sit under the generic sequential-call deadline: with it, every batch longer than
 while its children kept running as orphans and the orchestrator polled transcripts for hours."""
 from agent import tool_executor as te
 
+
 def test_delegate_task_is_exempt_from_the_sequential_deadline():
     assert "delegate_task" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
+
+
+def test_a2a_call_is_exempt_from_the_sequential_deadline():
+    assert "a2a_call" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS

@@ -568,6 +568,112 @@ class TestClientTools:
         assert "input-required" in out
         assert "ctx-q" in out
 
+    def test_call_timeout_returns_accepted_json_and_probes_get_task_once(self, monkeypatch, tmp_path):
+        """Timeout must mint & preserve task/context ids, run one bounded GetTask probe, and never retry."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            tools,
+            "_load_config",
+            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999", "timeout": 120}}},
+        )
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        calls = []
+
+        def fake_post(url, body, headers, timeout):
+            calls.append((body["method"], body, timeout))
+            if body["method"] == "SendMessage":
+                raise urllib.error.URLError(TimeoutError("timed out"))
+            assert body["method"] == "GetTask"
+            assert timeout == 30
+            ctx = calls[0][1]["params"]["message"]["contextId"]
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task(body["params"]["id"], ctx, protocol.STATE_WORKING, ""),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "long running analysis"})
+
+        assert [c[0] for c in calls] == ["SendMessage", "GetTask"]
+        send_body, probe_body = calls[0][1], calls[1][1]
+        assert probe_body["params"]["id"] == send_body["id"]
+
+        data = json.loads(out)
+        assert data["status"] == "accepted"
+        assert data["task_id"] == send_body["id"]
+        assert data["context_id"] == send_body["params"]["message"]["contextId"]
+        assert data["reply_if_already_available"] is None
+        assert "GetTask" in data["hint"]
+        assert "a2a_history" in data["hint"]
+        assert data["task_id"] in data["hint"]
+        assert data["context_id"] in data["hint"]
+
+    def test_call_timeout_recovers_persisted_reply_from_single_get_task_probe(self, monkeypatch, tmp_path):
+        """When the peer finished before GetTask runs, the single probe returns & persists the reply."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            tools,
+            "_load_config",
+            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999", "timeout": 15}}},
+        )
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        calls = []
+
+        def fake_post(url, body, headers, timeout):
+            calls.append((body["method"], body, timeout))
+            if body["method"] == "SendMessage":
+                raise TimeoutError("socket read timed out")
+            assert timeout == 15
+            ctx = calls[0][1]["params"]["message"]["contextId"]
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task(
+                    body["params"]["id"],
+                    ctx,
+                    protocol.STATE_COMPLETED,
+                    "recovered final answer",
+                ),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "compute result"})
+
+        assert [c[0] for c in calls] == ["SendMessage", "GetTask"]
+        data = json.loads(out)
+        assert data["status"] == "accepted"
+        assert data["task_id"] == calls[0][1]["id"]
+        assert data["reply_if_already_available"] == "recovered final answer"
+        convo = protocol.load_conversation(data["context_id"])
+        assert any(m.get("role") == "agent" and m.get("text") == "recovered final answer" for m in convo)
+
+    def test_call_timeout_probe_failure_still_returns_structured_accepted(self, monkeypatch, tmp_path):
+        """Even if the single GetTask probe itself fails, a2a_call still returns task/context ids without retrying."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            tools,
+            "_load_config",
+            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999", "timeout": 10}}},
+        )
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        calls = []
+
+        def fake_post(url, body, headers, timeout):
+            calls.append(body["method"])
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "compute result"})
+
+        assert calls == ["SendMessage", "GetTask"]
+        data = json.loads(out)
+        assert data["status"] == "accepted"
+        assert data["task_id"]
+        assert data["context_id"]
+        assert data["reply_if_already_available"] is None
+
     def test_rpc_url_prefers_supported_interfaces(self):
         card = {
             "url": "http://legacy:1/",

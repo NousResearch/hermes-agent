@@ -64,7 +64,9 @@ def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path):
     assert "entries" not in shown  # the model reads the table; only a cell gets the dicts
 
     entries = _cell("ls", "read_file", path=str(root))["entries"]
-    assert [(e["name"], e["type"], e["size"]) for e in entries] == [("sub", "dir", None), ("data.json", "file", 3)]
+    sub_size = (root / "sub").lstat().st_size
+    assert [(e["name"], e["type"], e["size"]) for e in entries] == [("sub", "dir", sub_size), ("data.json", "file", 3)]
+    assert rows[0].split()[0] == str(sub_size)  # a dir shows its size like ls -la, never a "-"
 
     big = tmp_path / "big"
     big.mkdir()

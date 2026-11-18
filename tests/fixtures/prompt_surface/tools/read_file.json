@@ -15,7 +15,7 @@
         "type": "integer"
       },
       "path": {
-        "description": "Path to the file to read (absolute, relative, or ~/path)",
+        "description": "File to read, or a directory to list with each entry's type and size (absolute, relative, or ~/path)",
         "type": "string"
       }
     },

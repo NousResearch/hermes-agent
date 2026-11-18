@@ -404,10 +404,15 @@ def _port_bind_conflict(host: str, port: int) -> bool:
 
     ``port == 0`` (ephemeral) never conflicts, so it is skipped. Any probe
     error other than address-in-use returns ``False`` so uvicorn surfaces it
-    with its normal diagnostics (bad host, EACCES, …).
+    with its normal diagnostics (bad host, EACCES, …). After a backend
+    migration retired the old backend, this home's gateway on *port* is a
+    conflict whatever the OS would allow (``web_server_port_holder``).
     """
     if not port:
         return False
+    from hermes_cli.web_server_port_holder import gateway_port_after_migration
+    if gateway_port_after_migration(port) is not None:
+        return True
     import socket as _socket
 
     family = _socket.AF_INET6 if ":" in host else _socket.AF_INET
@@ -462,10 +467,13 @@ def _report_port_in_use(host: str, port: int, *, headless: Optional[bool] = None
     retry never frees the port, so a supervisor should stop. Anything else keeps the generic
     hint and :data:`PORT_IN_USE_EXIT_CODE`."""
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
-    from hermes_cli.web_server_port_holder import describe_gateway_holder, gateway_holding_port
+    from hermes_cli.web_server_port_holder import (
+        describe_gateway_holder, gateway_holding_port, gateway_port_after_migration,
+    )
 
     _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
-    holder = gateway_holding_port(port, host=host)
+    # After a backend migration the gateway on *port* is the holder for any address of that port.
+    holder = gateway_holding_port(port, host=host) or gateway_port_after_migration(port)
     if holder is not None:
         print("\n".join(describe_gateway_holder(holder, host, port, headless=headless)), flush=True)
         return GATEWAY_FATAL_CONFIG_EXIT_CODE

@@ -161,6 +161,20 @@ def gateway_holding_port(port: int, home: Optional[Path] = None, *,
     return running_gateway(home, port=port, host=host) if port else None
 
 
+def gateway_port_after_migration(port: int, home: Optional[Path] = None) -> Optional[GatewayHolder]:
+    """This home's gateway on *port* when a backend migration retired the old backend here, else None.
+
+    Whether a second bind on the gateway's port fails is the OS's call: Linux refuses ``127.0.0.1:P``
+    beside a wildcard listener, macOS accepts the more specific address (and so would split loopback
+    clients from everyone else), and another address of the same port binds anywhere. After a migration
+    the old command must not become a second session owner beside the gateway on its port, so the bind
+    probe alone does not decide. Without a migration this returns None and nothing changes."""
+    from hermes_cli.backend_migration_marker import backend_retired_by_migration
+    if not port or not backend_retired_by_migration(home):
+        return None
+    return gateway_holding_port(port, home)
+
+
 def _listener_serves_webapp(holder: GatewayHolder) -> bool:
     """The Webapp's listener is up: serving, or up with its bundle not built yet (the gateway reports
     that as ``unavailable`` but keeps the address)."""

@@ -6348,6 +6348,13 @@ export interface GroupsChangedPayload {
   broadcast_id?: string | null
   [key: string]: unknown
 }
+/** Authoritative result of a sidebar pin mutation; every connected client adopts it. */
+export interface SessionPinnedChangedPayload {
+  session_id: string
+  profile: string
+  pinned: boolean
+  revision: number
+}
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
 // ── Client→server methods ──
@@ -7457,6 +7464,8 @@ export interface BackendGatewayEventMap {
   'session.control.update': SessionControlUpdatePayload
   /** Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate. */
   'session.info': SessionLiveInfo
+  /** A sidebar pin/unpin committed; adopt this server value without another list request. */
+  'session.pinned_changed': SessionPinnedChangedPayload
   /** The backend reclaimed a live session out from under its clients. */
   'session.reclaimed': SessionReclaimedPayload
   /** Deferred resume hydration progress. */
@@ -7568,6 +7577,7 @@ export const GATEWAY_EVENT_TYPES = [
   'review.summary',
   'session.control.update',
   'session.info',
+  'session.pinned_changed',
   'session.reclaimed',
   'session.resume_progress',
   'session.title',

@@ -653,6 +653,11 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Server-side revision counter for this row. Used by the pin-sync module
+   *  to fence writes: a PATCH carrying `expected_revision` is rejected with
+   *  409 when the server row has moved past it, letting the client re-pull
+   *  and adopt the authoritative value instead of resurrecting a stale pin. */
+  runtime_revision?: number
   /** Registry connection that owns this row when it came from a CONNECTED
    *  non-primary gateway (Electron's unified-list splice, #88880). Absent for
    *  rows served by the primary/local backend. Opens must route through the

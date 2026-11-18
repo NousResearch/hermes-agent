@@ -62,6 +62,9 @@ def emitted_event_names() -> set[str]:
         names.update(_LITERAL_EMIT.findall(text))
         names.update(_LITERAL_FRAME.findall(text))
         names.update(_SIDE_AGENT.findall(text))
+    # The web-server session mutation handler broadcasts session.pinned_changed.
+    for src in (REPO / current_path("hermes_cli")).glob("web_server_sessions.py"):
+        names.update(_LITERAL_EMIT.findall(_read(src)))
     from tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS
     from tui_gateway.change_watcher import _CHANGE_WATCHES
 

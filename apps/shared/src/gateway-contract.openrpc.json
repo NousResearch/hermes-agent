@@ -40059,6 +40059,36 @@
         "title": "SessionParams",
         "type": "object"
       },
+      "SessionPinnedChangedPayload": {
+        "additionalProperties": false,
+        "description": "Authoritative result of a sidebar pin mutation; every connected client adopts it.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "profile",
+          "pinned",
+          "revision"
+        ],
+        "title": "SessionPinnedChangedPayload",
+        "type": "object"
+      },
       "SessionPruneParams": {
         "additionalProperties": false,
         "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
@@ -52150,6 +52180,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.pinned_changed",
+      "summary": "A sidebar pin/unpin committed; adopt this server value without another list request.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionPinnedChangedPayload"
           }
         }
       ]

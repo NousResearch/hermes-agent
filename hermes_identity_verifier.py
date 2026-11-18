@@ -9,8 +9,8 @@ the frame's whole turn, and every body field that asserts a tenant, principal, o
 administration right or agent is ignored — only the verified claim counts.
 
 The verifier, not core, owns the signature scheme and the keys: core defines this interface and
-resolves a plugin by explicit name (``hosted.identity_verifier``), the same shape
-``hermes_state_port`` uses for session storage — bundled ``plugins/identity_verifier/<name>/``
+resolves a plugin by explicit name (``hosted.identity_verifier``) through the shared named-provider
+seam (``plugins.plugin_loader.load_named``) — bundled ``plugins/identity_verifier/<name>/``
 first, then ``$HERMES_HOME/plugins/<name>/``, in-process only (a user provider is refused under
 ``plugins.isolation: host``), and a name that is missing, refused or unavailable is an error,
 never a fallback to another verifier. A local install consults no verifier at all.

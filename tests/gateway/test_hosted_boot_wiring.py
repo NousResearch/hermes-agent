@@ -127,8 +127,8 @@ async def test_a_hosted_refusal_stops_the_boot_before_anything_serves(_startup, 
 
 def _hosted_boot_reaching_storage(monkeypatch, persistence):
     """A hosted deployment whose every other boot condition passes, so the boot's verdict is the
-    storage check's: the import-free preflight and the loaded-code checks are the subject of
-    their own tests, so they are no-ops here; ``_require_hosted_backends`` and the real
+    storage check's: the import-free preflight, the loaded-code checks and the verifier's
+    resolution are the subject of their own tests, so they are no-ops here; ``_require_hosted_backends`` and the real
     ``persistence_assembly.require_hosted_persistence`` it calls are not."""
     import hermes_yaml as yaml
 
@@ -146,6 +146,11 @@ def _hosted_boot_reaching_storage(monkeypatch, persistence):
     monkeypatch.setattr(hosted_mode, "_refuse_non_sandbox_terminal", lambda config: None)
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
     monkeypatch.setattr(hosted_mode, "finish_hosted_boot", lambda: None)
+    # The identity verifier's resolution has its own tests: here it resolves to an available stub.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("hermes_identity_verifier.resolve_identity_verifier",
+                        lambda name: SimpleNamespace(is_available=lambda: True))
 
 
 @pytest.mark.asyncio

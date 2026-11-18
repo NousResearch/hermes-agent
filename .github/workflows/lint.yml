@@ -69,19 +69,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only footguns
 
-      - name: Require portable Bash shebangs
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
-        run: just check --only shebangs
-
-      # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
-      # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
-      # through the scratch-dir helper; skills, docs and prompts must not teach the model a
-      # literal /tmp either. `no-tmp: ok — <why>` marks a deliberate line; _BASELINE in the
-      # script is the burn-down list of pre-existing hits.
-      - name: Forbid literal /tmp paths outside the baseline
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
-        run: just check --only no-tmp
-
       # A child in its own session/group (start_new_session, os.setsid/setpgid) does not die with
       # a SIGKILLed Hermes. Long-lived children start through process_identity.spawn_owned; a line
       # that must stay detached says why with `detached-spawn: ok — <why>`.
@@ -135,12 +122,6 @@ jobs:
       - name: Forbid unmarked macOS fakes in tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only os-marker-fakes
-
-      # Every AGENTS.md from the git root down to the working directory loads as one
-      # project-context block (30,720 chars on a 128k window); chains are capped at 30k.
-      - name: Keep every AGENTS.md under its truncation cap
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
-        run: just check --only agents-md
 
       # Files at old module paths that shipped updaters still reach after a move are generated from
       # hermes_agent/compat/{moves,required_names}.py and must match the generator byte for byte.

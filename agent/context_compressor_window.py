@@ -4,15 +4,43 @@ summary into that window."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
 
+logger = logging.getLogger(__name__)
+
 
 def _restart_probe_extra() -> int:
     from agent.context_compressor import _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
     return _RESTART_HANDOFF_PROBE_EXTRA_MESSAGES
+
+
+#: Tools whose pruned form is a correctness filter, not a size cut: a clarify one-liner keeps only real user
+#: answers and drops legacy headless notices ("... using your own judgment") the summarizer would read as one.
+_SUMMARY_KEEPS_PRUNED_FORM = frozenset({"clarify"})
+
+
+def summary_view(
+    plan: list[dict[str, Any]], originals: list[dict[str, Any]], start: int, end: int,
+) -> list[dict[str, Any]]:
+    """*plan* with the window ``[start, end)`` put back to the original tool results: what the summarizer
+    reads. The pre-summary prune shapes only the boundaries and the kept head/tail; results being summarized
+    are never pointers, stubs or dedup references (the summarizer's own input budget bounds them)."""
+    if len(originals) != len(plan):
+        return plan
+    from agent.context_compressor import _tool_calls_by_id
+
+    calls = _tool_calls_by_id(originals)
+    window = [
+        original if (original.get("role") == "tool"
+                     and calls.get(original.get("tool_call_id") or "", ("",))[0] not in _SUMMARY_KEEPS_PRUNED_FORM)
+        else pruned
+        for pruned, original in zip(plan[start:end], originals[start:end])
+    ]
+    return [*plan[:start], *window, *plan[end:]]
 
 
 class CompactionWindowMixin:
@@ -78,13 +106,81 @@ class CompactionWindowMixin:
 
     def _plan_compaction_window(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int, int]:
         """Phases 1-2 of compress(): ``(working, pruned_count, compress_start, compress_end)``.
-        ``working`` is a pruned copy without blank echoes; the boundaries index into it."""
+        ``working`` is a pruned copy without blank echoes; the boundaries index into it. Write-free: the
+        prune only decides where the window ends. The summarizer reads the window's ORIGINAL rows
+        (:func:`summary_view`), and archiving happens once, after a summary exists (:meth:`_commit_window`)."""
         working, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )
-        working = self._drop_blank_echoes(working)
-        compress_start, compress_end = self._compress_window(working)
-        return working, pruned_count, compress_start, compress_end
+        plan = self._drop_blank_echoes(working)
+        compress_start, compress_end = self._compress_window(plan)
+        return plan, pruned_count, compress_start, compress_end
+
+    def _commit_window(
+        self, originals: list[dict[str, Any]], plan: list[dict[str, Any]], pruned_count: int, start: int, end: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """After the summary: save, byte-exact, every result *plan* shortens and every whole result the summary
+        replaces, each stub naming its file, and (lean mode) demote the stale tail results the same way. Returns
+        ``(rows to assemble from, pruned_count)``. *originals* is the unpruned transcript without blank echoes
+        (index-aligned with *plan*). The boundaries stay as summarized even when a failed write keeps an
+        original whole."""
+        from tools.tool_result_storage import archive_compaction_drops
+
+        session_id = getattr(self, "_session_id", "") or ""
+        if pruned_count:
+            plan, _written, kept = archive_compaction_drops(originals, plan, session_id)
+            pruned_count -= kept
+        if start < end:
+            plan, offloaded, _written, failed = self._offload_window_results(plan, start, end)
+            if failed:
+                # The summary (which read the original) still replaces the window; refusing would re-pay the
+                # summary on every later turn while the disk stays full. Say so: no byte-exact copy exists.
+                logger.warning("compaction: %d summarized tool result(s) could not be archived (disk full or "
+                               "read-only home); only the summary and the session store keep them", failed)
+            pruned_count += offloaded
+        if getattr(self, "tail_mode", "lean") == "lean":
+            plan = self._demote_stale_tail_tools(plan, end)
+        return plan, pruned_count
+
+    def _assemble_with_archive_list(
+        self, messages: list[dict[str, Any]], start: int, end: int, scan: Any, summary: str,
+    ) -> list[dict[str, Any]]:
+        """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
+        nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
+        (it read the originals), and the list keeps the model's path back and the reference the retention
+        sweep keeps the file for."""
+        from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
+
+        named = pruned_archive_refs(messages)
+        kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
+        return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
+
+    def _offload_window_results(
+        self, plan: list[dict[str, Any]], start: int, end: int,
+    ) -> tuple[list[dict[str, Any]], int, list[str], int]:
+        """The tool results the summary replaced, saved after it was generated: each one the prune left whole
+        inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
+        open the exact output. Local backend only. Returns ``(rows, stubbed, written paths, failed writes)``."""
+        from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
+        from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals, has_archive_pointer
+
+        if not _backend_reads_host_files():
+            return plan, 0, [], 0
+        demoted, calls = list(plan), _tool_calls_by_id(plan)
+        changed = 0
+        for i in range(start, end):
+            if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
+                changed += 1
+            elif (plan[i].get("role") == "tool" and plan[i].get("content")
+                  and (isinstance(plan[i]["content"], (list, dict))
+                       or isinstance(plan[i]["content"], str) and not has_archive_pointer(plan[i]["content"]))):
+                # The summary replaces small strings too, even when the size prune left them alone.
+                demoted[i] = _rewritten(plan[i], "[Tool output archived]")
+                changed += 1
+        if not changed:
+            return plan, 0, [], 0
+        rows, written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")
+        return rows, changed - kept, written, kept
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,

@@ -846,7 +846,8 @@ class GatewaySessionCommandsMixin:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _run_manual_compression(self, source, session_entry, history: list, request) -> str:
+    async def _run_manual_compression(self, source, session_entry, history: list, request, *,
+                                      trigger: Optional[str] = None) -> str:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, render_compress_result
@@ -881,7 +882,7 @@ class GatewaySessionCommandsMixin:
             # executor hop would drop, failing aux-client credential resolution closed.
             result = await self._run_in_executor_with_context(
                 lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True,
-                                     task_id=session_entry.session_id or "default"))
+                                     task_id=session_entry.session_id or "default", trigger=trigger))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":
@@ -902,6 +903,7 @@ class GatewaySessionCommandsMixin:
         """Build the throwaway AIAgent that performs a manual /compress rewrite of *session_id*."""
         from run_agent import AIAgent
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from agent.prompt_caching import refresh_auto_cache_ttl
         from hermes_cli.config import load_config as _load_cfg
         from utils import is_truthy_value as _is_truthy
 
@@ -932,6 +934,7 @@ class GatewaySessionCommandsMixin:
         # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what
         # keeps the reduced-toolset build out of the session row (#122822).
         tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
+        refresh_auto_cache_ttl(tmp_agent)
         tmp_agent._print_fn = lambda *a, **kw: None
         # close() must not end the rotated session the gateway entry now points at.
         tmp_agent._end_session_on_close = False

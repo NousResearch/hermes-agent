@@ -491,6 +491,21 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
     return [dict(row) for row in holder._read_retrying_ioerr(read)]
 
 
+def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:
+    """``_enter_fts_fail_open`` for a search read. A read-only handle cannot write the stale
+    breadcrumb, so it stops using the indexes for its own lifetime and leaves the persistent
+    detach and the rebuild to the next writable open."""
+    if not holder.read_only:
+        return _enter_fts_fail_open(holder, exc)
+    if not holder._fts_enabled or not is_fts_scoped_corruption_error(exc):
+        return False
+    logger.warning("FTS search on a read-only handle hit index damage (%s); answering from canonical rows "
+                   "until a writable open repairs the index.", exc)
+    holder._fts_stale = True
+    holder._fts_enabled = holder._trigram_available = False
+    return True
+
+
 def _match_rows(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, *, fail_open: Optional[str] = None,
                 operational_debug: Optional[str] = None, **kwargs) -> Optional[list[dict[str, Any]]]:
     """Run one MATCH against *table*; ``None`` when the query cannot execute (tokenizer /
@@ -504,7 +519,7 @@ def _match_rows(holder: StoreHolder, table: str, match_query: str, order_by_sql:
             logger.debug(operational_debug, exc_info=True)
         return None
     except sqlite3.DatabaseError as exc:
-        if fail_open is None or not _enter_fts_fail_open(holder, exc):
+        if fail_open is None or not _detach_fts_for_search(holder, exc):
             raise
         logger.warning(
             "%s FTS search hit a corruption error (%s); detached FTS and falling back to canonical LIKE.",
@@ -691,7 +706,7 @@ def _search_messages_impl(
             # MATCH read, the same class the write path handles (#66296). OperationalError (query
             # syntax) is a subclass caught above; this arm is the corruption parent. The existing
             # stale-open/repair paths retain rebuild ownership.
-            if not _enter_fts_fail_open(holder, exc):
+            if not _detach_fts_for_search(holder, exc):
                 raise
             matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
     detached_before_retries = holder._fts_stale

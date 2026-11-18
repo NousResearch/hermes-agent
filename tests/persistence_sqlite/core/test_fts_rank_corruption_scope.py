@@ -89,6 +89,34 @@ def test_ranked_search_over_orphaned_posting_stays_index_scoped(tmp_path):
         holder.close()
 
 
+def test_ranked_search_on_a_read_only_handle_answers_from_canonical_rows(tmp_path):
+    """A read-only handle cannot persist the detach; it still answers this and later searches by LIKE."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        append_message(holder, "s", role="user", content="orphanword survives in this row")
+        _orphan_posting(holder, "s")
+    finally:
+        holder.close()
+
+    reader = StoreHolder(db_path=path, read_only=True)
+    try:
+        assert reader._fts_enabled
+        for _ in range(2):
+            rows = search_messages(reader, "orphanword")
+            assert any("survives" in (row.get("snippet") or "") for row in rows)
+        assert storage_state(path) == STORAGE_OK
+    finally:
+        reader.close()
+
+    writer = _open(path)
+    try:
+        assert writer.get_meta("fts_stale") is None  # nothing was persisted by the reader
+    finally:
+        writer.close()
+
+
 def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
     path = tmp_path / "state.db"
     holder = _open(path)

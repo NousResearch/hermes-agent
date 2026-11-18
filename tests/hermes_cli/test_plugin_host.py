@@ -43,6 +43,21 @@ def register(ctx):
     ctx.register_platform("x", "X", adapter_factory=lambda cfg: None, check_fn=lambda: True)
 '''
 
+INJECT_PLUGIN = '''
+import json
+
+def register(ctx):
+    def inject(args, **kw):
+        return json.dumps({"ok": ctx.inject_message(
+            "from the host", session_key="agent:main:telegram:dm:42",
+            expected_session_id="session-42")})
+
+    ctx.register_tool(name="hostprobe_inject", toolset="hostprobe",
+        schema={"name": "hostprobe_inject", "description": "d",
+                "parameters": {"type": "object", "properties": {}}},
+        handler=inject)
+'''
+
 
 def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
     home = tmp_path / ".hermes"
@@ -100,6 +115,36 @@ def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash
                 break
             time.sleep(0.2)
         assert json.loads(result)["pid"] not in {host_pid, os.getpid()}
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")  # a child host process; the ctx call crosses the JSON wire
+def test_hosted_plugin_inject_message_forwards_expected_session_id(tmp_path, monkeypatch):
+    from tools.registry import registry
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {"injectprobe": INJECT_PLUGIN})
+    config_path = home / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["plugins"]["entries"] = {"injectprobe": {"allow_gateway_injection": True}}
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    manager = PluginManager()
+    seen = {}
+
+    def inject(**kwargs):
+        seen.update(kwargs)
+        return True
+
+    manager.set_gateway_message_injector(object(), inject)
+    manager.discover_and_load()
+    try:
+        assert manager._plugins["injectprobe"].error is None
+        result = json.loads(registry.dispatch("hostprobe_inject", {}, scope=manager.scope_key))
+        assert result == {"ok": True}
+        assert seen["session_key"] == "agent:main:telegram:dm:42"
+        assert seen["expected_session_id"] == "session-42"
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

@@ -4,6 +4,8 @@ from queue import SimpleQueue
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import hermes_yaml as yaml
 
 import hermes_cli.plugins as plugins_mod
@@ -191,6 +193,60 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
         content="[system] wake up",
         plugin_id="notify-plugin",
     )
+
+
+def test_expected_session_id_is_forwarded_with_the_session_key(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message(
+        "pinned", session_key="agent:main:telegram:dm:42",
+        expected_session_id="session-42") is True
+
+    injector.assert_called_once_with(
+        session_key="agent:main:telegram:dm:42",
+        expected_session_id="session-42",
+        plugin_home=manager.home_path,
+        content="pinned",
+        plugin_id="notify-plugin",
+    )
+
+
+@pytest.mark.parametrize("expected", ["", "   ", 42, object()])
+def test_expected_session_id_rejects_blank_or_non_string_values(tmp_path, monkeypatch, expected):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message(
+        "pinned", session_key="agent:main:telegram:dm:42",
+        expected_session_id=expected) is False
+    injector.assert_not_called()
+
+
+def test_expected_session_id_requires_a_session_key_pin(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message("pinned", expected_session_id="session-42") is False
+    assert context.inject_message("pinned", origin=ORIGIN, expected_session_id="session-42") is False
+    injector.assert_not_called()
+
+
+def test_expected_session_id_is_not_silently_ignored_by_a_tui_host(tmp_path, monkeypatch):
+    _write_plugin_config(tmp_path, monkeypatch, {"allow_gateway_injection": True})
+    context, manager = _context()
+    tui = MagicMock(return_value=True)
+    manager.set_tui_message_injector(object(), tui)
+
+    assert context.inject_message(
+        "pinned", session_key="ses_tui", expected_session_id="session-42") is False
+    tui.assert_not_called()
 
 
 def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch):

@@ -155,16 +155,28 @@ class GatewayPluginInjectionMixin:
         self, *, content: str, plugin_id: str, session_key: Optional[str] = None,
         origin: Optional[Mapping[str, Any]] = None, plugin_home: Optional[Path] = None,
         keyless: bool = False, calling_session_key: str = "",
+        expected_session_id: Optional[str] = None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe).
 
         With ``origin`` the profile, origin and adapter checks run here, synchronously, so the plugin
         gets ``False`` for a chat it may not start; authorization is rechecked at dispatch. ``keyless``
-        (neither given) picks the target here too (``gateway/plugin_keyless_inject.py``)."""
+        (neither given) picks the target here too (``gateway/plugin_keyless_inject.py``).
+        ``expected_session_id`` pins the physical conversation and requires a keyed session."""
         from gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
+
+        if expected_session_id is not None:
+            if not isinstance(expected_session_id, str) or not expected_session_id.strip():
+                logger.warning("Plugin message injection refused: expected_session_id must be a "
+                               "non-empty string")
+                return False
+            if keyless or origin is not None or not session_key:
+                logger.warning("Plugin message injection refused: expected_session_id requires "
+                               "session_key (not origin or a key-less target)")
+                return False
 
         if keyless:
             from gateway import plugin_keyless_inject
@@ -185,9 +197,11 @@ class GatewayPluginInjectionMixin:
             if not self._plugin_session_key_admissible(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
                 return False
             target = f"session={session_key}"
-            coro = self._dispatch_plugin_message_injection(
-                session_key=session_key, content=content, plugin_id=plugin_id, plugin_home=plugin_home,
-            )
+            dispatch_kwargs = {"session_key": session_key, "content": content, "plugin_id": plugin_id,
+                               "plugin_home": plugin_home}
+            if expected_session_id is not None:
+                dispatch_kwargs["expected_session_id"] = expected_session_id
+            coro = self._dispatch_plugin_message_injection(**dispatch_kwargs)
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -310,9 +324,15 @@ class GatewayPluginInjectionMixin:
 
     async def _dispatch_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str, plugin_home: Optional[Path] = None,
+        expected_session_id: Optional[str] = None,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         if not self._plugin_injection_accepting():
+            return False
+        if expected_session_id is not None and (
+                not isinstance(expected_session_id, str) or not expected_session_id.strip()):
+            logger.warning("Plugin message injection refused: expected_session_id must be a "
+                           "non-empty string")
             return False
         entry = await self.async_session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None or not self._plugin_injection_accepting():
@@ -321,8 +341,10 @@ class GatewayPluginInjectionMixin:
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
         if source.platform == Platform.LOCAL:
-            return await self._dispatch_plugin_local_injection(source, entry, content=content, plugin_id=plugin_id,
-                                                               plugin_home=plugin_home)
+            local_kwargs = {"content": content, "plugin_id": plugin_id, "plugin_home": plugin_home}
+            if expected_session_id is not None:
+                local_kwargs["expected_session_id"] = expected_session_id
+            return await self._dispatch_plugin_local_injection(source, entry, **local_kwargs)
         if not self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
             return False
         if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=f"session={session_key}"):
@@ -337,18 +359,27 @@ class GatewayPluginInjectionMixin:
             allow_gateway_control=False,
             metadata={
                 "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
-                "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
+                "gateway_session_key": session_key,
+                "gateway_session_id": (expected_session_id if expected_session_id is not None
+                                       else entry.session_id),
                 "gateway_session_strict": True,
             },
         )
         # Both lanes below answer through this adapter: warm a Relay's egress routing first.
         prime_revived_egress(adapter, event)
         async with self._plugin_injection_scope(source):
-            admitted = await self._admit_plugin_injection(
-                adapter, source, session_key=session_key, session_id=entry.session_id,
-                content=content, plugin_id=plugin_id)
+            admit_kwargs = {"session_key": session_key, "session_id": entry.session_id,
+                            "content": content, "plugin_id": plugin_id}
+            if expected_session_id is not None:
+                admit_kwargs["expected_session_id"] = expected_session_id
+            admitted = await self._admit_plugin_injection(adapter, source, **admit_kwargs)
             if admitted is not None:
                 return admitted
+            if expected_session_id is not None:
+                # Without the authority FIFO there is no admission-time fence to honor the pin.
+                logger.warning("Plugin message injection refused: expected_session_id needs a live "
+                               "session authority (plugin=%s session=%s)", plugin_id, session_key)
+                return False
             await adapter.handle_message(event)
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
@@ -357,7 +388,8 @@ class GatewayPluginInjectionMixin:
         return True
 
     async def _dispatch_plugin_local_injection(self, source: SessionSource, entry, *, content: str,
-                                               plugin_id: str, plugin_home: Optional[Path]) -> bool:
+                                               plugin_id: str, plugin_home: Optional[Path],
+                                               expected_session_id: Optional[str] = None) -> bool:
         """A local (CLI/TUI/Desktop) session has no messaging adapter or chat allowlist: the plugin
         turn is committed to its FIFO on the live session's own source and adapter, as a bot delivery
         is, only when the plugin's own profile's authority holds the session (checked before entering
@@ -366,9 +398,12 @@ class GatewayPluginInjectionMixin:
         if live is None:
             return False
         async with self._plugin_injection_scope(source, plugin_home):
+            admit_kwargs = {"session_key": entry.session_key, "session_id": entry.session_id,
+                            "content": content, "plugin_id": plugin_id}
+            if expected_session_id is not None:
+                admit_kwargs["expected_session_id"] = expected_session_id
             return bool(await self._admit_plugin_injection(
-                self._adapter_for_source(live.source), live.source, session_key=entry.session_key,
-                session_id=entry.session_id, content=content, plugin_id=plugin_id))
+                self._adapter_for_source(live.source), live.source, **admit_kwargs))
 
     def _served_profile_for_home(self, home: Optional[Path]) -> Optional[str]:
         """Name of the profile this gateway serves at *home* (a plugin manager's immutable home), or
@@ -488,13 +523,20 @@ class GatewayPluginInjectionMixin:
 
     async def _admit_plugin_injection(
         self, adapter, source: SessionSource, *, session_key: str, session_id: str, content: str,
-        plugin_id: str,
+        plugin_id: str, expected_session_id: Optional[str] = None,
     ) -> Optional[bool]:
         """Under a session authority, commit the plugin turn into the session's durable FIFO as a
         trusted producer admission (the heartbeat / completion seam) instead of running it on the
         in-process lane beside an admitted turn. ``None`` means no authority serves this scope and
-        the caller keeps the standalone adapter path; a refused admission is ``False``, logged."""
+        the caller keeps the standalone adapter path; a refused admission is ``False``, logged.
+        ``expected_session_id`` is the caller's pin; the admission rechecks it against the route's
+        lineage, so compression may continue the conversation but /new or /reset cannot move it."""
         from gateway.session_authorities import active_authority
+        if expected_session_id is not None and (
+                not isinstance(expected_session_id, str) or not expected_session_id.strip()):
+            logger.warning("Plugin message injection refused: expected_session_id must be a "
+                           "non-empty string")
+            return False
         authority = active_authority(self)
         if authority is None:
             return None
@@ -502,10 +544,11 @@ class GatewayPluginInjectionMixin:
         import uuid
         from persistence.core.errors import AuthorityRefusal
         identity = json.dumps([_PLUGIN_PRODUCER, plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
+        pinned_session_id = expected_session_id if expected_session_id is not None else session_id
         event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False, message_id=identity,
-            metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
+            metadata={"gateway_session_key": session_key, "gateway_session_id": pinned_session_id},
         )
         try:
             await authority.admit_automation(adapter, event, identity)

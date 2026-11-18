@@ -338,6 +338,47 @@ async def test_base_adapter_rejects_derived_session_mismatch():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_forwards_expected_session_id_to_the_keyed_dispatch():
+    runner = _runner(_entry())
+    loop = asyncio.get_running_loop()
+    runner._gateway_loop = loop
+    runner._dispatch_plugin_message_injection = AsyncMock(return_value=True)
+
+    assert runner._schedule_plugin_message_injection(
+        session_key="agent:main:telegram:dm:42",
+        content="wake up",
+        plugin_id="notify-plugin",
+        expected_session_id="session-42",
+    ) is True
+    await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+
+    runner._dispatch_plugin_message_injection.assert_awaited_once_with(
+        session_key="agent:main:telegram:dm:42",
+        content="wake up",
+        plugin_id="notify-plugin",
+        plugin_home=None,
+        expected_session_id="session-42",
+    )
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"expected_session_id": "session-42"},
+    {"origin": {"platform": "telegram", "chat_id": "42"}, "expected_session_id": "session-42"},
+    {"keyless": True, "expected_session_id": "session-42"},
+    {"session_key": "agent:main:telegram:dm:42", "expected_session_id": ""},
+    {"session_key": "agent:main:telegram:dm:42", "expected_session_id": 42},
+])
+def test_scheduler_rejects_expected_session_id_without_a_valid_keyed_pin(kwargs):
+    runner = _runner(_entry())
+    runner._gateway_loop = MagicMock(is_closed=MagicMock(return_value=False))
+    runner._dispatch_plugin_message_injection = AsyncMock(return_value=True)
+
+    assert runner._schedule_plugin_message_injection(
+        content="wake up", plugin_id="notify-plugin", **kwargs) is False
+    runner._dispatch_plugin_message_injection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_logs_async_failure_without_callback_error():
     runner = _runner(_entry())
     loop = asyncio.get_running_loop()
@@ -454,6 +495,168 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+async def _real_owner(tmp_path, monkeypatch, human_message_id="human-1"):
+    """A real SessionAuthority/Discord session with one committed human turn, ready for dispatch."""
+    from tests.gateway.test_automation_notification_category import _native_owner
+
+    runner, authority, adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, human_message_id)
+    runner._running = True
+    runner._draining = False
+    runner._background_tasks = set()
+    return runner, authority, adapter, source, metadata
+
+
+async def _admit_human_after_reset(runner, authority, source):
+    from tests.gateway.test_automation_compression_media import _admit_human
+    await _admit_human(runner, authority, MessageEvent(
+        text="after reset", source=source, message_id="after-reset"))
+
+
+@pytest.mark.asyncio
+async def test_expected_session_id_holds_the_current_session_through_dispatch(tmp_path, monkeypatch):
+    """The optional pin is forwarded through the host lookup and commits to the current conversation."""
+    runner, authority, _adapter, _source, metadata = await _real_owner(tmp_path, monkeypatch)
+    route, session_id = metadata["gateway_session_key"], metadata["gateway_session_id"]
+    try:
+        assert await runner._dispatch_plugin_message_injection(
+            session_key=route, content="expected-session success", plugin_id="probe",
+            expected_session_id=session_id) is True
+        rows = authority.persistence.admissions.list(
+            session_id=authority.logical_owner(session_id), pending_only=False)
+        assert any((r.payload.get("native_text_v1") or {}).get("automation") for r in rows)
+    finally:
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_plugin_context_expected_session_id_reaches_the_durable_fifo(tmp_path, monkeypatch):
+    """The public plugin call carries the pin through the scheduler into the same admission."""
+    from pathlib import Path
+
+    runner, authority, _adapter, _source, metadata = await _real_owner(tmp_path, monkeypatch)
+    runner._gateway_loop = asyncio.get_running_loop()
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="probe", key="probe", source="user"), manager)
+    (Path(manager.home_path) / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"entries": {"probe": {"allow_gateway_injection": True}}}}),
+        encoding="utf-8",
+    )
+    try:
+        with patch("hermes_cli.plugins._plugin_manager", manager):
+            runner._install_plugin_message_injector()
+            try:
+                assert context.inject_message(
+                    "through the public API",
+                    session_key=metadata["gateway_session_key"],
+                    expected_session_id=metadata["gateway_session_id"],
+                ) is True
+                await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+            finally:
+                runner._clear_plugin_message_injector()
+        rows = authority.persistence.admissions.list(
+            session_id=authority.logical_owner(metadata["gateway_session_id"]), pending_only=False)
+        assert any((r.payload.get("native_text_v1") or {}).get("automation") for r in rows)
+    finally:
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_expected_session_id_allows_a_compression_continuation(tmp_path, monkeypatch):
+    """The pin is a conversation pin, not an exact transcript id: compression keeps the same
+    conversation and must keep accepting the pre-compression session id."""
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_messages
+
+    runner, authority, _adapter, _source, metadata = await _real_owner(tmp_path, monkeypatch)
+    route, root = metadata["gateway_session_key"], metadata["gateway_session_id"]
+    tip = root + "-compressed"
+    try:
+        seed_messages(authority.persistence, root, {"role": "user", "content": "human"})
+        authority.persistence.lineage.publish_compression_child(
+            root, CompressionChild(session_id=tip, source="discord"),
+            [NewMessage.from_live({"role": "user", "content": "summary"})],
+            require_compression_lease=False)
+        assert runner.session_store.advance_compression_session(route, root, tip) is not None
+        assert await runner._dispatch_plugin_message_injection(
+            session_key=route, content="compression stays", plugin_id="probe",
+            expected_session_id=root) is True
+    finally:
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_expected_session_id_refuses_a_reset_before_the_host_lookup(tmp_path, monkeypatch):
+    """The caller's pin survives until dispatch: a /new between the call and the lookup must not
+    redirect the plugin turn into the fresh conversation, even after that conversation has a human turn."""
+    runner, authority, _adapter, source, metadata = await _real_owner(tmp_path, monkeypatch)
+    route, session_id = metadata["gateway_session_key"], metadata["gateway_session_id"]
+    real_lookup = runner.async_session_store.lookup_by_session_key
+    lookup_started, release_lookup = asyncio.Event(), asyncio.Event()
+
+    async def delayed_lookup(key):
+        lookup_started.set()
+        await release_lookup.wait()
+        return await real_lookup(key)
+
+    monkeypatch.setattr(runner.async_session_store, "lookup_by_session_key", delayed_lookup)
+    dispatch = asyncio.create_task(runner._dispatch_plugin_message_injection(
+        session_key=route, content="must not jump", plugin_id="probe",
+        expected_session_id=session_id))
+    try:
+        await lookup_started.wait()
+        fresh = runner.session_store.reset_session(route)
+        assert fresh is not None
+        await _admit_human_after_reset(runner, authority, source)
+        release_lookup.set()
+        assert await dispatch is False
+        assert not any((r.payload.get("native_text_v1") or {}).get("automation")
+                       for r in authority.persistence.admissions.list(
+                           session_id=authority.logical_owner(session_id), pending_only=False))
+        # The fresh conversation is admissible on its own pin: the refusal above is the stale pin,
+        # not a missing provenance/route.
+        assert await runner._dispatch_plugin_message_injection(
+            session_key=route, content="fresh is allowed", plugin_id="probe",
+            expected_session_id=fresh.session_id) is True
+    finally:
+        release_lookup.set()
+        await asyncio.gather(dispatch, return_exceptions=True)
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_expected_session_id_fails_closed_without_a_session_authority():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(_entry(), adapter)
+
+    assert await runner._dispatch_plugin_message_injection(
+        session_key="agent:main:telegram:dm:42", content="pinned", plugin_id="notify-plugin",
+        expected_session_id="session-42") is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expected_session_id_refuses_a_reset_between_lookup_and_admission(tmp_path, monkeypatch):
+    """The existing admission fence is rechecked after the lookup: the pinned session may compress,
+    but a /new committed before the FIFO write refuses the injection."""
+    runner, authority, _adapter, _source, metadata = await _real_owner(tmp_path, monkeypatch)
+    route, session_id = metadata["gateway_session_key"], metadata["gateway_session_id"]
+    real_admit = authority.admit_automation
+
+    async def reset_then_admit(*args, **kwargs):
+        runner.session_store.reset_session(route)
+        return await real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(authority, "admit_automation", reset_then_admit)
+    try:
+        assert await runner._dispatch_plugin_message_injection(
+            session_key=route, content="must not commit", plugin_id="probe",
+            expected_session_id=session_id) is False
+    finally:
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

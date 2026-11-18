@@ -111,7 +111,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Add slash commands | `ctx.register_command(name, handler, description)` — adds `/name` in CLI and gateway sessions |
 | Dispatch tools from commands | `ctx.dispatch_tool(name, args)` — invokes a registered tool with parent-agent context auto-wired |
 | Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
-| Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=...)` - see [Injecting Messages](#injecting-messages) |
+| Inject messages | `ctx.inject_message(content, role="user", session_key=... \| origin=..., expected_session_id=...)` - see [Injecting Messages](#injecting-messages) |
 | Post and edit a status message | `handle = ctx.post_message(text)`, then `handle.edit(text)` — see [Posting a live message](#posting-a-live-message) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | `ctx.register_skill(name, path)` — namespaced as `plugin:skill`, loaded via `skill_view("plugin:skill")` |
@@ -1093,7 +1093,7 @@ ctx.inject_message(
 )
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None, expected_session_id: str | None = None) -> bool`
 
 Plugins run in the gateway on every local surface (classic CLI, TUI and Desktop), so an injected message never cancels work in progress:
 
@@ -1113,6 +1113,7 @@ The chosen session receives the text as a queued input, the same way as a keyed 
 In gateway mode with a key:
 
 - `session_key` must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- `expected_session_id` optionally pins the physical conversation that was current when the plugin called: pass the session ID from trusted runtime context. It requires `session_key` (and is refused with `origin` or a key-less call). The gateway rechecks it at admission against the route's conversation lineage, so compression may continue the same conversation but `/new` or `/reset` cannot move the injection into the fresh one. Invalid, blank, or non-string values return `False`. Only the messaging gateway honors it; the TUI/desktop host refuses it rather than ignoring it. Omit it to keep the routing-key-only behavior.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
 - The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.

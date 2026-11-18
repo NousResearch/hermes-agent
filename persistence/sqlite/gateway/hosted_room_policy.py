@@ -35,7 +35,9 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # ``turn.deferred`` receipts come from explicit user retries, not from the configured reply
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
-_TRANSCRIPT_SCHEMA_VERSION = 6  # Rebuild watermarks and active anchors for log-backed file delivery.
+# Released v5 readers rebuild only markers below five. A negative format identifier
+# also makes v6 replay if v5 rewrites the projection during a rollback.
+_TRANSCRIPT_SCHEMA_VERSION = -6
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
@@ -343,7 +345,7 @@ def _ensure_cursor_and_transcript(conn: sqlite3.Connection, room_id: str) -> int
             "through_seq"])
     transcript_state = conn.execute(
         "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
-    if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
+    if transcript_state is None or int(transcript_state["schema_version"]) != _TRANSCRIPT_SCHEMA_VERSION:
         # Rebuild derived history without rewriting admissions or the room log.
         for table in ("hosted_room_policy_events", "hosted_room_policy_threads",
                       "hosted_room_policy_watermarks", "hosted_room_policy_transcript"):

@@ -192,3 +192,19 @@ def test_upgrade_preserves_an_already_admitted_frozen_turn(tmp_path, monkeypatch
     assert log(store) == history
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks WHERE room_id='upgrade-room'").fetchone()[0] == 1
+
+
+def test_older_checkpoint_either_has_the_route_or_replays_the_log(tmp_path, store):
+    rooms.create_room(store, placement="profile", room_id="upgrade-room", name="Upgrade", authority_gateway_id="home",
+                      members=[{"member_id": p, "profile": p, "handle": p} for p in PROFILES])
+    append(store, "source", "message.user", {"text": "Who can help?", "thread_id": "thread"})
+    append(store, "route", "room.routed", {"thread_id": "thread", "discussion_event_id": "source",
+                                           "member_ids": ["writer"]}, "gateway")
+    snapshot = HostedRoomPolicyCheckpoint(store, placement="profile").snapshot(room_id="upgrade-room", latest_seq=2)
+    assert [e["event_id"] for e in snapshot.events] == ["source", "route"]
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        version, = conn.execute("SELECT schema_version FROM hosted_room_policy_transcript_state").fetchone()
+        cached = [json.loads(row[0])["event_id"] for row in conn.execute(
+            "SELECT event_json FROM hosted_room_policy_events ORDER BY seq")]
+    # The released v5 reader replays versions below five and otherwise trusts its active rows.
+    assert version < 5 or cached == ["source", "route"]

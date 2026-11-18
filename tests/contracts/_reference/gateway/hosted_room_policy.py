@@ -26,7 +26,9 @@ __all__ = ["InMemoryHostedRoomPolicyRepository"]
 MAX_ACTIVE_POLICY_EVENTS = 64
 # Retry receipts (``turn.deferred``) are bounded apart from the discussion's other events.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
-_TRANSCRIPT_SCHEMA_VERSION = 6
+# Released v5 readers rebuild only markers below five. A negative format identifier
+# also makes v6 replay if v5 rewrites the projection during a rollback.
+_TRANSCRIPT_SCHEMA_VERSION = -6
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = frozenset({*_TERMINAL_KINDS, "message.member", "room.assignment", "room.routed", "room.continued"})
@@ -214,7 +216,7 @@ def _ensure_cursor_and_transcript(tables: HostedTables, room_id: str) -> int:
     _require_room(tables, room_id)
     cursor = tables["hosted_room_policy_cursors"].setdefault(room_id, {"room_id": room_id, "through_seq": 0, "stopped_through_seq": 0, "updated_at": 0})
     state = tables["hosted_room_policy_transcript_state"].get(room_id)
-    if state is None or int(state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
+    if state is None or int(state["schema_version"]) != _TRANSCRIPT_SCHEMA_VERSION:
         for name in _DERIVED_TABLES:
             tables[name].pop(room_id, None)
         cursor.update(through_seq=0, stopped_through_seq=0)

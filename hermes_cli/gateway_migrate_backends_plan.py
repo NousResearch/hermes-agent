@@ -950,7 +950,8 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     plan.bundle_missing = host.bundle_missing()
     if plan.rec["supervisor"] == "systemd" and _own_cgroup_inside(plan):
         plan.blockers.append(f"This command runs inside {plan.rec['unit']} itself, so stopping that unit would end "
-                             f"the run. Run it from a terminal that is not part of that unit.")
+                             f"the run. Run it from a terminal that is not part of that unit, or re-run with "
+                             f"--detach.")
     return plan
 
 
@@ -1017,7 +1018,7 @@ def _plan_body(plan: BackendPlan) -> list[str]:
     if plan.shows_steps:
         steps = [s["title"] for s in plan.step_titles() if s["name"] != "preflight"]
         lines += ["", "  Steps:", *[f"    {n}. {s}" for n, s in enumerate(steps, 1)]]
-    lines += ["  This version only prints the plan: it changes nothing.",
+    lines += ["  Any failure after step 1 undoes what was changed and verifies the old backend answers again.",
               "  After a move, clients notice: one re-sign-in (new cookies); the browser gets the Webapp instead of the old "
               "dashboard UI; old-protocol WebSocket clients and loopback page-token clients stop working."]
     return lines

@@ -457,7 +457,7 @@ hermes gateway migrate --backends --dry-run --json   # the same report as JSON
 
 For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
 label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
-`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet; when one of them
+`HERMES_HOME` it serves, and its ownership. The report itself changes nothing; when one of them
 serves this home, the report ends with the command that shows the plan for moving it (see
 [Planning a move to the gateway](#planning-a-move-to-the-gateway-dry-run)). The report never
 stops, restarts or kills anything, never edits or writes a service file, unit, plist or ledger, and opens no network
@@ -526,6 +526,72 @@ matches, or a matching entry may not be what started it, the steps say so and as
 steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry
 aside before the gateway is installed; they run as typed in PowerShell or Command Prompt. On macOS a
 LaunchAgent is planned like a systemd user unit.
+
+### Moving a dashboard backend to the gateway {#moving-a-dashboard-backend-to-the-gateway}
+
+```bash
+hermes gateway migrate --backends --apply --dry-run   # the plan and every blocker; changes nothing
+hermes gateway migrate --backends --apply [--yes]     # migrate (asks on a terminal without --yes)
+hermes gateway migrate --backends --restore [--yes]   # undo a finished migration
+hermes gateway migrate --backends --status [--json]   # state of the last or ongoing run
+```
+
+`--apply` serves the old backend's address from the gateway's Webapp instead: same bind (loopback stays
+loopback, a wildcard stays a wildcard, one IP address stays that address, plus the loopback socket the
+gateway adds beside it for this machine's own clients) and same port. Before changing anything it records
+the current state in `backend_migration.json` in the home, with mode-600 backups of `config.yaml` and
+`.env`. Then it builds the Webapp bundle if it is missing, copies `HERMES_DASHBOARD_*` sign-in settings
+that exist only in the old unit's environment into `.env` (names are printed, values never), installs the
+gateway as a user service (`hermes gateway install`, which also tries to enable lingering; a launchd agent
+on macOS), stops and disables the old unit (its file is kept; a drop-in `UNIT.d/hermes-migrated.conf` with
+`RestartPreventExitStatus=78` makes a later manual start exit once and stay down), starts the gateway and
+checks every address it now listens on within 90 seconds: `/api/status` answers from the gateway and the
+Webapp page itself is served. A backend you started by hand is stopped by its recorded process ID (only
+while that ID is still the same process); there is nothing to disable. Any failure puts back what the run
+had changed, and only that: the files, the gateway service exactly as it was, and the old unit with the
+same enablement it had (`enabled`, `enabled-runtime`, `static` or `disabled`). The old backend is started
+again only once the gateway no longer listens on its address; otherwise the run stops with manual steps
+(exit 5) rather than run two backends side by side. A run that was interrupted (killed, or the machine
+went down) is rolled back by the next `--apply` or `--restore` before anything else; it never continues
+forward. `--restore` also removes the drop-in.
+
+Nothing is changed (exit 3) while another old backend for this home is running, enabled or (on macOS)
+loaded (also when `--address` picks one of them), when the old unit's enablement could not be put back
+exactly (for example a `linked` unit), when a hand-started backend's start time cannot be read, when
+`config.yaml` or `.env` is a symbolic link (replace it with a copy first), when the command runs inside
+the gateway's own service (also for the rollback of an unfinished run), or when `backend_migration.json`
+exists but cannot be read (move it aside after checking the home by hand; the backups are in
+`backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never
+replaces its backups; `--restore` undoes it. When the rollback cannot prove the gateway is off the old
+address, the old backend stays down and the run ends with manual steps (exit 5).
+On macOS the old backend's LaunchAgent is booted out, disabled (`launchctl disable gui/UID/LABEL`) and its plist
+renamed to `.disabled`, so neither the next login nor a later `launchctl bootstrap` starts it; `--restore` and a
+rollback undo all three.
+After a migration, `hermes update` leaves the stopped old backend stopped, and a second `--apply` says
+there is nothing to migrate.
+
+Options: `--address HOST:PORT` (pick one backend when several serve this home), `--keep-webapp-address`
+(retire the old backend but keep an already enabled Webapp where it is), `--force-interrupt` (proceed
+although a turn is running on the old backend; without it a running turn blocks), `--detach` (with
+`--apply` or `--restore`: run in the background, outside the caller's systemd unit; a background run that
+refuses to start is reported by `--status` as `failed` with the reason; exit 7, JSON `"outcome":
+"unconfirmed"`, when it was started but did not confirm in time), `--expect TOKEN` (change nothing, exit 8
+with JSON `"plan_changed": true`, unless the backend found now is the one whose `expect_token` the
+`--dry-run --json` plan printed; a unit restarting keeps its token, a hand-started process replaced on the
+same port does not), `--json`. Commands the engine prints
+name this profile (`hermes -p NAME ...`). `--status --json`
+includes `manual_steps` when a rollback was incomplete. Only one run (apply, restore, or the rollback of an
+interrupted run) can change a home at a time: a second one started meanwhile exits 3 with "already
+running" and changes nothing; `--status` and `--dry-run` never wait for it.
+
+Exit codes: 0 done or nothing to do, 2 invalid invocation, 3 blocked (nothing changed), 4 failed and
+rolled back, 5 rollback incomplete (numbered manual steps printed), 6 this kind of backend cannot be
+migrated automatically (Nix, s6/containers, a systemd system unit, Windows; the steps are printed one
+command per line, and for a system unit only one of them, `sudo systemctl disable --now UNIT`, needs
+root). On Windows the report names the Task Scheduler task or Startup-folder entry that starts the old
+backend, and the steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set
+the entry aside before `hermes gateway install`; they run as typed in PowerShell or Command Prompt. Every
+browser signs in once more afterwards.
 
 ## `/reload` Slash Command
 

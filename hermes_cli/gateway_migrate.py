@@ -1227,7 +1227,8 @@ def _host_supports_migration() -> Optional[str]:
     return None
 
 
-_BACKEND_FLAGS = ("apply", "address", "keep_webapp_address", "force_interrupt")
+_BACKEND_FLAGS = ("apply", "restore", "status", "address", "keep_webapp_address", "force_interrupt", "detach",
+                  "expect")
 
 
 def cmd_migrate(args) -> None:
@@ -1244,7 +1245,7 @@ def cmd_migrate(args) -> None:
         print("✗ --json is only supported with --backends.", file=sys.stderr)
         sys.exit(2)
     if any(getattr(args, flag, None) for flag in _BACKEND_FLAGS):
-        print("✗ --apply and its options go with --backends.", file=sys.stderr)
+        print("✗ --apply/--restore/--status and their options go with --backends.", file=sys.stderr)
         sys.exit(2)
     reason = _host_supports_migration()
     if reason:

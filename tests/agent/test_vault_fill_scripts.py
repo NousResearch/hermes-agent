@@ -172,6 +172,7 @@ class TestReadBack:
         ("tel", "+48 600 100 200", "+48600100200"),          # the + stays where it was
         ("cc-exp", "07/29", "7/29"),                          # month 07 shown as 7: the same month
         ("cc-exp", "07/29", "0729"),                          # separator dropped, groups intact
+        ("tel", "+48 600 100 200", "(+48) 600 100 200"),      # the country code in parentheses
     ])
     def test_a_mask_that_only_reformats_digits_is_landed(self, token, value, shown):
         setup = f'stamp(add(document, "input", {{ type: "text", value: {json.dumps(shown)} }}), 0);'
@@ -186,6 +187,7 @@ class TestReadBack:
         ("cc-exp", "12/03", "1/203"),                              # same digits, other month and year
         ("cc-exp", "07/29", "07/2029"),
         ("cc-exp", "07/29", "0730"),                               # separator dropped, another year
+        ("tel", "48600100200", "(+48) 600 100 200"),               # a + the value never had
         ("tel", "user@example.com", ""),                           # not a number: exact only
         ("current-password", "12 34", "1234"),                     # passwords stay exact
         ("username", "a-b", "ab"),

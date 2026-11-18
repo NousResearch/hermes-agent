@@ -79,8 +79,16 @@ async def close_viewer_session(authority, session_id, reason):
     if is_history_mount(live):
         return  # stored history: no route, agent or delegation of its own
     from tools.async_delegation import interrupt_for_session, refuse_for_session
+    generation = live.viewer_revision
+    live.detaching += 1
+    try:
+        target = await asyncio.to_thread(_physical_target, authority, session_id)
+    finally:
+        live.detaching -= 1
+    if live.viewer_revision != generation or authority.sessions.get(session_id) is not live:
+        return
     route = live.route
-    parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
+    parents = tuple(dict.fromkeys((session_id, target)))
     refuse_for_session((authority.profile_id, session_id), session_key=route, parent_session_ids=parents)
     for parent in parents:
         interrupt_for_session(session_key=route, parent_session_id=parent, reason=f'viewer_close:{reason}')
@@ -273,9 +281,11 @@ async def settle_viewer_close(authority, session_id):
         return
     if not await _resolve_abandoned_unknown(authority, session_id, live, close):
         return  # left paused (a viewer came back, or the resolution was refused)
-    target = _physical_target(authority, session_id)
     # Every await below can let a viewer reattach (attach drops the pending close) or another
     # settler run, so the close is re-checked after each one.
+    target = await asyncio.to_thread(_physical_target, authority, session_id)
+    if not _still_pending(authority, session_id, live, close):
+        return
     if await asyncio.to_thread(_busy, authority, session_id, target):
         return  # the drain's next idle point completes it
     idle_stamp = live.event_stream.execution  # each claim stamps a new one (``_stamp_claim``)
@@ -337,7 +347,8 @@ async def _resolve_abandoned_unknown(authority, session_id, live, close):
 
 
 def _still_pending(authority, session_id, live, close):
-    return not live.subscribers and authority.pending_closes.get(session_id) is close
+    return (authority.sessions.get(session_id) is live and not live.subscribers
+            and authority.pending_closes.get(session_id) is close)
 
 
 async def _requeue_if_busy(authority, session_id, live, target, close):

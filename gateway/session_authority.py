@@ -104,7 +104,9 @@ class LiveSession:
     retire_timer: object = None
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
-    viewer_revision: int = 0  # an attach invalidates startup's prepared close, even after a live handoff
+    # An attach invalidates startup's prepared close (even after a live handoff) and cancels
+    # an older detach even if it leaves before the detach's storage read returns.
+    viewer_revision: int = 0
     # Set while a plugin's turn waits for the session's background work (run_plugin_injection
     # ``admission_turn_scope``): a person's input queued behind it sets it and ends that wait.
     background_wait: threading.Event | None = None
@@ -486,6 +488,7 @@ class SessionAuthority:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
+                    generation = live.viewer_revision
                     live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
                     try:
                         await asyncio.to_thread(release_editor_mcp, self, [session_id])
@@ -493,7 +496,8 @@ class SessionAuthority:
                         live.detaching -= 1
                     if end_reason:
                         from gateway.session_viewer_close import close_viewer_session
-                        await close_viewer_session(self, session_id, end_reason)
+                        if live.viewer_revision == generation and self.sessions.get(session_id) is live:
+                            await close_viewer_session(self, session_id, end_reason)
                         return
                     from gateway.session_acp_lifecycle import end_idle_acp_session, reopen_if_reattached
                     from gateway.session_runtime_workers import tracked_write

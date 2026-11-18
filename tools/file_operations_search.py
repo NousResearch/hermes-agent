@@ -137,7 +137,7 @@ def _bundled_rg() -> Optional[str]:
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, *, file_rows: bool = False) -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
@@ -150,7 +150,7 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
         if line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
             diagnostics.append(line)
-        elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
+        elif file_rows or line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
         else:
             diagnostics.append(line)
@@ -424,7 +424,9 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
-    diagnostics, payload = _split_tool_diagnostics(stdout)
+    # A successful -l run prints only file names, which may contain spaces.
+    diagnostics, payload = _split_tool_diagnostics(
+        stdout, file_rows=output_mode == "files_only" and result.exit_code == 0)
     if result.exit_code in _SHELL_EXEC_FAILURE_CODES:
         # The shell could not run the engine at all (126 not executable, 127 not found).
         return SearchResult(error=f"Search failed: {result.stdout.strip() or 'Search error'}",
@@ -473,7 +475,7 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                 except ValueError:
                     pass
         return SearchResult(
-            counts=counts, total_count=sum(counts.values()),
+            counts=dict(list(counts.items())[offset:]), total_count=sum(counts.values()),
             truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
             warning=warning, **skip)
     matches = []
@@ -932,12 +934,13 @@ class SearchMixin:
         rg_executable = self._resolve_command('rg')
         if not rg_executable:
             return None
+        path = self._expand_path(path)  # the same backend root the primary search used (~ included)
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         words = [self._quote_executable(rg_executable), "--hidden --no-ignore --count",
                  f"{glob_expr} {self._search_prune_glob_args()}",
                  "-e", self._escape_shell_arg(pattern, translate_path=False), "--", self._escape_native_tool_arg(path)]
         bound = 1000
-        probe = self._run_rg_bounded(words, bound, timeout=30)
+        probe = self._run_rg_bounded(words, bound, timeout=30, shell_prefix="set -o pipefail; ")
         lines = (probe.stdout or "").strip().splitlines()
         if probe.exit_code not in (0, 1) or len(lines) >= bound:
             return None

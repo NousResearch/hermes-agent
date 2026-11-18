@@ -110,6 +110,7 @@
     <h2 id="title">Updating Hermes</h2>
     <p id="line">Hermes will open once done.</p>
   </div>
+  <script id="windows-update-ui-copy" type="application/json"><!-- windows-update-ui-copy --></script>
 <script>
   /* ── Fourier Flow loader, ported verbatim from loader.tsx ─────────────── */
   const TWO_PI = Math.PI * 2
@@ -203,12 +204,24 @@
   const titleEl = document.getElementById('title')
   const lineEl = document.getElementById('line')
   const glyphEl = document.getElementById('glyph')
+  const windowsCopyJson = document.getElementById('windows-update-ui-copy').textContent.trim()
+  const windowsCopy = windowsCopyJson.startsWith('{') ? JSON.parse(windowsCopyJson) : null
+  const copy = windowsCopy?.labels
+  if (copy) {
+    document.documentElement.lang = windowsCopy.locale
+    titleEl.textContent = copy.updating
+    lineEl.textContent = copy.waiting
+    document.getElementById('loader').setAttribute('aria-label', copy.updating)
+  }
   const defaultLine = lineEl.textContent   /* what a stage-less run says */
   let settled = false
   let failures = 0
 
   const elapsedText = s =>
-    s < 60 ? `${s}s elapsed` : `${Math.floor(s / 60)}m ${s % 60}s elapsed`
+    s < 60
+      ? (copy?.seconds ?? '{0}s elapsed').replace('{0}', String(s))
+      : (copy?.minutes ?? '{0}m {1}s elapsed')
+          .replace('{0}', String(Math.floor(s / 60))).replace('{1}', String(s % 60))
 
   function settle(state) {
     settled = true
@@ -227,21 +240,25 @@
     } else if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'
-      titleEl.textContent = 'Update complete'
-      lineEl.textContent = 'Opening Hermes\u2026\nYou can close this window.'
+      titleEl.textContent = copy?.complete ?? 'Update complete'
+      lineEl.textContent = copy?.opening ?? 'Opening Hermes\u2026\nYou can close this window.'
     } else if (state.status === 'manual') {
       // Update landed but Hermes will NOT reopen itself (package skew,
       // sandbox helper, launch rejected). The orchestrator leaves this
       // window up; the message says what to do.
       settle('done')
       glyphEl.textContent = '\u2713'
-      titleEl.textContent = 'Update complete'
-      lineEl.textContent = state.message || 'Reopen Hermes to finish.'
+      titleEl.textContent = copy?.complete ?? 'Update complete'
+      lineEl.textContent = state.message || copy?.reopen || 'Reopen Hermes to finish.'
     } else if (state.status === 'error') {
       settle('error')
       glyphEl.textContent = '\u2715'
-      titleEl.textContent = 'Failed to update'
-      lineEl.innerHTML = 'Run <code>hermes debug share</code> in a terminal to send a report.'
+      titleEl.textContent = copy?.failed ?? 'Failed to update'
+      const command = document.createElement('code')
+      command.textContent = 'hermes debug share'
+      const report = copy?.report ?? 'Run hermes debug share in a terminal to send a report.'
+      const [before, after] = report.split(command.textContent)
+      lineEl.replaceChildren(...(after === undefined ? [report] : [before, command, after]))
     }
   }
 
@@ -279,8 +296,9 @@
         // honest, finite state even if the browser refuses the close request.
         settle('disconnected')
         glyphEl.textContent = '!'
-        titleEl.textContent = 'Update status unavailable'
-        lineEl.textContent = 'The progress connection was lost.\nCheck Hermes for the update result. You can close this window.'
+        titleEl.textContent = copy?.unavailable ?? 'Update status unavailable'
+        lineEl.textContent = copy?.disconnected ??
+          'The progress connection was lost.\nCheck Hermes for the update result. You can close this window.'
       }
     }
     if (!settled) setTimeout(poll, 400)

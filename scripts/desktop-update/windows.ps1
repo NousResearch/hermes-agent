@@ -27,10 +27,10 @@
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
 #     [-ProbeTimeoutSeconds <n>] launcher probe bound, default 60 (tests)
 #     [-HandoffRun <id>]    protocol 2: the run id of the Desktop's bridge claim
+#     [-UiLocale <locale>]  protocol 3: the Desktop window's display language
 #
-# hermes-handoff-protocol: 2
-# (exact line above: the Desktop reads it to learn this script speaks hand-off
-# protocol 2 -- it accepts -HandoffRun and the -MarkerOp helper below.)
+# hermes-handoff-protocol: 3
+# (The Desktop reads the exact line above before passing newer arguments.)
 #
 # HELPER OPS (Electron's only way to mutate the marker; runs right after
 # marker.ps1 loads -- no UI, log rotation, result or relaunch):
@@ -76,6 +76,7 @@ param(
     [switch]$SelfTestMarker,
     [switch]$SelfTestWorkingDirectory,
     [string]$HandoffRun = "",
+    [string]$UiLocale = "en",
     [string]$MarkerOp = "",
     [int]$CustodyOf = 0
 )
@@ -267,8 +268,52 @@ try {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {}
+function Get-UpdateUiCopy([string]$Locale) {
+    $copy = @{
+        locale = 'en'
+        labels = @{
+            updating = 'Updating Hermes'; waiting = 'Hermes will open once done.'
+            complete = 'Update complete'; opening = "Opening Hermes$([char]0x2026)`nYou can close this window."
+            reopen = 'Reopen Hermes to finish.'; failed = 'Failed to update'
+            report = 'Run "hermes debug share" in a terminal to send a report.'; close = 'Close'
+            unavailable = 'Update status unavailable'
+            disconnected = "The progress connection was lost.`nCheck Hermes for the update result. You can close this window."
+            seconds = '{0}s elapsed'; minutes = '{0}m {1}s elapsed'
+        }
+        stages = @{
+            'Building the desktop app' = 'Building Hermes Desktop from source on this computer'
+            'Packaging the desktop app' = 'Packaging the locally built app'
+        }
+    }
+    $language = ($Locale -split '-', 2)[0].ToLowerInvariant()
+    if ($language -ne 'en') {
+        try {
+            $catalog = ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windows-ui.json')))
+            $translation = $catalog.PSObject.Properties[$language]
+            if ($translation) {
+                $copy.locale = $language
+                foreach ($entry in $translation.Value.labels.PSObject.Properties) {
+                    $copy.labels[$entry.Name] = $entry.Value
+                }
+                foreach ($entry in $translation.Value.stages.PSObject.Properties) {
+                    $copy.stages[$entry.Name] = $entry.Value
+                }
+            }
+        } catch {
+            Write-HandoffLog ("Could not load update window translations: {0}" -f $_.Exception.Message)
+        }
+    }
+    return $copy
+}
+
+function Get-UpdateUiStage([string]$Message) {
+    if ($script:UiCopy.stages.ContainsKey($Message)) { return $script:UiCopy.stages[$Message] }
+    return $Message
+}
+
 $script:Ui = $null
-$script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
+$script:UiCopy = Get-UpdateUiCopy $UiLocale
+$script:UiStage = $script:UiCopy.labels.waiting
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 # ── The shim: repo-owned HTML in a chromeless default-browser app window ───
@@ -359,7 +404,12 @@ function Start-UiServer([string]$HtmlPath) {
         $rs.Open()
         $rs.SessionStateProxy.SetVariable("Listener", $listener)
         $rs.SessionStateProxy.SetVariable("State", $script:UiState)
-        $rs.SessionStateProxy.SetVariable("HtmlBytes", [System.IO.File]::ReadAllBytes($HtmlPath))
+        # The page and native fallback share the copy selected before Desktop quit.
+        $html = [IO.File]::ReadAllText($HtmlPath)
+        $uiCopyJson = (@{ locale = $script:UiCopy.locale; labels = $script:UiCopy.labels } |
+            ConvertTo-Json -Compress).Replace('<', '\u003c')
+        $html = $html.Replace('<!-- windows-update-ui-copy -->', $uiCopyJson)
+        $rs.SessionStateProxy.SetVariable("HtmlBytes", [System.Text.Encoding]::UTF8.GetBytes($html))
 
         $ps = [powershell]::Create()
         $ps.Runspace = $rs
@@ -513,10 +563,10 @@ function Publish-UiEvent([string]$Status, [string]$Message) {
 
 function Get-UiElapsedText {
     $elapsed = [Math]::Floor($script:UiStopwatch.Elapsed.TotalSeconds)
-    if ($elapsed -lt 60) { return "${elapsed}s elapsed" }
+    if ($elapsed -lt 60) { return ($script:UiCopy.labels.seconds -f $elapsed) }
     $minutes = [Math]::Floor($elapsed / 60)
     $seconds = $elapsed % 60
-    return "${minutes}m ${seconds}s elapsed"
+    return ($script:UiCopy.labels.minutes -f $minutes, $seconds)
 }
 
 function Get-UiProgressLine {
@@ -527,8 +577,8 @@ function Publish-UiProgress([string]$Message) {
     # Stages come from the orchestrator's own control flow. Child stdout and
     # stderr remain asynchronously drained in Invoke-HermesStep and are never
     # read or parsed for UI updates.
-    $script:UiStage = $Message
-    $script:UiState.message = $Message
+    $script:UiStage = Get-UpdateUiStage $Message
+    $script:UiState.message = $script:UiStage
     $script:UiState.status = "running"
     $script:UiState.receipt = $null
     $script:UiState.acknowledged_receipt = $null
@@ -616,7 +666,7 @@ function Show-ProgressWindow {
         $bar.MarqueeAnimationSpeed = 30
         $bar.SetBounds(60, 128, 160, 8)
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Updating Hermes"
+        $title.Text = $script:UiCopy.labels.updating
         $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
         $title.ForeColor = $fore
         $title.TextAlign = "MiddleCenter"
@@ -673,10 +723,10 @@ function Show-ErrorFinale([string]$Message) {
         $ui = $script:Ui
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
-        $ui.Title.Text = "Failed to update"
-        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $ui.Title.Text = $script:UiCopy.labels.failed
+        $ui.Sub.Text = $script:UiCopy.labels.report
         $close = New-Object System.Windows.Forms.Button
-        $close.Text = "Close"
+        $close.Text = $script:UiCopy.labels.close
         $close.SetBounds(100, 252, 80, 28)
         $close.FlatStyle = "Flat"
         $close.ForeColor = $ui.Title.ForeColor
@@ -705,6 +755,7 @@ function Show-ManualFinale([string]$Message) {
     # `manual` itself; the WinForms card swaps its copy. Held so the user
     # actually sees the instruction — this window is the only surface until
     # they reopen Hermes themselves.
+    $Message = Get-UpdateUiStage $Message
     if ($script:UiServer) {
         Publish-UiEvent "manual" $Message
         Stop-UiServer -LeaveWindow
@@ -715,10 +766,10 @@ function Show-ManualFinale([string]$Message) {
         $ui = $script:Ui
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
-        $ui.Title.Text = "Update complete"
+        $ui.Title.Text = $script:UiCopy.labels.complete
         $ui.Sub.Text = $Message
         $close = New-Object System.Windows.Forms.Button
-        $close.Text = "Close"
+        $close.Text = $script:UiCopy.labels.close
         $close.SetBounds(100, 252, 80, 28)
         $close.FlatStyle = "Flat"
         $close.ForeColor = $ui.Title.ForeColor

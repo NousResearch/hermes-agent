@@ -587,9 +587,19 @@ def _report_dashboard_status() -> int:
     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids, _ledger_serve_binds, _process_listens_on, _scan_dashboard_processes,
+    )
     from gateway.status import _pid_exists
     binds = _ledger_serve_binds()
+    # The installed `hermes` runs this CLI under a launcher whose argv is this same `dashboard --status`
+    # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
+    # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
+    # listener itself. The only address this home's gateway is asked about is the concrete one the
+    # probe reached for such a launcher, unless a listed backend's own probe reached that same address.
+    ancestors: set[int] | None = None
+    unclaimed: list[tuple[str, int]] = []
+    held: set[tuple[str, int]] = set()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
@@ -601,15 +611,30 @@ def _report_dashboard_status() -> int:
             host = ledger_host or host
         if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
             continue
+        if ancestors is None:
+            ancestors = _caller_ancestor_pids()
+        if pid in ancestors and _process_listens_on(pid, port) is False:
+            unclaimed.append((_dashboard_probe_host(host), port))
+            continue
         live.append((pid, command, mode))
+        held.add((_dashboard_probe_host(host), port))
+    gateway_note = None
+    if unclaimed:
+        from hermes_cli.web_server_port_holder import gateway_webapp_summary
+        asked = [peer for peer in dict.fromkeys(unclaimed) if peer not in held]
+        gateway_note = next(filter(None, (gateway_webapp_summary(*peer) for peer in asked)), None)
 
     if not live:
         print("No hermes dashboard or serve processes running.")
+        if gateway_note:
+            print(gateway_note)
         return 0
 
     print(f"{len(live)} hermes dashboard/serve process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
+    if gateway_note:
+        print(gateway_note)
     return len(live)
 
 

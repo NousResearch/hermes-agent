@@ -167,6 +167,21 @@ def _listener_serves_webapp(holder: GatewayHolder) -> bool:
         holder.webapp_state == "unavailable" and str(holder.webapp_reason or "").startswith(NOT_BUILT))
 
 
+def gateway_webapp_summary(host: str, port: int, home: Optional[Path] = None) -> Optional[str]:
+    """One line for ``hermes dashboard --status`` when this home's gateway serves the Webapp on the
+    concrete address *host*:*port* the status probe reached (its live listener takes that address),
+    else None."""
+    holder = gateway_holding_port(port, home, host=host)
+    if holder is None or not _listener_serves_webapp(holder):
+        return None
+    pid = f" (PID {holder.pid})" if holder.pid else ""
+    line = (f"The Hermes gateway{pid} serves the Webapp for this profile at "
+            f"{holder.public_url or holder.api_origin} (hermes webapp opens it).")
+    if holder.webapp_state != "serving":
+        line += f" {holder.webapp_reason}"
+    return line
+
+
 def launcher_examples(platform: str) -> str:
     """What usually starts an old backend on *platform* (``sys.platform``), for the hint above."""
     return "Task Scheduler task or Startup-folder entry" if platform == "win32" else "systemd unit or launchd job"

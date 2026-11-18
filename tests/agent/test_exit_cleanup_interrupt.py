@@ -10,6 +10,7 @@ from tests.fixtures.storage_holder import raw_holder
 from tests.fixtures.storage_read import session_row
 from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 
 @pytest.mark.asyncio
@@ -34,7 +35,7 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
     job = {"id": "test-job-1", "name": "test cleanup", "prompt": "hello",
            "schedule": "0 9 * * *", "model": "test/model"}
     row = {"admission_id": "cleanup-admission", "request_id": "cleanup-request",
-           "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+           "principal_id": "cron-owner", **claim_stamp(store, ref.session_id), "payload": {"text": ""}}
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": row["request_id"]}))
     runtime = {"provider": "custom", "api_key": "test-key",

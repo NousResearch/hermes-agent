@@ -24,6 +24,7 @@ from cron import scheduler
 from cron.scheduler import _CronJobConfig, _resolve_job_runtime
 from hermes_cli.auth import AuthError
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 
 def _run_owned_job(job, tmp_path):
@@ -43,7 +44,7 @@ def _run_owned_job(job, tmp_path):
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
     )
     row = {"admission_id": admission_id, "request_id": "cron-owner-request",
-           "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+           "principal_id": "cron-owner", **claim_stamp(persistence, ref.session_id), "payload": {"text": ""}}
     policy = SimpleNamespace(request_json=json.dumps(
         {"cron_job": job, "extra_prompt": None, "request_id": "cron-owner-request"}))
 

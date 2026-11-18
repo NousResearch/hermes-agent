@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.cron.conftest import claim_stamp
 
 
 @pytest.fixture
@@ -81,7 +82,7 @@ def _fire(home: Path, job_id: str):
         persistence=store, profile_id=home.name, pending_results={},
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
     row = {"admission_id": f"adm-{job_id}", "request_id": f"req-{job_id}", "principal_id": "cron-owner",
-           "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
+           **claim_stamp(store, ref.session_id), "payload": {"text": ""}}
     policy = SimpleNamespace(request_json=json.dumps(
         {"cron_job": job, "extra_prompt": None, "request_id": f"req-{job_id}"}))
     try:

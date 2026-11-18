@@ -17,13 +17,14 @@ def test_static_default_stays_within_sol_price_budget(provider):
         assert selected.amount_usd <= baseline.amount_usd, model
 
 
-@pytest.mark.parametrize("provider", ["openai-api", "openai-codex"])
-def test_bare_provider_switch_uses_the_cost_safe_default(provider):
+@pytest.mark.parametrize("provider, expected", [("openai-api", "gpt-6.2-sol"), ("openai-codex", "gpt-6-sol")])
+def test_bare_provider_switch_uses_the_cost_safe_default(provider, expected):
+    # The offline Codex fallback must also work on plans that don't offer GPT-6.2.
+    assert get_default_model_for_provider(provider) == expected
     selected = detect_static_provider_for_model(provider, "anthropic")
-    assert selected is not None
-    assert selected == (provider, get_default_model_for_provider(provider))
+    assert selected == (provider, expected)
     usage = CanonicalUsage(input_tokens=1_000, output_tokens=1_000)
     baseline = estimate_usage_cost("gpt-6.1-sol", usage, provider="openai-api")
-    cost = estimate_usage_cost(selected[1], usage, provider="openai-api")
+    cost = estimate_usage_cost(expected, usage, provider="openai-api")
     assert cost.amount_usd is not None and baseline.amount_usd is not None
     assert cost.amount_usd <= baseline.amount_usd, selected

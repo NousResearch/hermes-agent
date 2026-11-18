@@ -16,11 +16,12 @@ def main() -> None:
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--issue", type=int)
     parser.add_argument("--candidate")
+    parser.add_argument("--ledger-issue", type=int, help="Canonical bot confirmation ledger issue")
     parser.add_argument("--event", type=Path)
     parser.add_argument("--snapshot", type=Path, help="Audited historical sample to refresh (report only)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    api = GitHub(args.repository or "")
+    api = GitHub(args.repository or "", ledger_issue=args.ledger_issue)
     if args.action == "gate":
         result = gate_report(api, args.candidate or "")
     elif args.action == "report":

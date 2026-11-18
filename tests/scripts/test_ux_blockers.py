@@ -45,6 +45,7 @@ def trusted(login):
 class Ledger:
     prefix = "repos/example/project"
     repository = "example/project"
+    ledger_issue = 157333
     trusted = staticmethod(trusted)
 
     def __init__(self, body=None):
@@ -54,6 +55,7 @@ class Ledger:
         self.fixes = {1: []}
         self.mutations = []
         self.contained = False
+        self.acknowledged = []
 
     def issue(self, number):
         return self.rows[number]
@@ -64,8 +66,13 @@ class Ledger:
     def links(self, number):
         return self.fixes[number]
 
+    def receipts(self):
+        return self.acknowledged
+
     def indexed(self):
-        return [row for row in self.rows.values() if CONFIRMED in {x["name"] for x in row["labels"]}]
+        return [{**row, "_ux_receipts": [r["comment"] for r in self.acknowledged if r["issue"] == row["number"]]}
+                for row in self.rows.values() if CONFIRMED in {x["name"] for x in row["labels"]}
+                or any(r["issue"] == row["number"] for r in self.acknowledged)]
 
     def contains(self, candidate, commit):
         assert candidate == SHA and commit == OTHER
@@ -79,6 +86,9 @@ class Ledger:
             from urllib.parse import unquote
             name = unquote(endpoint.rsplit("/", 1)[1])
             self.rows[1]["labels"] = [row for row in self.rows[1]["labels"] if row["name"] != name]
+        elif endpoint == f"{self.prefix}/issues/{self.ledger_issue}/comments":
+            value = json.loads(fields["body"][len(RECEIPT):])
+            self.acknowledged.append({**value, "comment": comment(500 + len(self.acknowledged), fields["body"], login=BOT, kind="Bot")})
         elif endpoint.endswith("/comments"):
             self.messages[1].append(comment(100 + len(self.messages[1]), fields["body"], login=BOT, kind="Bot"))
         else:
@@ -104,6 +114,7 @@ def test_missing_evidence_and_unsupported_journeys_remain_unknown():
     f"> /ux confirm {SHA} {URL} reason", f"```\n/ux confirm {SHA} {URL} reason\n```",
     f"/ux confirm {SHA} http://example.test reason", f"/ux resolve {SHA} {URL} reason",
     f"/ux confirm fixed {SHA} {URL} reason", f"/ux confirm {SHA} https://user:pass@example.test reason",
+    f"/ux confirm {SHA} https://[broken reason",
     f"/ux confirm main {URL} reason", f"/ux confirm {SHA} {URL} \t",
 ])
 def test_command_parser_rejects_quoted_incomplete_or_mutable_authority(body):
@@ -156,6 +167,12 @@ def test_proposal_link_refresh_and_confirmation_are_idempotent():
     assert any(row["body"].startswith(RECEIPT) for row in api.messages[1])
     api.rows[1].update(state="closed", body="edited away")
     assert gate_report(api, SHA)["blocking_issues"] == [1]
+    # Even source deletion combined with label loss retains the acknowledged hold.
+    api.messages[1] = [row for row in api.messages[1] if row["id"] != 200]
+    api.rows[1]["labels"] = [{"name": "P2"}]
+    assert gate_report(api, SHA)["blocking_issues"] == [1]
+    sync_issue(api, 1)
+    assert CONFIRMED in {row["name"] for row in api.rows[1]["labels"]}
     api.messages[1].append(resolve(300))
     assert gate_report(api, SHA)["status"] == "passed"
     assert gate_report(api, OTHER)["status"] == "blocked"
@@ -228,9 +245,11 @@ def test_fix_relationships_paginate_completely_and_reject_cursor_stalls():
         {"nodes": [{"number": 2}], "pageInfo": {"hasNextPage": True, "endCursor": "next"}},
         {"nodes": [{"number": 3}], "pageInfo": {"hasNextPage": False, "endCursor": "last"}},
     ]
-    def run(_):
+    def run(argv):
+        assert "includeClosedPrs:true" in argv[argv.index("-f") + 1]
         return json.dumps({"data": {"repository": {"issue": {"closedByPullRequestsReferences": responses.pop(0)}}}})
-    assert GitHub("example/project", run=run).links(1) == [{"number": 2}, {"number": 3}]
+    api = GitHub("example/project", run=run)
+    assert api.links(1) == [{"number": 2}, {"number": 3}]
     responses[:] = [{"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": None}}]
     with pytest.raises(ValueError, match="pagination"):
         GitHub("example/project", run=run).links(1)
@@ -286,3 +305,33 @@ def test_bug_form_options_match_classifier_and_gate_is_mandatory():
     workflow = (root / ".github/workflows/ux-blockers.yml").read_text()
     assert 'ref: ${{ github.event.repository.default_branch }}' in workflow
     assert "github.event.pull_request.head" not in workflow
+
+
+def test_canonical_ledger_inventory_retains_unlabeled_closed_issue():
+    source = confirm()
+    receipt = comment(50, RECEIPT + "\n" + json.dumps({"issue": 1, "id": 1,
+        "sha256": hashlib.sha256(source["body"].encode()).hexdigest()}), login=BOT, kind="Bot")
+    def run(argv):
+        endpoint = argv[-1]
+        if "/issues?" in endpoint:
+            return "[[]]"
+        if "/issues/157333/comments?" in endpoint:
+            return json.dumps([[receipt]])
+        if endpoint.endswith("/issues/1"):
+            return json.dumps({"number": 1, "state": "closed", "labels": []})
+        raise AssertionError(argv)
+    rows = GitHub("example/project", run=run).indexed()
+    assert rows[0]["number"] == 1 and rows[0]["state"] == "closed"
+    assert rows[0]["_ux_receipts"] == [receipt]
+
+
+def test_malformed_untrusted_command_cannot_interrupt_valid_disposition():
+    messages = [confirm(), resolve(), comment(3, f"/ux confirm {SHA} https://[broken reason", login="reporter")]
+    assert decision(messages, SHA, trusted)["status"] == "cleared"
+
+
+def test_independent_issue_events_do_not_replace_each_other():
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/ux-blockers.yml").read_text()
+    assert "group: ux-blocker-${{ github.event.issue.number || inputs.issue || 'refresh' }}" in workflow
+    assert "cancel-in-progress: false" in workflow

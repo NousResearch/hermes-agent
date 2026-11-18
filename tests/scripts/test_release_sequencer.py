@@ -236,7 +236,8 @@ def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000)
 
 def _without_confirmed_ux_blockers(run):
     def fixture(argv):
-        if argv[:4] == ["gh", "api", "--paginate", "--slurp"] and "/issues?" in argv[-1]:
+        if argv[:4] == ["gh", "api", "--paginate", "--slurp"] and (
+                "/issues?" in argv[-1] or "/issues/157333/comments?" in argv[-1]):
             return "[[]]"
         return run(argv)
     return fixture

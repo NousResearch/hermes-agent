@@ -14,6 +14,9 @@ REVIEW = "ux:needs-review"
 MARKER = "<!-- hermes-ux-triage:v1 -->"
 RECEIPT = "<!-- hermes-ux-confirmation:v1 -->"
 BOT = "github-actions[bot]"
+# The existing policy issue is the append-only bot ledger. Closing it does not
+# remove records. Fork adopters select their own issue in GitHub's constructor.
+LEDGER_ISSUE = 157333
 SURFACES = ("Desktop", "Terminal", "Telegram", "Discord")
 JOURNEYS = ("Install / setup", "Sign-in / provider setup", "First reply",
             "Return to a conversation", "Update / recovery")
@@ -76,7 +79,10 @@ def parse_command(body: str) -> Command | None:
         r"([a-f0-9]{40}) (https://\S+) ([^\r\n]+)", text)
     if match is None or (match[1] == "resolve") != bool(match[2]):
         return None
-    url = urlsplit(match[4])
+    try:
+        url = urlsplit(match[4])
+    except ValueError:
+        return None
     if not url.hostname or url.username or url.password or not match[5].strip():
         return None
     return Command(match[1], match[3], match[2] or "", match[4], match[5].strip())

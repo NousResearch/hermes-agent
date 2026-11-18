@@ -63,6 +63,7 @@ jobs:
         run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:
           GH_TOKEN: ${{ github.token }}
+          UX_LEDGER_ISSUE: ${{ vars.UX_LEDGER_ISSUE || '157333' }}
           REQUESTED_VERSION: ${{ inputs.version || '' }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}

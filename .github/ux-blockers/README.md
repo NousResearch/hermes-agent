@@ -12,7 +12,7 @@ The master proposal is [#157333](https://github.com/NousResearch/hermes-agent/is
 2. Actions proposes UX P0 or P1 and adds `ux:needs-review`. Unknown evidence
    remains unclassified. Engineering severity is unchanged.
 3. A maintainer checks the supported path, version and evidence. A confirmation
-   enrolls the issue in the permanent `ux:confirmed` release index.
+   records an acknowledgement on the policy issue and adds `ux:confirmed` as its visible index.
 4. GitHub closing-PR relationships appear on the bot assessment and refresh when
    PRs change. A merged PR earns no automatic recovery or release-clearance claim.
 5. The release owner dispositions the exact candidate. Acceptance and the final
@@ -52,9 +52,11 @@ cover the reported failure. A duplicate clears only through its confirmed
 canonical issue. Cycles and missing canonical records hold promotion.
 
 Do not edit authority commands to change a decision. Post a new command. An
-edited command invalidates its authority. A bot acknowledgement records the
-source confirmation's ID and digest, so deleting or rewriting it leaves a hold.
-Leave `ux:confirmed` and its bot acknowledgement in place as the audit index.
+edited command invalidates its authority. The bot records the source issue, confirmation ID and digest on the canonical
+policy issue (#157333), as well as acknowledging the report. The gate always
+reads that ledger, so deleting a source command or removing a label leaves the
+confirmed report discoverable. Leave the canonical ledger and its bot records
+in place; labels are a projection of that ledger.
 The assessment labels alone confer no release authority.
 
 For an older report, post `/ux assess` followed by the same headings as the bug
@@ -98,7 +100,12 @@ not an automatically executed test or a guarantee that a linked run passed.
 
 To adopt, review/merge the workflow and release-controller changes, allow their
 standard Actions-token permissions, and nominate the release owner who confirms
-and dispositions blockers. The first triage run creates four impact/index
+and dispositions blockers. The existing policy issue #157333 is the canonical
+bot confirmation ledger. Fork adopters create a ledger issue and set repository
+variable `UX_LEDGER_ISSUE` to its number; local commands accept `--ledger-issue`
+or the same environment variable. Closing the ledger does not remove its
+records. Deleting the ledger or editing bot records is unsupported and holds
+promotion on API/integrity failure. The first triage run creates four impact/index
 labels. Manually assess the first-wave issues before confirming any of them.
 The historical dataset does not enroll issues or block releases. No external
 provider, extra secret, or bot service is needed. Existing release-signing and
@@ -109,7 +116,8 @@ history; reverting does not undo a published release or remove issue metadata.
 
 ## Hermes first-wave data
 
-The [versioned sample](hermes-first-wave-2026-11-18.json) records the bounded
+The [readable first-wave report](hermes-first-wave-2026-11-18.md) and
+[versioned sample](hermes-first-wave-2026-11-18.json) records the bounded
 Oct 1–Nov 18, 2026 Bangkok audit. Public issue/PR metadata was refreshed Nov 18.
 It contains **10 open report-evidenced problem clusters** — nine first filed in
 the window plus the September macOS carry-in — and **7 qualifying merged

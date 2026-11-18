@@ -13,26 +13,39 @@ from scripts.ux_blockers.policy import (
 
 
 def ensure_labels(api: GitHub) -> None:
+    import subprocess
+    from urllib.parse import quote
+
     present = {row["name"] for row in api.pages(f"{api.prefix}/labels?per_page=100")}
     for name, (color, description) in LABELS.items():
         if name not in present:
-            api.write(f"{api.prefix}/labels", "POST", name=name, color=color, description=description)
+            try:
+                api.write(f"{api.prefix}/labels", "POST", name=name, color=color, description=description)
+            except subprocess.CalledProcessError:
+                # Another issue's first run may have created the label in parallel.
+                if api.get(f"{api.prefix}/labels/{quote(name, safe='')}").get("name") != name:
+                    raise
 
 
 def sync_issue(api: GitHub, number: int) -> dict:
     issue = api.issue(number)
     comments = api.comments(number)
+    receipts = [row for row in api.receipts() if row["issue"] == number]
     commands = latest_commands(comments, api.trusted)
     labels = {row["name"] for row in issue["labels"]}
     # Confirmation is indexed before any optional API read or comment write.
     # Closing or editing a report never removes this index.
-    if any(command.action == "confirm" for _, command in commands) and CONFIRMED not in labels:
+    if (receipts or any(command.action == "confirm" for _, command in commands)) and CONFIRMED not in labels:
         api.write(f"{api.prefix}/issues/{number}/labels", "POST", labels=[CONFIRMED])
         labels.add(CONFIRMED)
     for comment, command in commands:
         if command.action == "confirm":
-            receipt = RECEIPT + "\n" + json.dumps({"id": comment["id"], "sha256":
+            receipt = RECEIPT + "\n" + json.dumps({"issue": number, "id": comment["id"], "sha256":
                 hashlib.sha256(comment["body"].encode()).hexdigest()}, sort_keys=True)
+            if not any(row["id"] == comment["id"] for row in receipts):
+                api.write(f"{api.prefix}/issues/{api.ledger_issue}/comments", "POST", body=receipt)
+                # Other issues in this run must see newly acknowledged records.
+                api._receipts = None
             if not any(row["user"].get("login") == BOT and row.get("body") == receipt for row in comments):
                 api.write(f"{api.prefix}/issues/{number}/comments", "POST", body=receipt)
     assessment_body = issue.get("body") or ""
@@ -90,7 +103,7 @@ def gate_report(api: GitHub, candidate: str) -> dict:
             raise ValueError("UX confirmation index contains a pull request")
         number = issue["number"]
         decisions[number] = {"issue": number, "url": issue["html_url"], "state": issue["state"],
-                             **decision(api.comments(number), candidate, api.trusted),
+                             **decision([*api.comments(number), *issue.get("_ux_receipts", [])], candidate, api.trusted),
                              "fixes": api.links(number)}
         row = decisions[number]
         if row.get("disposition") == "fixed":

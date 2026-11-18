@@ -41,6 +41,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/hermes-python -c 'import os; from scripts.ux_blockers.github import GitHub; GitHub(os.environ["GITHUB_REPOSITORY"]).trusted(os.environ["GITHUB_ACTOR"]); print("Repository permission lookup completed")'
+          scripts/hermes-python - <<'PY'
+          import os
+          from scripts.ux_blockers.github import GitHub
+          api = GitHub(os.environ["GITHUB_REPOSITORY"])
+          writers = api.pages(f"{api.prefix}/collaborators?permission=push&per_page=100")
+          assert writers, "No independently enumerated repository writer"
+          assert api.trusted(writers[0]["login"]), "Writer permission lookup failed"
+          print("Known repository writer permission verified")
+          PY
       - name: Test triage, candidate dispositions and publication barriers
         run: scripts/run_tests.sh -j 2 --file-timeout 180 --file-retries 0 tests/scripts/test_ux_blockers.py tests/scripts/test_release_sequencer.py -q

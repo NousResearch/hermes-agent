@@ -56,8 +56,9 @@ for command syntax, the first-wave audit and adoption steps.
 
 A human with current repository write, maintain or admin permission confirms a
 supported-path failure with an evidence URL and exact candidate SHA. The bot
-retains the `ux:confirmed` index and an acknowledgement of the source command.
-This index includes **closed issues**. Editing report fields, closing an issue,
+records the source issue, command ID and digest on the canonical policy issue
+(#157333). `ux:confirmed` is its visible projection. The gate reads the canonical
+ledger as well as labels, including **closed issues**. Editing report fields, closing an issue,
 merging a PR, or deleting an acknowledged confirmation cannot silently remove a
 hold. Reporters and bots cannot confirm or waive a blocker. Changes to maintainer
 commands require a fresh command; bot acknowledgements are audit records.

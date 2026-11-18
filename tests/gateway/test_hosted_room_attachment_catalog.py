@@ -391,3 +391,15 @@ def test_limit_query_and_sharer_inputs_are_bounded(tmp_path, field, values):
     for value in values:
         with pytest.raises(AttachmentError, match=field):
             _page(db, **{field: value})
+
+
+def test_catalog_retains_a_published_commitment_with_a_legacy_expiry(tmp_path):
+    db, store = _create_catalog(tmp_path)
+    item, event, data = share(db, store)
+    with sqlite3.connect(store_location(db.scope)) as conn:
+        conn.execute("UPDATE hosted_room_attachments SET expires_at=1")
+    row, = _page(db)["items"]
+    assert row.get("available", True)
+    assert (row["attachment_id"], row["event_id"]) == (item["attachment_id"], event)
+    assert store.read_viewer(room_id=ROOM_ID, event_id=event, attachment_id=item["attachment_id"],
+                             authority_gateway_id=AUTHORITY, authority_epoch=1).data == data

@@ -51,6 +51,7 @@ def _servable(
             recipient_member_id="",
             normalized_event=event_id,
             viewer=True,
+            reconciled=False,
             now=now,
         )
     except (AttachmentError, TypeError, ValueError):

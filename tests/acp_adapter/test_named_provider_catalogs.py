@@ -12,13 +12,26 @@ from unittest.mock import patch
 
 import pytest
 
-from acp_adapter.model_catalog import _named_custom_provider_catalogs
+from acp_adapter.model_catalog import _named_custom_provider_catalogs, build_model_state
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 from acp.schema import SessionModelState
 
 
 MANTLE_URL = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+
+
+@pytest.mark.parametrize("listed", [[], ["gpt-6-sol"], ["gpt-6-sol", "gpt-6.2-sol"]])
+def test_codex_session_model_is_not_an_undiscovered_choice(listed):
+    inventory = {"providers": [{"slug": "openai-codex", "models": listed}]}
+    with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
+        "acp_adapter.model_catalog._named_custom_provider_catalogs", return_value=[]
+    ):
+        picker = build_model_state("gpt-6.2-sol", "openai-codex", "")
+
+    assert picker is not None
+    assert picker.current_model_id == "openai-codex:gpt-6.2-sol"
+    assert [item.model_id for item in picker.available_models] == [f"openai-codex:{model}" for model in listed]
 
 
 def _cfg(providers=None, custom_providers=None):

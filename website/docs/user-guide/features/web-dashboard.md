@@ -574,7 +574,8 @@ Options: `--address HOST:PORT` (pick one backend when several serve this home), 
 (retire the old backend but keep an already enabled Webapp where it is), `--force-interrupt` (proceed
 although a turn is running on the old backend; without it a running turn blocks), `--detach` (with
 `--apply` or `--restore`: run in the background, outside the caller's systemd unit; a background run that
-refuses to start is reported by `--status` as `failed` with the reason; exit 7, JSON `"outcome":
+refuses to start is reported by `--status` as `failed` with the reason; where the move is manual steps
+only, such as Windows or a system unit, `--apply --detach` starts nothing and prints them with exit 6; exit 7, JSON `"outcome":
 "unconfirmed"`, when it was started but did not confirm in time), `--expect TOKEN` (change nothing, exit 8
 with JSON `"plan_changed": true`, unless the backend found now is the one whose `expect_token` the
 `--dry-run --json` plan printed; a unit restarting keeps its token, a hand-started process replaced on the

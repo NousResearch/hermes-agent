@@ -1007,6 +1007,21 @@ def _already_migrated(host, m: dict, *, as_json: bool, dry_run: bool) -> int:
     return EXIT_OK
 
 
+def _unsupported_here(host, args, *, as_json: bool, detached: bool = False) -> Optional[int]:
+    """Exit 6 with the manual steps, before ``--detach`` starts anything, when this host's backend can
+    only be moved by hand (Windows, a system unit, Nix, ...): the background run could only refuse, and
+    its refusal record would outlive a move done by hand. Read-only, like a dry run; leaves no record.
+    A confirmed plan's ``--expect`` token is checked first (exit 8), as a foreground run does."""
+    address = parse_address(args.address) if getattr(args, "address", None) else None
+    plan = build_plan(host, address=address, keep_webapp=bool(getattr(args, "keep_webapp_address", False)),
+                      force_interrupt=bool(getattr(args, "force_interrupt", False)))
+    if not plan.unsupported:
+        return None
+    if (expected := getattr(args, "expect", None)) and plan_token(plan) != expected:
+        return _plan_changed(host, plan, expected, as_json=as_json, detached=detached)
+    return _plan_exit(plan, dry_run=False, as_json=as_json)
+
+
 def cmd_apply(host, args) -> int:
     detached = bool(getattr(args, "detached_run", False))
     as_json = bool(getattr(args, "json", False))
@@ -1031,6 +1046,9 @@ def cmd_apply(host, args) -> int:
     if m is not None and m.get("state") == "done" and not getattr(args, "detach", False):
         return _already_migrated(host, m, as_json=as_json, dry_run=bool(getattr(args, "dry_run", False)))
     if getattr(args, "detach", False):
+        unfinished = m is not None and m.get("state") in ("running", "failed")  # the background run recovers it
+        if not unfinished and (code := _unsupported_here(host, args, as_json=as_json, detached=detached)) is not None:
+            return code
         return detach(host, args)
     address = parse_address(args.address) if getattr(args, "address", None) else None
     # A background run checks its own cgroup like any other run (build_plan reads /proc/self/cgroup):

@@ -816,6 +816,7 @@ def test_the_background_run_keeps_this_profile_over_a_sticky_one(tmp_path, monke
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(host_module.subprocess, "run", run)
     monkeypatch.setattr(host_module.subprocess, "Popen", Child)
+    monkeypatch.setattr(host_module.SystemHost, "backends", lambda self: [])  # the caller's read-only pre-check
 
     assert engine.cmd_apply(_SpawnHost(root, kind), _args(detach=True)) == engine.EXIT_OK
 
@@ -1221,3 +1222,26 @@ def test_an_unknown_listener_says_what_to_do_next(home):
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     assert "stop it, then run this command again" in engine.status_payload(host)["message"]
+
+
+def test_detach_hands_an_unfinished_run_to_the_background_even_where_the_plan_is_manual_only(home):
+    host = FakeHost(home)
+    _interrupt(host)
+    host.supervisor, host.scope = "systemd", "system"  # the backend found now could only be moved by hand
+    host.old.update(active=True, enabled=True)  # (listed by the scan: a fake host lists only a live one)
+    host.calls.clear()
+
+    assert engine.cmd_apply(host, _args(detach=True)) == engine.EXIT_OK
+
+    assert host.spawned and engine.read_manifest(home)["state"] == "running"  # recovery: the background run's
+
+
+def test_detach_checks_a_stale_token_before_it_prints_the_manual_steps(home, capsys):
+    host = FakeHost(home)
+    token = _token(host, capsys)  # confirmed for the user unit
+    host.supervisor, host.scope = "systemd", "system"  # replaced by a unit only steps can move
+
+    assert engine.cmd_apply(host, _args(detach=True, expect=token, json=True)) == engine.EXIT_PLAN_CHANGED
+
+    assert json.loads(capsys.readouterr().out)["plan_changed"] is True
+    assert host.spawned == [] and host.calls == [] and engine.status_payload(host)["state"] == "none"

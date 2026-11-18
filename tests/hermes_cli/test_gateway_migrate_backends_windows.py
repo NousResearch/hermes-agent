@@ -412,3 +412,17 @@ def test_the_windows_recipe_copies_only_what_the_env_file_lacks(home, capsys):
     (copy,) = [line.strip() for line in out.splitlines() if line.strip().startswith("# copy")]
     assert code == engine.EXIT_UNSUPPORTED
     assert copy.startswith("# copy HERMES_DASHBOARD_BASIC_AUTH_SECRET, HERMES_DASHBOARD_BASIC_AUTH_USERNAME from")
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_detach_on_windows_refuses_up_front_with_the_steps_and_leaves_no_record(home, capsys, as_json):
+    host = WindowsHost(home)
+    before = _files(home)
+
+    code = engine.cmd_apply(host, _args(detach=True, json=as_json))
+
+    assert code == engine.EXIT_UNSUPPORTED and host.spawned == [] and host.calls == []
+    assert _files(home) == before  # no detached-refused.json, no manifest: --status stays "none"
+    out = capsys.readouterr().out
+    assert "schtasks /End" in out
+    assert engine.status_payload(host)["state"] == "none"

@@ -1,4 +1,4 @@
-# Hermes plugin-catalog entry for hermes-frihet v0.2.1.
+# Hermes plugin-catalog entry for hermes-frihet v0.2.2.
 #
 # Catalog: NousResearch/hermes-agent/plugin-catalog/frihet.yaml
 # Per the catalog rules (plugin-catalog/README.md):
@@ -13,8 +13,8 @@
 #   ship a meaningful change (rule 4 of the catalog admission policy).
 name: frihet
 repo: https://github.com/Frihet-io/hermes-frihet
-# Pinned SHA — Frihet-io/hermes-frihet @ v0.2.1 (tagged)
-# (fix(classifier): treat anomaly_list as read; make manifest tests real).
+# Pinned SHA — Frihet-io/hermes-frihet @ v0.2.2 (tagged)
+# Adds read-only /frihet brief with the canonical monetary and temporal contract.
 #
 # This SHA supersedes ``f331208`` (the older doctor that read the OAuth
 # token cache), ``24a9612`` (first privacy fix), ``3c8325a`` (CI rename
@@ -68,16 +68,20 @@ repo: https://github.com/Frihet-io/hermes-frihet
 #     - Hard-coded "158 operations" dropped from docs: the canonical
 #       count moves with every frihet-mcp release.
 #
-# Tests: 88 pass + 3 skips. hermes plugins validate --install-deps
-# (clean HERMES_HOME): 14/14 checks, security scan "safe".
-sha: 72493236b16c5e1e2b6a5ada3674781a6da180a1
-description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical Frihet MCP surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
+# Validation recorded for v0.2.1: 88 pass + 3 skips; clean-HERMES_HOME
+# hermes plugins validate --install-deps: 14/14 checks, security scan "safe".
+# v0.2.2 CI: 99 pass + 3 skips on Python 3.14, manifest/schema/capability
+# validation, and Python 3.11/3.12/3.13 compatibility smoke all passed.
+# v0.2.2 adds /frihet brief, orchestrating read-only MCP operations through
+# the granted Hermes client; it never executes the suggested actions.
+sha: e06c47991a7b0ea668f21d8503f98a7bd4018209
+description: "Official Hermes Agent integration for Frihet — discoverability, setup, diagnostics, and operating guidance for the Frihet MCP. Zero duplicated tools; the canonical Frihet MCP surface stays in @frihet/mcp-server and the remote endpoint https://mcp.frihet.io/mcp. Disclosure — /frihet setup and /frihet doctor send an unauthenticated MCP initialize to mcp.frihet.io (or FRIHET_MCP_URL); /frihet doctor also makes one read-only list_invoices call through Hermes's MCP client once you grant plugins.entries.frihet.mcp_allowlist; /frihet brief uses get_business_context, list_invoices, list_quotes, list_expenses, list_clients, and list_client_activities through the same MCP client to display business data in the current session, without writes; reads ~/.hermes/config.yaml only to check that an mcp_servers.frihet block exists; the pre_tool_call hook prompts before Frihet MCP calls it classifies as irreversible or unknown, but reads and draft-first creates pass without a prompt unless the server sets trust: untrusted."
 maintainer: Frihet-io
 tier: community
 category: tools
 docs_url: https://github.com/Frihet-io/hermes-frihet#readme
 requires_hermes: ">=0.21.5"
-version: "0.2.1"
+version: "0.2.2"
 # Capabilities mirror plugin.yaml exactly.
 # Provides zero Python tools on purpose: the canonical Frihet surface
 # lives in @frihet/mcp-server and is reached via the
@@ -85,7 +89,7 @@ version: "0.2.1"
 #   - a skill (skills/frihet/SKILL.md) that encodes the operating contract
 #   - a pre_tool_call hook that escalates irreversible Frihet operations
 #     to the human approval gate
-#   - a /frihet slash command for setup/status/doctor
+#   - a /frihet slash command for setup/status/doctor/brief
 capabilities:
   provides_tools: []
   provides_hooks:

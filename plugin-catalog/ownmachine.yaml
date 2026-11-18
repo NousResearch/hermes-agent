@@ -1,26 +1,33 @@
 name: ownmachine
 title: OwnMachine
 repo: https://github.com/rbur0425/ownmachine
-sha: fa71c33a3fd706d9931725565fccf89a98254d69
+sha: f0b9160aa9235ea47439b10eb0b20d5ff6ab81bf
 subdir: plugin
-description: "A persistent private macOS or ARM64 Omarchy VM workspace for Hermes with SSH/MCP and human-controlled browser access. Disclosure — Runs OpenSSH, using your own SSH config, agent and keys, to an operator-configured Mac host and streams VM screenshots, accessibility text and computer_use input to a guest macOS or ARM64 Omarchy Linux VM through a fixed-command MCP relay; `/ownmachine setup --run` executes remote provisioning stages on the Mac over a separate setup SSH alias; the opt-in `remind later --mode tomorrow` writes a helper script into the Hermes `scripts/` directory and creates a one-shot no-agent cron job through the profile's local gateway; it keeps a shared control database in an operator-chosen directory. Licensed PolyForm Noncommercial 1.0.0."
+description: "Give Hermes its own Mac, Omarchy or Windows VM to test apps, scrape websites and automate desktop work with private SSH access and you in control. Keep a persistent workspace on infrastructure you control, watch from your browser and take over when needed. Privacy: screenshots and app text follow your configured model provider. Disclosure — Runs OpenSSH, using operator-configured aliases, agents and keys, to a Mac or Linux KVM host and streams VM screenshots, accessibility text and computer_use input through a restricted fixed-command MCP relay; screenshots and app text go to your configured model provider; guided setup (`/ownmachine setup --run`) executes reviewed remote provisioning stages over a separate temporary setup SSH alias and requires administrator registration and manual guest consent/sign-in; Windows guests use separate agent/viewer roles, a root-owned runtime, libvirt policy, firewall rules and a private Unix console on the host; the opt-in `remind later --mode tomorrow` writes a helper script into the Hermes `scripts/` directory and creates a one-shot no-agent cron job through the profile's local gateway; a shared control database is kept in an operator-chosen directory. Licensed PolyForm Noncommercial 1.0.0."
 maintainer: rbur0425
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
-version: "1.0.0"
-docs_url: https://github.com/rbur0425/ownmachine#readme
+version: "1.1.1"
+docs_url: https://github.com/rbur0425/ownmachine/blob/v1.1.1/README.md
 readme: true
-platforms: [linux, macos] # Hermes runtime; guest host still requires Apple Silicon macOS.
+platforms: [linux, macos] # Hermes runtime; macOS/Omarchy guests use Apple Silicon, Windows guests use Linux x86-64 KVM.
+# Promotional illustrations, not acceptance screenshots; immutable release asset pin.
+image: https://raw.githubusercontent.com/rbur0425/ownmachine/18707efa80e0376fed216a982677842b3d521244/docs/media/releases/1.1.0/platforms.webp
 screenshots:
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/human-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/agent-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/google-task.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/18707efa80e0376fed216a982677842b3d521244/docs/media/releases/1.1.0/windows.webp
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/18707efa80e0376fed216a982677842b3d521244/docs/media/releases/1.1.0/macos.webp
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/18707efa80e0376fed216a982677842b3d521244/docs/media/releases/1.1.0/omarchy.webp
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/18707efa80e0376fed216a982677842b3d521244/docs/media/catalog/google-task.png
 known_issues:
   - Omarchy supports tested foreground control on Apple Silicon; background input is experimental and Chromium requires explicit matching Hyprland module opt-in.
   - Linux uses a reviewed preview-grade driver pin; rolling system updates require compatibility checks.
   - Declares websockets==15.0.1 for gateway scheduling and Pillow>=11.0.0,<14 for screenshot verification; Hermes requests dependency consent during installation.
-  - Manual Mac/guest setup, firewall installation and macOS permission grants are required.
+  - Windows support is Windows 11 Enterprise Evaluation x86-64 on Linux KVM/libvirt; Home/Pro, Windows ARM and other hypervisors are not qualified.
+  - Administrator firewall/runtime registration and manual guest consent/sign-in are required; Windows first DVD boot needs the private viewer.
+  - Linux host reboot acceptance was skipped; firewall-service restart is tested. Broad Windows background/pixel input and clipboard sync are not qualified.
+  - Hermes must use in-process plugin isolation; keep viewer credentials separate and configure the OwnMachine computer_use backend and shared control directory.
+  - Guest provisioning downloads pinned upstream driver artifacts; Windows installation uses operator-supplied verified Microsoft media. Guest-driver updates require separate fresh-guest qualification.
   - Independent ALF-only random-port blocking and reboot persistence of the new security setup are unverified.
   - One initial guest boot hung; later restart checks passed.
   - Model-driven pixel-click acceptance is deferred; cloud Mac hosting is unverified.

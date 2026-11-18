@@ -127,7 +127,11 @@ class PtyHermes:
         assert operator not in (self.hermes_home.resolve(), *self.hermes_home.resolve().parents), (
             f"sandbox {self.hermes_home} sits inside the operator's Hermes home")
         if llm is not None:
-            write_hermes_home(self.hermes_home, llm.base_url, extra_config=extra_config)
+            # No passive update check (the tui_pty sandbox's rule): on an official checkout the
+            # CLI and its attached gateway both resolve the stable release against real GitHub,
+            # and the gateway, which outlives /exit, is mid `git ls-remote` whenever GitHub is slow.
+            write_hermes_home(self.hermes_home, llm.base_url,
+                              extra_config="updates:\n  check: false\n" + extra_config)
         self.llm = llm
         self.screen = Screen(rows, cols)
         self.raw = bytearray()

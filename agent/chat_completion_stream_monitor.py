@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from agent import chat_completion_wait_notice as wn
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import is_local_server
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
 from agent.stream_max_lifetime import StreamLifetime, StreamLifetimeExceeded, resolve_stream_max_lifetime
@@ -266,7 +266,7 @@ class StreamingWaitMonitor:
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
             wait_notice=wn.WaitNoticeState(),
         )
-        _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
+        _is_local_base = is_local_server(self.agent.base_url, self.agent.provider)
         # Only a server on this machine sleeps with it; a remote one kept working (or died).
         sleep_watch = (SleepWatch(interval=0.3) if self.agent.base_url
                        and is_loopback_host(urlsplit(self.agent.base_url).hostname) else None)

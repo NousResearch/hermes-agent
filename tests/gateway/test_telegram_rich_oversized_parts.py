@@ -529,3 +529,15 @@ async def test_a_final_edit_continuation_accepted_before_its_receipt_timed_out_i
     rows = Counter(re.findall(r"row \d+-\d+:", "\n".join(screen.values()).replace("\\", "")))
     assert [row for row in re.findall(r"row \d+-\d+:", content) if rows[row] != 1] == []
     assert consumer.delivery_uncertain is True
+
+
+@pytest.mark.asyncio
+async def test_opted_out_split_rich_reply_sends_no_anchor():
+    """``anchor_multipart_replies: false`` covers split rich replies too, not only MarkdownV2 chunks (#55059)."""
+    adapter = _make_adapter({"anchor_multipart_replies": False})
+
+    await adapter.send("12345", _details_content(), reply_to="777")
+
+    calls = _rich_calls(adapter)
+    assert len(calls) >= 2
+    assert all("reply_parameters" not in call.kwargs["api_kwargs"] for call in calls)

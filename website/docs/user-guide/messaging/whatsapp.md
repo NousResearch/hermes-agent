@@ -370,6 +370,49 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 
 ---
 
+## Customer-facing bot
+
+Defaults assume the people on the allowlist are you and your team. If the bot number answers
+customers (`WHATSAPP_ALLOWED_USERS=*`, `WHATSAPP_ALLOW_ALL_USERS=true`, or a list of customer
+numbers), everyone on the allowlist is trusted the same way, so harden the gateway before going
+live:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  platforms:
+    whatsapp:
+      tool_progress: "off"              # or "log": no tool-progress bubbles in the chat
+      interim_assistant_messages: false # no mid-turn commentary, only the final reply
+
+platforms:
+  whatsapp:
+    home_channel:                       # or WHATSAPP_HOME_CHANNEL in ~/.hermes/.env
+      platform: whatsapp
+      chat_id: "15551234567@s.whatsapp.net"   # your operator chat, not a customer's
+      name: Operator
+    extra:
+      allow_admin_from:                 # only these senders may run admin slash commands
+        - "15551234567@s.whatsapp.net"
+      group_allow_admin_from:           # same, for group chats (DM admins are not group admins)
+        - "15551234567@s.whatsapp.net"
+      # user_allowed_commands: [new]    # optional: commands customers may still run
+```
+
+- **`tool_progress`** defaults to `new` on WhatsApp, so customers see each tool the agent runs.
+- **`interim_assistant_messages`** defaults to `true`, so customers see the agent's mid-turn commentary.
+- **Home channel:** without one, every sender's first message in a new session (a new customer, or
+  anyone after `/new`) gets a "type /sethome" prompt, and any sender who runs `/sethome` takes over
+  cron and notification delivery. Set it to your own chat.
+- **`allow_admin_from`** (DMs) and **`group_allow_admin_from`** (groups) turn on [slash-command access control](../../reference/slash-commands.md#permissions-and-adminuser-split):
+  customers keep only `/help` and `/whoami` (plus anything in `user_allowed_commands`), can't run
+  `/sethome`, and never get the `/sethome` prompt. Send `/whoami` from your own phone to get the
+  exact ID to list.
+
+`hermes whatsapp` prints a warning pointing here when bot mode allows everyone and no home channel is set.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |

@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 
 # Import the module under test via an import-time side-effect check path.
 # We need to be able to reset its state between tests, so we import it
@@ -180,10 +182,10 @@ class TestStdioReconfigureErrorHandling:
 
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
-])
+)])
 def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path):
     import subprocess
     from pathlib import Path
@@ -290,11 +292,11 @@ print('reached-pm')
     assert result.stdout.strip() == "reached-pm"
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
     "agent/managed_worker.py", "hermes_cli/kanban_worker_client.py",
-])
+)])
 @pytest.mark.parametrize("bootstrap,expected", [
     (None, "proceeded"),
     ("import hermes_missing_dependency_probe\n", "raised hermes_missing_dependency_probe"),

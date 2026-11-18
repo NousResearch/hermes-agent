@@ -1,18 +1,18 @@
 name: hermes-egm
 title: Hermes EGM
 repo: https://github.com/willbohn/hermes-egm
-sha: d37006f9ddd940ed196fa07554fe2dd470ce7336
+sha: e22a6c9b4d4cd12d9339b29932f0c2b829bafac8
 description: Fresh-context, tool-free design reviews with checked source evidence and EGM workflow skills.
 maintainer: willbohn
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-version: "0.2.0"
+version: "0.3.0"
 docs_url: https://github.com/willbohn/hermes-egm#quickstart
-image: https://raw.githubusercontent.com/willbohn/hermes-egm/d37006f9ddd940ed196fa07554fe2dd470ce7336/assets/banner.jpg
+image: https://raw.githubusercontent.com/willbohn/hermes-egm/e22a6c9b4d4cd12d9339b29932f0c2b829bafac8/assets/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/willbohn/hermes-egm/d37006f9ddd940ed196fa07554fe2dd470ce7336/assets/how-it-works.svg
-  - https://raw.githubusercontent.com/willbohn/hermes-egm/d37006f9ddd940ed196fa07554fe2dd470ce7336/assets/activation-modes.svg
+  - https://raw.githubusercontent.com/willbohn/hermes-egm/e22a6c9b4d4cd12d9339b29932f0c2b829bafac8/assets/how-it-works.svg
+  - https://raw.githubusercontent.com/willbohn/hermes-egm/e22a6c9b4d4cd12d9339b29932f0c2b829bafac8/assets/activation-modes.svg
 readme: true
 platforms: [linux]
 capabilities:

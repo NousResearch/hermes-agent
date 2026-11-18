@@ -3,6 +3,7 @@
 A final refused with ``send_path_degraded`` stays ``failed`` in the delivery ledger until a runtime
 sweep claims it. The runner sweeps when it REPLACES an adapter (reconnect), but Telegram's polling
 ladder usually heals the same adapter in place, so without this edge the reply waited for a restart.
+The owed restart notices (``.restart_notify.json`` / ``.restart_pending.json``) ride the same edge.
 """
 
 from __future__ import annotations
@@ -33,8 +34,9 @@ class TelegramSendPathRecoveryMixin:
 
 def mark_send_path_recovered(adapter) -> None:
     """First proof getUpdates is flowing for this generation: flip a published "retrying" (degraded
-    connect, reconnect stamp, mid-session recovery) back to "connected" (#101391) and replay the
-    finals this adapter refused while degraded."""
+    connect, reconnect stamp, mid-session recovery) back to "connected" (#101391), replay the finals
+    this adapter refused while degraded, and the restart notices a boot or reconnect pass could not
+    send yet (#66589: a degraded reconnect heals in place, so no reconnect replay follows)."""
     if not adapter._send_path_degraded:
         return
     adapter._send_path_degraded = False
@@ -43,6 +45,9 @@ def mark_send_path_recovered(adapter) -> None:
             "connected", platform_state="connected", error_code=None, error_message=None,
         )
         _schedule_recovery_sweep(adapter)
+        replay_notices = getattr(getattr(adapter, "gateway_runner", None), "_schedule_restart_notice_replay", None)
+        if callable(replay_notices):
+            replay_notices()
 
 
 def _schedule_recovery_sweep(adapter) -> None:

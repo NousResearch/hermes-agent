@@ -188,7 +188,7 @@ class GatewayInboundTranscriptionMixin:
                     if clip_memo is not None:
                         clip_memo[path] = (transcript, note)
                 else:
-                    logger.debug("Transcribing user voice: %s", path)
+                    logger.info("Transcribing user voice: %s", path)
                     transcript, note = await self._transcribe_one_clip(
                         path, transcribe_audio, transcribe_audio_local_fallback,
                     )
@@ -224,6 +224,17 @@ class GatewayInboundTranscriptionMixin:
                 _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                 await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
         return message_text
+
+    @staticmethod
+    def _busy_interrupt_text(event) -> Optional[str]:
+        """What ``agent.interrupt()`` carries for a busy follow-up: its caption, else the media
+        placeholder. Never the transcript: awaiting STT first held the running turn and the busy
+        ack for the clip's whole transcription (#143961). The queued event keeps its audio, so the
+        follow-up turn transcribes (and echoes) it once."""
+        from gateway.run import _build_media_placeholder
+        if event.text or not getattr(event, "media_urls", None):
+            return event.text
+        return _build_media_placeholder(event)
 
     def _pending_event_audio_paths(self, event) -> list[str]:
         """Return STT-eligible paths from a pending voice message."""

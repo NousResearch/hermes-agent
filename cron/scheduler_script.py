@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
     from cron.cancellation import _CancelEventLike
@@ -163,7 +164,7 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(project_root_str())
     if resolve_store_python(repo) is None:
         return [sys.executable, str(script)], {}
     # project_python, not committed_venv as on Windows: a pre-PM venv selected before the first
@@ -195,7 +196,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import committed_venv, site_packages as dependency_site
 
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(project_root_str())
     managed_python = resolve_store_python(repo)
     if managed_python is not None:
         # Only the committed generation may overlay the store Python: ``selected_venv``
@@ -216,7 +217,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             interpreter = base_python
             env_overlay["VIRTUAL_ENV"] = str(venv_dir)
             pythonpath_entries = [
-                str(_sched.Path(__file__).resolve().parents[1]), str(site_packages)]
+                project_root_str(), str(site_packages)]
             existing_pythonpath = os.environ.get("PYTHONPATH", "")
             if existing_pythonpath:
                 pythonpath_entries.append(existing_pythonpath)

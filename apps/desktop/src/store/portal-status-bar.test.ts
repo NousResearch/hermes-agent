@@ -2,22 +2,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { setInterfaceMode } from './interface-mode'
 import { $portalStatusBarOpen, setPortalStatusBarOpen } from './portal-status-bar'
-// setPortalPreferred arrives with the Settings toggle; until then these cases set the stored choice.
-import { $shellChoice } from './shell-variant'
+import { setPortalPreferred } from './shell-variant'
 
 describe('the redesign’s status bar', () => {
   afterEach(() => {
     setInterfaceMode('advanced')
     setPortalStatusBarOpen(true)
-    $shellChoice.set(false)
+    setPortalPreferred(false)
   })
 
   it('is open in the redesigned shell with developer chrome, until collapsed', () => {
     setInterfaceMode('advanced')
-    $shellChoice.set(false)
+    setPortalPreferred(false)
     expect($portalStatusBarOpen.get()).toBe(false)
 
-    $shellChoice.set(true)
+    setPortalPreferred(true)
     expect($portalStatusBarOpen.get()).toBe(true)
 
     setPortalStatusBarOpen(false)
@@ -25,7 +24,7 @@ describe('the redesign’s status bar', () => {
   })
 
   it('rests collapsed in Simple, where opening it never rewrites the advanced choice', () => {
-    $shellChoice.set(true)
+    setPortalPreferred(true)
     setPortalStatusBarOpen(false)
     setInterfaceMode('simple')
     expect($portalStatusBarOpen.get()).toBe(false)

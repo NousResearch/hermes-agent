@@ -26,7 +26,7 @@ describe('applyAppearance', () => {
   // An unpicked skin resolves to the shell's own default, so the accent is saved on that skin.
   it.each([
     { shell: 'classic', choice: false, saved: 'nous-accent-8a2be2' },
-    { shell: 'redesign', choice: true, saved: 'portal-accent-8a2be2' }
+    { shell: 'redesign', choice: null, saved: 'portal-accent-8a2be2' }
   ])('applies every value and reports the ids the agent reads ($shell)', ({ choice, saved }) => {
     $shellChoice.set(choice)
     setInterfaceMode('simple')

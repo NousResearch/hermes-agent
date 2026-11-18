@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect } from 'react'
 import { MemoryRouter, useNavigate } from 'react-router'
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
 import { $workspaceIsPage } from '@/app/routes'
 import { group } from '@/components/pane-shell/tree/model'
@@ -13,15 +13,12 @@ import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { usePortalZoneHeader } from './portal-conversation-header'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 // The contrib controller installs this at boot; TreeGroup alone draws only the shared strip.
 beforeAll(() => provideZoneHeader(usePortalZoneHeader))
 
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 it('replaces chat tabs without remounting drafts, preserves mixed tabs and minimized restore handles', () => {

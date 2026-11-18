@@ -61,7 +61,6 @@ describe('FloatingPanes (live DOM)', () => {
   beforeEach(async () => {
     vi.resetModules()
     window.localStorage.clear()
-    window.localStorage.setItem('hermes.desktop.agentShell.v1', 'true') // the redesign is opt-in until it is turned on
     registry = (await import('@/contrib/registry')).registry
     FloatingPanes = (await import('./floating-panes')).FloatingPanes
     resizeWindow(1440, 900)

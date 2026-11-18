@@ -29,9 +29,6 @@ import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '
 
 import { useComposerDraft } from './use-composer-draft'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const mockComposerApi = { setText: vi.fn() }
 
 vi.mock('@assistant-ui/react', () => ({
@@ -774,7 +771,7 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     getByLabelText('Other control').focus()
     rerender(<Draft focusKey="second" />)
     expect(globalThis.document.activeElement).toBe(getByLabelText(focused))
-    $shellChoice.set(true)
+    $shellChoice.set(null)
   })
 
   it('claims the bus on mount when visible', () => {

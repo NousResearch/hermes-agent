@@ -2,10 +2,9 @@ import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
-import { $shellChoice } from '@/store/shell-variant'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
@@ -47,9 +46,6 @@ const toggle = (label: string) =>
   globalThis.document.querySelector<HTMLButtonElement>(
     `[data-tree-group="terminal-zone"] button[aria-label="${label}"]`
   )!
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 afterEach(() => {
   if (root) {

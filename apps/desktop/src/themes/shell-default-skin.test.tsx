@@ -24,7 +24,7 @@ const mount = () =>
 
 beforeEach(() => {
   window.localStorage.clear()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 afterEach(() => {

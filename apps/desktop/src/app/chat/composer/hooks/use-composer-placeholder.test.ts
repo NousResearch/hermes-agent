@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { firstTimeCopy } from '@/app/discovery/first-time-copy'
 import { en } from '@/i18n/en'
@@ -8,9 +8,6 @@ import { $guidanceLedger } from '@/store/guidance-ledger'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { useComposerPlaceholder } from './use-composer-placeholder'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 const starters: readonly string[] = en.composer.newSessionPlaceholders
 const followUps: readonly string[] = en.composer.followUpPlaceholders
@@ -32,7 +29,7 @@ function renderPlaceholder(initialProps: Props = { scope: fresh, sessionId: null
 }
 
 afterEach(() => {
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   $guidanceLedger.set({})
 })
 

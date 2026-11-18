@@ -152,9 +152,6 @@ function mountDeletion(owner: SessionOwnerRoute) {
   }
 }
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(deleteSession).mockResolvedValue({ ok: true })

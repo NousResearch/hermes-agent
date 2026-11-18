@@ -15,9 +15,6 @@ import type { ChatBarState } from './types'
 
 import { ChatBar } from './index'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 // The HUD keeps the classic look in every mode; that must not hand it the classic first run's
 // composer rules while the redesign (and so the setup guide) is the user's preference.
 vi.mock('@/store/windows', async importOriginal => ({
@@ -70,12 +67,12 @@ afterEach(() => {
   cleanup()
   $onboardingSession.set(null)
   $onboardingPhase.set('idle')
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 describe('composer onboarding rules in the HUD', () => {
   it('follow the redesign preference', () => {
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     render(<Harness />)
 
     expect(skip()).toBeNull()

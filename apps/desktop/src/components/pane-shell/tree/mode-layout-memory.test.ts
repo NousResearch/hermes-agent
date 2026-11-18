@@ -4,6 +4,8 @@ import type { LayoutNode } from './model'
 
 beforeEach(() => {
   window.localStorage.clear()
+  // Pins the classic shell, whose layout keeps the keys asserted here.
+  window.localStorage.setItem('hermes.desktop.agentShell.v1', 'false')
   vi.resetModules()
 })
 
@@ -197,3 +199,37 @@ it.each(['advanced', 'simple'] as const)(
     expect(reloaded.model.allPaneIds(restoredTree)).toEqual(reloaded.model.allPaneIds(expectedTree))
   }
 )
+
+it('keeps the redesign developer panel out of the classic layout across runtime toggles and reloads', async () => {
+  const app = await boot()
+  const { model, tree, snapshot } = app
+  const shell = await import('@/store/shell-variant')
+  const { prepareDeveloperToolPanel } = await import('@/app/redesign/developer-tool-panel')
+  const classic = snapshot()
+  const classicStored = { ...window.localStorage }
+
+  shell.setPortalPreferred(true)
+  prepareDeveloperToolPanel('terminal')
+  const panel = model.findGroupOfPane(tree.$layoutTree.get()!, 'terminal')!
+  expect(panel.panes).toEqual(['files', 'review', 'terminal'])
+  expect(tree.$activePresetId.get()).toBe('custom')
+  const portal = snapshot()
+
+  shell.setPortalPreferred(false)
+  expect(snapshot()).toEqual(classic)
+
+  for (const key of Object.keys(classicStored).filter(key => key.startsWith('hermes.desktop.layout'))) {
+    expect(window.localStorage.getItem(key)).toBe(classicStored[key])
+  }
+
+  shell.setPortalPreferred(true)
+  expect(snapshot()).toEqual(portal)
+
+  vi.resetModules()
+  const reloaded = await boot()
+  // Terminal visibility is session state (it boots collapsed); the arrangement is what persists.
+  expect(reloaded.model.findGroupOfPane(reloaded.tree.$layoutTree.get()!, 'terminal')!.panes).toEqual(panel.panes)
+  expect(reloaded.snapshot()).toMatchObject({ placed: portal.placed, preset: 'custom' })
+  ;(await import('@/store/shell-variant')).setPortalPreferred(false)
+  expect(reloaded.snapshot()).toEqual(classic)
+})

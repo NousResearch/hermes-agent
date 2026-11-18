@@ -1,5 +1,5 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 
 import { $shellChoice } from '@/store/shell-variant'
 import { type ThemeContextValue, ThemeProvider, useTheme } from '@/themes/context'
@@ -8,20 +8,17 @@ import { installUserTheme, removeUserTheme } from '@/themes/user-themes'
 
 import { ComposerSurfaceBacking } from './composer-surface-backing'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const customName = 'shell-integration-custom'
 
 afterEach(() => {
   cleanup()
   removeUserTheme(customName)
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   localStorage.clear()
 })
 
 it('keeps the normal shell across real light, dark and custom skins, with classic rollback', () => {
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   installUserTheme({ ...nousTheme, name: customName, label: 'Custom shell test' })
   let appearance!: ThemeContextValue
 

@@ -6,14 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
-import { $shellChoice } from '@/store/shell-variant'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
 import { settingsPagesCopy } from './settings-pages-copy'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 vi.mock('@/i18n', () => ({
   isBundledLocale: (locale: string) => locale === 'en',

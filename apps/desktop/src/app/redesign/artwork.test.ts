@@ -26,9 +26,6 @@ function launches(mode: ArtworkMode, count: number): Artwork[] {
   return seen
 }
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 describe('the launch rotation', () => {
   it('walks every dark artwork in Figma order, then starts over', () => {
     expect(launches('dark', 6)).toEqual(['wing', 'angel', 'ascend', 'karborn', 'vanilla', 'wing'])

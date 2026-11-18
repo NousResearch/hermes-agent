@@ -103,3 +103,26 @@ def test_a_mid_chat_route_switch_makes_the_next_request_offload_first():
     assert prompt_cache_is_cold(agent) is False
     agent.model = "z-ai/glm-5.1"
     assert prompt_cache_is_cold(agent) is True
+
+
+def test_a_keep_alive_served_at_ultrafast_is_billed_at_the_served_tier():
+    """OpenAI reports the served ``service_tier`` on the response, not in ``usage``: a keep-alive
+    replay served at Ultrafast books Ultrafast prices, as a normal turn does."""
+    agent = _agent("gpt-6.1-sol")
+    agent.provider, agent.base_url = "openai", "https://api.openai.com/v1"
+    served = agent.client._create
+
+    def _ultrafast(**kw):
+        response = served(**kw)
+        response.service_tier = "ultrafast"
+        return response
+
+    agent.client.chat.completions.create = _ultrafast
+    request = {"model": "gpt-6.1-sol", "max_tokens": 4096, "stream": True, "service_tier": "ultrafast",
+               "messages": [{"role": "system", "content": "sys " * 9000}, {"role": "user", "content": "hi"}]}
+    assert _respond(agent, request) is None
+    pcl.end_turn_prompt_cache_warming(agent)
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    warmer._refresh(warmer._run)
+    # gpt-6.1-sol Ultrafast, $/M: input 12, output 60, cache read 0.60 (Standard would be 1/6 of it)
+    assert agent.session_estimated_cost_usd == pytest.approx(100 * 12e-6 + 1 * 60e-6 + 39_900 * 0.6e-6)

@@ -296,6 +296,51 @@ Decode the captured OTLP payload and assert the new name/attribute is present
 AND that no content leaked. When a real collector sits in front, add its
 allowlist entries and re-verify against the backend, not just the local capture.
 
+## Status reports to a deployment URL
+
+Separate from the OTLP export above, and off unless the hosting deployment turns
+it on. A deployment that wants to know its gateway is alive without polling it
+stamps `GATEWAY_STATUS_REPORT_URL` into the gateway's launch environment. The
+gateway then POSTs a small report to that URL about every two minutes (`beat`),
+and one more just before it suspends its own machine under scale-to-zero
+(`goodbye`).
+
+- **Only the deployment can turn it on.** There is no default URL and no
+  `config.yaml` key. The variable is launch-only: a value in a profile `.env` or
+  from a secret source is ignored, and the `.env` writers refuse it.
+- **URL shape.** An absolute `https` URL whose `t` query parameter holds the
+  credential, the shape of `GATEWAY_RELAY_SLEEP_URL`. The gateway moves the
+  credential into `Authorization: Bearer` and sends to the URL without it. The
+  URL and the credential are never logged.
+- **One sender per machine.** Only the default profile's gateway reports, and it
+  holds a machine-local lock while it does, so a host that runs one gateway per
+  profile sends one stream of reports.
+- **Replies.** `2xx` is stored. `429`/`503` wait for `Retry-After`, at most 10
+  minutes. `401`/`403` back off 2, 4, 8, 16, 32 and then 60 minutes until a
+  report is stored again. A network error or another `5xx` gets one retry a few
+  seconds later. The reply body is never read, so a receiver cannot steer the
+  gateway.
+
+What a report carries, and nothing else:
+
+| Field | Content |
+| --- | --- |
+| `v`, `kind`, `seq`, `boot_id` | Contract version `1`, `beat` or `goodbye`, a counter per process, a random id per gateway start |
+| `status.gateway_running` | `true` |
+| `status.gateway_state` | Lifecycle state code |
+| `status.gateway_exit_reason` | Bounded code or `null`, never free text |
+| `status.gateway_platforms` | Per platform key: `state` and, when one is set, `error_code` |
+| `status.nous_session_valid` | `valid`, `terminal` or `unknown` |
+
+`status` is the form an unverified `/api/status` caller already gets, cut down to
+these fields. Platform keys are the ones that endpoint shows: `<platform>`, or
+`<profile>:<platform>` for a platform the gateway serves for another profile.
+No install id, profile list, session counts, messages, prompts, config, error
+text, paths or version are sent.
+
+The contract and its test vectors are in `tests/fixtures/status_report/v1/`; the
+code is `gateway/status_report/`.
+
 ## Boundaries and roadmap
 
 The `hermes monitoring` CLI intentionally exposes `status` only. This first

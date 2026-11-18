@@ -726,7 +726,8 @@ class HostedRoomService:
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
-        changed, room_id, local_profiles = False, str(room["room_id"]), self.room_profiles(room)
+        changed, room_id = False, str(room["room_id"])
+        local_profiles = None
         cursor = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
@@ -734,6 +735,8 @@ class HostedRoomService:
                 room_id=room_id, task_id=task["identity"].task_id, status=status,
                 execution_generation=execution_generation):
                 continue
+            if local_profiles is None:
+                local_profiles = self.room_profiles(room)
             task_events = self.policy_checkpoint.events_for_task(
                 room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
                 input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)

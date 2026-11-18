@@ -1,6 +1,7 @@
 """A stalled preparation can be cancelled without repairing its cause (#149660)."""
 
 import asyncio
+from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -204,3 +205,25 @@ def test_replay_checks_for_new_work_without_reading_event_pages(tmp_path, monkey
     assert call("groups.stop", cancel_id="original") == {"cancelled": 0}
     assert pages == []
     assert call("groups.state")["driver_status"]["pending_actions"]
+
+
+def test_stop_cannot_publish_a_second_stall_when_profile_discovery_fails(
+    tmp_path, monkeypatch
+):
+    service, call, _ = stalled_service(tmp_path, monkeypatch)
+
+    def unavailable():
+        raise PermissionError("profiles directory is unreadable")
+
+    monkeypatch.setattr(service, "local_profiles", unavailable)
+    assert call("groups.stop", cancel_id="stop") == {"cancelled": 0}
+    (binding,) = service.bindings()
+    for _ in range(STALL_ATTEMPTS):
+        with suppress(PermissionError):
+            service.runtime.prepare_room(binding)
+    assert [event["kind"] for event in call("groups.log")["events"]] == [
+        "message.user",
+        "member.unavailable",
+        "room.stop_requested",
+    ]
+    assert call("groups.state")["driver_status"]["pending_actions"] == []

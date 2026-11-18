@@ -3,6 +3,7 @@ from dataclasses import asdict
 
 from gateway import hosted_room_driver as tasks
 from persistence.core.errors import AuthorityRefusal
+from persistence.gateway.hosted_rooms import StaleTaskError
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, _TerminalReceipt, discarded_receipt, room_session_title,
 )
@@ -75,10 +76,13 @@ class HostedControls:
         return result
 
     def _cancel_deferred(self, task, cancel_id):
-        result = tasks.cancel_deferred_task(self.store, task['identity'], placement=self.placement, cancel_id=cancel_id,
-                                   expected_execution_generation=task['execution_generation'],
-                                   expected_cancel_generation=task['cancel_generation'],
-                                   clock=self.runtime.clock)
+        try:
+            result = tasks.cancel_deferred_task(
+                self.store, task['identity'], placement=self.placement, cancel_id=cancel_id,
+                expected_execution_generation=task['execution_generation'],
+                expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
+        except StaleTaskError as exc:
+            raise AuthorityRefusal('stale_generation') from exc
         self.runtime.wakeup()
         return result
 

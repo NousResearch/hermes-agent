@@ -6,7 +6,6 @@ import sqlite3
 import time
 
 import pytest
-from persistence.gateway.hosted_rooms import StaleTaskError
 from aiohttp import web
 
 from gateway import hosted_room_driver as driver
@@ -149,9 +148,9 @@ async def test_delayed_discard_cannot_cancel_a_newer_deferred_attempt(gateway, m
         return closed
 
     monkeypatch.setattr(service, 'close_peer_admission', delayed_confirmation)
-    with pytest.raises(StaleTaskError):
-        await asyncio.to_thread(service.discard_room_task, 'linked', member_id='reviewer',
-                                task_id=identity.task_id, execution_generation=1)
+    result = await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
+                        task_id=identity.task_id, execution_generation=1)
+    assert result == 'stale_generation'
     task = driver.get_task(db, identity, placement='profile')
     assert (task['status'], task['execution_generation']) == ('deferred', 2)
 

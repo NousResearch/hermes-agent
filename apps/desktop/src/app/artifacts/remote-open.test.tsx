@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { _resetItemIndexForTests } from '@/store/item-index'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ArtifactsView } from './index'
 
@@ -30,72 +32,84 @@ vi.mock('@/hermes', async () => ({
 afterEach(() => {
   cleanup()
   $connection.set(null)
+  $shellChoice.set(null)
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+  window.localStorage.clear()
+  _resetItemIndexForTests()
 })
 
-it('keeps discovered file paths and originating session scope intact through remote opening', async () => {
-  getSessionMessages.mockResolvedValue({
-    messages: [
-      {
-        role: 'assistant',
-        timestamp: 1000,
-        content: paths.map(path => `MEDIA:${path}`).join(' ') + ' https://example.com/report.txt'
-      }
-    ],
-    session_id: 'artifact-session'
-  })
-  const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
-  const openExternal = vi.fn()
-  vi.stubGlobal('hermesDesktop', { saveGatewayFile, openExternal })
-  $connection.set({
-    isFullscreen: false,
-    nativeOverlayWidth: 0,
-    logs: [],
-    windowButtonPosition: null,
-    mode: 'remote',
-    connectionId: 'remote-fixture',
-    profile: 'writer',
-    baseUrl: 'http://localhost',
-    token: '',
-    wsUrl: ''
-  })
-  render(
-    <MemoryRouter>
-      <ArtifactsView />
-    </MemoryRouter>
-  )
-
-  for (const name of [
-    'USER.md',
-    'report.md',
-    'parent.md',
-    'home.txt',
-    'child.txt',
-    'ancestor.txt',
-    'drive.txt',
-    'unc.txt',
-    'absolute.txt'
-  ]) {
-    fireEvent.click(await screen.findByRole('button', { name }))
-  }
-
-  await waitFor(() => expect(saveGatewayFile).toHaveBeenCalledTimes(paths.length))
-  expect(saveGatewayFile.mock.calls.map(([request]) => request)).toEqual(
-    paths.map(path => ({
+it.each([false, true])(
+  'keeps file paths and originating scope intact through remote opening (V2=%s)',
+  async enabled => {
+    $shellChoice.set(enabled)
+    getSessionMessages.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          timestamp: 1000,
+          content: paths.map(path => `MEDIA:${path}`).join(' ') + ' https://example.com/report.txt'
+        }
+      ],
+      session_id: 'artifact-session'
+    })
+    const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
+    const openExternal = vi.fn()
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile, openExternal })
+    $connection.set({
+      isFullscreen: false,
+      nativeOverlayWidth: 0,
+      logs: [],
+      windowButtonPosition: null,
+      mode: 'remote',
       connectionId: 'remote-fixture',
-      profile: 'origin-profile',
-      sessionId: 'artifact-session',
-      path,
-      suggestedName: path.split(/[\\/]/).pop()
-    }))
-  )
-  expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
-  expect(openExternal).not.toHaveBeenCalled()
-  expect(getSessionMessages).toHaveBeenCalledWith('artifact-session', 'origin-profile', {
-    includeCompacted: true,
-    limit: expect.any(Number),
-    offset: 0,
-    order: 'oldest'
-  })
-})
+      profile: 'writer',
+      baseUrl: 'http://localhost',
+      token: '',
+      wsUrl: ''
+    })
+    // The redesign's All view shows a short table; its Files tab lists every file.
+    render(
+      <MemoryRouter initialEntries={[enabled ? '/?tab=file' : '/']}>
+        <ArtifactsView />
+      </MemoryRouter>
+    )
+
+    for (const name of [
+      'USER.md',
+      'report.md',
+      'parent.md',
+      'home.txt',
+      'child.txt',
+      'ancestor.txt',
+      'drive.txt',
+      'unc.txt',
+      'absolute.txt'
+    ]) {
+      fireEvent.click(await screen.findByRole('button', { name }))
+    }
+
+    await waitFor(() => expect(saveGatewayFile).toHaveBeenCalledTimes(paths.length))
+    expect(saveGatewayFile.mock.calls.map(([request]) => request)).toEqual(
+      paths.map(path => ({
+        connectionId: 'remote-fixture',
+        profile: 'origin-profile',
+        sessionId: 'artifact-session',
+        path,
+        suggestedName: path.split(/[\\/]/).pop()
+      }))
+    )
+
+    if (!enabled) {
+      expect(screen.getByRole('link').getAttribute('href')).toBe('https://example.com/report.txt')
+    }
+
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(getSessionMessages).toHaveBeenCalledWith('artifact-session', 'origin-profile', {
+      includeCompacted: true,
+      limit: expect.any(Number),
+      offset: 0,
+      order: 'oldest'
+    })
+  }
+)

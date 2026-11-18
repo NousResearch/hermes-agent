@@ -3,9 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { getToolsets, type ProfileScope, profileScopeKey } from '@/hermes'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { normalize } from '@/lib/text'
-import type { ToolsetInfo } from '@/types/hermes'
+import type { EnvVarInfo, ToolsetInfo } from '@/types/hermes'
 
 import { includesQuery, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
+import type { KeyGroup } from '../../settings/keys-settings'
 
 // Toolsets live in the RQ cache so switching tabs/pages paints the cached list
 // instantly (no reload flash) and mount only fires a deduped background
@@ -37,7 +38,19 @@ export type ToolsetThemeId = 'work' | 'create' | 'recall' | 'connect' | 'more'
 export const TOOLSET_THEMES: ReadonlyArray<{ id: Exclude<ToolsetThemeId, 'more'>; names: readonly string[] }> = [
   {
     id: 'work',
-    names: ['browser', 'computer_use', 'web', 'terminal', 'file', 'code_execution', 'cronjob', 'kanban', 'delegation', 'todo', 'clarify']
+    names: [
+      'browser',
+      'computer_use',
+      'web',
+      'terminal',
+      'file',
+      'code_execution',
+      'cronjob',
+      'kanban',
+      'delegation',
+      'todo',
+      'clarify'
+    ]
   },
   {
     id: 'create',
@@ -62,7 +75,8 @@ export const TOOLSET_FEATURE_MIN = 8
 /** The feature row before there's usage to rank by. */
 export const TOOLSET_ESSENTIALS: readonly string[] = ['browser', 'file', 'code_execution', 'memory']
 
-export const toolsetTheme = (name: string): { id: ToolsetThemeId } => TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
+export const toolsetTheme = (name: string): { id: ToolsetThemeId } =>
+  TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
 
 export function filteredToolsets(
   toolsets: ToolsetInfo[],
@@ -107,4 +121,28 @@ export function toolsetSearchTerms(toolsets: ToolsetInfo[]): string[] {
     .filter(ts => isDesktopToolsetVisible(ts.name) && toolNames(ts).length > 0)
     .slice(0, 5)
     .map(ts => toolNames(ts)[0])
+}
+
+/** What one agent has on: its enabled toolsets and the distinct tools they bring (895:14659). */
+export function enabledToolsetSummary(toolsets: ToolsetInfo[]): { toolsets: number; tools: number } {
+  const on = toolsets.filter(ts => ts.enabled && isDesktopToolsetVisible(ts.name))
+
+  return { toolsets: on.length, tools: new Set(on.flatMap(toolNames)).size }
+}
+
+/** Group an env key under the toolset that calls it (the one sharing most of its tools), so Tools ›
+ *  Advanced reads by service (895:23456); keys no visible toolset calls fall under `otherLabel`. */
+export function toolsetKeyGroup(toolsets: ToolsetInfo[], otherLabel: string): (info: EnvVarInfo) => KeyGroup {
+  const visible = toolsets.filter(ts => isDesktopToolsetVisible(ts.name))
+  const toolSets = visible.map(ts => new Set(toolNames(ts)))
+
+  return info => {
+    const overlaps = toolSets.map(names => info.tools.filter(tool => names.has(tool)).length)
+    const best = Math.max(0, ...overlaps)
+    const index = overlaps.indexOf(best)
+
+    return best === 0
+      ? { label: otherLabel, order: visible.length }
+      : { label: toolsetDisplayLabel(visible[index]), order: index }
+  }
 }

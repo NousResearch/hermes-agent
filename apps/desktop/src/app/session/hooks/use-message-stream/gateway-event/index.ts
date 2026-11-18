@@ -21,6 +21,7 @@ import { handleDeferredPickEvent } from './deferred-pick'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
+import { recordStreamedItems } from './library-items'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleOnboardingEvent } from './onboarding'
@@ -313,6 +314,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId) {
           noteSessionEvent(sessionId)
           retireTurnToolProgress(event.type, sessionId)
+          recordStreamedItems(ctx)
         }
       }
     },

@@ -1,13 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
-import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ModelSettings } from './model-settings'
+import { SettingsOwnerContext } from './profile-scope'
+
+// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
+beforeEach(() => $shellChoice.set(true))
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -42,7 +48,8 @@ vi.mock('@/hermes', async () => ({
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
-  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
+  profileScopeKey: (scope?: null | string | { connectionId?: string; profile: string }) =>
+    scope && typeof scope === 'object' ? `${scope.connectionId}::${scope.profile}` : (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -134,6 +141,54 @@ describe('ModelSettings profile scope', () => {
     expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
     expect(getMoaModels).toHaveBeenCalledWith('research')
   })
+})
+
+describe('ModelSettings auxiliary deep links', () => {
+  it.each([true, false])(
+    'reveals and focuses Vision before consuming its link (agent layout: %s)',
+    async agentLayout => {
+      const auxiliary = Promise.withResolvers<{
+        main: { provider: string; model: string }
+        tasks: { task: string; provider: string; model: string; base_url: string }[]
+      }>()
+
+      getAuxiliaryModels.mockReturnValueOnce(auxiliary.promise)
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      function Location() {
+        return <output data-testid="route">{useLocation().search}</output>
+      }
+
+      render(
+        <MemoryRouter initialEntries={['/settings?tab=config:model&aux=vision&panel=settings']}>
+          <QueryClientProvider client={client}>
+            <ModelSettings advancedOpen={false} agentLayout={agentLayout} />
+            <Location />
+          </QueryClientProvider>
+        </MemoryRouter>
+      )
+
+      expect(screen.getByTestId('route').textContent).toContain('aux=vision')
+      expect(window.document.getElementById('aux-task-vision')).toBeNull()
+
+      await act(async () => {
+        auxiliary.resolve({
+          main: { provider: 'nous', model: 'hermes-4' },
+          tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+        })
+      })
+
+      await waitFor(() => expect(screen.getByTestId('route').textContent).not.toContain('aux='))
+      const vision = window.document.getElementById('aux-task-vision')
+
+      expect(vision).not.toBeNull()
+      expect(window.document.activeElement).toBe(vision)
+      expect(vision?.closest('details')?.open).toBe(agentLayout ? true : undefined)
+      expect(screen.getByTestId('route').textContent).toContain('panel=settings')
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
 })
 
 describe('ModelSettings', () => {
@@ -565,6 +620,30 @@ describe('ModelSettings', () => {
     )
   })
 
+  it.each([
+    ['repaints the live model for the active agent', 'default', 1],
+    ['leaves the live model alone for another agent', 'research', 0]
+  ])('%s after an owner-scoped main apply', async (_label, profile, repaints) => {
+    $activeGatewayProfile.set('default')
+    const onMainModelChanged = vi.fn()
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile }}>
+            <ModelSettings onMainModelChanged={onMainModelChanged} />
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalled())
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'success' })))
+    expect(onMainModelChanged).toHaveBeenCalledTimes(repaints)
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
       ok: true,
@@ -605,7 +684,7 @@ describe('ModelSettings', () => {
       expect(await screen.findByText(/仍由/)).toBeTruthy()
       expect(screen.getByText('openrouter')).toBeTruthy()
       expect(
-        screen.getAllByRole('button', { name: TRANSLATIONS[locale].settings.model.resetAllToMain }).length
+        screen.getAllByRole('button', { name: resolveTranslations(locale).settings.model.resetAllToMain }).length
       ).toBeGreaterThan(0)
       expect(screen.queryByText(/still run on/)).toBeNull()
       expect(setModelAssignment).not.toHaveBeenCalled()
@@ -810,7 +889,7 @@ describe('ModelSettings MoA preset editor', () => {
     'localizes MoA preset and reference controls in %s without changing their saved identities',
     async locale => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      const m = TRANSLATIONS[locale].settings.model
+      const m = resolveTranslations(locale).settings.model
       render(
         <MemoryRouter>
           <I18nProvider configClient={null} initialLocale={locale}>
@@ -820,9 +899,9 @@ describe('ModelSettings MoA preset editor', () => {
           </I18nProvider>
         </MemoryRouter>
       )
-      expect(m.moaDescription).not.toBe(TRANSLATIONS.en.settings.model.moaDescription)
-      expect(m.moaReferenceHint).not.toBe(TRANSLATIONS.en.settings.model.moaReferenceHint)
-      expect(m.moaAggregatorBilled).not.toBe(TRANSLATIONS.en.settings.model.moaAggregatorBilled)
+      expect(m.moaDescription).not.toBe(resolveTranslations('en').settings.model.moaDescription)
+      expect(m.moaReferenceHint).not.toBe(resolveTranslations('en').settings.model.moaReferenceHint)
+      expect(m.moaAggregatorBilled).not.toBe(resolveTranslations('en').settings.model.moaAggregatorBilled)
       await screen.findByText(m.moaDescription)
       expect(screen.getByText(m.moaReferenceTitle(1))).toBeTruthy()
       expect(screen.getByText(m.moaAggregator)).toBeTruthy()
@@ -978,7 +1057,7 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     // First visit: the deliberate cross-provider pin surfaces the banner.
     renderModelSettings()
     expect(await screen.findByText(/still run on/)).toBeTruthy()
-    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss }))
+    fireEvent.click(await screen.findByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss }))
 
     await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
 
@@ -995,7 +1074,7 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     renderModelSettings()
     expect(await screen.findByText(/still run on/)).toBeTruthy()
     // The dismiss affordance is offered again for the new configuration.
-    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeTruthy()
+    expect(screen.getByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss })).toBeTruthy()
   })
 
   it('keeps the post-switch notice undismissable — it announces a change that just happened', async () => {
@@ -1013,7 +1092,24 @@ describe('ModelSettings stale-aux banner dismissal', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
 
     expect(await screen.findByText(/still run on/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeNull()
+    expect(screen.queryByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss })).toBeNull()
+  })
+})
+
+describe('ModelSettings agent layout', () => {
+  it('shows a load failure without opening the closed model picker', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(new Error('catalog unreachable'))
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <ModelSettings agentLayout />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByText(/catalog unreachable/)).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: 'Provider' })).toBeNull()
   })
 })
 

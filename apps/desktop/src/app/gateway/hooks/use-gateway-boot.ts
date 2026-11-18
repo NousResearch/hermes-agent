@@ -68,6 +68,7 @@ import {
   isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
+import { forgetItemIndexOwner } from '@/store/item-index'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import {
@@ -1397,6 +1398,7 @@ export function useGatewayBoot({
         // owner hints naming it so its sessions are not pinned (fail-closed)
         // to a route that no longer exists.
         forgetSessionOwnerHintsForConnection(payload.connectionId)
+        forgetItemIndexOwner(payload.connectionId)
       }
     })
 

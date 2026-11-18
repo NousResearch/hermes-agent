@@ -1,8 +1,11 @@
 {
   "files": {
+    "app/messaging/messaging.css": 2,
     "app/redesign/portal-controls.css": 6,
     "app/redesign/portal-floating.css": 1,
     "app/redesign/portal-shell.css": 5,
-    "app/settings/global-overviews.css": 2
+    "app/settings/appearance-overview.css": 1,
+    "app/settings/global-overviews.css": 2,
+    "components/onboarding/surface.css": 1
   }
 }

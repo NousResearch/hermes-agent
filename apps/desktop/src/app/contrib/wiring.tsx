@@ -16,21 +16,17 @@ import { useLocation, useNavigate } from 'react-router'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
-import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
-import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
-import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { leaveIntro } from '@/components/onboarding/first-run/intro'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
-import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
-import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -59,6 +55,7 @@ import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $profileScope,
+  $sessionListProfileScope,
   type AgentProfileRoute,
   ALL_PROFILES,
   ensureGatewayProfile,
@@ -90,7 +87,10 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
+import { usePortalShell } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -155,6 +155,7 @@ import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
+import { useBandHiddenTools } from '../shell/band-tools'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
@@ -165,7 +166,7 @@ import {
   titlebarToolsWidthCss,
   TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
-import { TitlebarControls } from '../shell/titlebar-controls'
+import { TitlebarControls, TitlebarSessionTab } from '../shell/titlebar-controls'
 import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { useStableNavigateSource } from '../stable-navigate'
@@ -185,6 +186,7 @@ import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { MainWindowOverlays } from './main-window-overlays'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
@@ -220,17 +222,26 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
   }, [navigate, routeRequest])
 }
 
-// The main window asks the backend whether first-run onboarding is due and opens it with main's
-// intro around it; every other window never runs it, so its first-run surfaces are free at once.
-// Settings' Run onboarding again opens its chat through the same opener.
+// Both modes own their decision promise; a live toggle re-reads without deleting a classic chat.
 function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResume, gatewayOpen: boolean): void {
+  const setupGuide = useStore($setupGuideOnboarding)
+  const lastMode = useRef<boolean | null>(null)
+  // eslint-disable-next-line no-restricted-syntax -- previous processed mode detects transitions; never read as current state
   useEffect(() => {
     if (!isMainWindow()) {
       markOnboardingDecided()
     } else if (gatewayOpen) {
-      void decideOnboarding(request, open, { intro: firstRunIntro() })
+      const switched = lastMode.current !== null && lastMode.current !== setupGuide
+      lastMode.current = setupGuide
+
+      if (setupGuide) {
+        leaveIntro()
+        void decideSetupGuide(request, switched)
+      } else {
+        void decideOnboarding(request, open, { intro: firstRunIntro(), freshLaunch: !switched }, switched)
+      }
     }
-  }, [gatewayOpen, open, request])
+  }, [gatewayOpen, open, request, setupGuide])
 
   useEffect(() => {
     if (!isMainWindow()) {
@@ -351,6 +362,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const sessionListProfileScope = useStore($sessionListProfileScope)
   const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -441,7 +453,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
-    useSessionListActions({ profileScope })
+    useSessionListActions({ profileScope: sessionListProfileScope })
 
   const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionIdRef,
@@ -1232,7 +1244,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const shownTool = shownInMode(interfaceMode)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
+
+  const bandHidden = useBandHiddenTools()
+
+  const clusters = titlebarAppActionsClusterCounts(
+    appActionsSide,
+    leftExtraCount,
+    0,
+    interfaceMode,
+    usePortalShell() ? bandHidden : undefined
+  )
+
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
@@ -1277,35 +1299,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           />
         )}
         {children}
+        {!isHudWindow() && !isBrowserWindow() && <TitlebarSessionTab />}
       </div>
 
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
-      {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
-        <DesktopOnboardingOverlay
-          enabled={gatewayState === 'open'}
-          onCompleted={() => {
-            void refreshHermesConfig()
-            void refreshCurrentModel()
-            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-          }}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {!isAuxiliaryWindow() && <OnboardingEnd />}
-      {!isAuxiliaryWindow() && (
-        <SharedMetricsConsentDialog
-          enabled={gatewayState === 'open'}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      <MainWindowOverlays
+        enabled={gatewayState === 'open'}
+        onCompleted={() => {
+          void refreshHermesConfig()
+          void refreshCurrentModel()
+          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+        }}
+        onSelectModel={selectModel}
+        profile={activeGatewayProfile}
+        requestGateway={requestGateway}
+      />
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

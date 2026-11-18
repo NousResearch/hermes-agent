@@ -18,6 +18,7 @@ import { isOnboardingChat } from './onboarding-session'
 import { $activeGatewayProfile, $freshSessionRequest, $newChatProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
 import { $sessionTiles } from './session-states'
+import { $shellChoice } from './shell-variant'
 
 const ensureProfile = async (): Promise<void> => undefined
 
@@ -46,6 +47,7 @@ function backend(state: { eligible: boolean; run: boolean }, runId: null | strin
 }
 
 beforeEach(() => {
+  $shellChoice.set(false)
   // SAFETY: factsSource reads only `mode`; a local connection skips the machine comparison.
   $connection.set({ mode: 'local' } as never)
   setPrimaryGatewayConnectionId('local')
@@ -98,6 +100,18 @@ describe('onboarding run', () => {
     expect($onboardingPhase.get()).toBe('done')
     expect($onboardingEnded.get()).toBe('done')
     expect($onboardingSurfaceClear.get()).toBe(true)
+  })
+
+  it('releases a classic client when the sessionless guide retires its run', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    expect(isOnboardingChat('rt-1')).toBe(true)
+
+    noteOnboardingEnded({ outcome: 'replaced', run_id: 'run-1', stored_session_id: 'st-1' })
+
+    expect($onboardingPhase.get()).toBe('skipped')
+    expect($onboardingSurfaceClear.get()).toBe(true)
+    expect(isOnboardingChat('rt-1')).toBe(false)
   })
 
   it('frees the first-run surfaces in another chat mid-run and arms the end-of-onboarding wait', async () => {
@@ -288,4 +302,19 @@ describe('onboarding run', () => {
     expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingEnded.get()).toBeNull()
   })
+})
+
+it('ignores a pending classic start after switching to redesigned setup', async () => {
+  const response = Promise.withResolvers<unknown>()
+  const request = vi.fn(() => response.promise)
+  const intro = { failed: vi.fn(), opened: vi.fn(), started: vi.fn(), starting: vi.fn() }
+  resume.mockClear()
+  const starting = startOnboarding(request as OnboardingRequest, resume, { ensureProfile, intro })
+  await vi.waitFor(() => expect(request).toHaveBeenCalled())
+  $shellChoice.set(true)
+  response.resolve({ resumed: false, run_id: 'late', session_id: 'late', stored_session_id: 'late' })
+  expect(await starting).toBe(false)
+  expect(intro.started).not.toHaveBeenCalled()
+  expect(intro.opened).not.toHaveBeenCalled()
+  expect(resume).not.toHaveBeenCalled()
 })

@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import type { SessionInfo } from '@/hermes'
 import { $sessions } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CommandCenterView } from './index'
 
@@ -23,6 +24,7 @@ vi.mock('./maintenance', () => ({ MaintenancePanel: () => null }))
 afterEach(() => {
   cleanup()
   $sessions.set([])
+  $shellChoice.set(null)
 })
 
 const SESSION = {
@@ -48,7 +50,9 @@ describe('Command Center session open carries the row', () => {
     $sessions.set([SESSION])
   })
 
-  it('passes the clicked ROW to onOpenSession, not a bare id', async () => {
+  it.each([false, true])('passes the clicked ROW to onOpenSession in simplified mode %s', async simplified => {
+    $shellChoice.set(simplified)
+    $sessions.set([SESSION, { ...SESSION, id: 'newer', title: 'Recent notes', last_active: SESSION.last_active! + 100 }])
     const onOpenSession = vi.fn()
     render(
       <MemoryRouter>
@@ -61,7 +65,12 @@ describe('Command Center session open carries the row', () => {
       </MemoryRouter>
     )
 
-    const title = await screen.findByText('Remote conversation')
+    expect((await screen.findAllByText(/^(Remote conversation|Recent notes)$/)).map(node => node.textContent)).toEqual([
+      'Recent notes', 'Remote conversation'
+    ])
+    fireEvent.change(screen.getByPlaceholderText('Search sessions, views, and actions'), { target: { value: 'Remote' } })
+    await waitFor(() => expect(screen.queryByText('Recent notes')).toBeNull())
+    const title = screen.getByText('Remote conversation')
     fireEvent.click(title.closest('button') as HTMLButtonElement)
 
     expect(onOpenSession).toHaveBeenCalledWith(SESSION.id, SESSION)

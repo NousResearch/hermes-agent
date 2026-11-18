@@ -1,5 +1,14 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import {
+  downloadGatewayMediaFile,
+  type GatewayFileOrigin,
+  isArtifactFilePath,
+  isRemoteGateway,
+  mediaExternalUrl,
+  mediaPathFromMarkdownHref,
+  resolveMediaDisplaySrc
+} from '@/lib/media'
+import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -112,7 +121,7 @@ function looksLikeArtifact(value: string, explicit = false): boolean {
   return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
 }
 
-function artifactSessionTitle(session: SessionInfo): string {
+export function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
 
@@ -584,4 +593,61 @@ export async function loadArtifactsForSessions(
   }
 
   return { artifacts, failures }
+}
+
+/** Page numbers to show for `page` of `pageCount`: all of them up to seven, else the first, the
+ *  last and the current one's neighbours, with gaps between. */
+export function paginationItems(page: number, pageCount: number): Array<number | 'ellipsis'> {
+  if (pageCount <= 7) {
+    return Array.from({ length: pageCount }, (_, index) => index + 1)
+  }
+
+  const pages: Array<number | 'ellipsis'> = [1]
+  const start = Math.max(2, page - 1)
+  const end = Math.min(pageCount - 1, page + 1)
+
+  if (start > 2) {
+    pages.push('ellipsis')
+  }
+
+  for (let nextPage = start; nextPage <= end; nextPage += 1) {
+    pages.push(nextPage)
+  }
+
+  if (end < pageCount - 1) {
+    pages.push('ellipsis')
+  }
+
+  pages.push(pageCount)
+
+  return pages
+}
+
+/** Open a file or link record (classic's Artifacts page and the redesign's Library). */
+export async function openArtifactRecord(
+  artifact: ArtifactRecord,
+  origin: GatewayFileOrigin,
+  failedLabel: string
+): Promise<void> {
+  try {
+    // A gateway-local file resolves to file:// in remote mode (the file
+    // lives on the gateway, not this disk). Opening that locally fails —
+    // and an OAuth remote connection has no query token to build a download
+    // URL. Fetch the bytes over the authenticated fs bridge instead.
+    // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
+    // expanding them on the client would target the wrong home or cwd.
+    if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
+      await downloadGatewayMediaFile(artifact.value, origin)
+
+      return
+    }
+
+    if (window.hermesDesktop?.openExternal) {
+      await window.hermesDesktop.openExternal(artifact.href)
+    } else {
+      window.open(artifact.href, '_blank', 'noopener,noreferrer')
+    }
+  } catch (err) {
+    notifyError(err, failedLabel)
+  }
 }

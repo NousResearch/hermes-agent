@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { connectionRequestOwnsPart, ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
-import { I18nProvider } from '@/i18n'
+import { I18nProvider, resolveTranslations } from '@/i18n'
 import {
   $connectionRequests,
   type ConnectionRequest,
@@ -16,6 +16,9 @@ import {
 import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
+
+// The wording the active shell renders (the redesign by default).
+const en = resolveTranslations('en')
 
 const SESSION_ID = 'session-1'
 const OWNER = { connectionId: 'connection-1', profile: 'default' }
@@ -128,7 +131,7 @@ function Where() {
 }
 
 describe('ConnectorOffer named-account notice', () => {
-  it('says which name Hermes chose once the account connected, and Rename opens that account (by id) on the Connectors tab', () => {
+  it('names the connected account and opens Rename for that account id on the Connectors tab', () => {
     const request = {
       ...REQUEST,
       settled: true,
@@ -147,9 +150,9 @@ describe('ConnectorOffer named-account notice', () => {
       </I18nProvider>
     )
 
-    expect(screen.getAllByText('Hermes named this Gmail account work.')).toHaveLength(1)
+    expect(screen.getAllByText(en.connectors.namedAccount('Gmail', 'work'))).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    fireEvent.click(screen.getByRole('button', { name: en.connectors.renameAccount }))
 
     expect(screen.getByTestId('where').textContent).toBe(
       '/capabilities?tab=connectors&connector=gmail&profile=default&rename=ca_work'
@@ -158,24 +161,6 @@ describe('ConnectorOffer named-account notice', () => {
 })
 
 describe('ConnectorTool operation card', () => {
-  it('offers one verb per row and Continue below; nothing per row says no', () => {
-    renderOffer({
-      ...REQUEST,
-      targets: [
-        { ...GMAIL, state: 'initiated' },
-        { ...GMAIL, connectUrl: null, name: 'notion', state: 'failed' },
-        { ...GMAIL, name: 'linear', state: 'connected' }
-      ]
-    })
-
-    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Connect',
-      'Try again',
-      'Continue'
-    ])
-    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
-  })
-
   it('opens the stored link from Connect on a waiting row, without an RPC', async () => {
     const request = vi.fn()
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.

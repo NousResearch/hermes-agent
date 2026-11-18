@@ -67,7 +67,7 @@ describe('PluginsTab catalog card for a standalone desktop plugin', () => {
               searchPlaceholder="Search plugins"
               searchValue=""
             >
-              <PluginsTab onQueryChange={() => undefined} profile={null} query="" />
+              <PluginsTab agentControls={false} onQueryChange={() => undefined} profile={null} query="" />
             </PageSearchShell>
           </MemoryRouter>
         </QueryClientProvider>

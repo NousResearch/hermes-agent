@@ -27,7 +27,12 @@ vi.mock('@/store/settings-scope', () => ({
   $settingsScopeOverride: atom<null | string>('B'),
   $settingsScopeProfile: atom('B')
 }))
-vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => null }))
+vi.mock('./profile-scope', () => ({
+  SettingsProfileScope: () => null,
+  settingsScopeProfile: (scope: unknown) => scope,
+  useSettingsOwner: () => undefined,
+  useSettingsRequestScope: (requested: unknown) => requested
+}))
 vi.mock('../hooks/use-on-profile-switch', () => ({ useOnProfileSwitch: () => {} }))
 vi.mock('@/store/projects', () => ({
   $worktreeRefreshToken: atom(0),

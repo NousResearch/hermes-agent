@@ -1,11 +1,12 @@
 import type { OnboardingStartResult } from '@hermes/shared'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { $chatOnboardingSolo, $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { type OnboardingRequest, startOnboarding } from '@/store/onboarding-run'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { $introCopy } from './intro'
 import { firstRunIntro } from './kickoff'
@@ -31,6 +32,7 @@ const adopt = vi.fn(async (storedId: string) => {
 })
 
 beforeEach(() => {
+  $shellChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size } }
@@ -44,6 +46,8 @@ beforeEach(() => {
   size.mockClear()
   adopt.mockClear()
 })
+
+afterEach(() => $shellChoice.set(true))
 
 describe('first-run kickoff', () => {
   it('lands on the chat onboarding.start returned and opens the intro over it', async () => {

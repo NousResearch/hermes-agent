@@ -17,6 +17,7 @@ import {
   skipOnboarding
 } from '@/store/onboarding-run'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { OnboardingSettings } from './onboarding-settings'
 
@@ -48,6 +49,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  $shellChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size }, guestOnboardingEnabled: true }

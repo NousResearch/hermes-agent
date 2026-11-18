@@ -3,7 +3,6 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { SetupBeat } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { Puzzle } from 'lucide-react'
 import { type ComponentType, type ReactNode, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -11,7 +10,7 @@ import { CLARIFY_ICON_CLASS } from '@/components/assistant-ui/clarify/core/shell
 import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
 import { AccentPickerCard } from '@/components/assistant-ui/theme-picker/accent-picker-card'
 import { LayoutPickerCard } from '@/components/assistant-ui/theme-picker/layout-picker-card'
-import { LayoutDashboard, MessageQuestion, Palette, Plug } from '@/lib/icons'
+import { LayoutDashboard, MessageQuestion, Palette, Plug, Puzzle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { applyAppearance } from '@/store/appearance-apply'
 import {

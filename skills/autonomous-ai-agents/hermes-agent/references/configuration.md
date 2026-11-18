@@ -32,7 +32,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | Toolset | What it provides |
 |---------|-----------------|
 | `web` / `search` | Web search + extraction / search-only subset |
-| `browser` | `browser_exec` (Python CDP helpers), `browser_cdp`, `browser_dialog`, `browser_vault` — local Chromium, a cloud provider, or `/browser connect`. Disable this toolset to turn browsing off |
+| `browser` | `browser_exec` (Python CDP helpers), `browser_cdp`, `browser_dialog`, `browser_vault`. Uses local Chromium, a cloud provider, or `/browser connect`. Disable this toolset to turn browsing off |
 | `terminal` | Shell commands and process management |
 | `file` | File read/write/search/patch |
 | `code_execution` | Sandboxed Python execution |
@@ -59,7 +59,7 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 
 Camofox is no longer built in: `hermes plugins install camofox` adds it as the `camofox` toolset with its own browser tools. Existing Camofox setups are migrated automatically on `hermes update`.
 
-Tool changes take effect on `/reset` (new session) — never mid-conversation, to preserve prompt caching.
+Tool changes take effect on `/reset` (new session): never mid-conversation, to preserve prompt caching.
 
 ## Voice
 

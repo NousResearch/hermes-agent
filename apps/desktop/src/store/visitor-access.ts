@@ -1,0 +1,69 @@
+/**
+ * The app's one answer to "must this visitor sign up before anything runs?" and its one way to start
+ * sign up (lib/visitor-access.ts has the rule and what is real today).
+ *
+ * Read once per page: the serving page's globals do not change under it, and signing up is a full
+ * navigation away and back. Tests and the dev harness put the app in the signed-out state the way the
+ * hosting will, by injecting `__HERMES_SIGN_UP_URL__` before the app loads (or by setting
+ * `$visitorAccess` in a unit test).
+ */
+
+import { atom, computed } from 'nanostores'
+
+import { isBrowserHostedDesktop } from '@/lib/platform'
+import type { BrowserHostGlobals } from '@/lib/platform'
+import {
+  OPEN_ACCESS,
+  signInFailedAt,
+  signUpHref,
+  type VisitorAccess,
+  visitorAccessFrom,
+  withoutSignInOutcome
+} from '@/lib/visitor-access'
+
+import { recordIaAction } from './ia-metrics'
+
+export const $visitorAccess = atom<VisitorAccess>(OPEN_ACCESS)
+
+/** Nothing this visitor sends runs until they sign up. */
+export const $signUpRequired = computed($visitorAccess, access => access.kind === 'sign_up_required')
+
+/** Sign up came back without signing the visitor in. Cleared by the next attempt. */
+export const $signInFailed = atom(false)
+
+/** main.tsx, before the first render: settle access from the page, and take a failed sign-in's report
+ *  off the address so a reload does not say it again. */
+export function installVisitorAccess(): void {
+  const pageUrl = window.location.href
+
+  const access = visitorAccessFrom({
+    nativeApp: Boolean(window.hermesDesktop) && !isBrowserHostedDesktop(),
+    pageUrl,
+    signUpUrl: (window as Window & BrowserHostGlobals).__HERMES_SIGN_UP_URL__
+  })
+
+  $visitorAccess.set(access)
+  $signInFailed.set(access.kind === 'sign_up_required' && signInFailedAt(pageUrl))
+
+  const clean = withoutSignInOutcome(pageUrl)
+
+  if (clean !== pageUrl) {
+    window.history.replaceState(window.history.state, '', clean)
+  }
+}
+
+export type SignUpEntry = 'chat' | 'splash' | 'tray'
+
+/** Leave for sign up, which returns to this same place (this chat, this page) when it is done. A
+ *  no-op where sign up is not required. */
+export function startSignUp(from: SignUpEntry): void {
+  const access = $visitorAccess.get()
+
+  if (access.kind !== 'sign_up_required') {
+    return
+  }
+
+  recordIaAction(`ia.sign_up.${from}`)
+  $signInFailed.set(false)
+  window.location.assign(signUpHref(access.signUpUrl, window.location.href))
+}

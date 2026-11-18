@@ -103,6 +103,7 @@ import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
+import { useHeldPromptRun } from '../discovery/held-prompt-run'
 import { NewVersionNotice } from '../discovery/new-version-notice'
 import { NotificationBell } from '../discovery/notification-tray'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -838,10 +839,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
 
-  // The global-hotkey Quick Entry window's bridge: its captured text rides the
-  // SAME submit machinery the normal composer uses (current chat / picked
-  // session / new session), and it hears gateway truth from this window.
+  // The Quick Entry window's captured text, and a message held until sign up (held-prompt-run.ts),
+  // ride the SAME submit machinery the normal composer uses (current chat / picked session / new
+  // session), hearing gateway truth from this window.
   useQuickEntryBridge({ submitText, submitTextToNewSession })
+  useHeldPromptRun(submitTextToNewSession)
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })

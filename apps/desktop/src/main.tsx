@@ -48,6 +48,7 @@ import { isTransparentWindow } from './lib/transparent-windows'
 import { startUiPreferencesSync } from './lib/ui-preferences/sync'
 import { installBrowserTabTitle } from './store/browser-tab-title'
 import { installShellAttribute } from './store/shell-variant'
+import { installVisitorAccess } from './store/visitor-access'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -64,6 +65,8 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 installShellAttribute()
 // The launch's artwork (redesign only), on <html> before the first paint so no other art flashes.
 installArtworkAttributes()
+// Whether this visitor must sign up before anything runs: settled from the serving page, once.
+installVisitorAccess()
 // Body-portalled surfaces clear the band through this root property, in every window.
 installTitlebarBandProperty()
 // The redesign's sheets below wide: CSS lifts the rail into a compact sheet and stands the band down.

@@ -950,19 +950,11 @@ class StoreHolder:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
         return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchone())
 
-    def _read_all(
-        self, sql: str, params: Any = (), *,
-        rescope: Optional[Callable[[sqlite3.DatabaseError], sqlite3.DatabaseError]] = None,
-    ) -> list[sqlite3.Row]:
-        """``fetchall()`` of one read-only statement via ``_read_ctx``; *rescope*: see ``_read_retrying_ioerr``."""
-        def read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-            return conn.execute(sql, params).fetchall()
-        return self._read_retrying_ioerr(read) if rescope is None else self._read_retrying_ioerr(read, rescope=rescope)
+    def _read_all(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
+        """``fetchall()`` of one read-only statement via ``_read_ctx``."""
+        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall())
 
-    def _read_retrying_ioerr(
-        self, fn: Callable[[sqlite3.Connection], T], *,
-        rescope: Optional[Callable[[sqlite3.DatabaseError], sqlite3.DatabaseError]] = None,
-    ) -> T:
+    def _read_retrying_ioerr(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Run an idempotent SELECT through ``_read_ctx``, retrying a transient SQLITE_IOERR.
 
         A warm ``mode=ro`` pooled reader can hit the same millisecond-wide WAL transition window as a
@@ -971,12 +963,7 @@ class StoreHolder:
         the -shm index (#100871, WSL2 ext4-on-vhdx, multi-process). The window closes on its own, so
         the statement is replayed on the SAME connection within the read-only IOERR budget -- never
         closed and reopened (close() cancels this process's POSIX locks for every sibling connection),
-        never quarantined (busy is not broken). A persistent IOERR exhausts the budget and propagates.
-
-        *rescope* maps a corruption-class error to the one that is published and raised, BEFORE the
-        storage-health latch sees it: a caller that knows its statement's error code is masked
-        (FTS5's ``ORDER BY rank`` sorter, see search ``_rescope_ranked_fts_corruption``) returns the
-        index-scoped error so damage to a derived index never latches the whole store."""
+        never quarantined (busy is not broken). A persistent IOERR exhausts the budget and propagates."""
         for attempt in range(_READ_ONLY_IOERR_RETRY_ATTEMPTS + 1):
             try:
                 with self._read_ctx() as conn:
@@ -989,11 +976,8 @@ class StoreHolder:
             except sqlite3.DatabaseError as exc:
                 # A reader is often the only observer (the sidebar poll on a store nobody is
                 # writing to): publish structural damage so the list is not read as empty.
-                scoped = rescope(exc) if rescope is not None else exc
-                note_storage_error(self.db_path, scoped)
-                if scoped is exc:
-                    raise
-                raise scoped from exc
+                note_storage_error(self.db_path, exc)
+                raise
 
     def _ensure_db_file_generation(self) -> None:
         """Mint a once-per-file generation stamp (state_meta + application_id). First opener wins (INSERT

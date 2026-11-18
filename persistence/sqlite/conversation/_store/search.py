@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Collection, Optional
+from typing import Any, Collection, Optional
 from persistence.sqlite._state.common import fts_rebuild_admission
 from sqlite_support import routed_sessions_setting
 from storage_errors import is_fts_scoped_corruption_error, is_malformed_db_error
@@ -449,55 +449,56 @@ def _fts_match_sql(table: str, match_query: str, order_by_sql: str, *, limit: in
     return sql, params
 
 
-def _rescope_ranked_fts_corruption(
-    holder: StoreHolder, table: str, match_query: str, order_by_sql: str,
-) -> Optional[Callable[[sqlite3.DatabaseError], sqlite3.DatabaseError]]:
-    """``rescope`` for a ranked MATCH read (see ``StoreHolder._read_retrying_ioerr``); None for any
-    other ordering: only the rank-only sort masks the code (``newest``/``oldest`` keep it).
-
-    FTS5 evaluates ``ORDER BY rank`` in a nested sorter statement, and SQLite returns that
-    statement's error masked to the primary code: index damage bm25 reports as
-    ``SQLITE_CORRUPT_VTAB`` (e.g. a posting whose ``_docsize`` row is gone) reaches the caller
-    as bare ``SQLITE_CORRUPT``, which reads as whole-file damage and latches the store. Only for
-    that bare code, re-ask the index alone, unsorted (bm25 in the outer statement keeps the
-    extended code). An index-scoped answer replaces the error; anything else — the probe
-    passing, or failing some other way — keeps the original, so real damage still fails closed."""
-    if order_by_sql != _FTS_RANK_ORDER_BY:
-        return None
-    # FTS5 refuses bm25() inside an aggregate, so the probe streams the rows (nothing is kept).
-    probe_sql = f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?"
-
-    def rescope(exc: sqlite3.DatabaseError) -> sqlite3.DatabaseError:
-        if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_CORRUPT:
-            return exc
-        try:
-            with holder._read_ctx() as conn:
-                for _ in conn.execute(probe_sql, (match_query,)):
-                    pass
-        except sqlite3.DatabaseError as probe_exc:
-            if is_fts_scoped_corruption_error(probe_exc):
-                logger.warning("%s ranked MATCH reported bare SQLITE_CORRUPT; the index alone reports %s, "
-                               "so this is index damage, not a corrupt state.db", table, probe_exc)
-                return probe_exc
-        except sqlite3.Error:
-            # A probe that cannot run (closed handle, misuse) proves nothing: keep the original error.
-            logger.debug("%s rank-corruption probe could not run; keeping the original error", table, exc_info=True)
+def _attribute_ranked_corruption(
+    conn: sqlite3.Connection, table: str, match_query: str, order_by_sql: str, exc: sqlite3.DatabaseError,
+) -> sqlite3.DatabaseError:
+    """The error to raise for a failed MATCH read: FTS5 runs ``ORDER BY rank`` in a nested sorter
+    statement whose error SQLite masks to the primary code, so index damage bm25 reports as
+    ``SQLITE_CORRUPT_VTAB`` arrives as bare ``SQLITE_CORRUPT`` and would latch the whole store.
+    For that case only, re-ask the index on the same connection without the sort, which keeps the
+    extended code; any other outcome keeps *exc*, so damage the index does not reproduce fails closed."""
+    if order_by_sql != _FTS_RANK_ORDER_BY or getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_CORRUPT:
         return exc
+    try:
+        # bm25() is refused inside an aggregate, so stream the rows.
+        for _ in conn.execute(f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?", (match_query,)):
+            pass
+    except sqlite3.DatabaseError as probe_exc:
+        if is_fts_scoped_corruption_error(probe_exc):
+            logger.warning("%s ranked MATCH reported bare SQLITE_CORRUPT; the index alone reports %s, "
+                           "so this is index damage, not a corrupt state.db", table, probe_exc)
+            return probe_exc
+        logger.debug("%s rank-corruption probe failed another way; keeping the original error", table, exc_info=True)
+    return exc
 
-    return rescope
+
+def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, **kwargs) -> list[dict[str, Any]]:
+    """One MATCH read whose corruption error is attributed before ``_read_retrying_ioerr`` publishes it
+    to the storage-health latch (see ``_attribute_ranked_corruption``)."""
+    sql, params = _fts_match_sql(table, match_query, order_by_sql, **kwargs)
+
+    def read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        try:
+            return conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError as exc:
+            attributed = _attribute_ranked_corruption(conn, table, match_query, order_by_sql, exc)
+            if attributed is exc:
+                raise
+            raise attributed from exc
+
+    return [dict(row) for row in holder._read_retrying_ioerr(read)]
 
 
 def _match_rows(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, *, fail_open: Optional[str] = None,
                 operational_debug: Optional[str] = None, **kwargs) -> Optional[list[dict[str, Any]]]:
     """Run one MATCH against *table*; ``None`` when the query cannot execute (tokenizer /
-    syntax) so the caller falls back. *fail_open* names the index for the
-    substring-capable routes: a corruption-class ``DatabaseError`` there detaches the
-    derived indexes (``_enter_fts_fail_open``) and answers from canonical rows — a live
+    syntax) or, with *fail_open*, after a corruption-class ``DatabaseError`` detached the derived
+    indexes (``_enter_fts_fail_open``): the caller then answers from canonical rows, and a live
     search never runs the unbounded rebuild. Other ``DatabaseError``s propagate."""
-    sql, params = _fts_match_sql(table, match_query, order_by_sql, **kwargs)
     try:
-        rescope = _rescope_ranked_fts_corruption(holder, table, match_query, order_by_sql)
-        return [dict(row) for row in holder._read_all(sql, params, rescope=rescope)]
+        return _fts_match_read(holder, table, match_query, order_by_sql, **kwargs)
     except sqlite3.OperationalError:
         if operational_debug:
             logger.debug(operational_debug, exc_info=True)
@@ -679,10 +680,8 @@ def _search_messages_impl(
     if is_cjk:
         matches = _search_cjk(holder, query, wants_unindexed_rows, route)
     else:
-        sql, params = _fts_match_sql("messages_fts", query, **route)
         try:
-            rescope = _rescope_ranked_fts_corruption(holder, "messages_fts", query, order_by_sql)
-            matches = [dict(row) for row in holder._read_all(sql, params, rescope=rescope)]
+            matches = _fts_match_read(holder, "messages_fts", query, **route)
         except sqlite3.OperationalError:
             return []  # FTS5 syntax error despite sanitization
         except sqlite3.DatabaseError as exc:

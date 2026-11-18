@@ -22,7 +22,7 @@ from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import FTS_TOOL_CONTENT_PREFIX_CHARS
 from persistence.sqlite._state.health import STORAGE_CORRUPT, STORAGE_OK, reset_storage_state, storage_state
 from persistence.sqlite.conversation._store.messages import append_message
-from persistence.sqlite.conversation._store.search import _rescope_ranked_fts_corruption, search_messages
+from persistence.sqlite.conversation._store.search import search_messages
 from persistence.sqlite.conversation._store.sessions import create_session
 
 # The v3 projection cuts tool rows at FTS_TOOL_CONTENT_PREFIX_CHARS; this body puts the
@@ -81,11 +81,10 @@ def test_ranked_search_over_orphaned_posting_stays_index_scoped(tmp_path):
 
         rows = search_messages(holder, "orphanword")
 
-        # Answered (LIKE fail-open over canonical rows), not raised; the file is not latched.
         assert any("survives" in (row.get("snippet") or "") for row in rows)
-        assert holder._fts_stale  # the fail-open path detached the index for the repair paths
+        assert holder._fts_stale
         assert storage_state(path) == STORAGE_OK
-        create_session(holder, "after", source="cli")  # writes still accepted
+        create_session(holder, "after", source="cli")
     finally:
         holder.close()
 
@@ -114,7 +113,6 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
 
         reopened._execute_write(lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (row_id,)))
 
-        # No orphaned "frag" posting: the ranked read and FTS5's strict checker both pass.
         reopened._conn.execute(
             "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'frag*' ORDER BY rank").fetchall()
         reopened._conn.execute("INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
@@ -186,24 +184,29 @@ def test_or_relaxed_retry_over_orphaned_posting_answers_from_canonical_rows(tmp_
         holder.close()
 
 
-def test_genuine_corruption_on_the_ranked_path_still_latches(tmp_path):
-    """The rescope only re-attributes when the index itself reports damage: a bare
-    SQLITE_CORRUPT the FTS-only probe cannot reproduce stays structural and latches."""
+def test_genuine_corruption_on_the_ranked_path_still_latches(tmp_path, monkeypatch):
+    """A bare SQLITE_CORRUPT the index alone does not reproduce stays structural and latches."""
     path = tmp_path / "state.db"
     holder = _open(path)
     try:
         create_session(holder, "s", source="cli")
         append_message(holder, "s", role="user", content="healthyword")
-        rescope = _rescope_ranked_fts_corruption(holder, "messages_fts", "healthyword*", "ORDER BY rank")
-        assert _rescope_ranked_fts_corruption(holder, "messages_fts", "x", "ORDER BY m.timestamp DESC") is None
+        original = holder._read_retrying_ioerr
 
-        def corrupt(_conn):
-            exc = sqlite3.DatabaseError("database disk image is malformed")
-            exc.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
-            raise exc
+        class CorruptRankedRead:
+            def __init__(self, conn):
+                self._conn = conn
 
+            def execute(self, sql, *args):
+                if "ORDER BY rank" in sql:
+                    exc = sqlite3.DatabaseError("database disk image is malformed")
+                    exc.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+                    raise exc
+                return self._conn.execute(sql, *args)
+
+        monkeypatch.setattr(holder, "_read_retrying_ioerr", lambda fn: original(lambda conn: fn(CorruptRankedRead(conn))))
         with pytest.raises(sqlite3.DatabaseError) as raised:
-            holder._read_retrying_ioerr(corrupt, rescope=rescope)
+            search_messages(holder, "healthyword")
         assert raised.value.sqlite_errorcode == sqlite3.SQLITE_CORRUPT
         assert storage_state(path) == STORAGE_CORRUPT
     finally:

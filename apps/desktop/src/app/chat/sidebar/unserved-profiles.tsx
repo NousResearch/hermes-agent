@@ -2,7 +2,7 @@ import { type ComponentProps, useEffect, useState } from 'react'
 
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 import { cn } from '@/lib/utils'
 import { normalizeProfileKey } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -20,7 +20,7 @@ export function useUnservedProfiles(profiles: readonly ProfileInfo[]): ReadonlyS
   const [unserved, setUnserved] = useState(NONE)
 
   useEffect(() => {
-    const roster = isBrowserHostedDesktop() ? window.hermesDesktop?.getAgentRoster : undefined
+    const roster = hostHas('servedProfileRoster') ? window.hermesDesktop?.getAgentRoster : undefined
 
     if (!roster || !profiles.length) {
       return

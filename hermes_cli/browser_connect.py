@@ -1055,7 +1055,9 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
 
 def _detach_kwargs(system: str) -> dict:
     if system != "Windows":
-        return {"start_new_session": True}
+        # /browser connect launches the USER's debug browser: it must outlive this Hermes (the connection persists in
+        # BROWSER_CDP_URL and a later session re-attaches to it), and it is never ours to stop.
+        return {"start_new_session": True}  # detached-spawn: ok — the user's browser, meant to outlive Hermes
     flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
              | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     return {"creationflags": flags} if flags else {}

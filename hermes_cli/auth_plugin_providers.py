@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import threading
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 # can be "OAuth-shaped with nobody to log them in": a bundled OAuth provider (nous, openai-codex …)
 # declares the same auth_type but its login lives in core.
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
+
+
+_SYNCING = threading.local()  # .active: this thread runs the pending mirror
 
 
 class HomeScopedRegistry(dict):
@@ -63,13 +67,38 @@ class HomeScopedRegistry(dict):
             return row
         return _home_row(row, user, from_profile=mirrored and shared is None)
 
+    _sync_pending = False
+
+    def sync_before_first_read(self) -> None:
+        """Mirror plugin profiles (:func:`sync_plugin_provider_registry`) before the first read."""
+        self._sync_pending = True
+
+    def _ready(self) -> None:
+        """Run the pending mirror on this read. No lock is held across it (it lists providers,
+        which reads config): concurrent first readers each run the idempotent sync. Never while
+        ``providers`` is mid-discovery: a partial profile list would mirror a provider that a
+        later, higher-priority registration replaces (discovery's completion sync runs then)."""
+        if not self._sync_pending or getattr(_SYNCING, "active", False):
+            return
+        import providers
+        if getattr(providers, "_discovering", False):
+            return
+        _SYNCING.active = True  # the sync reads the registry
+        try:
+            sync_plugin_provider_registry()
+        finally:
+            _SYNCING.active = False
+        self._sync_pending = False
+
     def __getitem__(self, key: str) -> Any:
+        self._ready()
         row = self._view(key, dict.__getitem__(self, key), _resolver())
         if row is None:
             raise KeyError(key)
         return row
 
     def get(self, key: str, default: Any = None) -> Any:
+        self._ready()
         row = dict.get(self, key)
         row = None if row is None else self._view(key, row, _resolver())
         return default if row is None else row
@@ -78,6 +107,7 @@ class HomeScopedRegistry(dict):
         return self.get(key) is not None
 
     def items(self) -> list[tuple[str, Any]]:
+        self._ready()
         resolve = _resolver()
         views = ((key, self._view(key, row, resolve)) for key, row in dict.items(self))
         return [(key, row) for key, row in views if row is not None]

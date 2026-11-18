@@ -21,6 +21,8 @@ export const jaNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。',
+    restoredDraftAttachmentsDropped:
+      '未送信のメッセージの添付ファイルは復元されませんでした。送信する前にもう一度添付してください。',
     mcpReloadDeferred:
       'このチャットは処理中です。MCP の変更は現在のターンが終わって MCP を再読み込みしたとき、またはチャットを開き直したときに反映されます',
     mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,

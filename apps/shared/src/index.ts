@@ -61,11 +61,13 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { INSTALL_ORIGIN, PACKAGE_MARKER, PLUGIN_CATALOG_NAME_RE } from './desktop-plugin-files'
 export { type ExternalUrlTarget, externalUrlTarget } from './external-url'
 export { fileUrlToNativePath } from './file-url'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'
+export { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from './hermes-cloud'
 export {
   applyDocumentLocale,
   type EndonymLocale,
@@ -84,6 +86,7 @@ export {
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
   type JsonRpcErrorPayload,
+  jsonRpcErrorReason,
   type JsonRpcFrame,
   JsonRpcGatewayError,
   JsonRpcRequestChannel,

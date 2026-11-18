@@ -27,6 +27,8 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import TypeGuard
 
+from agent.proxy_bypass import is_loopback_host
+from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import hermes_user_agent
@@ -345,7 +347,8 @@ def check_nous_free_tier(*, force_fresh: bool = False, cached_only: bool = False
 # [{modelName}], {paid,free}Recommended{Compaction,Vision}Model: {modelName} | null
 # ---------------------------------------------------------------------------
 
-NOUS_RECOMMENDED_MODELS_PATH = "/api/nous/recommended-models"
+NOUS_RECOMMENDED_MODELS_MIRROR = "https://web-assets.nousresearch.com/dynamic"
+_NOUS_MIRROR_TIMEOUT: float = 2.0  # seconds: a hanging mirror delays the Portal fallback by at most this
 _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 # (result_dict, monotonic timestamp), scoped to the profile and portal.
 _nous_recommended_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
@@ -387,12 +390,9 @@ def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
 def fetch_nous_recommended_models(
     portal_base_url: str = "", timeout: float = 5.0, *, force_refresh: bool = False
 ) -> dict[str, Any]:
-    """Fetch the Portal's public ``/api/nous/recommended-models`` payload (no auth).
-
-    Reuse successful results for ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds, including across
-    process restarts. ``force_refresh`` bypasses both caches. Stale disk data remains a fallback
-    on live failure; reading it never renews its freshness.
-    """
+    """Fetch the Portal's public recommended models (no auth): its R2 mirror, else the Portal itself.
+    Results are reused for ``_NOUS_RECOMMENDED_CACHE_TTL`` s across restarts unless ``force_refresh``;
+    stale disk data is the fallback on failure, and reading it never renews its freshness."""
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     now = time.monotonic()
     cache_key = (_pricing_profile_key(), base)
@@ -404,19 +404,20 @@ def fetch_nous_recommended_models(
         data, age = disk
         _nous_recommended_cache[cache_key] = (data, now - age)
         return data
-    try:
-        data = _get_json(
-            f"{base}{NOUS_RECOMMENDED_MODELS_PATH}", timeout=timeout,
-            headers={"Accept": "application/json", "Accept-Encoding": "gzip"}
-        )
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
-    if data:
-        _write_nous_recommended_disk(base, data)
+    parts = urllib.parse.urlsplit(base)
+    mirror = [] if is_loopback_host(parts.hostname) else [
+        (f"{NOUS_RECOMMENDED_MODELS_MIRROR}/{parts.netloc}", min(timeout, _NOUS_MIRROR_TIMEOUT))]
+    for origin, origin_timeout in [*mirror, (base, timeout)]:  # the Portal itself when its mirror is missing (404) or failing
+        try:
+            data = _get_json(f"{origin}/api/nous/recommended-models", timeout=origin_timeout,
+                             headers={"Accept": "application/json", "Accept-Encoding": "gzip"})
+        except Exception:
+            continue
+        if isinstance(data, dict) and data:
+            _write_nous_recommended_disk(base, data)
+            break
     else:
-        data = disk[0] if disk is not None else data
+        data = disk[0] if disk is not None else {}
     _nous_recommended_cache[cache_key] = (data, now)
     return data
 
@@ -1227,10 +1228,11 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw.split("/", 1)[1] if "/" in raw else raw
 
 
-def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """Return whether Hermes should expose the /fast toggle for this model."""
+def model_supports_fast_mode(model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None) -> bool:
+    """Whether to expose /fast for this model; a Bedrock-only one only on the route its request builder tiers."""
     from agent.model_metadata import is_grok_46_family
-
+    if model_id in BEDROCK_ULTRAFAST_ROUTES:
+        return normalize_provider(provider) == "bedrock" and bedrock_fast_mode_overrides(model_id, base_url, "ultrafast") is not None
     return (
         _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
@@ -1246,7 +1248,7 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
 
 
 def _fast_mode_route_supported(
-    model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
+    model_id: Optional[str], provider: Optional[str], base_url: Optional[str], tier: Optional[str] = None) -> bool:
     """Only the first-party endpoint that bills for fast mode may receive its params."""
     from urllib.parse import urlparse
 
@@ -1257,11 +1259,10 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
-        allowed = {
-            "openai": "api.openai.com",
-            "openai-api": "api.openai.com",
-            "openai-codex": "chatgpt.com",
-        }
+        from hermes_cli.models_fast_regions import openai_fast_region_allows
+        if openai_fast_region_allows(base_url, model_id, tier):
+            base_url = "https://api.openai.com"  # Eligibility only; the runtime URL stays regional.
+        allowed = {"openai": "api.openai.com", "openai-api": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
         return False
     host = (urlparse(str(base_url or "")).hostname or "").lower()
@@ -1280,15 +1281,13 @@ def resolve_fast_mode_overrides(
     model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
     tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
-    """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
-    ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
-    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
-    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
-    With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
-    never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
+    """Route/model-gated fast overrides for /fast and bounded windows; None if unsupported.
+    Ultrafast never silently downgrades to Priority. Bedrock has its own capability matrix."""
+    if normalize_provider(provider) == "bedrock":
+        return bedrock_fast_mode_overrides(model_id, base_url, tier)
     if not model_supports_fast_mode(model_id):
         return None
-    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
+    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url, tier):
         return None
     if tier == "ultrafast":
         return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
@@ -1473,12 +1472,8 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not base_url:
         return None
     model_cfg = _get_model_config_dict()
-    # Try common API key env vars for custom endpoints.
-    api_key = (
-        str(model_cfg.get("api_key", "") or "").strip()
-        or os.getenv("CUSTOM_API_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-        or os.getenv("OPENROUTER_API_KEY", ""))
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+    api_key = custom_catalog_probe_api_key(model_cfg, base_url)
     api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
@@ -1690,12 +1685,12 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
         profile = get_provider_profile(normalized)
         if profile is None or getattr(profile, "auth_type", "") != "api_key":
             return None
-        api_key, _ = _api_key_credentials(normalized)
+        from hermes_cli.auth_declared_providers import relay_probe_api_key
+        api_key = relay_probe_api_key(normalized, relay, *_api_key_credentials(normalized))
         live = profile.fetch_models(api_key=api_key, base_url=relay)
         return [str(m) for m in (live or []) if m] or None
     except Exception:
         return None
-
 
 
 # Canonical fetchers that already resolve `model.base_url` themselves for the configured
@@ -1881,17 +1876,9 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # External-process providers discover models through the launched program, so the command /
-    # argv env overrides identify the catalog the way an API key identifies an HTTP catalog.
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider)
-        if profile is not None and profile.auth_type == "external_process":
-            for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
-                if ev:
-                    parts.append(f"{ev}={os.environ.get(ev, '')}")
-    except Exception:
-        pass
+    from hermes_cli.models_process_fingerprint import process_catalog_identity
+    process_profile, process_parts = process_catalog_identity(provider)
+    parts += process_parts
 
     # config.yaml's model.base_url changes the endpoint discovery probes (data-residency hosts)
     # without touching any env var, so it must change the fingerprint too.
@@ -1930,8 +1917,9 @@ def _credential_fingerprint(provider: str) -> str:
         ]
 
     def _mtime_part(label: str, path) -> None:
+        from utils import file_cache_version  # hashed every time: keys a disk cache later processes read
         try:
-            parts.append(f"{label}@{os.stat(path).st_mtime_ns}")
+            parts.append(f"{label}@{file_cache_version(path, always_digest=True)}")
         except FileNotFoundError:
             parts.append(f"{label}@missing")
         except Exception:
@@ -1939,8 +1927,12 @@ def _credential_fingerprint(provider: str) -> str:
 
     if provider == "openai-codex":
         from hermes_cli.codex_models import codex_catalog_credential_identity
-
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
+    elif process_profile is not None:
+        # Only the profile's own files: the vendor CLI rewrites its token file on every refresh (#129094).
+        for rel in process_profile.catalog_credential_files:
+            path = os.path.expanduser(rel)
+            _mtime_part(path, path)
     else:
         try:
             from hermes_constants import get_hermes_home
@@ -1996,8 +1988,10 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
-    """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
+    slug = _normalized_cache_slug(provider)
+    return codex_model_requires_account_discovery(model) if slug == "openai-codex" else (
+        slug in {"openai", "openai-api"} and is_astra_model(model))
 
 
 def cached_provider_model_ids(
@@ -2006,10 +2000,8 @@ def cached_provider_model_ids(
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
     result. Always returns a list.
 
-    ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
-    A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
-    cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
-    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
+    ``non_blocking`` never waits for a provider probe (#114215). Only fresh verified rows can
+    advertise account-gated models; stale rows may be served while a daemon refreshes them."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -2022,15 +2014,14 @@ def cached_provider_model_ids(
 
     if not force_refresh:
         tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
-        if tier is not None:
+        if tier is not None and entry is not None:
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
-            return _chat_catalog_rows(list(entry["models"]))
+            verified = tier == "fresh" and not entry.get("fallback")
+            return _chat_catalog_rows([m for m in entry["models"] if verified or not _model_requires_account_discovery(normalized, m)])
 
     if non_blocking and not force_refresh:
-        # Read path: never touch the network in the caller's thread. A same-credentials row past the
-        # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
-        # warms the next open; a cold row returns [] and the caller falls back to its curated list.
+        # Serve same-credential hints past the SWR window while the daemon warms the next open.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
             return _chat_catalog_rows([
@@ -2124,16 +2115,16 @@ def _fetch_anthropic_models(
     timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[list[str]]:
     """Sorted model ids from the Anthropic /v1/models endpoint, or None. Credentials: explicit
-    ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
-    API-key credential_pool entry."""
+    ``api_key``, else ``anthropic_discovery_token`` (the Foundry key at azure.com, else env / OAuth /
+    Claude Code), else (off Foundry) a read-only API-key credential_pool entry."""
     try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import _is_oauth_token
     except ImportError:
         return None
 
-    resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
-    if not token:
+    from hermes_cli.runtime_provider import anthropic_discovery_token  # Foundry: never the OAuth token (#154242)
+    resolved_base_url, token = base_url, anthropic_discovery_token(api_key, base_url)
+    if token == "":
         # A pool credential and its endpoint are one security boundary — never pair the pool key
         # with a caller-provided endpoint.
         token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()

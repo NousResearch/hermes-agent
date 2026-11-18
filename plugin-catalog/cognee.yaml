@@ -1,13 +1,14 @@
 name: cognee
-repo: https://github.com/topoteretes/cognee-integrations
-subdir: integrations/hermes-agent
-sha: ccfb0e4e3fa8f3ce09c023d258c205ca972e48a8
-version: "1.3.2"
-description: "Knowledge-graph memory for Hermes, shared with Cognee's Claude Code, Codex and OpenClaw plugins: automatic recall, remember, forget, recaps and code search, on a local cognee server or Cognee Cloud. Disclosure — runs a local cognee server (uvicorn on 127.0.0.1:8011) and a session-close watcher in the background; each turn plus its tool calls and results (redacted, capped) go to that server and on to your configured LLM provider (OpenAI by default), or to Cognee Cloud / COGNEE_BASE_URL in remote mode; turns the server could not take are queued in ~/.cognee-plugin; the store lives in ~/.cognee, outside HERMES_HOME and shared across profiles and with Cognee's Claude Code, Codex and OpenClaw plugins; cognee sends anonymous telemetry unless TELEMETRY_DISABLED=1."
-maintainer: topoteretes
+repo: https://github.com/topoteretes/cognee
+subdir: cognee-integrations/integrations/hermes-agent
+sha: 4021292aab017a31a466846c8d4e3a94456666a7
+version: "1.4.3"
+description: "Memory that understands, not just stores: Cognee turns your Hermes sessions into a knowledge graph that connects the decisions you make with the reasoning and conversations that led to them, and recalls relevant context on every prompt. Works with Cognee Cloud or a self-hosted cognee server. Maintained by Cognee. Disclosure — each turn plus its tool calls and results (redacted, capped) goes to Cognee Cloud or COGNEE_BASE_URL in remote mode, or to the local cognee server and on to your configured LLM provider (OpenAI by default) in local mode; unless recall is pinned, the server picks which of your readable datasets each recall searches; turns the server could not take are queued in ~/.cognee-plugin; the store lives in ~/.cognee, outside HERMES_HOME, shared across profiles and with Cognee's other plugins. Local mode installs cognee==1.6.6 and its dependencies (about 1 GB from PyPI) into ~/.cognee-plugin/hermes/runtime only when you choose it (`hermes memory setup cognee` or `hermes cognee install-runtime`; never at session start), runs a local cognee server from it (uvicorn on 127.0.0.1:8011) and a session-close watcher in the background; `install-runtime` asks before stopping a local server the plugin started; cognee sends anonymous telemetry unless TELEMETRY_DISABLED=1. The system prompt tells the agent to prefer Cognee memory over MEMORY.md/USER.md (COGNEE_MEMORY_STEER=false turns it off), and an answer that used recalled memory may end with a one-line Cognee credit drawn with the Cognee logo by a transform_llm_output hook (COGNEE_PLUGIN_CITE_MEMORY=off turns it off); the same hook appends a one-time note about recall modes to the first reply when a non-default dataset is pinned by default."
+maintainer: Cognee
 tier: community
 category: memory
-docs_url: https://github.com/topoteretes/cognee-integrations/tree/main/integrations/hermes-agent#readme
+docs_url: https://github.com/topoteretes/cognee/tree/main/cognee-integrations/integrations/hermes-agent#readme
+image: https://raw.githubusercontent.com/topoteretes/cognee/4021292aab017a31a466846c8d4e3a94456666a7/cognee-integrations/integrations/hermes-agent/docs/banner.png
 readme: true
 capabilities:
   provides_tools:
@@ -21,5 +22,6 @@ capabilities:
     - on_session_end
     - on_pre_compress
     - on_memory_write
+    - transform_llm_output
   provides_middleware: []
   requires_env: []

@@ -55,7 +55,6 @@ class SkillsShSource(SkillSource):
     # Standard skill sub-paths tried before any tree/discovery walk.
     _STANDARD_BASE_PATHS = ("skills/", ".agents/skills/", ".claude/skills/")
 
-    _strip_html = staticmethod(_strip_html)
     SOURCE_ID = "skills-sh"
 
     def __init__(self, auth: GitHubAuth):
@@ -269,7 +268,7 @@ class SkillsShSource(SkillSource):
         # Fallback: scan repo root for directories that might contain skills.
         try:
             entries = _get_json(f"https://api.github.com/repos/{repo}/contents/",
-                                headers=self.github.auth.get_headers(), timeout=15, follow_redirects=True)
+                                headers=self.github.auth.get_headers(), timeout=15)
             for entry in entries if isinstance(entries, list) else []:
                 if entry.get("type") != "dir":
                     continue

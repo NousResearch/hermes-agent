@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { registry } from '@/contrib/registry'
+import { modelDisplayParts } from '@/lib/model-status-label'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -283,9 +284,56 @@ describe('the reasoning-effort badge (#51833)', () => {
   })
 })
 
+describe('the Daybreak switch', () => {
+  const codexCatalog = {
+    providers: [
+      {
+        name: 'OpenAI Codex',
+        slug: 'openai-codex',
+        models: ['gpt-6-sol', 'gpt-6.1-sol'],
+        capabilities: {
+          'gpt-6-sol': { fast: true, reasoning: false, daybreak: true },
+          'gpt-6.1-sol': { fast: true, reasoning: false }
+        }
+      }
+    ]
+  }
+
+  const rowTexts = async () => {
+    await waitFor(() =>
+      expect(screen.queryAllByRole('menuitem').some(row => row.textContent?.includes('6.1'))).toBe(true)
+    )
+
+    return screen
+      .queryAllByRole('menuitem')
+      .map(row => row.textContent ?? '')
+      .filter(text => /gpt-6/i.test(text))
+  }
+
+  it('labels only the models the account catalog lists while the profile switch is on', async () => {
+    getGlobalModelOptions.mockResolvedValue(codexCatalog)
+    renderMenu({}, { daybreak: { on: true, set: vi.fn() } })
+
+    const rows = await rowTexts()
+
+    expect(rows.filter(text => text.includes('Daybreak'))).toHaveLength(1)
+    expect(rows.find(text => text.includes('Daybreak'))).toMatch(/gpt-6-sol/i)
+  })
+
+  it('never labels a row while the switch is off or on a surface without it', async () => {
+    getGlobalModelOptions.mockResolvedValue(codexCatalog)
+    renderMenu({}, { daybreak: { on: false, set: vi.fn() } })
+    expect((await rowTexts()).some(text => text.includes('Daybreak'))).toBe(false)
+    cleanup()
+
+    renderMenu()
+    expect((await rowTexts()).some(text => text.includes('Daybreak'))).toBe(false)
+  })
+})
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
+function renderMenu(current: Partial<ModelMenuController['current']> = {}, host: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -293,7 +341,8 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
     current: { effort: '', fast: false, model: '', provider: '', ...current },
     presetFor: () => ({}),
     select,
-    setOptions: vi.fn()
+    setOptions: vi.fn(),
+    ...host
   }
 
   const client: QueryClient = queryClient
@@ -488,6 +537,19 @@ describe('the catalog owns favorite models', () => {
 })
 
 describe('the current model the catalog omits (#57534)', () => {
+  it.each([false, true])('shows the current Codex model in the menu only when listed (%s)', async listed => {
+    const model = 'gpt-6.2-sol'
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: listed ? ['gpt-6-sol', model] : ['gpt-6-sol'], name: 'OpenAI Codex', slug: 'openai-codex' }]
+    })
+
+    renderMenu({ model, provider: 'openai-codex' })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(Boolean(screen.queryByText(modelDisplayParts(model).name)?.closest('[role="menuitem"]'))).toBe(listed)
+  })
+
   it('renders the current model as a selectable row when the provider catalog lacks it', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [{ models: ['openai/gpt-4o-mini'], name: 'OpenRouter', slug: 'openrouter' }]
@@ -500,6 +562,29 @@ describe('the current model the catalog omits (#57534)', () => {
     const row = (await screen.findByText('Qwen 2.5 72B Instruct')).closest('[role="menuitem"]')!
 
     expect(row.textContent).toContain('Qwen 2.5 72B Instruct')
+  })
+
+  it.each(['openai-codex', 'review-proxy'])('keeps the current model for a custom endpoint named %s', async slug => {
+    const model = 'gpt-6.2-sol'
+    const provider = `custom:${slug}`
+
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          aliases: [provider],
+          api_url: 'https://proxy.example/v1',
+          is_user_defined: true,
+          models: ['gpt-6-sol'],
+          name: 'Proxy',
+          slug
+        }
+      ]
+    })
+
+    renderMenu({ model, provider })
+
+    await screen.findByText(modelDisplayParts('gpt-6-sol').name)
+    expect(screen.getByText(modelDisplayParts(model).name).closest('[role="menuitem"]')).not.toBeNull()
   })
 
   it('does not inject the current model into a provider that is not the current one', async () => {

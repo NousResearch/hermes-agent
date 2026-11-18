@@ -11,7 +11,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
-from hermes_state_runtime import claim_session_input, settle_session_input
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
@@ -37,19 +41,18 @@ async def settled_before_finalizer(*, compress=False):
         assert response.status == 202, await response.text()
         runner = adapter._message_handler.__self__
         authority = runner.session_authority
-        row = dict(authority.db._read_one("SELECT * FROM session_admissions"))
-        claimed = claim_session_input(
-            authority.db, epoch=authority.epoch, session_id=row["target_session_id"]
+        row = dict(raw_holder(authority.persistence)._read_one("SELECT * FROM session_admissions"))
+        claimed = authority.persistence.admissions.claim(
+            epoch=authority.epoch, session_id=row["target_session_id"]
         )
         if compress:
             logical = row["target_session_id"]
             entry = runner.session_store.lookup_by_session_id(logical)
             physical = logical + "-compressed"
-            authority.db.publish_compression_child(
-                parent_session_id=logical,
-                child_session_id=physical,
-                source="webhook",
-                messages=[{"role": "user", "content": "retained summary"}],
+            authority.persistence.lineage.publish_compression_child(
+                logical,
+                CompressionChild(session_id=physical, source="webhook"),
+                [NewMessage.from_live({"role": "user", "content": "retained summary"})],
                 require_compression_lease=False,
             )
             assert runner.session_store.advance_compression_session(
@@ -57,15 +60,14 @@ async def settled_before_finalizer(*, compress=False):
             ) is not None
             # The logical webhook still owns terminal settlement/finalization
             # after its physical transcript rotates.
-            authority.db._write_sql(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
                 "UPDATE sessions SET ended_at=NULL WHERE id=?", (logical,)
-            )
+            ))
             row["physical_session_id"] = physical
-        settle_session_input(
-            authority.db,
+        authority.persistence.admissions.settle(
             epoch=authority.epoch,
             admission_id=row["admission_id"],
-            generation=claimed["generation"],
+            generation=claimed.generation,
             outcome="completed",
         )
         # Crash after the durable settlement but before the process-local finalizer.
@@ -73,7 +75,7 @@ async def settled_before_finalizer(*, compress=False):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        assert authority.db.get_session(row["target_session_id"])["ended_at"] is None
+        assert authority.persistence.sessions.get(row["target_session_id"]).ended_at is None
         yield client, body, headers, runner, authority, row
 
 
@@ -94,17 +96,17 @@ async def test_restart_finalizes_settled_webhook_without_provider_retry(monkeypa
             runner,
             profile_id=authority.profile_id,
             instance_id="replacement-owner",
-            db=authority.db,
+            persistence=authority.persistence,
         )
         scheduled = []
         restarted._schedule = scheduled.append
 
         await run_runtime.recover_gateway_native_sessions(runner)
 
-        saved = authority.db.get_session(row["target_session_id"])
+        saved = session_row(authority.persistence, row["target_session_id"])
         assert saved["end_reason"] == "webhook_complete"
         assert scheduled == []
-        assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+        assert len(raw_holder(authority.persistence)._read_all("SELECT * FROM session_admissions")) == 1
 
 
 @pytest.mark.asyncio
@@ -119,19 +121,20 @@ async def test_restart_reauthorizes_compressed_route_but_finalizes_logical_webho
         physical = row["physical_session_id"]
         entry = runner.session_store.lookup_by_session_id(physical)
         unrelated = physical + "-branch"
-        authority.db.create_session(
+        seed_session(
+            authority.persistence,
             unrelated,
-            source="webhook",
+            "webhook",
             parent_session_id=physical,
             model_config={"_branched_from": physical},
         )
-        unrelated_before = authority.db.get_session(unrelated)
+        unrelated_before = session_row(authority.persistence, unrelated)
 
         restarted = await initialize_session_authority(
             runner,
             profile_id=authority.profile_id,
             instance_id="replacement-owner",
-            db=authority.db,
+            persistence=authority.persistence,
         )
         scheduled = []
         restarted._schedule = scheduled.append
@@ -146,12 +149,12 @@ async def test_restart_reauthorizes_compressed_route_but_finalizes_logical_webho
         results = await recover_webhook_finalizations(restarted)
 
         assert results == {logical: "finalized"}
-        assert authority.db.get_session(logical)["end_reason"] == "webhook_complete"
-        assert authority.db.get_session(physical)["ended_at"] is None
-        assert authority.db.get_session(unrelated) == unrelated_before
+        assert authority.persistence.sessions.get(logical).end_reason == "webhook_complete"
+        assert authority.persistence.sessions.get(physical).ended_at is None
+        assert session_row(authority.persistence, unrelated) == unrelated_before
         assert scheduled == []
         assert sent == []
-        admissions = authority.db._read_all("SELECT * FROM session_admissions")
+        admissions = raw_holder(authority.persistence)._read_all("SELECT * FROM session_admissions")
         assert len(admissions) == 1
         assert admissions[0]["target_session_id"] == logical
         assert admissions[0]["status"] == "terminal"
@@ -166,6 +169,6 @@ async def test_duplicate_request_finalizes_settled_webhook_without_reexecution()
 
         assert response.status == 200, await response.text()
         assert (await response.json())["status"] == "duplicate"
-        assert authority.db.get_session(row["target_session_id"])["end_reason"] == "webhook_complete"
+        assert authority.persistence.sessions.get(row["target_session_id"]).end_reason == "webhook_complete"
         assert scheduled == []
-        assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
+        assert len(raw_holder(authority.persistence)._read_all("SELECT * FROM session_admissions")) == 1

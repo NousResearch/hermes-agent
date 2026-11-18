@@ -8,7 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.onboarding_flow import Facts
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+from persistence.conversation.sessions import NewSession, SessionWindow
+from session_rules.onboarding_flow import Facts
 from tests.waiting import async_wait_until
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
@@ -49,7 +51,7 @@ async def _desktop(tmp_path, monkeypatch, turns, *, configured=True):
         return "ok"
 
     store = SessionStore(home / "sessions", GatewayConfig())
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _handle_message=answer, _evict_cached_agent=lambda route: None,
                              _cached_agent_for=lambda route: None, _peek_session_state=lambda key: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -61,7 +63,15 @@ async def _desktop(tmp_path, monkeypatch, turns, *, configured=True):
     connection = AuthorityConnection(authority, transport, identity, operator=True)
     from gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
-    return SimpleNamespace(authority=authority, connection=connection, transport=transport, db=store._db)
+    return SimpleNamespace(authority=authority, connection=connection, transport=transport, db=store.persistence)
+
+
+def _sessions(db) -> tuple:
+    return db.sessions.search_sessions(window=SessionWindow(limit=100))
+
+
+def _transcript(db, session_id: str) -> tuple:
+    return db.messages.read_transcript(session_id, TranscriptRead(view=TranscriptView.ALL))
 
 
 async def _request(desktop, rid, method, params, *, sessionless=True):
@@ -108,7 +118,7 @@ async def test_sessionless_progress_survives_completion_and_stale_window_without
         )
         assert restarted["result"]["run"] is True
         assert restarted["result"]["step"] == "preferences"
-        assert desktop.db.search_sessions(limit=100) == []
+        assert _sessions(desktop.db) == ()
         assert turns == []
     finally:
         await desktop.connection.close()
@@ -117,33 +127,35 @@ async def test_sessionless_progress_survives_completion_and_stale_window_without
 @pytest.mark.asyncio
 async def test_retirement_preserves_history_and_late_old_tool_cannot_finish_new_guide(tmp_path, monkeypatch):
     from agent import onboarding_record
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from hermes_cli import onboarding_run
     from tools.setup_beat_tool import setup_beat_tool
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     try:
-        desktop.db.create_session("legacy-setup", "desktop")
-        desktop.db.append_message("legacy-setup", "user", "Keep this conversation")
-        onboarding_record.start(desktop.db, "legacy-setup", FACTS)
-        messages = desktop.db.get_messages("legacy-setup")
+        db = desktop.db
+        db.sessions.create(NewSession(session_id="legacy-setup", source="desktop"))
+        db.messages.append("legacy-setup", NewMessage(role="user", content="Keep this conversation"))
+        onboarding_record.start(db, "legacy-setup", FACTS, persistence=db)
+        messages = _transcript(db, "legacy-setup")
+        assert messages
         # A classic read leaves its live conversation alone; only redesigned state opts into retirement.
         await _request(desktop, 0, "onboarding.state", {"sessionless": False})
-        assert onboarding_record.open_session_ids(desktop.db) == ["legacy-setup"]
+        assert onboarding_record.open_session_ids(db, persistence=db) == ["legacy-setup"]
         await _request(desktop, -1, "onboarding.state", {})
         await _request(desktop, 1, "onboarding.set_run", {"run": True, "step": "model"})
-        assert onboarding_record.open_session_ids(desktop.db) == []
-        assert desktop.db.get_messages("legacy-setup") == messages
-        onboarding_record.advance(desktop.db, "legacy-setup", End("skipped"))
+        assert onboarding_record.open_session_ids(db, persistence=db) == []
+        assert _transcript(db, "legacy-setup") == messages
+        onboarding_record.advance(db, "legacy-setup", End("skipped"), persistence=db)
         end_turn = Mock()
-        result = setup_beat_tool({"beat": "next"}, db=desktop.db, session_id="legacy-setup",
+        result = setup_beat_tool({"beat": "next"}, db=db, persistence=db, session_id="legacy-setup",
                                  callback=lambda card: pytest.fail("Retired setup must not show a card"),
                                  end_turn=end_turn)
         assert json.loads(result)["error"]
         end_turn.assert_called_once_with()
         assert onboarding_run.should_run() is True
         assert onboarding_run.guide_progress()["step"] == "model"
-        assert len(desktop.db.search_sessions(limit=100)) == 1
+        assert len(_sessions(db)) == 1
         assert turns == []
     finally:
         await desktop.connection.close()
@@ -158,7 +170,7 @@ async def test_setup_dispatch_requires_operator_and_preserves_root_scope(tmp_pat
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from hermes_cli.config import read_user_config_raw
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from tui_gateway.ws_legacy_fallback import legacy_fallback_allowed
 
     desktop = await _desktop(tmp_path, monkeypatch, [])
@@ -175,16 +187,16 @@ async def test_setup_dispatch_requires_operator_and_preserves_root_scope(tmp_pat
     work_config.write_text("onboarding:\n  run: false\n  step: model\n", encoding="utf-8")
     runner = desktop.authority.runner
     runner.config = SimpleNamespace(multiplex_profiles=True)
-    work_db = SessionDB(db_path=work / "state.db")
+    work_db = open_persistence(profile_scope(home=work))
     secondary = await initialize_session_authority(
-        runner, profile_id=str(work), instance_id="owner", db=work_db, register=False,
+        runner, profile_id=str(work), instance_id="owner", persistence=work_db, register=False,
     )
     runner.session_authorities = SessionAuthorities(home, multiplexed=True)
     runner.session_authorities.add(home, desktop.authority, name="default")
     runner.session_authorities.add(work, secondary, name="work")
     for db, sid in ((desktop.db, "root-setup"), (work_db, "work-setup")):
-        db.create_session(sid, "desktop")
-        onboarding_record.start(db, sid, FACTS)
+        db.sessions.create(NewSession(session_id=sid, source="desktop"))
+        onboarding_record.start(db, sid, FACTS, persistence=db)
     root_before, work_before = root_config.read_bytes(), work_config.read_bytes()
 
     tickets = TicketStore("owner", frozenset({str(work)}))
@@ -212,8 +224,8 @@ async def test_setup_dispatch_requires_operator_and_preserves_root_scope(tmp_pat
             assert "result" not in denied
         assert root_config.read_bytes() == root_before
         assert work_config.read_bytes() == work_before
-        assert onboarding_record.open_session_ids(desktop.db) == ["root-setup"]
-        assert onboarding_record.open_session_ids(work_db) == ["work-setup"]
+        assert onboarding_record.open_session_ids(desktop.db, persistence=desktop.db) == ["root-setup"]
+        assert onboarding_record.open_session_ids(work_db, persistence=work_db) == ["work-setup"]
 
         foreign = await _request(
             restricted, 3, "onboarding.set_run", {"profile": "default", "run": False},
@@ -244,8 +256,8 @@ async def test_setup_dispatch_requires_operator_and_preserves_root_scope(tmp_pat
             authorized, 6, "onboarding.state", {"profile": "work"}, sessionless=sessionless,
         )
         assert state["result"]["run"] is False, state
-        assert onboarding_record.open_session_ids(desktop.db) == ([] if sessionless else ["root-setup"])
-        assert onboarding_record.open_session_ids(work_db) == ["work-setup"]
+        assert onboarding_record.open_session_ids(desktop.db, persistence=desktop.db) == ([] if sessionless else ["root-setup"])
+        assert onboarding_record.open_session_ids(work_db, persistence=work_db) == ["work-setup"]
     finally:
         await worker.close()
         await operator.close()

@@ -55,7 +55,7 @@ def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
         listener(ended)
 
 
-def _transition(db, session_id: str, event: Event, *, sessionless: bool = False, persistence=None) -> Step | None:
+def _transition(db, session_id: str, event: Event, *, persistence=None) -> Step | None:
     """Apply *event* and write the result atomically at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
     read before a rotation published still lands on the copy the chat reads. An ended run then closes the
@@ -69,8 +69,6 @@ def _transition(db, session_id: str, event: Event, *, sessionless: bool = False,
             return current
         holder["was_active"] = is_active(current)
         holder["step"] = apply(current, event, Facts.from_stored(current["facts"]), now=time.time())
-        if sessionless:
-            holder["step"].record["sessionless"] = True
         return holder["step"].record
 
     from agent.agent_init_session import writer_interface
@@ -81,11 +79,6 @@ def _transition(db, session_id: str, event: Event, *, sessionless: bool = False,
         advanced = store.sessions.advance_onboarding_run(session_id, event, now=time.time())
         if advanced.step is not None:
             holder.update(was_active=advanced.was_active, step=advanced.step)
-            if sessionless:
-                # The store applies the event; the mark is written after it. A sessionless advance
-                # ends the run, and an ended record never changes again, so nothing can interleave.
-                advanced.step.record["sessionless"] = True
-                store.sessions.patch_model_config(session_id, {KEY: advanced.step.record})
     step = holder.get("step")
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
@@ -125,32 +118,29 @@ def start(db, session_id: str, facts: Facts, *, persistence=None) -> dict:
     return record
 
 
-def advance(db, session_id: str, event: Event, *, sessionless: bool = False, persistence=None) -> Step:
-    """Apply one event; sessionless retirement relinquishes the legacy install flag atomically."""
-    step = (_transition(db, session_id, event, sessionless=sessionless, persistence=persistence)
-            if db is not None and session_id else None)
+def advance(db, session_id: str, event: Event, *, persistence=None) -> Step:
+    """Apply one event to the stored run; LookupError when this session has no run. A sessionless
+    ``End`` leaves the install flag to sessionless setup."""
+    step = _transition(db, session_id, event, persistence=persistence) if db is not None and session_id else None
     if step is None:
         raise LookupError(f"session {session_id} has no onboarding run")
     return step
 
 
-def open_session_ids(db, *, persistence=None) -> list[str]:
-    """The chats whose run is still in progress, newest first. Rotation leaves the active copy on the
+def run_tips(db, *, persistence=None) -> list[str]:
+    """Every chat that carries a run record, newest first. Rotation leaves the live copy on the
     compression parent, so each id is read at its compression tip."""
     store = _reader(db, persistence)
-    tips: set[str] = set()
-    open_ids: list[str] = []
     if store is not None:
         ids, resolve = store.sessions.session_ids_with_model_config_key(KEY), store.lineage.resolve_resume_target
     else:
         ids, resolve = db.session_ids_with_model_config_key(KEY), db.resolve_resume_session_id
-    for sid in ids:
-        tip = resolve(sid) or sid
-        if tip not in tips:
-            tips.add(tip)
-            if is_active(load(db, tip, persistence=persistence)):
-                open_ids.append(tip)
-    return open_ids
+    return list(dict.fromkeys(resolve(sid) or sid for sid in ids))
+
+
+def open_session_ids(db, *, persistence=None) -> list[str]:
+    """The chats whose run is still in progress, newest first."""
+    return [tip for tip in run_tips(db, persistence=persistence) if is_active(load(db, tip, persistence=persistence))]
 
 
 def active_session_id(db, *, persistence=None) -> str | None:

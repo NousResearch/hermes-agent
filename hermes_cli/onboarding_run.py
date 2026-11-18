@@ -88,17 +88,16 @@ def guide_progress() -> dict:
             "started": step in ("preferences", "model")}
 
 
-def retire_conversational_runs(db) -> list[str]:
+def retire_conversational_runs(db, *, persistence=None) -> list[str]:
     """Retire only setup metadata; never change conversation messages or their cached context."""
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import KEY, advance, load, open_session_ids
+    from session_rules.onboarding_flow import End
+    from agent.onboarding_record import advance, load, open_session_ids, run_tips
 
-    retired = open_session_ids(db)
-    tips = {db.resolve_resume_session_id(sid) or sid for sid in db.session_ids_with_model_config_key(KEY)}
-    for session_id in tips:
-        record = load(db, session_id)
+    retired = open_session_ids(db, persistence=persistence)
+    for session_id in run_tips(db, persistence=persistence):
+        record = load(db, session_id, persistence=persistence)
         if record is None or record.get("sessionless"):
             continue
 
-        advance(db, session_id, End("replaced"), sessionless=True)
+        advance(db, session_id, End("replaced", sessionless=True), persistence=persistence)
     return retired

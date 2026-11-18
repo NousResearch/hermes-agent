@@ -2,7 +2,8 @@
 import asyncio
 from functools import partial
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 
 def handlers(connection):
@@ -12,7 +13,7 @@ def handlers(connection):
 
 def _authorize(connection):
     if 'session:operator' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
 
 
 async def _retire(connection):
@@ -28,7 +29,8 @@ async def _retire(connection):
     async with lock:
         if getattr(authority, '_sessionless_setup_migrated', False):
             return
-        retired = await tracked_write(authority, partial(retire_conversational_runs, authority.db))
+        store = authority_persistence(authority)
+        retired = await tracked_write(authority, partial(retire_conversational_runs, store, persistence=store))
         for sid in retired:
             live = authority.sessions.get(sid)
             if live is not None:
@@ -59,7 +61,7 @@ async def set_run(connection, ref, params):
     try:
         request = OnboardingSetRunParams.model_validate(params)
     except ValidationError as exc:
-        raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
+        raise AuthorityRefusal('invalid_params', detail=str(exc)) from exc
     if not request.sessionless:
         from tui_gateway.server import _run_state
         await asyncio.to_thread(persist, request.run, mark_profile_offered=request.mark_profile_offered)

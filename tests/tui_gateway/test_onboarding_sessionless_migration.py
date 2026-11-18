@@ -9,9 +9,12 @@ from pathlib import Path
 import pytest
 
 from agent import onboarding_record
-from agent.onboarding_flow import End, Facts, new_record
+from session_rules.onboarding_flow import End, Facts, new_record
 from agent.onboarding_session import onboarding_chat_toolsets
 from hermes_cli.onboarding_run import set_run
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+from persistence.conversation.sessions import NewSession
 from tests.waiting import wait_until
 from tui_gateway import server, server_requests
 
@@ -27,8 +30,8 @@ def db(tmp_path, monkeypatch):
     # Each test is a fresh backend process: the migration latch starts open.
     monkeypatch.setattr(server, "_sessionless_setup_migrated", False)
     db = server._get_db()
-    db.create_session("onb", "desktop")
-    db.patch_session_model_config("onb", {
+    db.sessions.create(NewSession(session_id="onb", source="desktop"))
+    db.sessions.patch_model_config("onb", {
         onboarding_record.KEY: new_record(Facts(os="macos"), run_id="legacy"),
     })
     set_run(True)
@@ -41,47 +44,51 @@ def _call(method: str, params: dict | None = None) -> dict:
     return response["result"]
 
 
+def _history(db, session_ids) -> dict:
+    return {sid: db.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.ALL)) for sid in session_ids}
+
+
 def test_state_retires_legacy_records_without_rewriting_compressed_history(db, monkeypatch):
     events = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda kind, payload: events.append((kind, payload)))
     config = Path(server._hermes_home) / "config.yaml"
     config_before = config.read_bytes()
-    db.append_message("onb", "user", "Keep my conversation")
-    db.patch_session_model_config("onb", {"codex_thread_id": "segment-only"})
-    db.publish_compression_child(
-        parent_session_id="onb", child_session_id="child", source="desktop",
-        messages=[{"role": "user", "content": "summary"}], require_compression_lease=False,
-    )
-    assert onboarding_record.load(db, "child") == onboarding_record.load(db, "onb")
-    assert db.get_session_model_config_value("child", "codex_thread_id") is None
-    history = {sid: db.get_messages(sid) for sid in ("onb", "child")}
-    toolsets = onboarding_chat_toolsets(["web"], db, "child")
+    db.messages.append("onb", NewMessage(role="user", content="Keep my conversation"))
+    db.sessions.patch_model_config("onb", {"codex_thread_id": "segment-only"})
+    db.lineage.publish_compression_child("onb", CompressionChild(session_id="child", source="desktop"),
+                                         [NewMessage(role="user", content="summary")],
+                                         require_compression_lease=False)
+    assert onboarding_record.load(db, "child", persistence=db) == onboarding_record.load(db, "onb", persistence=db)
+    assert db.sessions.get_model_config_value("child", "codex_thread_id") is None
+    history = _history(db, ("onb", "child"))
+    assert all(history.values())
+    toolsets = onboarding_chat_toolsets(["web"], db, "child", persistence=db)
 
     classic = server.handle_request({"jsonrpc": "2.0", "id": 4, "method": "onboarding.state", "params": {}})
     assert "result" in classic, classic
-    assert onboarding_record.active_session_id(db) == "child"
-    assert {sid: db.get_messages(sid) for sid in history} == history
+    assert onboarding_record.active_session_id(db, persistence=db) == "child"
+    assert _history(db, history) == history
 
     assert _call("onboarding.state")["run"] is True
-    assert onboarding_record.active_session_id(db) is None
-    assert {sid: db.get_messages(sid) for sid in history} == history
-    assert all(db.get_session(sid) is not None for sid in history)
+    assert onboarding_record.active_session_id(db, persistence=db) is None
+    assert _history(db, history) == history
+    assert all(db.sessions.get(sid) is not None for sid in history)
     ended = [("onboarding.ended", {"run_id": "legacy", "stored_session_id": "child", "outcome": "replaced"})]
     assert events == ended
-    assert onboarding_chat_toolsets(["web"], db, "child") == toolsets
-    assert db.get_session_model_config_value("onb", "codex_thread_id") == "segment-only"
+    assert onboarding_chat_toolsets(["web"], db, "child", persistence=db) == toolsets
+    assert db.sessions.get_model_config_value("onb", "codex_thread_id") == "segment-only"
     assert config.read_bytes() == config_before
 
     # Repeated reads and a late legacy agent completion cannot finish the new guide.
-    onboarding_record.advance(db, "child", End())
+    onboarding_record.advance(db, "child", End(), persistence=db)
     assert _call("onboarding.state")["run"] is True
-    assert {sid: db.get_messages(sid) for sid in history} == history
+    assert _history(db, history) == history
     assert events == ended
     assert config.read_bytes() == config_before
 
 
 def test_retirement_marks_already_ended_records_without_reannouncing_or_closing_guide(db, monkeypatch):
-    onboarding_record.advance(db, "onb", End("skipped"))
+    onboarding_record.advance(db, "onb", End("skipped"), persistence=db)
     set_run(True, sessionless=True, step="model", restart=True)
     config = Path(server._hermes_home) / "config.yaml"
     config_before = config.read_bytes()
@@ -90,7 +97,7 @@ def test_retirement_marks_already_ended_records_without_reannouncing_or_closing_
 
     for _ in range(2):
         assert _call("onboarding.state")["run"] is True
-        record = onboarding_record.load(db, "onb")
+        record = onboarding_record.load(db, "onb", persistence=db)
         assert record["sessionless"] is True
         assert record["ended_by"] == "skipped"
     assert events == []
@@ -113,7 +120,7 @@ def test_state_withdraws_a_waiting_legacy_card(db, monkeypatch):
         waiter.join(timeout=5)
         assert reply == [None]
         assert events == [("request.cancel", {"id": frames[0]["id"], "method": "setup_beat", "reason": "resolved"})]
-        assert onboarding_record.active_session_id(db) is None
+        assert onboarding_record.active_session_id(db, persistence=db) is None
     finally:
         server._cancel_session_requests(sid, "resolved", method="setup_beat")
         waiter.join(timeout=5)
@@ -142,7 +149,7 @@ def test_state_withdraws_a_legacy_card_waiting_in_a_compute_host_child(db, monke
 
     assert _call("onboarding.state")["run"] is True
     assert forwarded == [(sid, {"cancel": {"method": "setup_beat", "reason": "resolved"}})]
-    assert onboarding_record.active_session_id(db) is None
+    assert onboarding_record.active_session_id(db, persistence=db) is None
 
 
 def test_initial_latch_keeps_peer_progress_and_completion(db):
@@ -177,7 +184,7 @@ def test_state_takes_the_store_writer_only_while_legacy_runs_remain(db, monkeypa
     for _ in range(3):
         assert _call("onboarding.state")["run"] is True
     assert writers.count(True) == 1
-    assert onboarding_record.active_session_id(db) is None
+    assert onboarding_record.active_session_id(db, persistence=db) is None
 
     # A new backend process finds the legacy run already retired and stays a reader.
     monkeypatch.setattr(server, "_sessionless_setup_migrated", False)

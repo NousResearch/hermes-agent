@@ -52,23 +52,23 @@ def _retire_conversational_runs() -> None:
     with _onboarding_start_lock:
         if _sessionless_setup_migrated:
             return
-        with _profile_db(_ONBOARDING_PROFILE) as db:
+        with _profile_db(_ONBOARDING_PROFILE) as db, _persistence_for(db) as persistence:
             if db is None:
                 return
-            pending = _has_conversational_runs(db)
+            pending = _has_conversational_runs(db, persistence)
         if pending:
-            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db, _persistence_for(db) as persistence:
                 if db is None:
                     return
-                _withdraw_setup_cards(retire_conversational_runs(db))
+                _withdraw_setup_cards(retire_conversational_runs(db, persistence=persistence))
         _sessionless_setup_migrated = True
 
 
-def _has_conversational_runs(db) -> bool:
+def _has_conversational_runs(db, persistence) -> bool:
     """A run record ``retire_conversational_runs`` has not yet marked sessionless."""
-    from agent.onboarding_record import KEY, load
-    tips = {db.resolve_resume_session_id(sid) or sid for sid in db.session_ids_with_model_config_key(KEY)}
-    return any((record := load(db, tip)) is not None and not record.get("sessionless") for tip in tips)
+    from agent.onboarding_record import load, run_tips
+    return any((record := load(db, tip, persistence=persistence)) is not None and not record.get("sessionless")
+               for tip in run_tips(db, persistence=persistence))
 
 
 def _run_state(*, assume_fresh: bool = False) -> dict:

@@ -204,8 +204,7 @@ async def test_a_trial_users_desktop_chat_can_be_created_and_resumed(tmp_path, m
         resumed = await _request(conn, 3, "session.resume", {"session_id": stored})
         assert "result" in resumed, resumed
         assert resumed["result"]["session_id"] == stored
-        from hermes_state_local import local_receipt
-        assert local_receipt(conn.authority.db, stored)["policy"]["model"] == anon_auth.GUEST_MODEL
+        assert conn.authority.persistence.bindings.receipt(stored).policy["model"] == anon_auth.GUEST_MODEL
     finally:
         await conn.connection.close()
 

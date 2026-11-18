@@ -29,9 +29,12 @@ There is nothing to set up.
 a masked password field. *Save & sign in* stores it and continues; *Don't save*
 tells the agent to stop asking for this turn.
 
-From then on the agent lists your saved logins, types the identifier itself and
-fills the password through Hermes. The tool result it sees is
-`{filled_fields: 1, origin: "https://github.com"}`; the password is also
+From then on the agent lists your saved logins and fills the identifier and the
+password through Hermes, typed as trusted browser input so framework-controlled
+forms keep them. A fill counts only once the page has held every value for a
+moment; a page that reverts it, or moves focus while it is being typed, gets a
+refusal instead. The tool result it sees is
+`{filled_fields: 2, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
 ### Desktop preview or managed browser

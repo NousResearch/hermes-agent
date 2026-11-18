@@ -70,6 +70,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   // Guidance: what the user already skipped, saw or dismissed does not come
   // back in every new browser or origin (#145600).
   'hermes-onboarding-skipped-v1',
+  'hermes.desktop.guidance.v1',
   'hermes.desktop.tips.last.v1',
   'hermes.desktop.tips.next.v1',
   'hermes.desktop.tips.retired.v1',

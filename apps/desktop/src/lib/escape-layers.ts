@@ -19,6 +19,9 @@
 
 // Higher number = closer to the user. Gaps leave room to slot new layers.
 export const ESCAPE_PRIORITY = {
+  // A redesign splash in the chat area (app/discovery/splash-surface.tsx): the lowest layer, so Esc
+  // closes anything opened over it first.
+  splash: 5,
   narrowOverlay: 10,
   layoutEdit: 20,
   zoneEditor: 30,

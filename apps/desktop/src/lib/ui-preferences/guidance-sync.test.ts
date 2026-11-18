@@ -34,6 +34,7 @@ async function load(file: string) {
 
   return {
     onboarding: await import('@/store/onboarding'),
+    renameSplash: await import('@/store/rename-splash'),
     stop,
     tips: await import('@/store/tips')
   }
@@ -60,4 +61,25 @@ it('onboarding skipped and tips seen or dismissed in one browser stay so in anot
   expect(second.onboarding.$desktopOnboarding.get().firstRunSkipped).toBe(true)
   expect(second.tips.$retiredTips.get()).toContain('catalog:two')
   expect(Object.keys(second.tips.$tipShownAt.get())).toContain('catalog:one')
+})
+
+it('the rename splash seen in one browser is not shown again in another', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ui-guidance-'))
+  dirs.push(dir)
+  const file = path.join(dir, 'ui-preferences.json')
+
+  const first = await load(file)
+  await tick()
+  first.renameSplash.considerRenameSplash('existing')
+  first.renameSplash.dismissRenameSplash('button')
+  await tick()
+  first.stop()
+
+  const second = await load(file)
+  await tick()
+  second.renameSplash.considerRenameSplash('existing')
+  second.stop()
+
+  expect(second.renameSplash.$renameSplash.get()).toBeNull()
+  expect(second.renameSplash.$renameSplashReopenable.get()).toBe(true)
 })

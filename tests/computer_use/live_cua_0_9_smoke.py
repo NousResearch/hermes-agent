@@ -26,6 +26,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from tools.computer_use.cua_backend_parse import _mcp_field
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
 
@@ -173,10 +174,10 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             "stage": "throwaway_target",
                         }
                     else:
-                        focus = await client.call_tool(
+                        focus_ok = not _mcp_field(await client.call_tool(
                             "bring_to_front",
                             {"pid": launched_pid, "window_id": window_id},
-                        )
+                        ), "is_error", "isError", True)
                         before = await read_window_state(
                             client, capabilities, launched_pid, window_id, session_id)
                         editor = next(
@@ -240,7 +241,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             report["foreground"] = {
                                 "classification": (
                                     "pass"
-                                    if not focus.isError
+                                    if focus_ok
                                     and not refusal_code(typed)
                                     and not refusal_code(saved)
                                     and (
@@ -251,7 +252,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                                     )
                                     else "unproven"
                                 ),
-                                "focus_transport_ok": not focus.isError,
+                                "focus_transport_ok": focus_ok,
                                 "effect": typed.get("effect"),
                                 "verified": typed.get("verified"),
                                 "fresh_state": bool(after.get("elements")),

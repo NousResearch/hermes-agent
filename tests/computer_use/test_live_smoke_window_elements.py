@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from mcp.types import CallToolResult
 
 from tests.computer_use import live_cua_0_9_smoke as smoke
 
@@ -17,7 +18,8 @@ _TYPE_TOKEN_ONLY = {"element_token": {"type": "string"}}
     ({"tree_format": {"type": "string", "enum": ["markdown", "elements", "both"]}}, True, _TYPE_BOTH),
     ({}, False, _TYPE_BOTH),
 ])
-def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured_format, type_properties):
+@pytest.mark.parametrize("focus_error", [False, True])
+def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured_format, type_properties, focus_error):
     calls = []
     editor = {("element_index" if structured_format else "index"): 7,
               "element_token": "s1234abcd:7", "role": "AXTextArea", "value": ""}
@@ -42,11 +44,11 @@ def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured
             if name == "type_text":
                 assert set(args) - {"pid", "window_id", "text", "delivery_mode", "session"} <= set(type_properties)
                 assert args["element_token"] == editor["element_token"]
-                assert ("element_index" in args) == ("element_index" in type_properties)
+                assert args.get("element_index") == (7 if "element_index" in type_properties else None)
                 editor["value"] = args["text"]
             if name == "launch_app":
                 data = {"pid": 101, "windows": [{"window_id": 202}]}
-            return SimpleNamespace(content=[], structuredContent=data, isError=False)
+            return CallToolResult(content=[], structured_content=data, is_error=(name == "bring_to_front" and focus_error))
 
     @asynccontextmanager
     async def stdio(_params):
@@ -60,7 +62,8 @@ def test_smoke_negotiates_both_element_reads(monkeypatch, properties, structured
     monkeypatch.setattr(smoke, "ClientSession", session)
     monkeypatch.setattr(smoke, "textedit_process_contains", lambda pid, marker: False)
     result = asyncio.run(smoke.run_smoke("unused-test-socket"))
-    assert result["foreground"]["classification"] == "pass"
+    assert result["foreground"]["classification"] == ("unproven" if focus_error else "pass")
+    assert result["foreground"]["focus_transport_ok"] is (not focus_error)
     assert result["foreground"]["fresh_state_confirmed"] is True
     reads = [args for name, args in calls if name == "get_window_state"]
     assert len(reads) == 2 and reads[0] == reads[1]

@@ -103,9 +103,9 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
 # RPCs retain arrival order within their control lane; at most two reads consume a connection.
 # ``session.account_usage`` waits on a provider's usage API (a plugin hook up to its deadline).
-_WS_CONCURRENT_READ_METHODS = frozenset({
-    "session.context_breakdown", "session.transcript", "session.account_usage", "groups.state",
-    "groups.log", "groups.list", "groups.capabilities",
+_WS_GROUP_READ_METHODS = frozenset({"groups.state", "groups.log", "groups.list", "groups.capabilities"})
+_WS_CONCURRENT_READ_METHODS = _WS_GROUP_READ_METHODS | frozenset({
+    "session.context_breakdown", "session.transcript", "session.account_usage",
 })
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
@@ -470,6 +470,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # Frames waiting for a profile's start, per start, in arrival order; one lane task drains each.
     held: dict[str, collections.deque] = {}
     held_lanes: set[asyncio.Task] = set()
+    held_reads = 0
     # Held frames count against the serial lane's bound: once that many wait, the dispatcher waits for
     # room, the queue fills and the reader parks, as it does behind a busy handler.
     held_room = asyncio.Semaphore(_WS_DISPATCH_QUEUE_MAX)
@@ -534,6 +535,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         (the authority then refuses a profile still starting retryably). A frame for that profile read
         meanwhile joins the queue instead of overtaking it on the serial lane. A client that leaves
         before the start ends drops them: nobody reads those replies."""
+        nonlocal held_reads
         try:
             waits = {asyncio.ensure_future(started.wait()), asyncio.ensure_future(client_gone.wait())}
             try:
@@ -543,12 +545,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                     wait.cancel()
             del held_waiting[key]  # dispatching from here on: a later disconnect lets these frames finish
             frames = held[key]
-            if key in held_dropped:
-                for _ in frames:
-                    held_room.release()
-                frames.clear()
             while frames:
-                await _dispatch_ready(frames[0])
+                req = frames[0]
+                if req.get("method") in _WS_GROUP_READ_METHODS:
+                    held_reads -= 1
+                    if key in held_dropped:
+                        read_admission.release()
+                if key not in held_dropped:
+                    await _dispatch_ready(req)
                 frames.popleft()
                 held_room.release()
         except _SendFailed:
@@ -560,6 +564,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             del held[key]
 
     async def _hold_for_profile_start(req: Any) -> bool:
+        nonlocal held_reads
+        method = req.get("method") if isinstance(req, dict) else None
+        if method in _WS_CONCURRENT_READ_METHODS and (
+                method not in _WS_GROUP_READ_METHODS or held_reads >= _WS_WAITING_READ_LIMIT):
+            # Session projections and excess group reads get the authority's retryable start refusal.
+            # A start can occupy the waiting budget, never the permits that let read workers run.
+            return False
         if authority_connection is None or authority_connection.awaits_profile_start(req, held) is None:
             return False
         await _unless_dispatch_failed(held_room.acquire())
@@ -570,6 +581,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             held_room.release()
             return False
         key, started = start
+        if method in _WS_GROUP_READ_METHODS:
+            held_reads += 1
         if key in held:
             held[key].append(req)
         else:

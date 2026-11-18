@@ -9,6 +9,8 @@ from tests.gateway.test_sibling_attach_while_profile_starting import (
     rig as multiplex_rig_fixture,
 )
 
+from tui_gateway import ws as ws_mod
+
 multiplex_rig = multiplex_rig_fixture
 
 
@@ -89,3 +91,28 @@ async def test_sibling_initialization_error_is_request_scoped(
     finally:
         error.cancel()
         await asyncio.gather(error, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.transcript", "groups.list"])
+async def test_starting_profile_reads_leave_the_reader_live(
+    multiplex_rig, monkeypatch, method
+):
+    monkeypatch.setattr(ws_mod, "_WS_CONCURRENT_READ_LIMIT", 1)
+    monkeypatch.setattr(ws_mod, "_WS_WAITING_READ_LIMIT", 1)
+    sock = await multiplex_rig.connect()
+    params = {"session_id": "absent"} if method == "session.transcript" else {}
+    for rid in ("first", "overflow", "next"):
+        request(sock, rid, method, profile="beta", **params)
+    request(sock, "heartbeat", "gateway.ping")
+    assert (await sock.reply("heartbeat", timeout=5))["result"]["ok"]
+    for rid in ("overflow", "next"):
+        reply = await sock.reply(rid, timeout=5)
+        assert reply["error"]["data"]["reason"] == "runtime_draining"
+    if method == "session.transcript":
+        first = await sock.reply("first", timeout=5)
+        assert first["error"]["data"]["reason"] == "runtime_draining"
+    else:
+        assert "first" not in sock.replies
+        multiplex_rig.release.set()
+        assert (await sock.reply("first"))["result"]["rooms"] == []

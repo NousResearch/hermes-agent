@@ -49,6 +49,8 @@ from typing import Any
 
 from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
+from registry_freeze import check_at_freeze, refuse_if_frozen, seal_at_freeze
+from registry_sealed import seal, seal_instance
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +155,10 @@ def register_provider(profile: ProviderProfile) -> None:
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
     collect = _COLLECT.get()
-    if collect is not None:
+    if collect is not None:  # a private catalog read (``bundled_profiles``), not a registration
         collect.append(profile)
         return
+    refuse_if_frozen("provider registry")
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return
@@ -173,6 +176,24 @@ def register_provider(profile: ProviderProfile) -> None:
         _PROVIDER_LIST_CACHE = None
     if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
         _sync_auth_registry()
+
+
+def _seal_registered() -> None:
+    """At the hosted freeze: every registered profile (process-wide and each home's layer) is sealed
+    in place, its nested containers detached from the ones the plugin passed, and the process-wide
+    maps become read-only, so a profile a lookup returned cannot change what other tenants see."""
+    global _REGISTRY, _ALIASES, _SOURCES
+    with _HOME_LAYERS_LOCK:
+        layers = list(_HOME_LAYERS.values())
+    for profile in [*_REGISTRY.values(), *(p for layer in layers for p in layer.registry.values())]:
+        seal_instance(profile)
+    _REGISTRY, _ALIASES, _SOURCES = seal(_REGISTRY), seal(_ALIASES), seal(_SOURCES)
+
+
+seal_at_freeze(_seal_registered)
+# Discovery is lazy (first lookup): run after the freeze, every bundled registration is refused
+# and the catalog stays empty for the process, so the freeze refuses until it has run.
+check_at_freeze(lambda: [] if _discovered and not _discovering else ["provider discovery"])
 
 
 def provider_source(name: str) -> str | None:
@@ -640,6 +661,9 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     """Import a single plugin directory so it self-registers.
 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
+    In a hosted process the process-wide code fence the boot installed refuses every load
+    whose file resolves outside the deployment image — a home directory, or a symlink planted
+    in the bundled tree whose realpath leaves it, alike.
     """
     if not (plugin_dir / "__init__.py").exists():
         return
@@ -715,6 +739,12 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
     if module_name in sys.modules:
         return  # already imported
 
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(plugin_dir)
+    if refusal:
+        logger.error("Provider plugin %s refused in hosted mode: %s", plugin_dir.name, refusal)
+        return
     _current_source = source
     try:
         spec = importlib.util.spec_from_file_location(
@@ -885,7 +915,10 @@ def bundled_profiles() -> list[ProviderProfile]:
     """Every bundled provider profile, one per name (the last registration wins, in discovery
     order), WITHOUT config and without touching the registry: each bundled plugin is executed into
     a private module whose registrations are collected. For descriptive catalogs, which must not
-    depend on config or on discovery having run."""
+    depend on config or on discovery having run. In a hosted process the process-wide code fence
+    the boot installed refuses a plugin whose files resolve outside the deployment image
+    (a symlink planted in the bundled tree targeting the home, exactly as provider discovery
+    refuses it)."""
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
@@ -906,6 +939,7 @@ def bundled_profiles() -> list[ProviderProfile]:
             try:
                 spec.loader.exec_module(module)
             except Exception as exc:  # health: allow BLE001 -- one broken plugin never breaks the catalog
+                sys.modules.pop(name, None)  # never leave an unexecuted shell behind
                 logger.debug("provider catalog skipped %s: %s", child.name, exc)
     finally:
         _COLLECT.reset(token)

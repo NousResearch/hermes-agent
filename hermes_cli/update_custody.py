@@ -106,7 +106,7 @@ _RETRY = ("Run {command} again from a regular terminal, outside any sandbox or t
 # Many readers swallow an OSError (a reader's None, a best-effort probe), so a refusal can end
 # the update as a misleading downstream error; the command's failure path prints
 # :func:`refusal_notice` instead.
-_RUN: dict = {"ran": False, "refused": None}
+_RUN: dict = {"ran": False, "refused": None}  # health: allow HX018 -- the `hermes update` command's run record; a serving process never runs an update
 
 
 def _refuse(argv: Sequence[str], cause: object, *, receipted: bool = False) -> CustodyRefused:

@@ -168,6 +168,151 @@ accepts only a policy owned by the bound agent. The code-health rule HX016 block
 through relative imports; existing ones migrate when their function is next
 edited.
 
+### Shared-process state
+
+A hosted process serves many tenants' agents at once, so a module-level dict,
+list or set, an `lru_cache`, or a class attribute filled at runtime is shared by
+all of them. The code-health rule HX018 refuses new state of that kind in every
+module the hosted entry point imports. Two forms pass (`hermes_scope_cache`):
+
+- `ScopedCache(name)`: one slot per `(tenant, agent)` of the bound scope.
+  `slot()` and `drop()` raise `UnscopedStateError` when no scope is bound; there
+  is no shared fallback slot. A cache keeps at most `max_slots` agents' slots
+  (default 1024) and evicts the least recently used one, so it holds only values
+  that are cheap to rebuild. `drop()` is for an owner that knows a slot is done.
+- `tenant_neutral(value, reason="...")` (or `@tenant_neutral(reason="...")` on a
+  cached function): state that is the same for every tenant, such as a model
+  catalog or tool schemas. The reason must be a non-empty literal.
+
+The rule counts any module-level name a function rebinds (through `global`,
+`setattr(sys.modules[__name__], ...)` or `globals()`) or changes in place,
+including through a nested item or attribute, whatever its initial value, plus
+`threading.local()` and class attributes changed through the class or an
+instance without its own copy from `__init__`. An own copy counts only when it
+is a fresh value (a container literal or constructor, a copy, a capitalised
+constructor; never an alias such as `self.values = C.values`) assigned by a
+top-level statement of `__init__` before anything there reads or writes that
+attribute, uses the instance, or returns, and only while nothing else in the
+class can replace it: every other store or `del` of that attribute through any
+receiver but the class must be a fresh value, and the class may use no
+namespace operation at all (`setattr`, `delattr`, `vars`, `eval`/`exec`, a
+`getattr` of a computed name, a dunder such as `__dict__`, `__setattr__` or
+`__delattr__` on any receiver, or anything from `builtins`, `operator`,
+`importlib`, `gc` or `ctypes`); otherwise no attribute of the class has an own
+copy. A walrus through `global` is a
+rebind, a method defined under a class-body `if`/`try` is a method, and an
+object bound by `from m import X` that a function changes in place is reported
+on the importer's import line, since `m` cannot see the write. A parameter or
+local that shares a module name is not the module's state. The two declarations count only when
+they resolve to the `hermes_scope_cache` API, not by name.
+
+The entry point is the list `HOSTED_ENTRY` in `scripts/code_health/config.py`.
+There is no hosted boot module yet, so the list names what it will load: the
+inbound turn path, the turn loop, the agent constructor, the built-in platform
+adapters, the scope modules and the registries. The graph
+(`scripts/code_health/hosted_graph.py`) follows every import that runs at import
+time, in class bodies, loops and other blocks too, and each root's package
+`__init__`. Imports inside functions are not followed, so a module the hosted
+process loads lazily is listed as a root. For the roots in
+`LAZY_IMPORTS_AUDITED` (`gateway.run`, `run_agent`, `agent.agent_init`) that is
+a maintained decision, not a best effort: every in-repo module they import
+inside a function is either a root or listed in `OFF_HOSTED_PATH` with the
+reason it never runs while the process serves tenants (boot before the first
+turn, process exit, a CLI-only entry), and
+`tests/scripts/test_code_health_lazy_roots.py` fails on a new one until it is
+placed. Other modules' function-body imports are not audited yet. Two dynamic loads are modelled: the
+built-in tool modules `model_tools` discovers at import, and
+`agent.lazy_forward` forwarders declared in a class body. When the hosted boot
+lands, it is added to the list.
+
+The ratchet walks the graph on both sides of a change, each from its own
+revision's roots: the base graph starts from the `HOSTED_ENTRY` committed on the
+base, so a root the change adds gets no base credit. State already on the
+hosted path in the base is baselined and is migrated when it is next touched.
+A module that a change newly brings onto the hosted path (a new import, or a
+new root) is checked for state even if the file is unchanged, and none of its
+state is baselined. Its other debt is not judged by this check.
+
+There is no baseline file. Base credit comes from re-running the current rules
+over the base source and crediting what survives, so existing state the rules
+now detect is credited too. That makes this a ratchet: credited state is debt
+that must not grow, not a reviewed declaration that it is tenant-neutral.
+
+Measured on the committed tree (`HX018` over `reachable()`, with the rule's
+`registry_freeze.py` exclusion applied): before the lazy imports were added as
+roots, 685 modules and 510 enforced hits in 162 files; with the stricter
+instance-copy, walrus, conditional-method and `from m import X` checks, 537
+hits in 174 files on the same 685 modules; with the audited lazy imports as
+roots, 823 modules and 678 enforced hits in 232 files; with an own copy
+revoked by any later non-fresh rebind or deletion, and an imported-object write
+reported on the import line of the binding it resolves to (relative imports
+included), 684 hits in 232 files; with own copies denied by default as above,
+still 684 (no hosted-path class relies on the credit). All of it is existing debt the ratchet
+credits; none of it has been reviewed as tenant-neutral.
+
+The tool, MCP, provider and plugin registries are frozen once the hosted boot
+finishes: it calls `registry_freeze.freeze_registries()`, after which every
+registration path raises `RegistryFrozen` and reads are unchanged. A per-agent
+toggle is a filter applied from the bound scope at read time, never a
+registration. A local install never freezes, so runtime plugin and MCP loading
+behave as before.
+
+The freeze also seals what the tool registry hands out. Its maps, every
+`ToolEntry`, and each schema and `requires_env` list become read-only. A
+schema is replaced by a detached copy, so the dict a module passed to
+`register()` is no longer the registered one. Writing through a getter's
+result, a retained entry or a map raises `RegistryFrozen`. `get_definitions()`
+and `copy.deepcopy` return writable copies for request shaping, and an entry
+keeps its identity. A sealed dict, list or set also refuses being
+reinitialised (`schema.__init__({...})`) and cannot be cast back to a plain one.
+
+Provider profiles are sealed the same way, in place: a profile
+`get_provider_profile()` returns is still the registered object, but its fields
+refuse rebinding, its dict/list/set fields (`default_headers`, `model_aliases`,
+...) are detached read-only copies of what the plugin passed, and the
+process-wide name and alias maps are read-only. `bundled_profiles()` still reads
+the provider catalog after the freeze, because collecting into a private list
+is not a registration.
+
+For plugins, a retained `ctx` or registration handle refuses after the freeze:
+`handle.dispose()` and its alias `handle.release()` raise, and a handle's `kind`
+and inverse cannot be rebound, so only a supervised task's lease (which cancels
+the plugin's own task) still releases. `remove_plugin_skill` refuses too; a
+plugin skill whose file was deleted reads as missing and stays registered.
+
+For MCP, every path that would change the served set refuses before its first
+side effect: reconciling with a changed `mcp_servers`, restarting a server on
+new launch inputs, a scoped or named `shutdown_mcp_servers`, and the removal
+helpers they share. A reconcile with nothing to change still returns its no-op
+result. Keeping a connection alive is not a registry change and stays allowed:
+a server that parks or shuts down closes its connection but keeps its
+registrations (a call fails as not connected until it revives), a revival or a
+lazy server's first use routes the tools it already registered to the live
+connection without publishing new ones, and `tools/list_changed` is ignored.
+The bare `shutdown_mcp_servers()` at process exit still closes every
+connection. Adopting another profile's live connection
+(`register_connected_into_current_scope`) refuses too; `shareable_connection`
+is the read-only lookup. A reconnect of a server that already registered still
+refreshes the call-time trust gate's `readOnlyHint` record from the new listing
+(#144380): that is trust metadata the gate reads, not the served tool set.
+
+`freeze_registries()` refuses, freezing nothing, while a registration is still
+pending (`registry_freeze.assert_registries_complete()` raises
+`RegistriesIncomplete` naming it). Today that means a deferred platform loader
+nobody has looked up yet: its adapter registers on first lookup, which the
+freeze would refuse, so the boot looks up (or drops) every platform it serves
+before it freezes. Hooks are process-wide too: a memory provider constructed
+per agent after the freeze must not register global hooks; its plugin
+registers them at boot. Stable boot-time hook dispatch to per-agent provider
+instances is a follow-up.
+
+An operation a frozen process cannot perform is answered as such, never as an
+internal error. `session.reload_mcp` returns `status: restart_required`
+("restart required: registries are frozen"). A `plugins.manage` settings save
+is still written (`saved: true`), but when it changes an MCP server's launch
+inputs no reconnect is started: the reply carries `activated: false`,
+`restart_required: true` and the servers in `restart_required_servers`.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

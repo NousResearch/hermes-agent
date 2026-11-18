@@ -855,6 +855,14 @@ def _upgrade_holding_store(hold, *args, **kwargs) -> None:
         hold.close()
 
 
+def _outliving_turn(target: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """The upgrade names the session from this turn's ask; it is not a reply that could interleave with the next
+    turn, so the session's next claim must not refuse it (another owner taking the profile over still does)."""
+    from agent.runtime_scope import outlive_turn
+    with outlive_turn():
+        target(*args, **kwargs)
+
+
 def _is_real_user_turn(message: Any) -> bool:
     """A question a person actually asked (Hermes persists machinery under ``role="user"``)."""
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -963,7 +971,7 @@ def maybe_auto_title(
         hold = open_persistence(persistence.scope)
         upgrade_kwargs["persistence"] = hold
         target, args = _upgrade_holding_store, (hold, *args)
-    upgrade = spawn_context_thread(target, name="auto-title", args=args, kwargs=upgrade_kwargs)
+    upgrade = spawn_context_thread(_outliving_turn, name="auto-title", args=(target, *args), kwargs=upgrade_kwargs)
     if persistence is not None:
         weakref.finalize(upgrade, hold.close)
     if title_upgrade_must_wait_for_turn(main_runtime):

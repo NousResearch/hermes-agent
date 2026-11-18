@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, 
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
+from registry_freeze import refuse_if_frozen
 from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
 from hermes_cli.plugins_state import _plugin_settings_entry
@@ -353,6 +354,7 @@ class PluginLoaderMixin:
         """Register a lazy loader for a bundled platform: the adapter imports only when the
         ``platform_registry`` is first asked for it; a placeholder ``LoadedPlugin`` keeps it visible in
         ``hermes plugins list`` until then."""
+        refuse_if_frozen("plugin registry")  # the loader is published before the ledger would refuse its lease
         from hermes_cli.plugins import LoadedPlugin
         lookup_key = manifest_key(manifest)
         loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
@@ -562,7 +564,9 @@ class PluginLoaderMixin:
             self._load_plugin_scoped(manifest)
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
-        """Load one plugin with the manager's home bound as current."""
+        """Load one plugin with the manager's home bound as current. Also the body of a deferred platform's
+        loader, which runs on first registry lookup, long after boot: it refuses once the registries froze."""
+        refuse_if_frozen("plugin registry")
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)
@@ -820,6 +824,14 @@ class PluginLoaderMixin:
         init_file = plugin_dir / "__init__.py"
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+        from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+        refusal = hosted_code_refusal(plugin_dir)
+        if refusal:
+            # A hosted process loads in-process code only from what its deployment image
+            # ships; a plugin directory outside it (the deployment home, a data mount) is
+            # refused before its package body can run.
+            raise HostedCodeRefused(refusal)
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]
@@ -850,7 +862,11 @@ class PluginLoaderMixin:
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType | Callable[..., Any]:
         """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,
-        the referenced attribute (normally ``register``) for the ``module:function`` form."""
+        the referenced attribute (normally ``register``) for the ``module:function`` form. In a hosted
+        process the process-wide code fence the boot installed refuses the import itself when the
+        module's file resolves outside the deployment image (distribution metadata is not
+        provenance: a ``.pth``-added path or an editable record can aim the name anywhere), so
+        the home's code never runs."""
         for ep in _select_entry_point_group(importlib.metadata.entry_points(), ENTRY_POINTS_GROUP):
             if ep.name == manifest.name:
                 return ep.load()

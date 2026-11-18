@@ -181,6 +181,52 @@ class ScopeSwitchRefused(RuntimeError):
     (``agent.runtime_scope.bind_profile_scope``)."""
 
 
+@dataclass(frozen=True)
+class TurnMark:
+    """The claimed turn an activity's writes belong to: its session, turn id and :class:`Fence`, the
+    store key of the store that issued the fence (``persistence.ProfileScope.store_key``; ``None``
+    when no store is named), and whether it is work that outlives the turn.
+
+    It is the storage provenance of the bound :class:`TurnScope` (:func:`current_turn`), immutable,
+    and never closes: a task or thread the turn starts copies the context and stays the turn's work
+    for its whole lifetime, so its writes are refused once the turn's lease is gone, also after the
+    turn's body returned (``persistence.core.fences``). Work the owner runs under its own guards
+    (settlement, the ledger, drains) runs under ``agent.runtime_scope.owner_operation`` instead."""
+
+    session: str
+    turn: str
+    fence: Fence
+    store: str | None
+    #: Work designed to outlive the turn (``agent.runtime_scope.outlive_turn``): held to the owner
+    #: epoch only, so a takeover still refuses it but the session's next claim does not.
+    outlives: bool = False
+
+
+class _OwnerOperation:
+    """``ScopeState.turn`` inside ``agent.runtime_scope.owner_operation``: no turn's work."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "OWNER_OPERATION"
+
+
+OWNER_OPERATION: Any = _OwnerOperation()
+
+
+def scope_store(scope: Scope | None) -> str | None:
+    """The store key a scope's turns are fenced on: a local scope's profile home
+    (``hermes_constants.hermes_home_key``, the local ``ProfileScope.store_key``), a hosted scope's
+    pin key (``persistence.StorePin(tenant, agent).key``). ``None`` with no scope."""
+    if scope is None:
+        return None
+    if scope.is_local:
+        from hermes_constants import hermes_home_key  # import-safe; lazy to keep this module stdlib-only
+        return hermes_home_key(scope.agent)
+    from persistence.core.context import StorePin
+    return StorePin(scope.tenant, scope.agent).key
+
+
 class BoundSecrets(NamedTuple):
     """An installed secret mapping plus the home it was built for, when the binder declared one:
     the provenance ``serves_routed_profile`` needs when a binding skips the home override."""
@@ -195,12 +241,15 @@ class ScopeState:
 
     ``home`` is the ``HERMES_HOME`` override (``None``: the process home). ``secrets`` is the
     secret scope (``None``: unscoped, ``os.environ`` semantics). ``terminal`` is the terminal
-    policy mapping or refusal (``None``: process env)."""
+    policy mapping or refusal (``None``: process env). ``turn`` is the storage provenance of the
+    claimed turn the activity runs (:class:`TurnMark`, recorded whether or not a scope is bound), or
+    :data:`OWNER_OPERATION` for the owner's own work; read it through :func:`current_turn`."""
 
     scope: Scope | None = None
     home: str | None = None
     secrets: BoundSecrets | None = None
     terminal: Any = None
+    turn: Any = None  # TurnMark | OWNER_OPERATION | None
 
 
 _EMPTY = ScopeState()
@@ -237,6 +286,24 @@ def current_state() -> ScopeState:
 def current_scope() -> Scope | None:
     """The bound scope, or ``None`` outside any scoped activity."""
     return current_state().scope
+
+
+def current_turn() -> TurnMark | None:
+    """The claimed turn the current activity's writes belong to, else ``None``.
+
+    One identity: a bound :class:`TurnScope` is the turn, and its mark (``bind_turn``) only adds the
+    issuing store; a TurnScope bound without one is fenced on its own scope's store
+    (:func:`scope_store`). With no scope bound (a single-profile gateway's turn) the mark alone is
+    the turn. ``None`` inside an owner operation or outside any turn."""
+    state = current_state()
+    mark, scope = state.turn, state.scope
+    if mark is OWNER_OPERATION:
+        return None
+    if isinstance(scope, TurnScope):
+        if mark is not None and (mark.session, mark.turn, mark.fence) == (scope.session, scope.turn, scope.fence):
+            return mark
+        return TurnMark(scope.session, scope.turn, scope.fence, scope_store(scope))
+    return mark
 
 
 class StateToken:

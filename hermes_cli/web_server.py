@@ -1417,6 +1417,38 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         raise
 
 
+def _admit_hosted_serving() -> None:
+    """The standalone dashboard/serve boot's hosted admission, run before anything binds a port.
+
+    ``hermes dashboard`` / ``hermes serve`` (and the update resume that relaunches them) serve
+    HTTP without the gateway's boot, so they run the same admission here: when this process is
+    hosted by EITHER signal — the start command's ``--hosted`` flag, or a hosted config — the
+    gateway's own :func:`hermes_cli.hosted_mode.assert_hosted_boot` (start-flag confirmation,
+    preflight, loaded-code checks, identity verifier and isolating persistence) decides it, and
+    a refusal prints ``Hosted boot refused: ...`` and exits with the gateway's fatal-config code
+    — the listener never binds. A flag on a deployment whose config is not hosted is the same
+    mismatch the gateway preflight refuses. A local install (neither signal) is untouched."""
+    from hermes_cli.hosted_code_fence import (HOSTED_BOOT_REFUSED_EXIT, armed_by_start_flag,
+                                              hosted_start_flag_requested)
+    from hermes_cli.hosted_mode import HostedBootRefused, assert_hosted_boot, is_hosted
+
+    flagged = hosted_start_flag_requested() or armed_by_start_flag()
+    try:
+        hosted = is_hosted()
+        if not flagged and not hosted:
+            return
+        if not hosted:
+            raise HostedBootRefused(
+                "the start command passed --hosted but this deployment's config does not "
+                "enable hosted. Remove the flag from the start command, or enable hosted in "
+                "the deployment's config")
+        assert_hosted_boot()
+    except HostedBootRefused as refusal:
+        _log.error("Hosted boot refused: %s", refusal)
+        print(f"Hosted boot refused: {refusal}", flush=True)
+        raise SystemExit(HOSTED_BOOT_REFUSED_EXIT) from refusal
+
+
 def start_server(*args, **kwargs):
     """Run the dashboard/serve backend; no lazy install may prompt on an inherited TTY (#125607)."""
     from pm.extras import suppress_interactive_install_prompts
@@ -1451,6 +1483,8 @@ def _start_server_runtime(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    # Hosted admission FIRST: a hosted process that may not serve never reaches the listener.
+    _admit_hosted_serving()
     from hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a backend an update replayed keeps the user's proxy env, not the update's
     _apply_ssh_session_token(ssh_session_token or "")

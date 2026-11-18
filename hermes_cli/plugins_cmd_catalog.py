@@ -27,6 +27,30 @@ from pm.filesystem import is_junction
 
 logger = logging.getLogger(__name__)
 
+
+def bundled_dir_is_genuine(plugin_dir) -> bool:
+    """Whether a manifest that claims the ``bundled`` source really is a directory inside the
+    plugins tree shipped with Hermes: not a symlink, and its realpath stays inside the bundled
+    root (the tree resolved from Hermes's own installed code — never from the deployment home,
+    config or environment; a hosted process ignores ``HERMES_BUNDLED_PLUGINS``). A symlink planted
+    in the bundled dir (or a dir whose realpath leaves the tree) is operator-unreviewed code
+    wearing the bundled label, so the local curated-trust tiers below consult this, not the
+    label alone. (Hosted in-process loading is enforced separately, by the process-wide code
+    fence the hosted boot installs.)"""
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    if not plugin_dir:
+        return False
+    path = Path(plugin_dir)
+    try:
+        if path.is_symlink():
+            return False
+        resolved = path.resolve()
+        root = get_bundled_plugins_dir().resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
 CATALOG_SIDECAR = ".hermes-catalog.json"
 
 # ── Resolution / provenance ──────────────────────────────────────────────────
@@ -222,13 +246,22 @@ def browser_page_backend_provenance_error(manifest) -> str:
 
 
 def login_backend_provenance_error(manifest, rule: str = LOGIN_BACKEND_RULE) -> str:
-    """Why *manifest*'s plugin may not register a login backend, or "" when it may.
+    """Why *manifest*'s plugin may not register a login backend, or ``""`` when it may.
 
     Read from the installer-owned ``.install-metadata.json`` record of the CURRENT home's plugins dir, never
     from the tree (a repo can commit a ``.hermes-catalog.json``). No config key relaxes it. This decides
-    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it."""
+    which plugins Hermes offers the seam to; code already running in-process is not sandboxed by it.
+
+    A catalog install is trusted at the tier and pin its own installer-owned record claims:
+    the record is written by the installer, not the plugin, and a local home is its user's own
+    machine. (A hosted process never consults this for trust at all — in hosted mode only what
+    the deployment image ships loads in-process; see ``hermes_cli.hosted_code_fence``.)
+    """
     if manifest.source == "bundled":
-        return ""
+        if bundled_dir_is_genuine(manifest.path):
+            return ""
+        return (f"{rule}; this plugin claims the bundled source but its directory is a symlink or "
+                f"leaves the plugins tree shipped with Hermes")
     if manifest.source in _NON_CATALOG_SOURCES:
         return f"{rule}; this plugin was loaded from {_NON_CATALOG_SOURCES[manifest.source]}"
     record = _install_record(Path(manifest.path)) if manifest.source == "user" and manifest.path else None

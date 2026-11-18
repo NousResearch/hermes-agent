@@ -7,9 +7,15 @@ import inspect
 import pytest
 
 from hermes_cli import plugins_loader
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, get_bundled_plugins_dir
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_constants import get_hermes_home
+
+
+def _bundled_manifest(name: str) -> PluginManifest:
+    """A bundled manifest as the loader builds it: with the bundled directory it was discovered
+    in (the login/browser-page seams admit the bundled label only for a genuine bundled dir)."""
+    return PluginManifest(name=name, source="bundled", path=str(get_bundled_plugins_dir() / name))
 
 
 def _provider_for(base_ref: str, name: str):
@@ -26,7 +32,7 @@ def test_each_registrar_registers_into_its_rows_registry(row):
     name = "probe" + kind.replace("_", "")
     provider = _provider_for(base_ref, name)
     manager = PluginManager()
-    ctx = PluginContext(PluginManifest(name="probe", source="bundled"), manager)
+    ctx = PluginContext(_bundled_manifest("probe"), manager)
     registry = importlib.import_module(registry_mod)
 
     handle = getattr(ctx, method)(provider)
@@ -87,7 +93,7 @@ def test_make_scoped_provider_registrar_still_builds_a_working_method(row, monke
     assert str(inspect.signature(built)) == f"(self, {options.get('param', 'provider')})"
     name = "probebuilt" + kind.replace("_", "")
     manager = PluginManager()
-    ctx = PluginContext(PluginManifest(name="probe", source="bundled"), manager)
+    ctx = PluginContext(_bundled_manifest("probe"), manager)
     registry = importlib.import_module(registry_mod)
     real, transactions = plugins_loader.replacement_coordinator, []
 

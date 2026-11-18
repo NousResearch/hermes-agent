@@ -20,6 +20,7 @@ from persistence import (
     AuthorityRefusal, DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced,
 )
 from persistence.core.errors import HandoffUnsettled
+from persistence.core.fences import writes_as
 from persistence.sqlite._state.write import write_site, writer_mutex_until
 from persistence.authority.coordination import (
     COMPLETION_DELIVERIES, DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS,
@@ -238,10 +239,13 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
     def release_compression_lock(self, *, session_id: SessionId, holder: str) -> None:
         if not session_id:
             return
-        self._write_sql_logged(
-            "release_compression_lock", session_id,
-            "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?",
-            (session_id, holder))
+        # Holder-qualified: it can only drop the caller's own row and writes no content, so a claimed turn that lost
+        # its lease still releases it instead of leaving the session locked until the TTL (``_turn_fence``).
+        with writes_as(None):
+            self._write_sql_logged(
+                "release_compression_lock", session_id,
+                "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?",
+                (session_id, holder))
 
     def get_compression_lock_holder(self, *, session_id: SessionId) -> Optional[str]:
         if not session_id:
@@ -301,7 +305,9 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             conn.execute(
                 "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                 (conversation_id, holder))
-        with translated():
+        # Holder-qualified, as the compression lock's release: a turn that lost its claim still releases its own
+        # lease, or the session's next turn waits out the TTL behind a holder that already finished.
+        with translated(), writes_as(None):
             store._execute_write(_do)
 
     def turn_lease_expires_at(self, *, session_id: SessionId, holder: str) -> Optional[float]:

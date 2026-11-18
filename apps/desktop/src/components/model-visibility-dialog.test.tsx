@@ -62,61 +62,63 @@ afterEach(() => {
 })
 
 describe('Edit Models reset', () => {
-  it('uses the same source labels in both pickers and the pill without changing selected ids', async () => {
-    const provider = 'custom:relay'
-    const models = ['codex/gpt-6-astra', 'nas/codex/gpt-6-astra', 'auto/gpt-6-astra']
-    const labels = ['codex / GPT-6-astra', 'nas/codex / GPT-6-astra', 'auto / GPT-6-astra']
-    vi.mocked(requestModelOptions).mockResolvedValue({
-      providers: [{ slug: provider, name: 'Relay', models }]
-    })
-    $visibleModels.set(new Set(models.map(model => modelVisibilityKey(provider, model))))
+  it.each(['custom', 'custom:relay'])(
+    'uses the same source labels for %s in both pickers and the pill without changing selected ids',
+    async provider => {
+      const models = ['codex/gpt-6-astra', 'nas/codex/gpt-6-astra', 'auto/gpt-6-astra']
+      const labels = ['codex / GPT-6-astra', 'nas/codex / GPT-6-astra', 'auto / GPT-6-astra']
+      vi.mocked(requestModelOptions).mockResolvedValue({
+        providers: [{ slug: provider, name: 'Relay', models }]
+      })
+      $visibleModels.set(new Set(models.map(model => modelVisibilityKey(provider, model))))
 
-    renderDialog()
+      renderDialog()
 
-    for (const label of labels) {
-      expect(await screen.findByText(label)).toBeTruthy()
-    }
+      for (const label of labels) {
+        expect(await screen.findByText(label)).toBeTruthy()
+      }
 
-    cleanup()
-
-    Element.prototype.scrollIntoView = vi.fn()
-    Element.prototype.hasPointerCapture = vi.fn(() => false)
-    Element.prototype.releasePointerCapture = vi.fn()
-    const select = vi.fn()
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={client}>
-        <DropdownMenu open>
-          <DropdownMenuContent>
-            <ModelCatalogMenu
-              controller={{
-                current: { model: models[0], provider, effort: '', fast: false },
-                select,
-                applyPreset: vi.fn(),
-                presetFor: () => ({}),
-                setOptions: vi.fn()
-              }}
-            />
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </QueryClientProvider>
-    )
-
-    for (const label of labels) {
-      expect(await screen.findByText(label)).toBeTruthy()
-    }
-
-    fireEvent.click(screen.getByText(labels[1]))
-    expect(select).toHaveBeenCalledWith(models[1], provider)
-    cleanup()
-    client.clear()
-
-    for (const [index, model] of models.entries()) {
-      render(<ModelPill disabled={false} model={{ model, provider, canSwitch: true }} />)
-      expect(screen.getByText(labels[index])).toBeTruthy()
       cleanup()
+
+      Element.prototype.scrollIntoView = vi.fn()
+      Element.prototype.hasPointerCapture = vi.fn(() => false)
+      Element.prototype.releasePointerCapture = vi.fn()
+      const select = vi.fn()
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <QueryClientProvider client={client}>
+          <DropdownMenu open>
+            <DropdownMenuContent>
+              <ModelCatalogMenu
+                controller={{
+                  current: { model: models[0], provider, effort: '', fast: false },
+                  select,
+                  applyPreset: vi.fn(),
+                  presetFor: () => ({}),
+                  setOptions: vi.fn()
+                }}
+              />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </QueryClientProvider>
+      )
+
+      for (const label of labels) {
+        expect(await screen.findByText(label)).toBeTruthy()
+      }
+
+      fireEvent.click(screen.getByText(labels[1]))
+      expect(select).toHaveBeenCalledWith(models[1], provider)
+      cleanup()
+      client.clear()
+
+      for (const [index, model] of models.entries()) {
+        render(<ModelPill disabled={false} model={{ model, provider, canSwitch: true }} />)
+        expect(screen.getByText(labels[index])).toBeTruthy()
+        cleanup()
+      }
     }
-  })
+  )
 
   it('restores the default shortlist when a model is stuck hidden by the known snapshot', async () => {
     // A curation saved while the snapshot machinery was live: gpt-6 was listed

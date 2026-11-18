@@ -206,7 +206,8 @@ export function modelDisplayParts(model: string, options?: ModelDisplayOptions):
   // Custom endpoints can route the same model through arbitrary nested sources.
   // Keep that path verbatim and first, ahead of the potentially truncated name.
   // Ordinary catalogs retain their compact vendor-free labels.
-  const source = options?.provider?.startsWith('custom:') && slash > 0 ? id.slice(0, slash) : ''
+  const isCustom = options?.provider === 'custom' || options?.provider?.startsWith('custom:')
+  const source = isCustom && slash > 0 ? id.slice(0, slash) : ''
 
   return { name: source ? `${source} / ${name}` : name, tag: tags.join(' ') }
 }

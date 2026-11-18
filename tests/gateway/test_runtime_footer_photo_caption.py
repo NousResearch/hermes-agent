@@ -6,6 +6,7 @@ whose only text is the footer) it goes on the last photo's caption, on adapters 
 """
 
 from types import SimpleNamespace
+import copy
 
 import pytest
 
@@ -221,3 +222,15 @@ async def test_no_separate_footer_when_the_captioned_photo_is_queued_for_a_reupl
 
     assert [batch[-1][1] for batch in adapter.batches] == [FOOTER, FOOTER]
     assert FOOTER not in adapter.sent
+
+
+def test_footered_reply_supports_copy_and_deepcopy():
+    """Session event publication deep-copies payloads containing FooteredReply (#157439)."""
+    reply = FooteredReply("answer", FOOTER)
+    shallow = copy.copy(reply)
+    deep = copy.deepcopy({"payload": reply})["payload"]
+
+    assert shallow is reply
+    assert deep is reply
+    assert deep == f"answer\n\n{FOOTER}"
+    assert deep.runtime_footer == FOOTER

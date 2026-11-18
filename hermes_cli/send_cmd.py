@@ -189,9 +189,8 @@ def _load_hermes_env() -> None:
         cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in target:
-            target[key] = str(val)
+    from hermes_cli.env_loader import bridge_config_scalars
+    bridge_config_scalars(cfg, target)
 
 
 def cmd_send(args: argparse.Namespace) -> None:
@@ -232,7 +231,7 @@ def cmd_send(args: argparse.Namespace) -> None:
         message = f"{subject}\n\n{message.lstrip()}"
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
-    from tools.send_message_tool import send_message_tool
+    from gateway.outbound.send import send_message_tool
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.

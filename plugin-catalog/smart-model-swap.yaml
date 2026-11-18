@@ -1,0 +1,31 @@
+name: smart-model-swap
+title: "Smart Model Swap"
+repo: https://github.com/CarmaOS-Dev/SmartModelSwap-plugin
+sha: b8c2c6df26bc98e65be7475a13851c9586b93ac7
+description: "Run a big and a small local LLM on one GPU rig and let the agent switch between them by task: the small one for quick or voice chat and to free VRAM for GPU jobs (ComfyUI), the big one for deep work. SmartModelProvider launches and stops llama.cpp's llama-server itself, swaps in the background without cutting replies, checks per-GPU VRAM before loading, restores the big model when idle, and ships a launch-parameter editor in the dashboard and Desktop, plus a bundled routing skill. Ollama, vLLM and LM Studio are detection-only. Disclosure — starts and stops llama-server as a long-running background process (in a transient systemd-run --user scope when available), autostarts the primary model when the gateway starts and swaps back to it if a smaller model was left serving (GPU memory), and keeps a detached runner per swap and a watcher that restores the primary after inactivity and, by default, loads another registered model if the serving one dies; sends SIGINT/SIGKILL only to the engine process it manages or an engine of the same kind holding its port; runs nvidia-smi, ss, systemctl --user show, systemd-run and llama-server --help/--version with a minimal environment (no provider keys); reads /proc of other processes to identify the engine and GPU users, and its guard reads shell scripts a terminal command is about to run; adds one-line hints to turns, can veto terminal/execute_code calls that manage the engine by hand, and can end a turn with an explanation while the LLM is unloaded on purpose; writes its own settings to config.yaml and, only on request, installs a model-provider plugin under plugins/model-providers/smart-model-provider; HTTP only to the configured engine and ComfyUI endpoints (localhost by default). No telemetry, credentials, self-updater or approval bypass."
+maintainer: CarmaOS-Dev
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/CarmaOS-Dev/SmartModelSwap-plugin#readme
+version: "0.4.0"
+screenshots:
+  - https://raw.githubusercontent.com/CarmaOS-Dev/SmartModelSwap-plugin/cc593118c22b22d635f226997ea6f8c868dc3138/docs/screenshots/dashboard.png
+readme: true
+platforms: [linux]
+known_issues:
+  - "Needs an NVIDIA GPU with nvidia-smi and a built llama.cpp llama-server; only llama.cpp is managed (Ollama, vLLM and LM Studio are detection-only)."
+  - "On WSL2, GGUFs on a Windows drive (/mnt/<drive>, 9p) load ~10x slower than from the Linux filesystem."
+  - "Keep the same -c on every model: Hermes caches one context length per model id (the editor enforces it)."
+capabilities:
+  provides_tools:
+    - sms_status
+    - sms_plan
+    - sms_swap
+    - sms_restore
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - pre_transcription
+  provides_middleware: []
+  requires_env: []

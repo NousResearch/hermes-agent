@@ -56,32 +56,36 @@ def test_native_delete_exact_retry_survives_owner_restart(tmp_path):
 def test_route_retirement_rolls_back_with_receipt_and_rejects_stale_mirror(tmp_path):
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore, SessionSource
-    from hermes_state import SessionDB
-    import hermes_state_runtime as rt
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
+    from persistence.authority.runtime import Delete
+    from persistence.core.errors import PermanentStoreError
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
+    # The stores below resolve the active profile's state.db, the one this handle opens.
+    with open_persistence(profile_scope()) as db:
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        store._db = db
         source = SessionSource(platform=Platform.TELEGRAM, chat_id='owned')
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        if db.get_session(sid) is None:
-            db.create_session(sid, source='telegram')
+        if session_row(db, sid) is None:
+            seed_session(db, sid, 'telegram')
         serialized = json.dumps(entry.to_dict())
-        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
-        args = dict(epoch=epoch, principal_id='human', session_id=sid, request_id='delete',
-                    expected_revision=0, expected_generation=0, operation='delete', payload={})
-        db._execute_write(lambda conn: conn.execute("CREATE TRIGGER reject_receipt BEFORE INSERT ON state_meta WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END"))
-        with pytest.raises(sqlite3.IntegrityError, match='receipt unavailable'):
-            rt.mutate_runtime_session(db, **args)
-        assert db.get_session(sid) is not None
-        assert db.load_gateway_routing_entries(scope=store._routing_scope())
-        db._execute_write(lambda conn: conn.execute('DROP TRIGGER reject_receipt'))
-        rt.mutate_runtime_session(db, **args)
-        assert not db.load_gateway_routing_entries(scope=store._routing_scope())
-        db.save_gateway_routing_entry(entry.session_key, serialized, scope=store._routing_scope())
-        db.replace_gateway_routing_entries({entry.session_key: serialized}, scope=store._routing_scope())
-        assert not db.load_gateway_routing_entries(scope=store._routing_scope())
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        args = dict(principal_id='human', session_id=sid, request_id='delete',
+                    expected_revision=0, expected_generation=0, command=Delete())
+        raw_holder(db)._execute_write(lambda conn: conn.execute("CREATE TRIGGER reject_receipt BEFORE INSERT ON state_meta WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END"))
+        with pytest.raises(PermanentStoreError, match='receipt unavailable') as refused:
+            db.runtime.mutate(epoch, **args, owner=None)
+        assert isinstance(refused.value.__cause__, sqlite3.IntegrityError)
+        assert session_row(db, sid) is not None
+        assert db.routing.load_routing_entries(routing_scope=store._routing_scope())
+        raw_holder(db)._execute_write(lambda conn: conn.execute('DROP TRIGGER reject_receipt'))
+        db.runtime.mutate(epoch, **args, owner=None)
+        assert not db.routing.load_routing_entries(routing_scope=store._routing_scope())
+        db.routing.upsert_routing_entry(entry.session_key, serialized, routing_scope=store._routing_scope())
+        db.routing.replace_routing_entries({entry.session_key: serialized}, routing_scope=store._routing_scope())
+        assert not db.routing.load_routing_entries(routing_scope=store._routing_scope())
         # The pre-commit mirror remains on disk as in a crash before publication.
         restored = SessionStore(store.sessions_dir, GatewayConfig())
-        restored._db = db
         assert restored.lookup_by_session_id(sid) is None

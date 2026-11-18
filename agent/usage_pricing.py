@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
+from agent.reasoning_effort import GPT62_MODEL_IDS
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,10 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # Granted cache tier per written token, when the response names it: Anthropic (and Kimi's
+    # Messages wire) ``cache_creation.ephemeral_5m/1h_input_tokens``, OpenAI Responses
+    # ``cache_write_tokens_details.ttl_30m/12h_tokens``. ``(("1h", 4096),)``; empty = not reported.
+    cache_write_by_ttl: tuple[tuple[str, int], ...] = ()
 
     @property
     def prompt_tokens(self) -> int:
@@ -81,15 +86,18 @@ class CanonicalUsage:
         return self.prompt_tokens + self.output_tokens
 
     def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
-        """Sum two usage buckets. ``raw_usage`` (single-response detail) is
-        dropped; ``request_count`` adds so callers see how many API calls a
+        """Sum two usage buckets. ``raw_usage`` and ``cache_write_by_ttl`` (single-response
+        detail) are dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""
         if not isinstance(other, CanonicalUsage):
             return NotImplemented
         return CanonicalUsage(**{
             f.name: getattr(self, f.name) + getattr(other, f.name)
-            for f in fields(CanonicalUsage) if f.name != "raw_usage"
+            for f in fields(CanonicalUsage) if f.name not in _PER_RESPONSE_FIELDS
         })
+
+
+_PER_RESPONSE_FIELDS = frozenset({"raw_usage", "cache_write_by_ttl"})
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-12", {
+        "gemini-4-hydrogen": ("1.50", "7.50", "0.075"),
+    }),
     # Gemini 4 introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-10", {
         "gemini-4-carbon": ("2.00", "10.00", "0.10"),
@@ -310,6 +321,21 @@ for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
         cache_write_cost_per_million_above=Decimal(_write_above),
     )
 del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
+
+# https://developers.openai.com/api/docs/models/gpt-6.2-astra (and gpt-6.2-sol).
+for _slug, (_inp, _out, _read, _write) in {
+    "gpt-6.2-astra": ("8.00", "40.00", "0.40", "10.00"),
+    "gpt-6.2-sol": ("2.00", "10.00", "0.10", "2.50"),
+}.items():
+    _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
+        _inp, _out, _read, _write, url=f"https://developers.openai.com/api/docs/models/{_slug}",
+        version="openai-gpt-6.2-2026-11", tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal(_inp) * 2,
+        output_cost_per_million_above=Decimal(_out) * Decimal("1.5"),
+        cache_read_cost_per_million_above=Decimal(_read) * 2,
+        cache_write_cost_per_million_above=Decimal(_write) * 2,
+    )
+del _slug, _inp, _out, _read, _write
 
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
@@ -512,6 +538,18 @@ def _served_openai_tier(usage: CanonicalUsage) -> Optional[str]:
     return usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
 
 
+def _openai_served_tier_entry(model: str, tier: Optional[str]) -> Optional[PricingEntry]:
+    """GPT-6.2's launch Ultrafast discount expires March 1, 2027, Pacific time; older tiers stay fixed."""
+    if model not in GPT62_MODEL_IDS:
+        return _OPENAI_ULTRAFAST_PRICING.get(model) if tier == "ultrafast" else None
+    entry = _OFFICIAL_DOCS_PRICING[("openai", model)]
+    multiplier = 2 if tier == "priority" else (
+        3 if _UTC_NOW() < datetime(2027, 3, 1, 8, tzinfo=UTC) else 6)
+    rates = {field.name: value * multiplier for field in fields(PricingEntry)
+             if "cost_per_million" in field.name and (value := getattr(entry, field.name)) is not None}
+    return replace(entry, **rates, pricing_version=f"{entry.pricing_version}-{tier}-{multiplier}x")
+
+
 def _served_fast(usage: CanonicalUsage) -> bool:
     """Anthropic names the speed that served a fast-mode request in ``usage.speed``."""
     return isinstance(usage.raw_usage, dict) and usage.raw_usage.get("speed") == "fast"
@@ -649,6 +687,20 @@ _CHAT_USAGE_SHAPE = (
 )
 
 
+# Where each wire reports the tier a cache write was granted at: (tier, path).
+_CACHE_WRITE_TIER_PATHS = (
+    ("5m", ("cache_creation", "ephemeral_5m_input_tokens")),
+    ("1h", ("cache_creation", "ephemeral_1h_input_tokens")),
+    ("30m", ("input_tokens_details", "cache_write_tokens_details", "ttl_30m_tokens")),
+    ("12h", ("input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens")),
+)
+
+
+def cache_write_tiers(response_usage: Any) -> tuple[tuple[str, int], ...]:
+    """Non-zero ``(tier, tokens)`` pairs the response proved for its cache writes."""
+    return tuple((tier, n) for tier, path in _CACHE_WRITE_TIER_PATHS if (n := _usage_field(response_usage, *path)))
+
+
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:
@@ -704,6 +756,7 @@ def normalize_usage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
+        cache_write_by_ttl=cache_write_tiers(u),
     )
 
 
@@ -732,9 +785,14 @@ def estimate_usage_cost(
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    if route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
-        entry = _OPENAI_ULTRAFAST_PRICING.get(route.model)
-        if not entry:
+    served_tier = _served_openai_tier(usage)
+    if served_tier == "fast" and route.model in GPT62_MODEL_IDS:
+        served_tier = "priority"
+    if route.provider == "openai" and served_tier in {"ultrafast", "priority"}:
+        served_entry = _openai_served_tier_entry(route.model, served_tier)
+        if served_entry:
+            entry = served_entry
+        elif served_tier == "ultrafast":
             return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")

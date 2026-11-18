@@ -8,11 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
-from hermes_state_runtime import (
-    begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
-    recover_session_inputs,
-)
 from gateway.session_contract import Submission
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 
 
@@ -47,12 +44,12 @@ class Turn:
         monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
 
-def interactive(db, sid='s', source='gui', created_source=None):
+def interactive(store, sid='s', source='gui', created_source=None):
     """The session was launched from an interactive local surface (Desktop by default): a local
     session's row records its frozen launch policy's source and, for a chat stored as ``local``, the
     surface that created it."""
-    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=?, created_source=? WHERE id=?',
-                                                (source, created_source, sid)))
+    raw_holder(store)._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=?, created_source=? WHERE id=?',
+                                                               (source, created_source, sid)))
 
 
 def _connection(authority):
@@ -66,9 +63,9 @@ async def _call(conn, method, **params):
     return await conn.dispatch({'id': 1, 'method': method, 'params': {'session_id': 's', **params}})
 
 
-def _ledger(db):
-    return [(row['request_id'], row['status'], row['outcome'])
-            for row in list_session_admissions(db, session_id='s', pending_only=False)]
+def _ledger(store):
+    return [(row.request_id, row.status, row.outcome)
+            for row in store.admissions.list(session_id='s', pending_only=False)]
 
 
 def _completions(frames):
@@ -79,7 +76,7 @@ def _completions(frames):
 @pytest.mark.asyncio
 async def test_steer_queued_delivers_the_queued_text_into_the_running_turn_exactly_once(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn, frames = Turn(monkeypatch), []
     authority.sessions['s'].event_stream.observers.add(frames.append)
     with db:
@@ -106,13 +103,13 @@ async def test_steer_queued_delivers_the_queued_text_into_the_running_turn_exact
         assert (settled['result']['status'], settled['result']['outcome']) == ('terminal', 'steered'), settled
         assert (queued.admission_id, 'steered') in _completions(frames)
     assert turn.ran == ['running'], 'the steered admission also ran as its own queued turn'
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+    assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
 
 
 @pytest.mark.asyncio
 async def test_steer_queued_refuses_by_name_and_leaves_the_admission_queued(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         idle = await _submit(authority, 'waiting')
@@ -124,48 +121,47 @@ async def test_steer_queued_refuses_by_name_and_leaves_the_admission_queued(tmp_
         assert missing['error']['data']['reason'] == 'not_found', missing
 
         # The drain claimed it first: it runs as its own turn and is never also steered.
-        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         started = await _call(conn, 'prompt.steer_queued', admission_id=idle.admission_id)
         assert started['error']['data']['reason'] == 'admission_started', started
-    assert _ledger(db) == [('waiting', 'started', None)]
+    assert _ledger(authority.persistence) == [('waiting', 'started', None)]
 
 
 def test_the_steer_transaction_fences_on_the_queued_row_and_the_running_generation(tmp_path, monkeypatch):
     """Atomic in the store: queued -> steered only while the named generation is the running one."""
-    import hermes_state_runtime as store
-    from hermes_state_runtime import RuntimeStoreError, admit_session_input
-    assert hasattr(store, 'steer_session_input'), 'no store transaction steers a queued admission'
-    steer_session_input = store.steer_session_input
+    from persistence.core.errors import AuthorityRefusal
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    store = authority.persistence.admissions
+    assert hasattr(store, 'steer'), 'no store transaction steers a queued admission'
+    interactive(authority.persistence)
     with db:
         for request_id in ('running', 'follow-up'):
-            admit_session_input(db, epoch=authority.epoch, principal_id='human', session_id='s',
-                                request_id=request_id, payload={'text': request_id})
-        running = claim_session_input(db, epoch=authority.epoch, session_id='s')
-        follow = find_session_admission(db, principal_id='human', session_id='s', request_id='follow-up')
-        with pytest.raises(RuntimeStoreError) as stale:
-            steer_session_input(db, epoch=authority.epoch, admission_id=follow['admission_id'],
-                                generation=running['generation'] + 1)
+            store.admit(epoch=authority.epoch, principal_id='human', session_id='s',
+                        request_id=request_id, payload={'text': request_id})
+        running = store.claim(epoch=authority.epoch, session_id='s')
+        follow = store.find(principal_id='human', session_id='s', request_id='follow-up')
+        with pytest.raises(AuthorityRefusal) as stale:
+            store.steer(epoch=authority.epoch, admission_id=follow.admission_id,
+                        generation=running.generation + 1)
         assert stale.value.reason == 'session_idle'
-        with pytest.raises(RuntimeStoreError) as own:
-            steer_session_input(db, epoch=authority.epoch, admission_id=running['admission_id'],
-                                generation=running['generation'])
+        with pytest.raises(AuthorityRefusal) as own:
+            store.steer(epoch=authority.epoch, admission_id=running.admission_id,
+                        generation=running.generation)
         assert own.value.reason == 'admission_started'
-        row, fresh = steer_session_input(db, epoch=authority.epoch, admission_id=follow['admission_id'],
-                                         generation=running['generation'])
+        row, fresh = store.steer(epoch=authority.epoch, admission_id=follow.admission_id,
+                                 generation=running.generation)
         # Bound to the receiving claim until that execution settles (never claimable, never steered yet).
-        assert (row['status'], row['outcome'], row['generation'], fresh) == (
-            'terminal', 'steering', running['generation'], True)
-        replay, fresh = steer_session_input(db, epoch=authority.epoch, admission_id=follow['admission_id'],
-                                            generation=running['generation'])
-        assert (replay['outcome'], fresh) == ('steering', False)
+        assert (row.status, row.outcome, row.generation, fresh) == (
+            'terminal', 'steering', running.generation, True)
+        replay, fresh = store.steer(epoch=authority.epoch, admission_id=follow.admission_id,
+                                    generation=running.generation)
+        assert (replay.outcome, fresh) == ('steering', False)
 
 
 @pytest.mark.asyncio
 async def test_replace_queued_retires_the_old_admission_and_admits_the_edit_at_the_back(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     frames = []
     authority.sessions['s'].event_stream.observers.add(frames.append)
@@ -180,8 +176,8 @@ async def test_replace_queued_retires_the_old_admission_and_admits_the_edit_at_t
         new_id = reply['result']['admission_id']
         assert new_id != first.admission_id and reply['result']['status'] == 'queued'
         assert (first.admission_id, 'cancelled') in _completions(frames)
-        queued = [r for r in list_session_admissions(db, session_id='s') if r['status'] == 'queued']
-        assert [(r['request_id'], r['payload']['text']) for r in queued] == [
+        queued = [r for r in authority.persistence.admissions.list(session_id='s') if r.status == 'queued']
+        assert [(r.request_id, r.payload['text']) for r in queued] == [
             ('second', 'second'), ('first-edited', 'first, edited')], 'the edit must join the back of the FIFO'
 
         # Exact retry: the same new admission, nothing admitted twice; the old id stays cancelled.
@@ -189,18 +185,18 @@ async def test_replace_queued_retires_the_old_admission_and_admits_the_edit_at_t
         assert again.get('result', {}).get('admission_id') == new_id, again
         old = await _call(conn, 'prompt.cancel', admission_id=first.admission_id)
         assert (old['result']['status'], old['result']['outcome']) == ('terminal', 'cancelled')
-    assert _ledger(db) == [('first', 'terminal', 'cancelled'), ('second', 'queued', None),
+    assert _ledger(authority.persistence) == [('first', 'terminal', 'cancelled'), ('second', 'queued', None),
                            ('first-edited', 'queued', None)]
 
 
 @pytest.mark.asyncio
 async def test_replace_queued_refuses_a_started_admission_and_admits_nothing(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         first = await _submit(authority, 'first')
-        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         conn = _connection(authority)
         reply = await _call(conn, 'prompt.replace_queued', admission_id=first.admission_id,
                             submission_id='too-late', text='edited')
@@ -208,22 +204,23 @@ async def test_replace_queued_refuses_a_started_admission_and_admits_nothing(tmp
         missing = await _call(conn, 'prompt.replace_queued', admission_id='no-such-admission',
                               submission_id='orphan', text='edited')
         assert missing['error']['data']['reason'] == 'not_found', missing
-    assert find_session_admission(db, principal_id='human', session_id='s', request_id='too-late') is None
-    assert _ledger(db) == [('first', 'started', None)]
+    assert authority.persistence.admissions.find(principal_id='human', session_id='s', request_id='too-late') is None
+    assert _ledger(authority.persistence) == [('first', 'started', None)]
 
 
 @pytest.mark.asyncio
 async def test_a_queued_admission_survives_an_owner_restart_and_is_steered_by_the_next_owner(tmp_path, monkeypatch):
     db, before = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(before.persistence)
     monkeypatch.setattr(before, '_schedule', lambda ref: None)
     with db:
         await _submit(before, 'head')
         follower = await _submit(before, 'follower')
         # Owner restart: a new epoch over the same store; both rows were still queued.
-        epoch = begin_runtime_epoch(db, instance_id='next')
-        recover_session_inputs(db, epoch=epoch)
-        after = SessionAuthority(before.runner, profile_id='owned', instance_id='next', db=db, epoch=epoch)
+        epoch = before.persistence.runtime.begin_epoch(instance_id='next')
+        before.persistence.admissions.recover(epoch=epoch)
+        after = SessionAuthority(before.runner, profile_id='owned', instance_id='next', epoch=epoch,
+                                 persistence=before.persistence)
         after.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
         turn = Turn(monkeypatch)
         after._schedule(REF)
@@ -235,19 +232,19 @@ async def test_a_queued_admission_survives_an_owner_restart_and_is_steered_by_th
         turn.release.set()
         await asyncio.wait_for(after.sessions['s'].task, 30)
     assert turn.ran == ['head']
-    assert _ledger(db) == [('head', 'terminal', 'completed'), ('follower', 'terminal', 'steered')]
+    assert _ledger(before.persistence) == [('head', 'terminal', 'completed'), ('follower', 'terminal', 'steered')]
 
 
 @pytest.mark.asyncio
 async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeypatch):
     """Desktop shows Steer / Edit only for rows that list them: an older owner lists none."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         await _submit(authority, 'head')
         await _submit(authority, 'follower')
-        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
@@ -264,14 +261,14 @@ async def test_a_row_submitted_with_clarify_batch_keeps_steer_and_edit(tmp_path,
     """Desktop and Ink declare ``clarify_batch`` on every prompt.submit; that must not hide Steer / Edit.
     Any other classic-CLI turn field is turn content a steer or edit would drop, so it still does."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         await _submit(authority, 'head')
         await _submit_with(authority, 'batch', clarify_batch=True)
         await _submit_with(authority, 'api-text', clarify_batch=True, api_text='model-facing text')
         await _submit_with(authority, 'override', model_override={'model': 'other-model'})
-        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
                                                      for r in authority._pending_rows(REF))}
         assert pending['batch'].get('controls') == ['steer', 'replace']
@@ -280,8 +277,8 @@ async def test_a_row_submitted_with_clarify_batch_keeps_steer_and_edit(tmp_path,
 
         # The verb itself accepts the row the panel now offers: the edit replaces it at the FIFO tail.
         conn = _connection(authority)
-        batch = find_session_admission(db, principal_id='human', session_id='s', request_id='batch')
-        reply = await _call(conn, 'prompt.replace_queued', admission_id=batch['admission_id'],
+        batch = authority.persistence.admissions.find(principal_id='human', session_id='s', request_id='batch')
+        reply = await _call(conn, 'prompt.replace_queued', admission_id=batch.admission_id,
                             submission_id='batch-edited', text='edited')
         assert 'error' not in reply, reply
 
@@ -296,12 +293,12 @@ async def test_a_row_submitted_with_clarify_batch_keeps_steer_and_edit(tmp_path,
 async def test_a_locally_stored_chat_is_interactive_by_its_creating_surface(tmp_path, monkeypatch, source, created_source,
                                                                            offered):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db, source=source, created_source=created_source)
+    interactive(authority.persistence, source=source, created_source=created_source)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         await _submit(authority, 'head')
         await _submit(authority, 'follower')
-        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
         pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
                                                      for r in authority._pending_rows(REF))}
     assert bool(pending['follower'].get('controls')) is offered

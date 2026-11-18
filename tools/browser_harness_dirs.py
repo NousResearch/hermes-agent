@@ -1,14 +1,13 @@
 """Per-profile runtime and tmp dirs for browser-harness daemons (Browser Use mode).
 
-A multiplexed gateway serves every profile from one process. The harness names a daemon by
-``BU_NAME`` alone and reuses any live one, so each served profile gets its own runtime dir (daemon
-sockets) and tmp dir (screenshots, debug overlays, logs). A runtime dir too long for a 64-character
-session's AF_UNIX socket moves to a private short dir under ``$XDG_RUNTIME_DIR`` or the socket temp
-root; outside a served profile, so does a default runtime dir whose socket for the call's own
-``BU_NAME`` would overflow (a deep HOME).
+The harness names a daemon by ``BU_NAME`` alone and reuses any live one in its runtime dir, which
+defaults to one dir per OS user. Every profile (a multiplexed gateway's served profiles, and each
+``hermes -p`` CLI, cron or one-shot process) therefore gets its own runtime dir (daemon sockets) and
+tmp dir (screenshots, debug overlays, logs), so no profile drives a daemon attached to another's
+browser. A runtime dir too long for a 64-character session's AF_UNIX socket moves to a private short
+dir under ``$XDG_RUNTIME_DIR`` or the socket temp root.
 
-``browser_use_cli._base_subprocess_env`` applies the result through ``namespace_harness_dirs``, and
-``browser_exec`` calls ``fit_default_socket_dir`` once the call's ``BU_NAME`` is final.
+``browser_use_cli._base_subprocess_env`` applies the result through ``namespace_harness_dirs``.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ _MACOS_SOCKET_DIR_BUDGET = 103 - len("/bu-.sock") - 64
 _LINUX_SOCKET_DIR_BUDGET = 107 - len("/bu-.sock") - 64
 
 
-# The env keys that, with BU_NAME, identify one harness daemon (a served profile's dirs are its own).
+# The env keys that, with BU_NAME, identify one harness daemon (a profile's dirs are its own).
 HARNESS_DIR_KEYS = ("BH_RUNTIME_DIR", "BH_RUNTIME_DIR_SHARED", "BH_TMP_DIR", "BH_TMP_DIR_SHARED")
 
 
@@ -59,21 +58,53 @@ def fits_socket_budget(resolved_dir: str, budget: Optional[int]) -> bool:
     return budget is None or len(resolved_dir.encode()) <= budget
 
 
-def harness_pid_file(env: dict) -> Path:
+def harness_pid_file(env: dict, suffix: str = ".pid") -> Path:
     """Where the harness publishes the pid of the daemon a call with ``env`` drives
     (browser_harness ``_ipc``): ``<runtime dir>/bu-<BU_NAME>.pid``, or ``bu.pid`` in an isolated
-    runtime dir that is not shared between names."""
+    runtime dir that is not shared between names. ``suffix`` names its sibling endpoint files
+    (``.sock`` on POSIX, ``.port`` on Windows)."""
     isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
     runtime = Path(isolated).expanduser() if isolated else Path(_harness_home(env)) / "runtime"
     shared = not isolated or env.get("BH_RUNTIME_DIR_SHARED") == "1"
-    return runtime / (f"bu-{env.get('BU_NAME', 'default')}.pid" if shared else "bu.pid")
+    return runtime / (f"bu-{env.get('BU_NAME', 'default')}{suffix}" if shared else f"bu{suffix}")
+
+
+def harness_current_target(env: dict, timeout: float = 2.0) -> Optional[str]:
+    """The CDP ``targetId`` of the tab the daemon behind ``env`` is attached to (the harness's own
+    ``current_tab`` IPC request), or None when no daemon answers. browser_vault fills prefer this tab:
+    on a shared CDP browser the first same-origin tab can be another session's."""
+    import json
+    import socket
+
+    token = None
+    try:
+        if sys.platform == "win32":  # loopback TCP + token from the port file
+            record = json.loads(harness_pid_file(env, ".port").read_text(encoding="utf-8-sig"))
+            token = record.get("token")
+            conn = socket.create_connection(("127.0.0.1", int(record["port"])), timeout=timeout)
+        else:
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # windows-footgun: ok — POSIX branch
+            conn.settimeout(timeout)
+            conn.connect(str(harness_pid_file(env, ".sock").resolve()))
+        with conn:
+            conn.settimeout(timeout)
+            req = {"meta": "current_tab", **({"token": token} if token else {})}
+            conn.sendall((json.dumps(req) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n") and len(data) < 1 << 16:
+                chunk = conn.recv(1 << 12)
+                if not chunk:
+                    break
+                data += chunk
+        reply = json.loads(data or b"{}")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    target = reply.get("targetId") if isinstance(reply, dict) else None
+    return target if isinstance(target, str) and target else None
 
 
 def namespace_harness_dirs(env: dict, tag: str) -> None:
-    """Give served profile ``tag`` its own harness runtime and tmp dirs in the child ``env``. An empty
-    ``tag`` (outside a served-profile scope) leaves ``env`` unchanged."""
-    if not tag:
-        return
+    """Give profile ``tag`` (its home key) its own harness runtime and tmp dirs in the child ``env``."""
     root = _harness_home(env)
     leaf = f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}"
     base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR") or str(Path(root) / "runtime")
@@ -95,33 +126,11 @@ def _harness_home(env: dict) -> str:
     return str(Path(root).expanduser())
 
 
-def fit_default_socket_dir(env: dict) -> None:
-    """Outside a served profile the harness binds ``<home>/runtime/bu-<BU_NAME>.sock``. Under a deep
-    HOME (a container's profile home ``$HERMES_HOME/home``, a long account home) that path overflows
-    sun_path and every call dies with ``AF_UNIX path too long``; such a call's runtime dir moves to a
-    private short dir. Judged on the call's own BU_NAME so a socket that already binds keeps its
-    path (and its live daemon). A runtime/tmp dir already set (a served profile's, or exported by
-    the user) is left alone."""
-    if env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR"):
-        return
-    budget = socket_dir_budget(sys.platform)
-    if budget is None:
-        return
-    root = _harness_home(env)
-    stem_budget = budget + 64 - len(env.get("BU_NAME") or "default")  # budget assumes a 64-char name
-    if fits_socket_budget(str((Path(root) / "runtime").resolve()), stem_budget):
-        return
-    short = _claim_short_dir(f"{root}\0", stem_budget)
-    if short:
-        env["BH_RUNTIME_DIR"] = short
-        env["BH_RUNTIME_DIR_SHARED"] = "1"  # several BU_NAMEs share the dir: keep bu-<name> stems
-
-
 def socket_fit_runtime_dir(runtime: str, base: str, tag: str) -> str:
     """``runtime`` unless the socket the harness binds under it would be too long for a 64-character
     session. The harness binds ``Path(BH_RUNTIME_DIR).expanduser().resolve()``, so the length is
     judged on that path (a short relative or symlinked spelling can still resolve deep); a dir that
-    fits is returned as given. Otherwise the served profile gets a private short dir
+    fits is returned as given. Otherwise the profile gets a private short dir
     (``_claim_short_dir``) keyed by base and profile; if none fits or can be claimed safely the long
     path stays (shorter names only)."""
     budget = socket_dir_budget(sys.platform)

@@ -774,7 +774,10 @@ class ResponsesApiTransport(ProviderTransport):
         context_management = params.get("context_management")
         native_compaction_active = _native_compaction_active(context_management)
 
-        reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
+        from agent.codex_extended_context import extended_context_base
+
+        reasoning_model = (extended_context_base(model) or model) if is_codex_backend else model
+        reasoning_effort, reasoning_enabled = _resolve_reasoning(reasoning_model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(
             self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
         )
@@ -783,7 +786,7 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
         request_overrides = params.get("request_overrides") or {}
         # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
-        wire_model = _strip_ctx_variant(request_overrides.get("model", model))
+        wire_model = _strip_ctx_variant(request_overrides.get("model", model), catalog_choice=is_codex_backend)
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
             "model": wire_model,

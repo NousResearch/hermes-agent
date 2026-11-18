@@ -52,6 +52,14 @@ export function providerDisplayName(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[normalized] ?? provider.trim()
 }
 
+/** A catalog budget is display metadata, not part of the model ID. */
+export function formatExtendedContextBudget(tokens?: number | null): string | undefined {
+  if (!tokens || !Number.isSafeInteger(tokens) || tokens <= 0) {
+    return undefined
+  }
+  return tokens % 1000 === 0 ? `${tokens / 1000}K` : new Intl.NumberFormat().format(tokens)
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()

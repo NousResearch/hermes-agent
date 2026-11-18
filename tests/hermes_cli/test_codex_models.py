@@ -421,3 +421,86 @@ def test_catalog_falls_back_to_the_ungated_sentinel_when_newest_client_is_reject
     entries, status = fetch_codex_catalog_entries(rejecting)
     assert [e["slug"] for e in entries] == ["gpt-5.5"] and status == 200
     assert fetch_codex_catalog_entries(lambda url: _Resp(200, [])) == ([], 200)
+
+
+def test_future_codex_model_gets_opt_in_budget_from_its_own_catalog(monkeypatch):
+    from agent import model_metadata as metadata
+    from hermes_cli import auth
+    from hermes_cli.inventory import _apply_capabilities
+
+    base = "gpt-future-codex"
+    extended = base + "-extended-context"
+    endpoint = "https://codex-fixture.invalid/backend-api/codex"
+    other = "https://other-codex-fixture.invalid/backend-api/codex"
+    credential = "fixture"
+    entries = [
+        {"slug": base, "context_window": 500_000, "max_context_window": 872_000},
+        {"slug": "gpt-no-extension", "context_window": 500_000, "max_context_window": 500_000},
+        {"slug": "gpt-hidden", "context_window": 500_000, "max_context_window": 872_000, "visibility": "hide"},
+        {"slug": "gpt-invalid", "context_window": True, "max_context_window": 872_000},
+        {"slug": "gpt-conflict", "context_window": 500_000, "max_context_window": 880_000},
+        {"slug": "gpt-conflict", "context_window": 500_000, "max_context_window": 890_000},
+    ]
+    monkeypatch.setattr(metadata, "fetch_codex_catalog_entries", lambda get, base_url: (
+        entries if base_url == endpoint else [dict(entries[0], max_context_window=500_000)], 200))
+    monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **kw: {
+        "api_key": credential, "base_url": endpoint})
+    monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *args: False)
+    models = get_codex_model_ids(credential, endpoint)
+    assert models[models.index(base) + 1] == extended
+    assert [m for m in models if m.endswith("-extended-context")] == [extended]
+    row = {"slug": "openai-codex", "models": [base, extended]}
+    _apply_capabilities([row])
+    assert row["capabilities"][extended]["extended_context_tokens"] == 872_000
+    assert "extended_context_tokens" not in row["capabilities"][base]
+    route = {"provider": "openai-codex", "api_key": credential, "base_url": endpoint}
+    assert metadata.get_model_context_length(base, **route) == 500_000
+    assert metadata.get_model_context_length(extended, **route) == 872_000
+    assert metadata.get_model_context_length(extended, **dict(route, base_url=other)) == 500_000
+    monkeypatch.setattr(metadata, "fetch_codex_catalog_entries", lambda get, base_url: (
+        [dict(entries[0], max_context_window=None)], 200))
+    assert extended not in get_codex_model_ids("another-fixture", endpoint)
+    assert metadata.get_model_context_length(extended, **dict(route, api_key="another-fixture")) == 500_000
+    assert extended not in get_codex_model_ids(credential, endpoint)
+    assert metadata.get_model_context_length(extended, **route) == 500_000
+
+
+def test_catalog_preserves_legacy_context_choice(monkeypatch):
+    from agent import model_metadata as metadata
+
+    base = "gpt-5.6-sol"
+    rows = [{"slug": base, "context_window": 272_000, "max_context_window": 872_000}]
+    monkeypatch.setattr(metadata, "fetch_codex_catalog_entries", lambda *args, **kwargs: (rows, 200))
+    models = get_codex_model_ids("legacy-fixture", "https://legacy-fixture.invalid")
+    assert models[models.index(base) + 1] == base + "-900k"
+    assert base + "-extended-context" not in models
+
+
+def test_empty_picker_catalog_does_not_cache_runtime_metadata(monkeypatch):
+    from agent import model_metadata as metadata
+
+    base = "gpt-future-fixture"
+    endpoint = "https://empty-fixture.invalid"
+    credential = "empty-fixture"
+    catalogs = iter([[], [{"slug": base, "context_window": 500_000, "max_context_window": 872_000}]])
+    monkeypatch.setattr(metadata, "fetch_codex_catalog_entries", lambda *args, **kwargs: (next(catalogs), 200))
+    assert base not in get_codex_model_ids(credential, endpoint)
+    assert metadata.get_model_context_length(base + "-extended-context", provider="openai-codex",
+                                             api_key=credential, base_url=endpoint) == 872_000
+
+
+def test_manually_entered_extended_choice_on_custom_proxy_uses_base_budget(monkeypatch):
+    from agent import model_metadata as metadata
+
+    base = "gpt-future-fixture"
+    endpoint = "https://custom-codex-fixture.invalid"
+    observed = []
+
+    def endpoint_context(model, url, api_key, provider):
+        observed.append((model, url))
+        return 500_000
+
+    monkeypatch.setattr(metadata, "_resolve_custom_endpoint_context_length", endpoint_context)
+    assert metadata._resolve_custom_codex_route_context_length(
+        base + "-extended-context", endpoint, "custom-fixture", "custom:fixture") == 500_000
+    assert observed == [(base, endpoint)]

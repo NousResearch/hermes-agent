@@ -45,7 +45,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, formatExtendedContextBudget, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -1036,6 +1036,11 @@ function rowSpeedSetting(
   return labels.fast
 }
 
+function ExtendedContextChip({ tokens }: { tokens?: number | null }) {
+  const budget = formatExtendedContextBudget(tokens)
+  return budget ? <ModelChip>{budget}</ModelChip> : null
+}
+
 /** One model family row: the favorite star, the trigger that commits the
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
@@ -1196,6 +1201,7 @@ function ModelFamilyRow({
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
           {tag ? <ModelChip>{tag}</ModelChip> : null}
+          <ExtendedContextChip tokens={caps?.extended_context_tokens} />
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}

@@ -15,7 +15,7 @@ import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { currentPickerSelection } from '@/lib/model-status-label'
+import { currentPickerSelection, formatExtendedContextBudget } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
 import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
@@ -359,6 +359,7 @@ function ModelResults({
         const renderModel = (model: string) => {
           const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
           const price = provider.pricing?.[model]
+          const contextBudget = formatExtendedContextBudget(provider.capabilities?.[model]?.extended_context_tokens)
           const locked = unavailable.has(model)
           const resetMs = modelResetMs(provider, model)
           const resetLabel = resetMs === null ? null : formatReset(resetMs)
@@ -389,6 +390,7 @@ function ModelResults({
               <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
                 <HighlightMatches foldSeparators query={search} text={model} />
               </span>
+              {contextBudget && <span className="shrink-0 tabular-nums">{contextBudget}</span>}
               {loadProgress && (
                 <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
                   <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">

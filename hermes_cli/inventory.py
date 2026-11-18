@@ -523,11 +523,28 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
+def _codex_picker_context_budgets() -> dict[str, int]:
+    from agent.model_metadata_memo_bounds import cached_codex_extended_budgets
+    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+    from hermes_cli.auth_codex import _codex_base_url
+
+    try:
+        creds = resolve_codex_runtime_credentials(read_only=True)
+    except Exception:
+        logging.getLogger(__name__).debug("Codex context label unavailable", exc_info=True)
+        return {}
+    token = creds.get("api_key")
+    if not token or _codex_access_token_is_expiring(token, 0):
+        return {}
+    return cached_codex_extended_budgets(token, creds.get("base_url") or _codex_base_url())
+
+
 def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
+    from agent.codex_extended_context import extended_context_base
     from agent.codex_service_tiers import daybreak_offered, ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
@@ -545,7 +562,10 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-        for model in row.get("models") or []:
+        models = row.get("models") or []
+        budgets = (_codex_picker_context_budgets()
+                   if slug == "openai-codex" and any(extended_context_base(model) for model in models) else {})
+        for model in models:
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
@@ -558,6 +578,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             fast = resolve_fast_mode_overrides(
                 model, provider=slug, base_url=row.get("api_url")) is not None
             entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
+            if (budget := budgets.get(extended_context_base(model))):
+                entry["extended_context_tokens"] = budget
             if fast and model_supports_ultrafast(model) and ultrafast_offered(
                     model, provider=slug, base_url=row.get("api_url")):
                 entry["ultrafast"] = True

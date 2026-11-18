@@ -455,7 +455,11 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     Returns None (fall through) when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
+        from agent.codex_extended_context import CODEX_EXTENDED_CONTEXT_SUFFIX
         from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
+
+        if req.lookup.lower().endswith(CODEX_EXTENDED_CONTEXT_SUFFIX) and req.lookup not in catalog:
+            return _reject(f"`{req.requested}` is not offered by the current Codex catalog. Pick the base model or refresh models.")
 
         # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
         # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real

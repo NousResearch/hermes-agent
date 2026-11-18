@@ -86,6 +86,8 @@ hermes config set security.allow_data_training_tiers_noninteractive true
 
 Hermes still prints the full data-policy warning and the acknowledgement key on every unattended startup, so worker logs retain an audit trail. This setting does not approve expensive-model or provider-routing warnings, and it does not replace the interactive confirmation prompt. Revoke it with `hermes config unset security.allow_data_training_tiers_noninteractive`.
 
+When the authenticated Codex catalog reports a larger `max_context_window` for a visible model, Hermes can offer a separate `-extended-context` choice without waiting for a model-specific update. It sends the same base model ID and uses the catalog maximum up to 900,000 tokens. The displayed number is a catalog-backed Hermes budget, not an independently tested input limit. The normal choice is unchanged. If discovery fails or the model is no longer eligible, Hermes does not assume a bigger window. Existing `-900k` aliases remain valid.
+
 ## Setting auxiliary models
 
 Click **Show auxiliary** to reveal one row per auxiliary task (plugins can register more):

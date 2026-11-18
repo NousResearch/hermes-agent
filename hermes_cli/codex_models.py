@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from agent.codex_extended_context import CODEX_EXTENDED_CONTEXT_SUFFIX, catalog_extended_budgets
 from hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
@@ -99,10 +100,12 @@ def _finalize_codex_models(model_ids: list[str]) -> list[str]:
 
 def codex_model_requires_account_discovery(model: str) -> bool:
     """Whether a Codex model is only advertised after account discovery."""
+    from agent.codex_extended_context import extended_context_base
     from agent.reasoning_effort import GPT62_MODEL_IDS, is_astra_model
     from hermes_cli.model_normalize import normalize_model_for_provider
 
-    return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
+    normalized = normalize_model_for_provider(model, "openai-codex")
+    return bool(extended_context_base(normalized)) or is_astra_model(model) or normalized in GPT62_MODEL_IDS
 
 
 def codex_catalog_credential_identity() -> str:
@@ -174,14 +177,25 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-        from agent.model_metadata import fetch_codex_catalog_entries
-        entries, _status = fetch_codex_catalog_entries(
+        from agent.model_metadata import fetch_codex_catalog_entries, has_codex_context_variant
+        from agent.model_metadata_memo_bounds import remember_codex_context_catalog
+        entries, status = fetch_codex_catalog_entries(
             lambda url: httpx.get(url, headers=headers, timeout=10), base_url=catalog_base)
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
 
-    return _finalize_codex_models(_ranked_slugs(entries))
+    if status == 200:
+        remember_codex_context_catalog(access_token, catalog_base, entries)
+    extended = catalog_extended_budgets(entries)
+    ordered = []
+    for slug in _ranked_slugs(entries):
+        if slug.endswith(CODEX_EXTENDED_CONTEXT_SUFFIX):
+            continue
+        ordered.append(slug)
+        if slug in extended and not has_codex_context_variant(slug):
+            ordered.append(slug + CODEX_EXTENDED_CONTEXT_SUFFIX)
+    return _finalize_codex_models(ordered)
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -228,4 +242,7 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
 
     default_model = _read_default_model(codex_home)
     hints = [*([default_model] if default_model else []), *_read_cache_models(codex_home), *DEFAULT_CODEX_MODELS]
-    return CuratedFallbackModels(_finalize_codex_models([m for m in hints if not codex_model_requires_account_discovery(m)]))
+    return CuratedFallbackModels(_finalize_codex_models([
+        model for model in hints if not model.endswith(CODEX_EXTENDED_CONTEXT_SUFFIX)
+        and not codex_model_requires_account_discovery(model)
+    ]))

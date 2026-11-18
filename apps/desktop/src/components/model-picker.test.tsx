@@ -495,3 +495,16 @@ describe('ModelPickerDialog search ranking', () => {
     })
   })
 })
+
+it('displays the catalog budget on the Codex extended option', async () => {
+  const base = 'gpt-future-codex'
+  const extended = `${base}-extended-context`
+  vi.mocked(requestModelOptions).mockResolvedValue({
+    providers: [{
+      slug: 'openai-codex', name: 'Codex', authenticated: true, models: [base, extended],
+      capabilities: { [extended]: { fast: false, reasoning: true, extended_context_tokens: 872_000 } }
+    }]
+  })
+  renderPicker()
+  expect(await screen.findByRole('option', { name: /872K/ })).toBeTruthy()
+})

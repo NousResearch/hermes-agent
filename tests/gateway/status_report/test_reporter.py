@@ -328,18 +328,24 @@ _FIRST_SENDER = textwrap.dedent("""
 """)
 
 
-@pytest.fixture
-def first_sender(tmp_path, monkeypatch):
-    """Another gateway of this machine, in its own process, already reporting to the same URL.
+def _start_other_sender(tmp_path):
+    """Another gateway of this machine, in its own process, reporting to the URL in the environment.
     Closing its stdin ends it."""
-    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
     other_root = tmp_path / "other-root"
-    other_root.mkdir()
+    other_root.mkdir(exist_ok=True)
     process = subprocess.Popen(
         [sys.executable, "-c", _FIRST_SENDER, str(ROOT)], env={**os.environ, "HERMES_HOME": str(other_root)},
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert process.stdout.readline().strip() == "reported", process.stderr.read()
+    return process
+
+
+@pytest.fixture
+def first_sender(tmp_path, monkeypatch):
+    """Another gateway of this machine already reporting to the same URL."""
+    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
+    process = _start_other_sender(tmp_path)
     try:
-        assert process.stdout.readline().strip() == "reported", process.stderr.read()
         yield process
     finally:
         _end(process)
@@ -372,6 +378,42 @@ async def test_a_second_sender_cannot_take_the_lock(clock, first_sender, monkeyp
     clock.advance(AFTER_INTERVAL_S)
     await reporter.poll()
     assert receiver.kinds == ["beat"], "the remaining gateway never took over from a dead sender"
+
+
+async def test_a_sender_whose_lock_was_taken_over_stands_by(clock, tmp_path, monkeypatch):
+    """A sender stopped long enough for another gateway to take its lock (a stopped owner counts as
+    gone) must not report beside that gateway once it resumes: ownership is checked before each
+    report, and the lock is taken back once the other gateway is gone."""
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
+    # The other sender is a bare interpreter here; a real one is a gateway process.
+    monkeypatch.setattr(gateway_status, "_looks_like_gateway_process", lambda pid: True)
+    receiver = Receiver()
+    reporter = StatusReporter(report_target_from_env(), launch_home=get_process_hermes_home(),
+                              read_source=a_status_source, opener=receiver)
+    await reporter.poll()
+    assert receiver.kinds == ["beat"]
+
+    taken_over = [path for path in lock_dir.rglob("*") if path.is_file()]
+    assert taken_over, "the sender holds no lock file"
+    for path in taken_over:
+        path.unlink()
+    other = await asyncio.to_thread(_start_other_sender, tmp_path)
+    try:
+        clock.advance(AFTER_INTERVAL_S)
+        await reporter.poll()
+        assert receiver.kinds == ["beat"], "a sender that lost its lock kept reporting beside its replacement"
+        reporter.goodbye()
+        await settle()
+        assert receiver.kinds == ["beat"], "a sender that lost its lock said goodbye for its replacement"
+    finally:
+        await asyncio.to_thread(_end, other)
+
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "beat"], "the sender never took its lock back"
 
 
 @pytest.fixture
@@ -457,6 +499,28 @@ _LOCK_FAULTS = [
     pytest.param(OSError(errno.ENOSPC, "No space left on device", _FAULT_PATH), id="full disk"),
     pytest.param(NotADirectoryError(errno.ENOTDIR, "Not a directory", _FAULT_PATH), id="a file where the lock directory goes"),
 ]
+
+
+@pytest.mark.parametrize("fault", _LOCK_FAULTS)
+async def test_a_sender_whose_lock_cannot_be_confirmed_keeps_reporting(clock, monkeypatch, fault):
+    """No other gateway can take the lock from a directory this one cannot read either, so a sender
+    that cannot confirm its lock keeps reporting rather than going quiet."""
+    faults = []
+
+    def take_the_lock(scope, identity):
+        if faults:
+            raise faults[0]
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    faults.append(fault)
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "beat"]
 
 
 @pytest.mark.parametrize("fault", _LOCK_FAULTS)

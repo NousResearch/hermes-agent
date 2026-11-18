@@ -742,6 +742,8 @@ def execute_code(
     except Exception as refusal:
         return tool_error(f"execute_code refused: {refusal} "
                           "(profile terminal policy unresolved; fix the profile's config.yaml / .env and retry)")
+    from tools.code_kernel import attach_fence_stripped_note, strip_code_fences
+    code, fence_stripped = strip_code_fences(code)
     if not code or not code.strip():
         return tool_error("No code provided. execute_code requires a non-empty 'code' "
                           "parameter containing Python source. To run shell commands, use terminal(command=...) instead.")
@@ -789,16 +791,19 @@ def execute_code(
     from tools.environments.sandbox_scope import hosted_scope
     # A hosted agent's code runs only in its sandbox, never in a kernel on this host.
     if env_type != "local" or hosted_scope() is not None:
-        return record_execution_backend("code", "remote", _execute_remote(
+        raw_result = _execute_remote(
             code, task_id, enabled_tools, reset=bool(reset), session_id=session_id, turn_id=turn_id,
-            conversation_id=conversation_id))
+            conversation_id=conversation_id)
+        if fence_stripped:
+            raw_result = attach_fence_stripped_note(raw_result)
+        return record_execution_backend("code", "remote", raw_result)
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
-    return record_execution_backend("code", "local", execute_in_session_kernel(
+    raw_result = execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
@@ -806,7 +811,10 @@ def execute_code(
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
-    ))
+    )
+    if fence_stripped:
+        raw_result = attach_fence_stripped_note(raw_result)
+    return record_execution_backend("code", "local", raw_result)
 
 
 def _load_config() -> dict:

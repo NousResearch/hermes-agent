@@ -35,7 +35,65 @@ import threading
 import time
 import uuid
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_OPENING_FENCE_LINE_RE = re.compile(
+    r"^\s*(?:```[A-Za-z0-9_+-]*\s*|<pre(?:\s+[^>]*)?>\s*(?:<code(?:\s+[^>]*)?>)?|<code(?:\s+[^>]*)?>)\s*$",
+    re.IGNORECASE,
+)
+_CLOSING_FENCE_LINE_RE = re.compile(
+    r"^\s*(?:```|</code>\s*</pre>|</pre>\s*</code>|</code>|</pre>)\s*$",
+    re.IGNORECASE,
+)
+FENCE_STRIPPED_NOTE = "fence line stripped before compile"
+
+
+def strip_code_fences(code: str) -> tuple[str, bool]:
+    """Strip at most one leading and one trailing markdown/HTML fence line."""
+    if not isinstance(code, str) or not code:
+        return code, False
+    lines = code.splitlines()
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    end = len(lines) - 1
+    while end >= start and not lines[end].strip():
+        end -= 1
+    if start > end:
+        return code, False
+
+    stripped = False
+    new_start = 0
+    new_end = len(lines)
+    if _OPENING_FENCE_LINE_RE.match(lines[start]):
+        new_start = start + 1
+        stripped = True
+    if end >= new_start and _CLOSING_FENCE_LINE_RE.match(lines[end]):
+        new_end = end
+        stripped = True
+    if not stripped:
+        return code, False
+    return "\n".join(lines[new_start:new_end]), True
+
+
+def attach_fence_stripped_note(result_json: str) -> str:
+    """Record ``FENCE_STRIPPED_NOTE`` in a tool result JSON string."""
+    import json as _json
+
+    try:
+        payload = _json.loads(result_json)
+    except (ValueError, TypeError):
+        return result_json
+    if not isinstance(payload, dict):
+        return result_json
+    payload["note"] = FENCE_STRIPPED_NOTE
+    existing_warning = payload.get("warning")
+    if not existing_warning:
+        payload["warning"] = FENCE_STRIPPED_NOTE
+    elif FENCE_STRIPPED_NOTE not in str(existing_warning):
+        payload["warning"] = f"{existing_warning} {FENCE_STRIPPED_NOTE}"
+    return _json.dumps(payload, ensure_ascii=False)
 
 from agent import deadline as agent_deadline
 
@@ -1023,15 +1081,17 @@ def execute_in_session_kernel(
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
+    code, fence_stripped = strip_code_fences(code)
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
-        return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
-                         sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
-                         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+        result_json = _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
+                                sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
+                                is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                                session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+        return attach_fence_stripped_note(result_json) if fence_stripped else result_json
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1

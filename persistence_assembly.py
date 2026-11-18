@@ -233,8 +233,10 @@ def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] =
     configured provider and assembles its backend; closing the handle closes that backend. ``patience_s`` is how
     long the handle's open and its reads wait for a store another connection holds before raising
     ``StoreContention`` (a verb that sets its own wait reads with that one); None keeps the backend's read wait.
-    With ``check_drift`` the handle's first use also runs ``StoreAdmin.schema_drift_reason``'s probe on the handle's
-    own connection and raises ``DeclarativeDrift`` with that reason, so a browse needs no second connection for it."""
+    With ``check_drift`` the handle's connection, when it opens (``ready()`` or the first repository read; fetching a
+    repository such as ``reader.sessions`` opens nothing), also runs ``StoreAdmin.schema_drift_reason``'s probe and
+    raises ``DeclarativeDrift`` with that reason, so a browse needs no second connection for it. Such a handle also
+    reports every open failure to its caller only and leaves the process's last session-store init error alone."""
     path = target if isinstance(target, Path) and (target.name == "state.db" or target.is_file()) else None
     if isinstance(target, Path):
         scope = profile_scope(home=path.parent if path is not None else target)

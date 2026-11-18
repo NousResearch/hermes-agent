@@ -1,0 +1,37 @@
+#!/bin/sh
+# The lefthook every git hook of this clone runs (`lefthook:` in lefthook.yml).
+#
+# lefthook's stock hook, once the binary path it baked in is gone (a deleted worktree's
+# node_modules) and none is on PATH, falls back to `uv run lefthook`. `uv run` syncs the
+# checkout's `.venv` and editable-installs the checkout into it, so a `.venv` linked to
+# another checkout's venv re-pointed that checkout at this tree's code on every commit.
+# Hooks are shared by every worktree of a clone, so the clone's main checkout is searched too.
+top="$(git rev-parse --show-toplevel)" || exit 1
+common="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)" || exit 1
+os="$(uname | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
+exe=
+case "$os" in mingw*|msys*|cygwin*) os=windows exe=.exe ;; esac
+found=
+# pnpm's native binary, not the node_modules/.bin shim: that one needs node on PATH,
+# which a commit from an unactivated shell does not have.
+for root in "$top" "$common"; do
+    for candidate in "$root"/node_modules/.pnpm/lefthook-"$os"-"$arch"@*/node_modules/lefthook-"$os"-"$arch"/bin/lefthook"$exe"; do
+        if [ -z "$found" ] && [ -x "$candidate" ]; then
+            found="$candidate"
+        fi
+    done
+done
+if [ -z "$found" ] && command -v lefthook >/dev/null 2>&1; then
+    found=lefthook
+fi
+if [ -z "$found" ]; then
+    echo "git hooks skipped: lefthook is not installed (run pnpm install at the repo root)" >&2
+    exit 0
+fi
+# The jobs call `just`, a PM tool: an unactivated shell gets it from this checkout's own
+# environment (scripts/run-in-hermes-env), never from a venv on PATH.
+if command -v just >/dev/null 2>&1; then
+    exec "$found" "$@"
+fi
+exec "$top/scripts/run-in-hermes-env" "$found" "$@"

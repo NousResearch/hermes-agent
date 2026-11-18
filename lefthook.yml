@@ -1,3 +1,9 @@
+# The command the generated git hooks run instead of searching PATH, node_modules and
+# finally `uv run lefthook`, which syncs `.venv` and editable-installs the checkout into it
+# (scripts/run-lefthook). No double quotes in the value: lefthook pastes it into
+# `test -n "..."`. A commit that predates the script skips the hooks instead of failing.
+lefthook: "sh -c 'if test -f scripts/run-lefthook; then exec sh scripts/run-lefthook $0 $*; fi; echo git hooks skipped: this checkout has no scripts/run-lefthook >&2'"
+
 pre-commit:
   jobs:
     - name: lint python

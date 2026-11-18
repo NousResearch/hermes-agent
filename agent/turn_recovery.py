@@ -629,10 +629,28 @@ def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
 def _pool_error_context(agent, classified: Any, error_context: Any) -> Any:
     """What the credential pool sees: a plan limit (usage-window 402) benches only the refused model on the
     credential, until its reset; every other failure passes the error context through unchanged."""
-    if not (getattr(classified, "error_context", None) or {}).get("usage_window"):
+    classified_ctx = getattr(classified, "error_context", None) or {}
+    if not classified_ctx.get("usage_window"):
         return error_context
+    if classified_ctx.get("usage_window_outage"):
+        # A usage-window *check outage* (503) has no reset and says nothing about the credential:
+        # flag it so the pool leaves the credential alone (``recover_with_credential_pool``).
+        return {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True,
+                "usage_window_outage": True}
     return {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True,
             **_usage_window_reset_context(agent)}
+
+
+def _pool_may_help(agent, classified: Any) -> bool:
+    """Whether credential-pool rotation may still recover this failure (so eager fallback waits).
+    Never for an upstream-aggregator 429 or a usage-window check outage (503
+    ``usage_window_unavailable``): neither is the credential's fault, so the pool cannot help."""
+    if classified.reason == FailoverReason.upstream_rate_limit:
+        return False
+    if (getattr(classified, "error_context", None) or {}).get("usage_window_outage"):
+        return False
+    from agent.conversation_loop import _ra
+    return bool(_ra()._pool_may_recover_from_rate_limit(agent._credential_pool))
 
 
 def _usage_window_reset_context(agent) -> dict[str, float]:
@@ -1960,13 +1978,11 @@ def route_classified_error(
         or (_is_transport_failure and retry_count >= 2)
     ) and not _plan_limit  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
-        # No eager fallback while credential pool rotation may recover. Exception: an
-        # upstream-aggregator 429 — the pool can't help, always fall back.
+        # No eager fallback while credential pool rotation may recover. Exceptions: an
+        # upstream-aggregator 429 or a usage-window check outage — the pool can't help.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-        pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
-        )
+        pool_may_recover = _pool_may_help(agent, classified)
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None

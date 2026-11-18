@@ -37,6 +37,7 @@ _OWNERS = ("persistence/", "persistence_assembly.py")
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "tests"}
 _ALLOWED: dict[str, str] = {
     "hermes_state_loop_guard.py": "the debug loop guard wraps the backend holder's two choke points",
+    "plugins/persistence/__init__.py": "the provider registry's built-in factory: sqlite is the provider it never discovers",
     "tools/session_search_tool.py": "the browse-preview redactor recognises the backend's preview cut by its length",
 }
 _BACKEND_DIR = "persistence/sqlite"

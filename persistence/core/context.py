@@ -50,7 +50,7 @@ class StorePin:
         return f"pin:{len(self.tenant)}:{self.tenant}/{self.agent}"
 
 
-_current_scope = None  # ``hermes_scope.current_scope``, imported on first use
+_current_scope = None  # ``hermes_scope.current_scope``, imported on first use  # health: allow HX018 -- a function reference bound once, the same for every tenant; the scope it reads is per context
 
 
 def bound_store_pin() -> StorePin | None:

@@ -16,7 +16,7 @@ import pytest
 from persistence import TurnFenceSuperseded, TurnLeaseLost
 from tests.contracts._waiting import wait_past
 from tests.hosted_persistence._turn_rows import flush
-from tests.hosted_persistence.test_turn_fence_lifetime import S, _contents, _turn, claimed
+from tests.hosted_persistence.test_turn_fence_lifetime import S, _contents, _turn
 
 
 def _agent(store, holder, ttl=None):

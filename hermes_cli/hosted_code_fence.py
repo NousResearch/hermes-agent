@@ -180,9 +180,9 @@ _CODE_EVENT_PATH: dict[str, Any] = {
 # process entry imports it before any Hermes code (the whole point — arming needs no Hermes
 # state). The state is the deployment's, identical for every tenant by construction, and
 # immutable in one direction: each flag flips once per process, at the first hosted arm.
-_installed = False  # health: allow HX015 -- the fence is the deployment's own enforcement, tenant-identical; stdlib-only arming cannot import the scope cache
-_armed_by_start_flag = False  # health: allow HX015 -- the start command's own flag, recorded once at process entry; tenant-identical deployment state
-_roots_cache: tuple[tuple, tuple] = ((), ())  # health: allow HX015 -- the image's allowed roots, identical for every tenant of the one deployment
+_installed = False  # health: allow HX018 -- the fence is the deployment's own enforcement, tenant-identical; stdlib-only arming cannot import the scope cache
+_armed_by_start_flag = False  # health: allow HX018 -- the start command's own flag, recorded once at process entry; tenant-identical deployment state
+_roots_cache: tuple[tuple, tuple] = ((), ())  # health: allow HX018 -- the image's allowed roots, identical for every tenant of the one deployment
 
 # The import system's state at the moment the fence took over, captured once at install:
 # every search entry, finder and path hook already present is the operator's interpreter
@@ -191,8 +191,8 @@ _roots_cache: tuple[tuple, tuple] = ((), ())  # health: allow HX015 -- the image
 # before it installed. What the snapshot buys is the line it draws: anything ADDED after
 # the fence exists is judged at every import; a pre-existing entry is instead REMOVED by
 # the arm's pruning (captured after the prune, so re-adding a pruned entry is refused anew).
-_bootstrap_search_entries: tuple = ()  # health: allow HX015 -- the operator's bootstrap search path, deployment-identical, captured once per process
-_bootstrap_finders: tuple = ()  # health: allow HX015 -- the operator's bootstrap finders, deployment-identical, captured once per process
+_bootstrap_search_entries: tuple = ()  # health: allow HX018 -- the operator's bootstrap search path, deployment-identical, captured once per process
+_bootstrap_finders: tuple = ()  # health: allow HX018 -- the operator's bootstrap finders, deployment-identical, captured once per process
 
 
 def _bundled_plugins_dir() -> Path | None:
@@ -395,8 +395,8 @@ _BYTECODE_SUFFIXES = (".pyc", ".pyo")
 # re-examines the live sys.path, sys.meta_path and sys.path_hooks, so each entry's realpath is
 # resolved once and reused while its raw value stays on the path. (The empty-string entry means
 # the current directory and is never cached, exactly because the directory can change.)
-_search_entry_inside: dict[str, bool] = {}  # health: allow HX015 -- verdicts for the deployment's own search-path entries, identical for every tenant
-_finder_file_inside: dict[str, bool] = {}  # health: allow HX015 -- verdicts for the deployment's own finders, identical for every tenant
+_search_entry_inside: dict[str, bool] = {}  # health: allow HX018 -- verdicts for the deployment's own search-path entries, identical for every tenant
+_finder_file_inside: dict[str, bool] = {}  # health: allow HX018 -- verdicts for the deployment's own finders, identical for every tenant
 
 
 def _entry_inside_image(entry) -> bool:

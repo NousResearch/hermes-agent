@@ -145,7 +145,7 @@ def test_skips_a_home_hook_in_a_hosted_process(tmp_path, monkeypatch):
                  "def handle(event_type, context): pass\n")
 
     reg = HookRegistry()
-    with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+    with patch("gateway.hooks.HOOKS_DIR", tmp_path):  # main has no built-in hooks to suppress
         reg.discover_and_load()
 
     assert reg.loaded_hooks == []

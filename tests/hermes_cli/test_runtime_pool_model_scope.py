@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,7 @@ from hermes_cli import runtime_provider as rp
 
 @pytest.fixture
 def codex_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -29,6 +31,39 @@ def codex_home(tmp_path, monkeypatch):
         "version": 1, "credential_pool": {"openai-codex": rows},
     }))
     return home
+
+
+@pytest.mark.parametrize("repeat_provider", [False, True])
+def test_channel_model_selects_an_account_outside_its_bench(codex_home, repeat_provider):
+    from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    auth_path = codex_home / "auth.json"
+    auth = json.loads(auth_path.read_text())
+    auth["credential_pool"]["openai-codex"][1]["model_cooldowns"] = {}
+    auth_path.write_text(json.dumps(auth))
+    config_path = codex_home / "config.yaml"
+    config_path.write_text(config_path.read_text().replace("round_robin", "fill_first"))
+    runner = object.__new__(GatewayRunner)
+    runner._resolve_session_key_or_none = lambda *args: None
+    runner.config = GatewayConfig(platforms={
+        Platform.DISCORD: PlatformConfig(enabled=True, channel_overrides={
+            "channel": ChannelOverride(
+                model="unsupported-model",
+                provider="openai-codex" if repeat_provider else None,
+            ),
+        }),
+    })
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="user"),
+        user_config={"model": {"provider": "openai-codex", "default": "supported-model"}},
+    )
+
+    assert model == "unsupported-model"
+    assert runtime["credential_pool"] is not None
+    assert not runtime["credential_pool"].token_is_blocked(runtime["api_key"], model=model)
 
 
 @pytest.mark.parametrize("target_model", [None, "supported-model"])

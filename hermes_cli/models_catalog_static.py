@@ -234,6 +234,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
+    # Subscription-eligible Meta chat models (dev.meta.ai/docs/models +
+    # muse-code/subscriptions, every plan): Spark 1.3 stays first as the
+    # recommended default; Muse Spark 1.1 is Model-API-only (not in Muse
+    # Code) and muse-image-*/muse-voice-*/sam-* are non-chat, so all are
+    # excluded here and filtered from the live catalog by the profiles.
+    "meta-oauth": [
+        "muse-spark-1.3", "muse-wonder-1.0", "muse-ember-1.0",
+        "muse-spark-1.3-contributor", "muse-spark-1.2", "muse-spark-1.2-contributor",
+    ],
     "gemini": [
         # Gemini 4 after it: [0] is the silent default when no model is configured, and a flagship never is.
         "gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon", "gemini-3.7-flash",
@@ -384,6 +393,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("openai-api", "OpenAI API", "OpenAI API (api.openai.com, API key)"),
     ("alibaba", "Qwen Cloud", "Qwen Cloud / DashScope (Qwen + multi-provider)"),
     ("xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
+    ("meta-oauth", "Meta (Muse subscription)", "Meta Muse subscription (Sign in with your Meta account, uses Muse Spark)"),
     ("xiaomi", "Xiaomi MiMo", "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
@@ -636,7 +646,9 @@ _PROVIDER_ALIASES = _CatalogAliases((
     ("tokenplan", "tencent-tokenplan"), ("tencent-lkeap", "tencent-tokenplan"), ("aws", "bedrock"),
     ("aws-bedrock", "bedrock"), ("amazon-bedrock", "bedrock"), ("amazon", "bedrock"), ("grok", "xai"),
     ("grok-oauth", "xai-oauth"), ("xai-oauth", "xai-oauth"), ("x-ai-oauth", "xai-oauth"),
-    ("xai-grok-oauth", "xai-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
+    ("xai-grok-oauth", "xai-oauth"), ("meta-oauth", "meta-oauth"),
+    ("meta-subscription", "meta-oauth"), ("muse-subscription", "meta-oauth"),
+    ("muse-code-subscription", "meta-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
     ("build-nvidia", "nvidia"), ("nemotron", "nvidia"), ("lmstudio", "lmstudio"), ("lm-studio", "lmstudio"),
     ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
@@ -691,7 +703,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # entries lead, curated-only append). Every OTHER provider keeps curated-first so a deliberately
 # surfaced newest model stays on top when the live API lags. Zen/Go re-expose dozens of vendors
 # and rotate them often, so their stale curated entries must not pollute the top.
-_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai"})
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai", "meta-oauth"})
 
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see

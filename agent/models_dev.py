@@ -124,10 +124,12 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "xai": "xai",
     "xai-oauth": "xai",  # OAuth is a transport path for the same xAI catalog
     "xiaomi": "xiaomi", "nvidia": "nvidia",
-    # Meta Model API (Muse Spark, api.meta.ai): models.dev keys it "meta", the
-    # Hermes provider is "meta-ai"; both aliases are needed or muse-spark-*
-    # falls back to the generic 256K default instead of its true 1M window.
-    "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
+    # Meta Model API (Muse Spark, api.meta.ai): models.dev keys it "meta"; the
+    # Hermes providers are "meta-ai" (API key) and "meta-oauth" (Muse
+    # subscription, same catalog via OAuth). Every alias is needed or
+    # muse-spark-* falls back to the generic 256K default instead of its
+    # true 1M window.
+    "meta-ai": "meta", "meta": "meta", "meta-oauth": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
 }

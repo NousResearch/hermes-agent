@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth adds one live-catalog fetcher mirroring _codex_catalog; static rows live in models_catalog_static.py
 """Provider/model catalogs: discovery, caching, and identity helpers.
 
 Origin module; cohesive clusters live in siblings and are re-imported here so
@@ -1360,6 +1361,31 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return get_codex_model_ids(access_token=access_token, base_url=base_url)
 
 
+def _meta_oauth_catalog(normalized: str, force_refresh: bool) -> list[str] | None:
+    """Live Muse Spark catalog for the subscription provider, via its stored credential.
+
+    Read-only like ``_codex_catalog`` (#68004): a picker never mints, refreshes or
+    persists a credential, so an expiring stored key means the curated catalog
+    until the runtime lease re-mints it. Any miss degrades to the static rows.
+    """
+    del normalized, force_refresh
+    try:
+        from hermes_cli.auth import _meta_access_token_is_expiring, resolve_meta_oauth_runtime_credentials
+        from providers import get_provider_profile
+
+        creds = resolve_meta_oauth_runtime_credentials(refresh_if_expiring=False)
+        api_key = str(creds.get("api_key") or "").strip()
+        if not api_key or _meta_access_token_is_expiring(api_key, 0):
+            return None
+        profile = get_provider_profile("meta-oauth")
+        if profile is None:
+            return None
+        return profile.fetch_models(api_key=api_key, base_url=str(creds.get("base_url") or "") or None)
+    except Exception:
+        logger.debug("meta-oauth live catalog fetch failed", exc_info=True)
+        return None
+
+
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     try:
         from hermes_cli.anon_challenge import background_caller
@@ -1519,6 +1545,7 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openrouter": lambda normalized, force_refresh: model_ids(force_refresh=force_refresh),
     "openai-codex": _codex_catalog,
+    "meta-oauth": _meta_oauth_catalog,
     "nous": _nous_catalog,
     "stepfun": _stepfun_catalog,
     "gmi": _api_key_provider_live,

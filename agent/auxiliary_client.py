@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth aux refresher mirrors the xai-oauth refresher beside it; credential logic lives in hermes_cli/auth_meta.py
 """Shared auxiliary client router for side tasks (compression, search, vision, ...).
 
 Text auto chain: main provider+model → OpenRouter → Nous Portal → custom endpoint →
@@ -2065,6 +2066,38 @@ def _resolve_xai_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[st
     return _creds_pair(creds)
 
 
+def _resolve_meta_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """Fresh Meta subscription (api_key, base_url) for aux clients, or None.
+
+    Pool first (a login may exist only as a pool entry), then the singleton
+    auth-store resolver — which never substitutes a pay-as-you-go Meta key.
+    """
+    try:
+        from hermes_cli.auth import DEFAULT_META_OAUTH_BASE_URL
+        pool = load_pool("meta-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select(model=model)
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
+                ).strip()
+                base_url = str(
+                    getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+                    or DEFAULT_META_OAUTH_BASE_URL
+                ).strip().rstrip("/")
+                if api_key and base_url:
+                    return api_key, base_url
+    except Exception as exc:
+        logger.debug("Auxiliary Meta OAuth pool credential resolution failed: %s", exc)
+    try:
+        from hermes_cli.auth import resolve_meta_oauth_runtime_credentials
+        creds = resolve_meta_oauth_runtime_credentials()
+    except Exception as exc:
+        logger.debug("Auxiliary Meta OAuth runtime credential resolution failed: %s", exc)
+        return None
+    return _creds_pair(creds)
+
+
 def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
@@ -2914,6 +2947,27 @@ def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_meta_oauth_aux_client(model: str | None) -> tuple[Optional[Any], Optional[str]]:
+    """CodexAuxiliaryClient for Meta Muse subscription OAuth (Responses API).
+
+    Caller must pass an explicit model — a pinned Muse default would rot as
+    Meta's subscription catalog drifts. (None, None) if not signed in.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: meta-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    resolved = _resolve_meta_oauth_for_aux(model)
+    if resolved is None:
+        return None, None
+    api_key, base_url = resolved
+    logger.debug("Auxiliary client: Meta OAuth (%s via Responses API)", model)
+    real_client = _create_openai_client(api_key=api_key, base_url=base_url)
+    return CodexAuxiliaryClient(real_client, model), model
+
+
 def _codex_base_url_override() -> str:
     """Profile-scoped ``HERMES_CODEX_BASE_URL`` (same read as the API-key env vars: under a
     multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
@@ -3418,6 +3472,7 @@ _POOL_PROVIDER_BY_HOST = (
     ("chatgpt.com", "openai-codex"), ("openrouter.ai", "openrouter"),
     ("inference-api.nousresearch.com", "nous"), ("api.anthropic.com", "anthropic"),
     ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
+    ("api.meta.ai", "meta-oauth"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
     ("chatgpt.com", "openai-codex"),
@@ -3425,6 +3480,10 @@ _AUTH_REFRESH_PROVIDER_BY_HOST = (
     # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
     # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
     ("api.x.ai", "xai-oauth"),
+    # Same inheritance for the Meta subscription route (api.meta.ai also serves the
+    # meta-ai API-key sibling; the sibling guard in _auth_refresh_provider_for_route
+    # keeps an API-key 401 from spending the OAuth grant, exactly as for xai).
+    ("api.meta.ai", "meta-oauth"),
 )
 
 
@@ -3468,6 +3527,12 @@ def _recoverable_pool_provider(
     if normalized not in {"", "auto", "custom"}:  # a pinned ``custom:<name>`` keeps its entry's identity
         return pinned if (pinned := str(resolved_provider or "").strip().lower()).startswith("custom:") else normalized
     known = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
+    if known == "meta-oauth":
+        # The same host also serves pay-as-you-go Meta keys. An inherited
+        # API-key route must never rotate or quarantine the subscription pool.
+        effective = _normalize_aux_provider(_effective_provider_for_client(client, ""))
+        if effective == "meta-ai":
+            return effective
     if known is not None:
         return known
     # Providers outside the table (e.g. opencode-go): match base URL against registered
@@ -3659,6 +3724,18 @@ def _refresh_xai_oauth_credentials() -> bool:
     return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
 
 
+def _refresh_meta_oauth_credentials() -> bool:
+    """Pool-level refresh first, then the singleton auth-store resolver."""
+    pool = load_pool("meta-oauth")
+    if pool and pool.has_credentials():
+        pool.select()
+        refreshed = pool.try_refresh_current()
+        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+            return True
+    from hermes_cli.auth import resolve_meta_oauth_runtime_credentials
+    return _creds_have_api_key(resolve_meta_oauth_runtime_credentials(force_refresh=True))
+
+
 def _refresh_vertex_credentials() -> bool:
     """Mirrors run_agent's Vertex refresh; the cache key ignores the rotating bearer, so
     without the eviction that follows, a ~1h-expired aux Vertex client 401s forever."""
@@ -3672,6 +3749,7 @@ _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
     "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
+    "meta-oauth": _refresh_meta_oauth_credentials,
 }
 
 
@@ -3704,9 +3782,11 @@ def _auth_refresh_provider_for_route(
     if normalized and normalized != "auto":
         return normalized
     host_provider = _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST)
-    # The auto client already knows it runs on the host's API-key sibling (``xai`` on api.x.ai):
-    # an XAI_API_KEY 401 must not spend a stale ``xai-oauth`` grant's refresh and switch routes.
-    if host_provider and host_provider == f"{_normalize_aux_provider(effective_provider)}-oauth":
+    # A shared host does not imply the same credentials. Meta's API-key
+    # sibling is named meta-ai (not meta), unlike xai/xai-oauth.
+    effective = _normalize_aux_provider(effective_provider)
+    if host_provider and (host_provider == f"{effective}-oauth"
+                          or (host_provider == "meta-oauth" and effective == "meta-ai")):
         return normalized
     return host_provider or normalized
 
@@ -4867,6 +4947,16 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+def _resolve_meta_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
+    """Meta Muse subscription OAuth (device code → Responses API). Without this branch
+    meta-oauth falls to the generic oauth_external arm, whose profile-supplied client is
+    None by design, and silently re-routes every aux task to the Step-2 fallback."""
+    client, default = _build_meta_oauth_aux_client(req.model)
+    return _route_or_warn(req, client, default,
+                          "resolve_provider_client: meta-oauth requested but no Meta "
+                          "subscription credential found (run: hermes auth add meta-oauth)")
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -5211,6 +5301,7 @@ _EXPLICIT_PROVIDER_BRANCHES: dict[str, Callable[[_ResolveRequest], _ResolveResul
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
+    "meta-oauth": _resolve_meta_oauth_branch,
     "custom": _resolve_custom_branch,
 }
 

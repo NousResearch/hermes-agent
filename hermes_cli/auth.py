@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- meta-oauth adds registry/alias rows only; provider logic lives in hermes_cli/auth_meta.py
 """Multi-provider authentication system for Hermes Agent.
 
 - ``ProviderConfig`` / ``PROVIDER_REGISTRY`` describe every known inference provider.
@@ -89,6 +90,11 @@ from hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
+from hermes_cli.auth_meta import (
+    _login_meta_oauth, _meta_access_token_is_expiring, _meta_oauth_device_code_login,
+    _meta_oauth_key_is_expiring, _read_meta_oauth_tokens, _save_meta_oauth_tokens,
+    get_meta_oauth_auth_status, refresh_meta_oauth_pure,
+    resolve_meta_oauth_runtime_credentials)
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE,
@@ -97,7 +103,7 @@ from hermes_cli.auth_constants import (
     DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE,
     MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE,
     MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
-    DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
+    DEFAULT_META_OAUTH_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL, DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -180,6 +186,9 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     ProviderConfig(
         "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
+    ProviderConfig(
+        "meta-oauth", "Meta (Muse subscription)", "oauth_external",
+        inference_base_url=DEFAULT_META_OAUTH_BASE_URL),
     ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
     ("gemini", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta",
@@ -1423,6 +1432,8 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "x-ai": "xai", "x.ai": "xai", "grok": "xai",
     "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
     "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
+    "meta-oauth": "meta-oauth", "meta-subscription": "meta-oauth",
+    "muse-subscription": "meta-oauth", "muse-code-subscription": "meta-oauth",
     "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
     "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -1970,6 +1981,11 @@ OAUTH_PROVIDER_FLOWS: dict[str, OAuthProviderFlow] = {
         "xai-oauth", "resolve_xai_oauth_runtime_credentials", "get_xai_oauth_auth_status",
         terminal_refresh_codes=frozenset({"xai_refresh_failed", "xai_auth_missing_refresh_token"}),
         logout_from_config=True),
+    "meta-oauth": OAuthProviderFlow(
+        "meta-oauth", "resolve_meta_oauth_runtime_credentials", "get_meta_oauth_auth_status",
+        terminal_refresh_codes=frozenset({
+            "meta_refresh_failed", "meta_auth_missing_refresh_token", "meta_session_expired"}),
+        logout_from_config=True),
     "qwen-oauth": OAuthProviderFlow(
         "qwen-oauth", "resolve_qwen_runtime_credentials", "get_qwen_auth_status"),
     "minimax-oauth": OAuthProviderFlow(
@@ -1984,6 +2000,7 @@ def _is_terminal_refresh_error(exc: Exception, provider: str) -> bool:
 
 _is_terminal_nous_refresh_error = partial(_is_terminal_refresh_error, provider="nous")
 _is_terminal_xai_oauth_refresh_error = partial(_is_terminal_refresh_error, provider="xai-oauth")
+_is_terminal_meta_oauth_refresh_error = partial(_is_terminal_refresh_error, provider="meta-oauth")
 _is_terminal_codex_oauth_refresh_error = partial(
     _is_terminal_refresh_error, provider="openai-codex")
 

@@ -285,7 +285,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
         # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
         agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
+    elif agent.provider in {"openai-codex", "xai", "xai-oauth", "meta-oauth"}:
         agent.api_mode = "codex_responses"
     elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
         agent.api_mode = "codex_responses"

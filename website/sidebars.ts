@@ -747,6 +747,7 @@ const sidebars: SidebarsConfig = {
         'guides/google-vertex',
         'guides/azure-foundry',
         'guides/xai-grok-oauth',
+        'guides/meta-muse-oauth',
         'guides/oauth-over-ssh',
         'guides/microsoft-graph-app-registration',
         'guides/operate-teams-meeting-pipeline',

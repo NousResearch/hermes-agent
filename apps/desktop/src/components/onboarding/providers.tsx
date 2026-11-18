@@ -13,8 +13,9 @@ const PROVIDER_ORDER: Record<string, number> = {
   'minimax-oauth': 2,
   'qwen-oauth': 3,
   'xai-oauth': 4,
-  anthropic: 5,
-  'claude-code': 6
+  'meta-oauth': 5,
+  anthropic: 6,
+  'claude-code': 7
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`

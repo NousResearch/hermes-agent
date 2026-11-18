@@ -98,13 +98,18 @@ _PERPLEXITY_RESERVED_TOOL_NAMES = (
 # namespace 'tool_search'", #83122 / #95003).
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
 _OPENAI_RESPONSES_HOSTS = frozenset({"api.openai.com", "chatgpt.com"})
+# Meta's Muse subscription keys are attested to the Muse Code client: a request
+# declaring these client function names is answered 403 client_attestation_denied
+# (verified live 2026-11). Alias them as hermes_<name> like the reserved-name
+# cases above; Hermes dispatch is unaffected (normalize_response maps back).
+_META_ATTESTED_TOOL_NAMES = ("read_file", "write_file", "web_search")
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
 # built a request; real requests carry request-local ``_last_wire_aliases``.
 _LEGACY_ALIAS_FALLBACK = {
     f"{_RESERVED_TOOL_ALIAS_PREFIX}{name}": name
-    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_PERPLEXITY_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES)
+    for name in (*_OPENCODE_RESERVED_TOOL_NAMES, *_PERPLEXITY_RESERVED_TOOL_NAMES, *_XAI_RESERVED_TOOL_NAMES, *_META_ATTESTED_TOOL_NAMES)
 }
 _LEGACY_ALIAS_FALLBACK[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
 
@@ -124,6 +129,15 @@ def _is_opencode_responses_backend(params: dict[str, Any]) -> bool:
         return base_url_hostname(str(params.get("base_url") or "")).lower() == "opencode.ai"
     except Exception:
         return False
+
+
+def _is_meta_oauth_backend(params: dict[str, Any]) -> bool:
+    """True for the Meta Muse subscription provider (attested keys).
+
+    Provider-id match only: the pay-as-you-go ``meta-ai`` provider shares the
+    api.meta.ai host but its keys are not subscription-attested.
+    """
+    return str(params.get("provider") or "").strip().lower() == "meta-oauth"
 
 
 def _is_perplexity_responses_backend(params: dict[str, Any]) -> bool:
@@ -265,6 +279,11 @@ def _alias_wire_tools(
     if response_tools and _is_perplexity_responses_backend(params):
         response_tools, _pplx_aliases = _alias_reserved_tools(response_tools, _PERPLEXITY_RESERVED_TOOL_NAMES)
         wire_aliases.update(_pplx_aliases)
+    # Meta Muse subscription attestation rejects the client names in
+    # _META_ATTESTED_TOOL_NAMES (403, see above). Same wire-alias treatment.
+    if response_tools and _is_meta_oauth_backend(params):
+        response_tools, _meta_aliases = _alias_reserved_tools(response_tools, _META_ATTESTED_TOOL_NAMES)
+        wire_aliases.update(_meta_aliases)
     # xAI server-side web search vs Hermes web providers. grok models on xAI's /v1/responses surface have a
     # *native*, server-executed web search. A client-side function literally named ``web_search`` collides
     # with that engine: declared as a plain ``function`` rather than ``{"type": "web_search"}``, the search

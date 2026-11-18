@@ -493,8 +493,8 @@ class InMemorySessionRepository(SessionTitlesConfigMixin, SessionDeleteMixin, Se
         if clean:
             self._resolve_title_conflict(scope, table, session_id, clean)
         row = blank_session_row(session_id, lineage_kind=SessionLineageKind.NONE, model_config=model_config)
-        # An API-server create sets only the source, model, model config, system prompt and title on a blank row.
-        row.update(source=source, model=model, system_prompt=system_prompt, title=clean)
+        # An API-server create sets only the source, model, model config, system prompt, title and the store's owner on a blank row.
+        row.update(source=source, model=model, system_prompt=system_prompt, title=clean, profile_name=self._backend.owner_profile)
         sync_lineage_markers(row)
         table[session_id] = row
         return self._record(scope, row)

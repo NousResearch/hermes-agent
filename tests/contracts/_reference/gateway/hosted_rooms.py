@@ -223,7 +223,7 @@ class InMemoryHostedRoomRepository(HostedRoomLogMixin, HostedRoomHandoffMixin):
         if clean is not None and any(other != session_id and held["title"] == clean for other, held in table.items()):
             raise HostedRoomRefusal(_ROOM_TITLE_CONFLICT)
         created = blank_session_row(session_id, lineage_kind=SessionLineageKind.NONE, model_config=None)
-        created.update(source="bot_room", title=clean, hidden=True)
+        created.update(source="bot_room", title=clean, hidden=True, profile_name=self._store.owner_profile)
         table[session_id] = created
         return session_id
 

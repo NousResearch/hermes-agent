@@ -1,7 +1,8 @@
 import { Box, Text, useInput } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useGuardedInterval } from '../hooks/useGuardedInterval.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -103,47 +104,27 @@ export function AgentSteerForm({
 export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
   const T = useT().hubs.agentControls
   const [tail, setTail] = useState(() => T.loadingTranscript)
-  useEffect(() => {
+  useGuardedInterval(async isActive => {
     const M = messages().hubs.agentControls
-    let active = true
-    let pending = false
 
-    const refresh = async () => {
-      if (pending) {
-        return
-      }
+    try {
+      const result = asRpcResult<{ available: boolean; text: string; truncated: boolean }>(
+        await gw.request('subagent.tail', { session_id: sid, subagent_id: id })
+      )
 
-      pending = true
-
-      try {
-        const result = asRpcResult<{ available: boolean; text: string; truncated: boolean }>(
-          await gw.request('subagent.tail', { session_id: sid, subagent_id: id })
+      if (isActive()) {
+        setTail(
+          result?.available
+            ? `${result.truncated ? `${M.truncatedPrefix}\n` : ''}${result.text}`
+            : M.transcriptUnavailable
         )
-
-        if (active) {
-          setTail(
-            result?.available
-              ? `${result.truncated ? `${M.truncatedPrefix}\n` : ''}${result.text}`
-              : M.transcriptUnavailable
-          )
-        }
-      } catch {
-        if (active) {
-          setTail(M.transcriptRefreshFailed)
-        }
-      } finally {
-        pending = false
+      }
+    } catch {
+      if (isActive()) {
+        setTail(M.transcriptRefreshFailed)
       }
     }
-
-    void refresh()
-    const timer = setInterval(() => void refresh(), 1500)
-
-    return () => {
-      active = false
-      clearInterval(timer)
-    }
-  }, [gw, sid, id])
+  }, 1500)
 
   return (
     <Box flexDirection="column">

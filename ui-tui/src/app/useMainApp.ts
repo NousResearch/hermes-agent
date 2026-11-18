@@ -33,6 +33,7 @@ import { hasPasteChip } from '../domain/pasteExpand.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
+import { createInFlightGuard } from '../hooks/useGuardedInterval.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
@@ -731,37 +732,49 @@ export function useMainApp(gw: GatewayClient) {
       })
       .catch(() => {})
 
+    const run = createInFlightGuard()
+
     const refresh = () => {
-      const sid = ui.sid
-      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
-        .then(raw => {
-          const result = asRpcResult<SubagentListResponse>(raw)
+      if (stopped) {
+        return
+      }
 
-          if (!stopped && result && getUiState().sid === sid) {
-            applyAgentSnapshot(sid, result)
-          }
-        })
-        .catch(() => {})
-      // Background processes share the dock with the subagents (Processes block).
-      gw.request<{ processes: ProcessEntry[] }>('process.list', { session_id: sid })
-        .then(raw => {
-          const result = asRpcResult<{ processes: ProcessEntry[] }>(raw)
+      void run(async () => {
+        const sid = ui.sid
 
-          if (!stopped && result && getUiState().sid === sid) {
-            applyProcessSnapshot(sid, result.processes ?? [])
-          }
-        })
-        .catch(() => {})
-      requestLiveSessions(gw, getUiState().sid)
-        .then(raw => {
-          const result = asRpcResult<SessionActiveListResponse>(raw)
+        // Wait for every request in this tick so a slow reply cannot stack another set.
+        await Promise.all([
+          gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+            .then(raw => {
+              const result = asRpcResult<SubagentListResponse>(raw)
 
-          if (!stopped && result?.sessions) {
-            noteLiveSessions(gw, result.sessions, sys, () => !stopped)
-            applyLiveSessionRoster(result.sessions)
-          }
-        })
-        .catch(() => {})
+              if (!stopped && result && getUiState().sid === sid) {
+                applyAgentSnapshot(sid, result)
+              }
+            })
+            .catch(() => {}),
+          // Background processes share the dock with the subagents (Processes block).
+          gw.request<{ processes: ProcessEntry[] }>('process.list', { session_id: sid })
+            .then(raw => {
+              const result = asRpcResult<{ processes: ProcessEntry[] }>(raw)
+
+              if (!stopped && result && getUiState().sid === sid) {
+                applyProcessSnapshot(sid, result.processes ?? [])
+              }
+            })
+            .catch(() => {}),
+          requestLiveSessions(gw, getUiState().sid)
+            .then(raw => {
+              const result = asRpcResult<SessionActiveListResponse>(raw)
+
+              if (!stopped && result?.sessions) {
+                noteLiveSessions(gw, result.sessions, sys, () => !stopped)
+                applyLiveSessionRoster(result.sessions)
+              }
+            })
+            .catch(() => {})
+        ])
+      })
     }
 
     refresh()

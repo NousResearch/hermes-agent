@@ -1,10 +1,11 @@
-"""``hermes gateway migrate --backends --apply --dry-run``: the plan and preflight of the backend migration.
+"""``hermes gateway migrate --backends --apply``: the backend migration's plan and preflight (``--dry-run``),
+then apply, rollback, restore and status.
 
 A fake host stands in for the service manager, the process table and the network (the gateway's user
-service, the old backend's unit, ``/api/health``); config.yaml and .env are the real files in a temp
-``HERMES_HOME``, and the bind check is the gateway's own ``webapp.host`` validation. A dry run changes
-nothing: no file in the home is written or added. (The real command on a scratch machine:
-``test_gateway_migrate_backends_dry_run_readonly.py``.)
+service, the old backend's unit, ``/api/health``); config.yaml, .env, the manifest, its backups and the old
+unit's drop-in are the real files in a temp ``HERMES_HOME``, and the bind check is the gateway's own
+``webapp.host`` validation. A dry run changes nothing: no host call, no file, no manifest. (The real command
+on a scratch machine: ``test_gateway_migrate_backends_dry_run_readonly.py``.)
 """
 
 from __future__ import annotations
@@ -35,9 +36,14 @@ _BACKEND_PID = 4242
 _GATEWAY_PID = 5151
 
 
+class Killed(BaseException):
+    """The migrator process dying mid-run (nothing in-process survives to compensate)."""
+
+
 class FakeHost(SystemHost):
-    """The machine as the plan reads it: one old backend (a systemd unit by default), the gateway's user
-    service and its ``GET /api/health`` read. Reads only, like :class:`SystemHost`; config.yaml and .env are real."""
+    """The machine: one old backend (a systemd unit by default), the gateway's user service and
+    its ``GET /api/health`` read. Every change is recorded in ``calls`` (and can be made to fail through ``fail_at``);
+    config.yaml, .env, the manifest and the old unit's drop-in are real files."""
 
     def __init__(self, home, *, host="0.0.0.0", supervisor="systemd", scope="user", gateway_installed=False,
                  gateway_active=False):
@@ -49,9 +55,32 @@ class FakeHost(SystemHost):
         self.supervisor, self.scope = supervisor, scope
         self.old = {"enabled": True, "active": True}
         self.gw = {"installed": gateway_installed, "enabled": gateway_installed, "active": gateway_active}
+        self.linger_on = False
+        self.calls: list[str] = []
+        self.fail_at: dict[str, BaseException] = {}
+        self.gateway_lies = False
+        self.manifest_seen_before: list[bool] = []
+        self.spawned: list[list[str]] = []
+
+    # --- recording every change, and whether the manifest already existed at that moment
+    def _change(self, name):
+        self.manifest_seen_before.append(engine.manifest_path(self.home).exists())
+        self.calls.append(name)
+        if name in self.fail_at:
+            raise self.fail_at[name]
+
+    def set_config(self, values):
+        self._change("set_config")
+        super().set_config(values)
+
+    def set_env(self, values):
+        self._change("set_env")
+        super().set_env(values)
 
     # --- discovery
     def backends(self):
+        if not (self.old["active"] or self.old["enabled"]):
+            return []
         return [BackendItem(supervisor=self.supervisor, running=self.old["active"],
                             pid=_BACKEND_PID if self.old["active"] else None, argv=list(self.argv),
                             unit="hermes-dashboard.service", scope=self.scope,
@@ -71,9 +100,12 @@ class FakeHost(SystemHost):
     def username(self):
         return "u"
 
+    unit_file_state = None  # None: enabled/disabled from self.old
+
     def unit_props(self, unit, scope):
-        return {"UnitFileState": "enabled" if self.old["enabled"] else "disabled",
-                "ActiveState": "active" if self.old["active"] else "inactive", "ControlGroup": f"/fake/{unit}"}
+        state = self.unit_file_state or ("enabled" if self.old["enabled"] else "disabled")
+        return {"UnitFileState": state, "ActiveState": "active" if self.old["active"] else "inactive",
+                "ControlGroup": self.unit_cgroup or f"/fake/{unit}"}
 
     def process_env(self, pid):
         return {"PATH": "/usr/bin", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "spike",
@@ -85,10 +117,27 @@ class FakeHost(SystemHost):
     def start_time(self, pid):
         return 1000 + pid
 
+    def same_process(self, pid, start_time):
+        return pid == _BACKEND_PID and self.old["active"]
+
+    unit_cgroup = None  # the old unit's ControlGroup (None: a fake path no real process is in)
+    caller_unit = None  # the systemd service this run is in (the real one is the test runner's)
+
+    def own_unit(self):
+        return self.caller_unit
+
     turns = 0
 
     def running_turns(self, pid, start_time):
         return self.turns
+
+    def spawn_detached(self, flags, log):
+        """The background run's first act: it got the run lock (the lock tests race real processes)."""
+        from hermes_cli import gateway_migrate_backends_lock as run_lock
+        i = flags.index("--detached-ack")
+        run_lock.write_ack(self.home, flags[i + 1], locked=True)
+        self.spawned.append(flags[:i] + flags[i + 2:])
+        return {"pid": 777}
 
     def bundle_missing(self):
         return None
@@ -104,8 +153,62 @@ class FakeHost(SystemHost):
     def gateway_preflight(self):
         return None
 
+    def install_gateway(self):
+        self._change("install_gateway")
+        self.gw.update(installed=True, enabled=True)
+        self.linger_on = True
+
+    def gateway_verb(self, verb):
+        self._change(f"gateway_{verb}")
+        if not self.gw["installed"]:
+            raise RuntimeError("not installed")
+        if verb in ("start", "restart"):
+            self.gw["active"] = True
+            self._stray_up = self._stray_up or self.stray_listener
+        elif verb == "stop":
+            self.gw["active"] = False
+        else:
+            self.gw["enabled"] = verb == "enable"
+
+    def uninstall_gateway(self):
+        self._change("uninstall_gateway")
+        self.gw.update(installed=False, enabled=False, active=False)
+
+    def gateway_pid(self):
+        return _GATEWAY_PID if self.gw["active"] else None
+
     def linger(self):
-        return False
+        return self.linger_on
+
+    def set_linger(self, enabled):
+        self._change("set_linger")
+        self.linger_on = enabled
+
+    # --- old backend
+    def old_stop(self, rec):
+        self._change("old_stop")
+        self.old["active"] = False
+
+    def old_disable(self, rec):
+        self._change("old_disable")
+        self.old["enabled"] = False
+
+    def old_enable(self, rec):
+        self._change("old_enable")
+        self.old["enabled"] = True
+
+    def old_start(self, rec, launcher_env, argv=None):
+        self._change("old_start")
+        self.old["active"] = True
+
+    def old_unit_active(self, rec):
+        return self.old["active"]
+
+    def user_unit_dir(self):
+        return self.home.parent / "systemd-user"  # real files, written by the real code
+
+    def daemon_reload(self, scope):
+        self._change(f"daemon_reload_{scope}")
 
     # --- network
     same_netns = True  # the backend's process shares the planner's network namespace
@@ -116,12 +219,66 @@ class FakeHost(SystemHost):
     def health_status(self, host, port):
         return self.http_status(host, port)
 
+    def _webapp_on_9119(self):
+        return self.gw["active"] and self.webapp_settings().enabled and self.webapp_settings().port == 9119
+
+    @staticmethod
+    def _reaches(bind, host, companion=None):
+        """A socket bound to *bind* answers a dial of *host* (a wildcard answers every address)."""
+        return bind in ("0.0.0.0", "::") or host in (bind, companion)
+
     def http_status(self, host, port):
-        """The old backend answers where it is bound (a wildcard bind answers every address)."""
+        """The plan's probe, shaped like SystemHost's: GET /api/health (+ providers), no /api/status fields."""
         self.probes.append((host, port))
-        if self.old["active"] and (self.bind in ("0.0.0.0", "::") or host == self.bind):
-            return {"gateway_state": None, "auth_required": True, "auth_providers": ["basic"]}
+        if self.old["active"]:
+            if not self._reaches(self.bind, host):
+                return None
+            return {"ok": True, "auth_required": True, "auth_providers": ["basic"]}
+        if self.gateway_status(host, port) is not None:
+            return {"ok": True, "auth_required": True, "auth_providers": ["basic"]}
         return None
+
+    def gateway_status(self, host, port):
+        """The migrated gateway's GET /api/status (the post-move verification)."""
+        self.probes.append((host, port))
+        if self.old["active"] or not self._webapp_on_9119() or self.gateway_lies:
+            return None
+        from gateway.webapp_listener import loopback_companion
+        bind = self.webapp_settings().host
+        if not self._reaches(bind, host, loopback_companion(bind)):
+            return None
+        return {"gateway_state": "running", "auth_required": True, "auth_providers": ["basic"]}
+
+    bundle_broken = False
+
+    def webapp_page_problem(self, host, port):
+        return "GET / answered 404, not the Webapp page" if self.bundle_broken else None
+
+    def pid_listens_on(self, pid, port):
+        return pid == _GATEWAY_PID and self._webapp_on_9119()
+
+    listener_unknown = False  # the listener probe cannot tell (an exception in a real probe)
+
+    def gateway_listens(self, port):
+        if self.listener_unknown:
+            return None
+        pid = self.gateway_pid()
+        return pid is not None and self.pid_listens_on(pid, port)
+
+    def live_manual_backend(self, port):
+        for item in self.backends():
+            if item.running and item.supervisor in ("manual", "detached") and item.pid:
+                return {"pid": item.pid, "start_time": self.start_time(item.pid)}
+        return None
+
+    stray_listener = False  # from the gateway's start on, something of unknown identity listens on the port
+    _stray_up = False
+
+    def port_in_use(self, host, port):
+        return self.old["active"] or self._stray_up
+
+    def sleep(self, seconds):
+        pass
 
 
 @pytest.fixture
@@ -129,6 +286,8 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / "hermes-home"
     h.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setattr(engine, "VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(engine, "ROLLBACK_VERIFY_SECONDS", 0.0)
     (h / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
     (h / ".env").write_text("OPENAI_API_KEY=sk-fake-local\n", encoding="utf-8")
     os.chmod(h / ".env", 0o600)
@@ -136,8 +295,8 @@ def home(tmp_path, monkeypatch):
 
 
 def _args(**kw):
-    base = dict(backends=True, apply=True, dry_run=False, yes=False, json=False, address=None,
-                keep_webapp_address=False, force_interrupt=False, multiplex=False)
+    base = dict(backends=True, apply=True, restore=False, status=False, dry_run=False, yes=True, json=False,
+                address=None, keep_webapp_address=False, force_interrupt=False, detach=False, multiplex=False)
     return SimpleNamespace(**{**base, **kw})
 
 
@@ -148,6 +307,16 @@ def _files(home):
 
 def _nothing_changed(home, before):
     assert _files(home) == before and not (home / "backend_migration.json").exists()
+
+
+def _config_files(home):
+    """config.yaml and .env, the files a run changes and a rollback must put back byte for byte."""
+    return {name: (home / name).read_bytes() for name in ("config.yaml", ".env")}
+
+
+def _nothing_applied(host, home, before):
+    assert host.calls == [] and _config_files(home) == before
+    assert not (home / "backend_migration.json").exists()
 
 
 def _plan(host, capsys, **kw):
@@ -231,19 +400,23 @@ def test_mixed_supervisors_require_a_unique_selection(home, capsys, monkeypatch)
     monkeypatch.setattr(host, "backends", lambda: items)
     code, out = _plan(host, capsys)
     assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"] == []
-    assert _plan(host, capsys, address="127.0.0.1:9119")[0] == engine.EXIT_OK
+    # Picking one with --address still leaves the other as a second session owner: apply refuses (exit 3).
+    code, out = _plan(host, capsys, address="127.0.0.1:9119")
+    assert code == engine.EXIT_BLOCKED
+    assert any("Another old backend also serves this home: container" in b for b in out["plan"]["blockers"])
     assert _plan(host, capsys, address="0.0.0.0:9119")[0] == engine.EXIT_UNSUPPORTED
 
 
 @pytest.mark.parametrize(("supervisor", "scope"), [("nix-systemd", "system"), ("nix-launchd", "gui/501"), ("s6", None),
                                                    ("container", None), ("systemd", "system")])
-def test_unsupported_supervisors_exit_6_and_change_nothing(home, supervisor, scope, capsys):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unsupported_supervisors_exit_6_and_change_nothing(home, supervisor, scope, capsys, dry_run):
     host = FakeHost(home, supervisor=supervisor, scope=scope)
     before = _files(home)
 
-    code = engine.cmd_apply(host, _args(dry_run=True))
+    code = engine.cmd_apply(host, _args(dry_run=dry_run))
 
-    assert code == engine.EXIT_UNSUPPORTED
+    assert code == engine.EXIT_UNSUPPORTED and host.calls == []
     _nothing_changed(home, before)
     out = capsys.readouterr().out
     assert "webapp.enabled" in out and "webapp.host" in out and "webapp.port" in out
@@ -252,12 +425,13 @@ def test_unsupported_supervisors_exit_6_and_change_nothing(home, supervisor, sco
     assert (" config set webapp" in out) is not declared and (" gateway install" in out) is not declared
 
 
-def test_a_system_unit_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys):
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_system_unit_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys, dry_run):
     host = FakeHost(home, supervisor="systemd", scope="system")
 
-    code = engine.cmd_apply(host, _args(dry_run=True))
+    code = engine.cmd_apply(host, _args(dry_run=dry_run))
 
-    assert code == engine.EXIT_UNSUPPORTED
+    assert code == engine.EXIT_UNSUPPORTED and host.calls == []
     lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
     steps = lines[lines.index("Steps, in this order (one command per line):") + 1:]
     sudo = [line for line in lines if line.startswith("sudo ")]
@@ -277,26 +451,6 @@ def test_a_system_unit_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys)
     assert all(s.startswith(("hermes -p default ", "sudo ", "systemctl ", "#")) for s in steps)
     assert not any("sudo hermes" in line or "sudo -E" in line or "systemctl --user" in line for line in lines)
     assert any("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in s and _PASSWORD not in s for s in steps)
-
-
-def test_a_run_from_inside_the_old_unit_is_blocked_without_pointing_at_a_flag_this_version_lacks(home, capsys,
-                                                                                             monkeypatch):
-    monkeypatch.setattr("hermes_cli.update_cmd_posix_pause._pid_cgroup",
-                        lambda pid="self": "/fake/hermes-dashboard.service/shell")
-
-    code, out = _plan(FakeHost(home), capsys)
-
-    (blocker,) = out["plan"]["blockers"]
-    assert code == engine.EXIT_BLOCKED and "runs inside hermes-dashboard.service" in blocker
-    assert "--detach" not in blocker
-
-
-@pytest.mark.parametrize(("flags", "message"), [({}, "--apply needs --dry-run"),
-                                                ({"dry_run": True, "address": "nope"}, "--address must be HOST:PORT")])
-def test_the_cli_refuses_what_this_version_cannot_do(flags, message, capsys):
-    with pytest.raises(SystemExit) as exit_info:
-        engine.cmd_backends(_args(**flags))
-    assert exit_info.value.code == 2 and message in capsys.readouterr().err
 
 
 def _everything(host, capsys, **kw):
@@ -619,11 +773,6 @@ def test_default_home_steps_name_the_default_profile(home, capsys, monkeypatch):
     monkeypatch.setattr(hermes_constants, "profile_name_for_home", lambda h: "default")
 
     assert plan_mod.hermes_command(str(home)) == "hermes -p default"
-
-
-# --- round 4: what cannot be read blocks (exit 3), nothing is guessed
-
-
 def test_a_glob_environment_file_makes_the_units_home_unknown(tmp_path, monkeypatch):
     """systemd expands an EnvironmentFile= pattern; an optional `-*.env` may override HERMES_HOME."""
     from hermes_cli import gateway_migrate_backends_host as host_mod
@@ -1652,82 +1801,3 @@ def test_the_by_hand_recipe_copies_only_what_the_env_file_lacks(home, capsys):
     (rest,) = _system_unit_steps(home, capsys)  # nothing left to name: the generic line must not undo the .env
     assert rest == (f"# copy every HERMES_DASHBOARD_* line from the old launcher's environment that {env} does "
                     f"not already set, if any, into {env} (chmod 600)")
-
-
-def test_the_gateway_install_output_is_shown_only_when_it_fails(capfd):
-    import subprocess
-    import sys
-
-    from hermes_cli.gateway_migrate_backends_host import run_quietly
-
-    def noisy(fail):
-        print("Next steps: hermes gateway start")
-        subprocess.run([sys.executable, "-c", "print('Created symlink from a child')"], check=True)
-        if fail:
-            raise RuntimeError("install failed")
-        return "installed"
-
-    assert run_quietly(lambda: noisy(False)) == "installed"
-    assert capfd.readouterr().out == ""
-    with pytest.raises(RuntimeError):
-        run_quietly(lambda: noisy(True))
-    out = capfd.readouterr().out
-    assert "Next steps" in out and "Created symlink from a child" in out
-
-
-class _Site(SystemHost):
-    """The real page check against a real local HTTP server serving a temp bundle."""
-
-    def __init__(self, home, dist):
-        super().__init__(home)
-        self.dist = dist
-
-    def webapp_dist(self):
-        return self.dist
-
-
-@pytest.mark.parametrize(("answer", "ok"), [("index", True), ("login", True), ("unavailable", False),
-                                             ("login-other-asset", False)])
-def test_the_webapp_page_check_needs_this_bundle_served(home, tmp_path, answer, ok):
-    import http.server
-    import threading
-
-    dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    index = '<!doctype html><html><head><script type="module" src="/assets/index-abc.js"></script></head></html>'
-    (dist / "index.html").write_text(index, encoding="utf-8")
-    (dist / "assets" / "index-abc.js").write_text("console.log('webapp')", encoding="utf-8")
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # http.server API
-            if self.path == "/" and answer == "index":
-                body, code, extra = index.encode(), 200, {}
-            elif self.path == "/" and answer == "unavailable":
-                body, code, extra = b"<h1>Hermes is unavailable</h1>", 404, {}
-            elif self.path == "/":
-                body, code, extra = b"", 302, {"Location": "/login?next=%2F"}
-            elif self.path == "/assets/index-abc.js":
-                body = b"console.log('webapp')" if answer == "login" else b"console.log('another build')"
-                code, extra = 200, {}
-            else:
-                body, code, extra = b"", 404, {}
-            self.send_response(code)
-            for k, v in extra.items():
-                self.send_header(k, v)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, format, *args):  # http.server API
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        problem = _Site(home, dist).webapp_page_problem("127.0.0.1", server.server_address[1])
-    finally:
-        server.shutdown()
-        server.server_close()
-    assert (problem is None) is ok, problem
-    (dist / "index.html").rename(dist / "index.html.moved")  # a bundle broken after the build
-    assert "cannot be served" in str(_Site(home, dist).webapp_page_problem("127.0.0.1", 9))

@@ -42,7 +42,7 @@ _UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*", "hermes-backend*")
 _ENABLED_STATES = frozenset({"enabled", "enabled-runtime", "linked", "linked-runtime", "static",
                              "generated", "alias", "indirect"})
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "libpod", "kubepods", "/lxc/")
-_NOT_APPLIED = "Report only: changes no service; backend migration is not available yet."
+_NOT_APPLIED = "Report only: changes no service."
 #: The report's last line when this home has a backend the migration can plan for (never Desktop's own).
 NEXT_STEP = ("To see what moving it to the gateway would do (changes nothing): "
              "{hermes} gateway migrate --backends --apply --dry-run")

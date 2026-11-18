@@ -52,6 +52,13 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: user_journey
+    attributes:
+      label: User Journey and Recovery (optional)
+      description: Which step stopped, what did Hermes show, and how could you continue? Mention if you had to switch surfaces, edit files, reinstall, or ask for help.
+      placeholder: "Desktop update said it was complete, but the app still offered only an installer. Quitting and rerunning the updater in Terminal worked."
+
   - type: dropdown
     id: component
     attributes:

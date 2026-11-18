@@ -34,6 +34,8 @@
 #                          release tag for a stable-to-stable leg (label the
 #                          leg stable-to-stable only when both refs are tags);
 #                          NEXT mints a synthetic child of --install-ref
+#     [--check-desktop-recovery]  On the disposable CI runner, keep the old
+#                                 installed app open through hermes-update.
 #
 # Requires a clean full-history checkout with release tags fetched, on a
 # macOS host with a window server (the GitHub macos runners qualify).
@@ -49,6 +51,7 @@ PHASE="all"
 UPDATE_METHOD=""
 INSTALL_REF=""
 UPDATE_REF=""
+CHECK_DESKTOP_RECOVERY=0
 DMG_URL="https://hermes-assets.nousresearch.com/Hermes-Setup.dmg"
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -67,6 +70,7 @@ while [ "$#" -gt 0 ]; do
     --dmg-url)
       [ "$#" -ge 2 ] || { echo 'error: --dmg-url needs a value' >&2; exit 1; }
       DMG_URL="$2"; shift 2 ;;
+    --check-desktop-recovery) CHECK_DESKTOP_RECOVERY=1; shift ;;
     -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
@@ -76,6 +80,11 @@ case "$UPDATE_METHOD" in
   *) echo "error: unsupported --update-method '$UPDATE_METHOD'" >&2; exit 1 ;;
 esac
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
+
+if [ "$CHECK_DESKTOP_RECOVERY" = 1 ] && { [ "$UPDATE_METHOD" != hermes-update ] || [ "${GITHUB_ACTIONS:-}" != true ]; }; then
+  echo 'error: --check-desktop-recovery requires the macOS CI hermes-update leg' >&2
+  exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
@@ -336,9 +345,17 @@ phase_update() {
       printf ' %q' "${update_cmd[@]}"
       printf '\n'
       local rc=0
-      (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
-      log_group "hermes update transcript" "$LOG_DIR/update.log"
-      [ "$rc" -eq 0 ] || fail "hermes update exited $rc; transcript above"
+      if [ "$CHECK_DESKTOP_RECOVERY" = 1 ]; then
+        local packaged_app
+        packaged_app="$(find_installed_app)" || fail "no OLD source Desktop bundle"
+        (cd "$INSTALL_DIR" && source_build_env "$HERMES_E2E_NODE" \
+          "$ASSETS/macos-cli-desktop-recovery.mjs" "$packaged_app" "$OLD_SHA" "$TARGET_SHA" "$LOG_DIR" \
+          -- "${update_cmd[@]}") || fail "CLI-triggered Desktop recovery failed on normal quit and relaunch"
+      else
+        (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
+        log_group "hermes update transcript" "$LOG_DIR/update.log"
+        [ "$rc" -eq 0 ] || fail "hermes update exited $rc; transcript above"
+      fi
       ;;
     installer-script)
       # A dmg user re-running today's install one-liner.
@@ -464,6 +481,8 @@ phase_checked_update() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || return 0
+  # Required journey evidence cannot be waived by a historical signature.
+  [ "$CHECK_DESKTOP_RECOVERY" = 0 ] || return "$rc"
   # phase_update snapshots HERMES_HOME/logs only once the checkout lands.
   mkdir -p "$LOG_DIR/install-logs"
   cp -R "$hermes_logs" "$LOG_DIR/install-logs/hermes-logs" 2>/dev/null || true

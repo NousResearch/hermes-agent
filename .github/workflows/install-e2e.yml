@@ -349,6 +349,7 @@ jobs:
       update-ref: ${{ matrix.update_ref }}
       tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
+      desktop-recovery: ${{ matrix.desktop_recovery == true }}
 
   # The leg player: one static HTML for the whole run. Uploaded BEFORE the
   # matrix legs so it exists even when every leg dies; the report job links

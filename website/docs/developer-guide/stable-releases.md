@@ -9,6 +9,33 @@ The committed project version is always `0.0.0`. Release jobs derive the payload
 version from the admitted ref and stamp isolated build trees. Do not bump version
 files on `main`.
 
+## Core user journeys
+
+Desktop, terminal, Telegram, and Discord are core surfaces. On supported
+paths, protect install and setup, sign-in and provider setup, first reply,
+returning to an existing conversation, and update and recovery.
+
+Track UX release priority alongside engineering severity. UX P0 applies when
+a core journey stops or reports false success and there is no safe,
+discoverable recovery in the normal flow. Normal commands are part of the
+terminal experience. Requiring a Desktop or messaging user to switch to a
+terminal, edit files, inspect logs, reinstall, or ask for help is a recovery
+gap. UX P1 applies to serious disruption with clear, safe in-product recovery.
+The existing engineering labels retain their meaning.
+
+Before stable promotion, the release owner checks verified UX P0s against the
+exact candidate and affected supported paths. Hold promotion of an affected
+path until its fix or recovery passes. Hold the candidate if its release lanes
+cannot isolate the affected path. A UX P1 goes to normal prioritization and
+does not automatically hold promotion. Link the observed journey, candidate,
+and acceptance run in the release record. An updater exit code alone cannot
+show that the installed app is usable.
+
+The first native check covers macOS source Desktop. Leave the installed older
+app open during a CLI update, then verify that a normal Desktop quit and
+relaunch can complete the update and that an existing conversation still gets
+a reply. This extends the install/update suite's existing macOS CLI leg.
+
 ## Order
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and

@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, Notification } from 'electron'
 
+import { registerDockBadgeIpc } from './dock-badge-ipc'
 import { createEventDeduper } from './event-dedupe'
 import { resolveNotificationAction } from './notification-actions'
 import { createLinuxNotifications } from './notification-linux'
@@ -141,6 +142,8 @@ export function registerNativeNotifications({
 
     return delivery
   })
+  // The Dock badge is the same attention signal, held while sessions wait on the owner.
+  registerDockBadgeIpc(ipcMain)
 
   return { dispose: () => linux?.dispose() }
 }

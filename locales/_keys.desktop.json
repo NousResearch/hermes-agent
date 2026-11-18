@@ -4932,6 +4932,7 @@
     "sidebar.row.markUnread",
     "sidebar.row.messageCount",
     "sidebar.row.needsInput",
+    "sidebar.row.needsYouBadge",
     "sidebar.row.newWindow",
     "sidebar.row.openInNewTab",
     "sidebar.row.openInSplit",

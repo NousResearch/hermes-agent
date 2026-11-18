@@ -3291,6 +3291,7 @@ export const en: Translations = {
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
+      needsYouBadge: 'Needs you',
       waitingForAnswer: 'Waiting for your answer',
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',

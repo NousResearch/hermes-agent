@@ -2891,6 +2891,7 @@ export interface Translations extends NoticeTranslations {
       sessionActions: string
       sessionRunning: string
       needsInput: string
+      needsYouBadge: string
       waitingForAnswer: string
       finishedUnread: string
       backgroundRunning: string

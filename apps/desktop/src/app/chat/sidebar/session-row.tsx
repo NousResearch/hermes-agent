@@ -31,7 +31,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -52,6 +52,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { needsYouTrailing, RowStateCues, rowTitleWeight } from './session-row-attention'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -117,6 +118,15 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 // while they are hovered or focused.
 const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity'
 const KEBAB_YIELDS = 'session-row-kebab'
+
+// Row titles; their weight comes from rowTitleWeight (unread rows are semibold).
+const COMPACT_TITLE_CLASS =
+  'hover-marquee block group-hover:text-foreground group-data-[working=true]:text-foreground/90'
+
+const TWO_LINE_TITLE_CLASS = cn(
+  'hover-marquee text-[0.8125rem] text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+  SIDEBAR_TRUNCATED_LEADING
+)
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -203,7 +213,11 @@ function SidebarSessionRowImpl({
   // switched on, and a PR keeps its place (and its click) unless it IS the last
   // thing. Chips used to render in the body instead, which left them stranded
   // to the left of the kebab's own column: never flush right, never swapping.
-  const trailing: { key: string; node: React.ReactNode }[] = []
+  // The same resolved state the row's dot paints, so the arc and the dot cannot
+  // contradict each other. A selector, not a plain useStore: the map is rebuilt
+  // whenever any session's status changes, but a row only repaints on its own.
+  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
+  const trailing: { key: string; node: React.ReactNode }[] = needsYouTrailing(dotState)
 
   if ((showProfile || pinnedProfile) && hasProfileTag) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
@@ -256,10 +270,6 @@ function SidebarSessionRowImpl({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
-  // The same resolved state the row's dot paints, so the arc and the dot cannot
-  // contradict each other. A selector, not a plain useStore: the map is rebuilt
-  // whenever any session's status changes, but a row only repaints on its own.
-  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
   const liveTurn = hasLiveTurn(dotState)
 
   // Card header line: the workspace this belongs to — the project when it
@@ -430,7 +440,7 @@ function SidebarSessionRowImpl({
         style={style}
         {...rest}
       >
-        {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
+        <RowStateCues state={dotState} />
         {/* #38072 finding 3: the row's body is a DIV, not a button — the
             reorder grabber (dnd-kit role="button" + tabIndex, kept for
             keyboard reorder, #83617) and the ⋯ trigger must be SIBLINGS of
@@ -543,7 +553,7 @@ function SidebarSessionRowImpl({
                     <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
                       <OverflowTip label={title} placement="row">
                         <SidebarRowLabel
-                          className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                          className={cn(COMPACT_TITLE_CLASS, rowTitleWeight(unread, dotState))}
                           onPointerEnter={armMarquee}
                           onPointerLeave={disarmMarquee}
                         >
@@ -611,10 +621,7 @@ function SidebarSessionRowImpl({
                   <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
                     <OverflowTip label={title} placement="row">
                       <SidebarRowLabel
-                        className={cn(
-                          'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                          SIDEBAR_TRUNCATED_LEADING
-                        )}
+                        className={cn(TWO_LINE_TITLE_CLASS, rowTitleWeight(unread, dotState))}
                         onPointerEnter={armMarquee}
                         onPointerLeave={disarmMarquee}
                       >

@@ -3721,6 +3721,7 @@ export const esOverrides = {
       sessionActions: 'Acciones de sesión',
       sessionRunning: 'Sesión en ejecución',
       needsInput: 'Necesita tu respuesta',
+      needsYouBadge: 'Te necesita',
       waitingForAnswer: 'Esperando tu respuesta',
       finishedUnread: 'Finalizada — sin leer',
       backgroundRunning: 'Tarea en segundo plano en ejecución',

@@ -66,6 +66,29 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].name, "CalDAV Calendar")
         self.assertEqual(results[0].description, "Calendar integration")
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch.object(ClawHubSource, "_load_catalog_index", return_value=[])
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    def test_search_names_owner_when_owners_share_a_slug(
+        self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
+    ):
+        # ClawHub answers a bare slug that two owners publish with 409, so a
+        # result named only "bloom" can be neither scanned nor installed.
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                return _MockResponse(status_code=200, json_data={"items": [
+                    {"ownerHandle": "alice", "slug": "bloom", "displayName": "Bloom A"},
+                    {"ownerHandle": "bob", "slug": "bloom", "displayName": "Bloom B"},
+                ]})
+            return _MockResponse(status_code=409, json_data={"code": "AMBIGUOUS_SKILL_SLUG"})
+
+        mock_get.side_effect = side_effect
+
+        results = self.src.search("bloom", limit=5)
+
+        self.assertEqual(sorted(r.identifier for r in results), ["@alice/bloom", "@bob/bloom"])
+        self.assertEqual({r.extra["owner"] for r in results}, {"alice", "bob"})
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):

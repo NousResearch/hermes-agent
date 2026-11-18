@@ -1,5 +1,4 @@
-"""Discord slash-command scopes through real discord.py serialization."""
-
+import json
 import subprocess
 import sys
 import textwrap
@@ -18,13 +17,17 @@ _PROBE = textwrap.dedent(
     from gateway.config import PlatformConfig
     from plugins.platforms.discord.adapter import DiscordAdapter
 
-    guild, user = json.loads(sys.argv[1])
+    guild, user, refresh_fails = json.loads(sys.argv[1])
     app_info = SimpleNamespace(
         guild_integration_config=object() if guild else None,
         user_integration_config=object() if user else None,
     )
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
-    bot._application = app_info
+    # Login-time snapshot predates a settings change; the sync must use the fresh one.
+    bot._application = SimpleNamespace(guild_integration_config=None, user_integration_config=object())
+    bot.application_info = AsyncMock(
+        side_effect=RuntimeError("503") if refresh_fails else None, return_value=app_info
+    )
     bot.tree.sync = AsyncMock(return_value=[])
     os.environ["DISCORD_COMMAND_SYNC_POLICY"] = "bulk"
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
@@ -40,19 +43,20 @@ _PROBE = textwrap.dedent(
 
 
 @pytest.mark.parametrize(
-    ("guild", "user", "expected"),
+    ("guild", "user", "refresh_fails", "expected"),
     [
-        # The reported app: Guild Install only. Every command must carry guild install;
-        # private_channel is refused by Discord without user install.
-        (True, False, [[0], [0, 1]]),
-        (True, True, [[0, 1], [0, 1, 2]]),
-        (False, True, [[1], [0, 1, 2]]),
-        (False, False, None),
+        # Discord refuses private_channel without user install.
+        (True, False, False, [[0], [0, 1]]),
+        (True, True, False, [[0, 1], [0, 1, 2]]),
+        (False, True, False, [[1], [0, 1, 2]]),
+        (False, False, False, None),
+        # A failed refresh falls back to the login-time snapshot (user install only here).
+        (True, False, True, [[1], [0, 1, 2]]),
     ],
 )
-def test_registered_commands_follow_app_installation_settings(guild, user, expected):
+def test_registered_commands_follow_app_installation_settings(guild, user, refresh_fails, expected):
     result = subprocess.run(
-        [sys.executable, "-c", _PROBE, f"[{str(guild).lower()}, {str(user).lower()}]"],
+        [sys.executable, "-c", _PROBE, json.dumps([guild, user, refresh_fails])],
         check=False,
         capture_output=True,
         text=True,
@@ -60,7 +64,6 @@ def test_registered_commands_follow_app_installation_settings(guild, user, expec
     if result.returncode != 0 and "No module named 'discord'" in result.stderr:
         pytest.skip("discord.py optional dependency is not installed")
     assert result.returncode == 0, result.stdout + result.stderr
-    import json
 
     rows = [json.loads(row) for row in json.loads(result.stdout.strip().splitlines()[-1])]
     assert rows == [expected if expected is not None else [None, None]]

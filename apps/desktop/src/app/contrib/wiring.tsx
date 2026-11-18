@@ -105,6 +105,7 @@ import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
+import { NewVersionNotice } from '../discovery/new-version-notice'
 import { NotificationBell } from '../discovery/notification-tray'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
@@ -301,6 +302,7 @@ function useStatusbarSurfaces(
           footer={
             <>
               <NotificationBell />
+              <NewVersionNotice />
               <PortalFreeTierSignIn />
               <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
               <PortalStatusBarSource

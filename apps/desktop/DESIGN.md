@@ -1139,6 +1139,11 @@ shared `TrayCard` (caption, title, sentence, one action). The bell carries a bra
 any listed item has news not yet seen; opening the tray sees it, and the cards that were new say
 so until it closes. Community posts from the frames are not built.
 
+A Webapp tab that was open when a newer build was deployed (W1) says so in the notice strip
+(`Butterbar`) and in the tray, and never reloads under the person: the new build loads at the next
+new chat while nothing is running, on the next visit, or from "Refresh now"
+(`store/new-version.ts`, `lib/deployed-build.ts`).
+
 ### The chat sidebar is a variant
 
 The chat sidebar (`app/chat/sidebar/portal/**`) is matched to "Prod - Desktop" (Panel 16292:15497).

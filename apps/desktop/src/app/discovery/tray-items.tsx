@@ -4,6 +4,7 @@ import type { ComponentType } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
+import { $newVersionReady } from '@/store/new-version'
 import { createNotificationTray, type TrayItemSource } from '@/store/notification-tray'
 import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
 import { $connection } from '@/store/session'
@@ -96,6 +97,20 @@ function AppUpdateCard({ close, unseen }: TrayCardProps) {
   )
 }
 
+function NewVersionCard({ unseen }: TrayCardProps) {
+  const copy = useDiscoveryCopy().newVersion
+
+  return (
+    <TrayCard
+      action={{ label: copy.refresh, run: () => window.location.reload() }}
+      description={copy.description}
+      eyebrow={copy.eyebrow}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
 function RenameSplashCard({ close, unseen }: TrayCardProps) {
   const copy = useDiscoveryCopy().renameItem
 
@@ -118,6 +133,11 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
 /** The tray's items, in the order they list. */
 export const TRAY_ITEMS: readonly TrayItemDefinition[] = [
   { id: 'app-update', $state: $pendingUpdate, Card: AppUpdateCard },
+  {
+    id: 'new-version',
+    $state: computed($newVersionReady, ready => (ready ? { news: 'ready' } : null)),
+    Card: NewVersionCard
+  },
   // Once seen, the splash's entry is news once more: the splash says it can be found here.
   {
     id: 'rename-splash',

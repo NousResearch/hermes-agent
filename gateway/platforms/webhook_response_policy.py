@@ -39,7 +39,13 @@ def _strip_delivery_markers(content: str) -> str:
 
 def urgent_response_allowed(content: str, metadata: dict | None = None) -> bool:
     """Only explicit action-required escalations may interrupt the route owner."""
-    if (metadata or {}).get("_interim_send") or "[SILENT]" in content.upper():
+    md = metadata or {}
+    # Approval and clarify prompts request human input by definition: suppressing them
+    # (with a successful admission) would deadlock the run waiting for an answer the
+    # owner never saw, so they are delivered even on urgent_only routes.
+    if md.get("is_approval_prompt") or md.get("is_clarify_prompt"):
+        return True
+    if md.get("_interim_send") or "[SILENT]" in content.upper():
         return False
     content = _strip_delivery_markers(content)
     lines = [line.strip() for line in content.splitlines() if line.strip()]
@@ -53,8 +59,13 @@ def urgent_response_allowed(content: str, metadata: dict | None = None) -> bool:
         if fenced:
             continue
         if match := _ACTION_LINE.match(line):
-            action = match.group(1).strip().strip("`\"'()[]*_ \u00a0")
-            if action and any(ch.isalnum() for ch in action) \
-                    and action.rstrip(".!; \u3002").casefold() not in _NO_ACTION:
+            action = match.group(1).strip()
+            # Strip emphasis/punctuation wrappers from BOTH ends until stable, so a
+            # `**none**.` (period outside the markers) normalizes to `none` too.
+            previous = None
+            while previous != action:
+                previous = action
+                action = action.strip("`\"'()[]*_ \u00a0.!; \u3002")
+            if action and any(ch.isalnum() for ch in action) and action.casefold() not in _NO_ACTION:
                 return True
     return False

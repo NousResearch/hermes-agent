@@ -273,6 +273,9 @@ prompt: |
 ```
 
 An `Action required:` value such as `none` or `no action needed` is rejected.
+Approval and clarify prompts are always delivered, even on `urgent_only` routes: they
+request human input, and suppressing them would stall the run on an answer the owner
+never saw.
 The header and `Action required:` matching is case-insensitive and tolerates markdown
 emphasis (`**Action required:** …`); fenced code blocks are not scanned for the action
 line, so a quoted runbook snippet cannot decide urgency. Any `[SILENT]` token anywhere

@@ -172,7 +172,7 @@ def test_policy_grammar_tolerances_and_hardening():
     assert allow(URGENT.replace("[NEEDS-APPROVAL]", "[needs-approval]"))
     assert allow("[NEEDS-APPROVAL] Disk full on db-01\n- action required: purge the WAL archive")
     for noop in ("No action required.", "None needed", "not applicable", "`none`", "—",
-                 "**none**", "**No action needed.**", "_none_"):
+                 "**none**", "**No action needed.**", "_none_", "**none**.", "_none_.", "(**none**)."):
         assert not allow(f"[NEEDS-APPROVAL] x\nAction required: {noop}")
     # A bolded REAL action still passes.
     assert allow("[NEEDS-APPROVAL] x\nAction required: **rotate the leaked key now**")
@@ -229,3 +229,56 @@ def test_invalid_dynamic_policy_skips_route_not_gateway(tmp_path, monkeypatch):
     a._reload_dynamic_routes()
     assert "bad" not in a._routes
     assert "good" in a._routes
+
+
+def test_approval_and_clarify_prompts_pass_the_gate(tmp_path, monkeypatch):
+    """Human-input prompts are delivered even on urgent_only routes: suppressing them
+    with a successful admission would deadlock the run on an answer the owner never saw."""
+    from gateway.platforms.webhook_response_policy import urgent_response_allowed
+    assert urgent_response_allowed("!approve: run rm -rf /tmp/old", {"is_approval_prompt": True})
+    assert urgent_response_allowed("Which database? 1) prod 2) staging", {"is_clarify_prompt": True})
+    # Interim flag alongside the approval marker must not veto it (the exec path sends both).
+    assert urgent_response_allowed("approve?", {"_interim_send": True, "is_approval_prompt": True})
+    # Plain interim status stays suppressed.
+    assert not urgent_response_allowed("still working…", {"_interim_send": True})
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    a, target = _adapter()
+    chat = _WebhookDeliveryIdentity.from_parts(None, "incident", "approval-1").session_chat_id
+    a._delivery_info[chat] = {"deliver": "discord", "deliver_extra": {"chat_id": "test-only"}}
+    _subscriptions(tmp_path, {"incident": _route(response_policy="urgent_only")})
+
+    async def exercise():
+        result = await a.send(chat, "!approve: run the destructive migration",
+                              metadata={"_interim_send": True, "is_approval_prompt": True})
+        assert result.success
+        assert target.send.await_count == 1
+
+    asyncio.run(exercise())
+
+
+def test_policy_reads_the_launch_home_not_the_ambient_scope(tmp_path, monkeypatch):
+    """Under multiplex, a reply executes in the owning profile's home; the policy (and the
+    whole dynamic-route table) must still come from the listener's launch home. A same-named
+    route in the profile home's subscriptions file must not silently win — that fails open."""
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profiles" / "coder"
+    launch_home.mkdir(parents=True)
+    profile_home.mkdir(parents=True)
+    _subscriptions(launch_home, {"incident": _route(response_policy="urgent_only")})
+    _subscriptions(profile_home, {"incident": _route()})  # same name, NO policy
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
+
+    a, target = _adapter()
+    chat = _WebhookDeliveryIdentity.from_parts(None, "incident", "scope-1").session_chat_id
+    a._delivery_info[chat] = {"deliver": "discord", "deliver_extra": {"chat_id": "test-only"}}
+
+    async def exercise():
+        result = await a.send(chat, "Routine close-out: recovered on its own.")
+        assert result.success
+        assert target.send.await_count == 0  # launch home says urgent_only — suppressed
+
+    asyncio.run(exercise())

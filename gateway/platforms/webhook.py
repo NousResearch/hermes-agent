@@ -488,9 +488,14 @@ class WebhookAdapter(BasePlatformAdapter):
         default gateway's subscriptions file does not exist — wiping there would drop every dynamic
         route for the whole gateway mid-turn. Deletion is still picked up by the next POST.
         """
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        # The listener's launch home, NOT the ambient scope: under ``multiplex_profiles``
+        # a reply can execute inside the owning profile's home, where a same-named route
+        # in that home's subscriptions file (or a missing key there) would silently win
+        # the policy read — failing open. The listener read the launch home at admission;
+        # the send path must compare against the same table.
+        subs_path = get_routing_process_hermes_home() / _DYNAMIC_ROUTES_FILENAME
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:

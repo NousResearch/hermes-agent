@@ -4,7 +4,7 @@
 _PASSTHROUGH_PARAMS = (
     "model", "max_iterations", "save_trajectories", "verbose_logging", "quiet_mode",
     "tool_progress_mode", "ephemeral_system_prompt", "platform", "skip_context_files",
-    "load_soul_identity", "pass_session_id", "log_prefix_chars",
+    "load_soul_identity", "pass_session_id", "log_prefix_chars", "skip_memory_prompt",
     # OpenRouter provider preferences
     "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
     "provider_require_parameters", "provider_data_collection", "openrouter_min_coding_score",

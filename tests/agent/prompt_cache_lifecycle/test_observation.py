@@ -116,6 +116,67 @@ def test_refreshing_snapshot_and_replacement_fence_a_real_inflight_completion(ch
         assert _arm(agent, payload) is None
 
 
+@pytest.mark.parametrize("transition", ["disabled", "skip", "api_mode", "caching", "client", "replay", "route"])
+@pytest.mark.parametrize("reopen", [False, True])
+def test_superseding_policy_fences_late_miss_but_keeps_its_bill(chat, monkeypatch, transition, reopen):
+    agent, ctx = chat
+    entered, finish = threading.Event(), threading.Event()
+    client = agent._anthropic_client
+    miss = SimpleNamespace(usage=_Usage(0, 1, 0, 120000), content=[], stop_reason="max_tokens")
+    monkeypatch.setattr(client.messages, "create", lambda **kwargs: miss)
+    assert _arm(agent) is None
+    warmer = agent._prompt_cache_warmer
+    _fire(warmer)  # Establish one real miss, without manufacturing controller state.
+
+    def blocked(**kwargs):
+        entered.set()
+        assert finish.wait(5)
+        return miss
+
+    monkeypatch.setattr(client.messages, "create", blocked)
+    run = warmer._run
+    run.timer.cancel()
+    thread = threading.Thread(target=warmer._refresh, args=(run,))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        payload = _request()
+        attribute, value = {
+            "disabled": ("_cache_disabled", True), "skip": ("_skip_prompt_cache_warming", True),
+            "api_mode": ("api_mode", "codex_responses"), "caching": ("_use_prompt_caching", False),
+            "client": ("_anthropic_client", None), "route": ("model", "claude-opus-4-6"),
+            "replay": ("_skip_prompt_cache_warming", False),
+        }[transition]
+        previous = getattr(agent, attribute, False)
+        if transition == "replay":
+            payload["thinking"] = {"type": "enabled", "budget_tokens": 2048}
+        else:
+            setattr(agent, attribute, value)
+        if transition in {"client", "replay"}:
+            assert _arm(agent, payload) is not None
+        else:
+            lifecycle.cancel_prompt_cache_warming(agent, "new request in flight")
+        expected_reason = "unknown" if transition == "route" else (
+            "disabled" if transition in {"disabled", "caching"} else "unsupported")
+        assert status(ctx)["reason"] == expected_reason
+        if reopen:
+            if transition != "replay":
+                setattr(agent, attribute, previous)
+            assert _arm(agent) is None
+        expected = status(ctx)
+        before = agent.session_estimated_cost_usd
+    finally:
+        finish.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert status(ctx) == expected
+    assert agent.session_cache_warm_calls == 2
+    assert agent.session_estimated_cost_usd - before == pytest.approx(120000 * 6.25e-6 + 25e-6)
+    assert run.budget.spent_usd > 0  # Reconcile the admitted request even though publication is fenced.
+    assert not run.budget.ended and not warmer.warming_disabled
+    assert warmer._miss_streak == (1, 1)
+
+
 def _expire_count(agent, warmer, monkeypatch):
     for _ in range(lifecycle.WARM_BUDGET):
         _fire(warmer)

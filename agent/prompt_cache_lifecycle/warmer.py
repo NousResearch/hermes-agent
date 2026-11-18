@@ -147,6 +147,8 @@ class _Run:
     stable_prefix_tokens: int = 0
     #: What the last keep-alive was billed (``None`` when unpriced).
     last_billed_usd: Optional[float] = None
+    #: Explicit opt-outs and route transitions supersede older completions, even if later reversed.
+    policy_epoch: int = 0
 
     @property
     def warm_count(self) -> int:
@@ -202,6 +204,7 @@ class PromptCacheWarmer:
         #: Keep-alive misses since the last hit: ``(real, any)``. Upstream switches and partial reads are
         #: not real misses (:meth:`_miss_ends_warming`).
         self._miss_streak = (0, 0)
+        self._policy_epoch = 0
         self._home_key = hermes_home_key()
         self._observation_owner = object()
         self._observation_key = (self._home_key, getattr(agent, "session_id", None) or "")
@@ -217,6 +220,7 @@ class PromptCacheWarmer:
         fingerprint = self._route_fingerprint()
         previous = self._observation
         if previous.route and previous.route != fingerprint:
+            self._policy_epoch += 1
             self._observation = replace(previous, route=fingerprint, reason="unknown", next_warm_at=None, ended=False)
             observations.update(self._observation_key, self._observation)
         agent = self.agent
@@ -229,6 +233,8 @@ class PromptCacheWarmer:
             self._observe("unsupported")
 
     def _observe(self, reason: Reason, *, due: Optional[float] = None) -> None:
+        if reason in {"disabled", "unsupported"}:
+            self._policy_epoch += 1
         self._observation = replace(self._observation, reason=reason, next_warm_at=due,
                                     ended=bool(self._budget and self._budget.ended))
         if self._observation_key is not None:
@@ -243,6 +249,8 @@ class PromptCacheWarmer:
         turn = getattr(self.agent, "_user_turn_count", None)
         turn = turn if type(turn) is int else None
         previous = self._observation
+        if previous.route and previous.route != fingerprint:
+            self._policy_epoch += 1
         same = previous.route == fingerprint and previous.turn == turn
         if same and previous.ended and self._budget is None:
             self._budget = _Budget(turn, ended=True)
@@ -349,6 +357,7 @@ class PromptCacheWarmer:
             witness=context_witness(agent), billing=self._billing_snapshot(),
             idle_ok=human_paced(agent) and idle_warming_allowed(agent), budget=budget,
             upstream=response_upstream(response), stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, api_mode),
+            policy_epoch=self._policy_epoch,
         )
         with self._lock:
             self._run = run
@@ -611,11 +620,14 @@ class PromptCacheWarmer:
     def _finish_refresh(self, run: _Run, message: Any, miss: Optional[str], sent_at: float) -> None:
         """Publish completion under the controller lock; no reset/replacement can interleave.
 
-        A replaced run may still end the SAME user-turn budget, but never a new turn or route.
+        A replaced run may still end the SAME user-turn budget, but never a superseding policy,
+        new turn or route. A routine cancel/re-arm does not advance the policy epoch.
         Accounting above remains attributed to the request that actually incurred the cost.
         """
         b = run.billing
         if self._budget is not run.budget or getattr(self.agent, "_session_reset_epoch", 0) != b["reset_epoch"]:
+            return
+        if run.policy_epoch != self._policy_epoch or getattr(self.agent, "api_mode", None) != run.api_mode:
             return
         if any(getattr(self.agent, name, "") != b[name] for name in ("provider", "base_url", "model")):
             return

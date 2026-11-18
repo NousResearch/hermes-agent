@@ -456,10 +456,48 @@ _PERMISSION_FLAGS = {
     "CREATE_PRIVATE_THREADS": 0x1000000000, "USE_EXTERNAL_STICKERS": 0x2000000000,
     "SEND_MESSAGES_IN_THREADS": 0x4000000000, "USE_EMBEDDED_ACTIVITIES": 0x8000000000,
     "MODERATE_MEMBERS": 0x10000000000,
+    # Bits above 40, added by Discord between 2023 and 2025. Without them a caller
+    # asking for PIN_MESSAGES or CREATE_EVENTS got "Unknown permission name" and no
+    # bit written at all — a missing capability, not a wrong one. Bit 47 is unused.
+    "VIEW_CREATOR_MONETIZATION_ANALYTICS": 0x20000000000,
+    "USE_SOUNDBOARD": 0x40000000000, "CREATE_EXPRESSIONS": 0x80000000000,
+    "CREATE_EVENTS": 0x100000000000, "USE_EXTERNAL_SOUNDS": 0x200000000000,
+    "SEND_VOICE_MESSAGES": 0x400000000000,
+    "SET_VOICE_CHANNEL_STATUS": 0x1000000000000,
+    "SEND_POLLS": 0x2000000000000, "USE_EXTERNAL_APPS": 0x4000000000000,
+    "PIN_MESSAGES": 0x8000000000000, "BYPASS_SLOWMODE": 0x10000000000000,
 }
 
+# Highest bit Discord assigns today. The table is frozen against discord.py's
+# Permissions; this constant exists so the test fails when Discord adds a bit and
+# the tool would answer "Unknown permission name" for a permission that exists.
+_MAX_PERMISSION_BIT = 52
 
-def _parse_permission_flags(raw: str) -> "tuple[int, List[str]]":
+
+def _parse_color(color: str) -> "tuple[Optional[int], Optional[str]]":
+    """Decimal role colour for ``#RRGGBB`` / ``RRGGBB`` (or ``#RGB``), or an error.
+
+    ``int(color.lstrip('#'), 16)`` used to accept ``0x1f``, then raised ValueError
+    for ``"#GGG"`` — surfaced by the generic handler as a base-16 traceback that told
+    the caller nothing about the expected format, while the schema advertises
+    ``#RRGGBB``. Discord stores 0-0xFFFFFF.
+    """
+    digits = color.strip().lstrip("#")
+    if len(digits) not in (3, 6):
+        return None, (f"Invalid color {color!r}: expected #RRGGBB or #RGB.")
+    try:
+        value = int(digits, 16)
+    except ValueError:
+        return None, (f"Invalid color {color!r}: expected #RRGGBB or #RGB, "
+                      "hexadecimal digits only.")
+    if len(digits) == 3:
+        value = int("".join(digit * 2 for digit in digits), 16)
+    if value > 0xFFFFFF:
+        return None, (f"Invalid color {color!r}: Discord colors go up to #FFFFFF.")
+    return value, None
+
+
+def _parse_permission_flags(raw: str) -> "tuple[int, list[str]]":
     """Bitfield for a comma-separated permission list, plus every unknown name.
 
     Unknown names are returned rather than dropped: a typo silently discarded
@@ -468,7 +506,7 @@ def _parse_permission_flags(raw: str) -> "tuple[int, List[str]]":
     if raw == "0":
         return 0, []
     value = 0
-    unknown: List[str] = []
+    unknown: list[str] = []
     for name in raw.split(","):
         name = name.strip().upper()
         if not name:
@@ -481,7 +519,7 @@ def _parse_permission_flags(raw: str) -> "tuple[int, List[str]]":
     return value, unknown
 
 
-def _existing_overwrite(token: str, channel_id: str, overwrite_id: str) -> Optional[Dict[str, Any]]:
+def _existing_overwrite(token: str, channel_id: str, overwrite_id: str) -> Optional[dict[str, Any]]:
     """Current permission overwrite for ``overwrite_id`` on ``channel_id``, or None."""
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
     for overwrite in channel.get("permission_overwrites") or []:
@@ -511,7 +549,7 @@ def _create_channel(
             "error": f"channel_type {channel_type!r} does not support topic "
                      "(Discord answers 400 Invalid Form Body); topic is only valid on "
                      "text, announcement, and forum channels."})
-    body: Dict[str, Any] = {"name": name, "type": type_id}
+    body: dict[str, Any] = {"name": name, "type": type_id}
     if topic:
         body["topic"] = topic
     if parent_id:
@@ -530,7 +568,7 @@ def _edit_channel(
     an error with no fields to update. ``topic`` is refused for channel types Discord
     rejects it on (voice, category, ...) instead of forwarding a guaranteed 400.
     """
-    body: Dict[str, Any] = {}
+    body: dict[str, Any] = {}
     if name:
         body["name"] = name
     if parent_id:
@@ -569,13 +607,16 @@ def _create_role(
     ``hoist``/``mentionable`` are sent only when explicitly provided: Discord expects
     booleans there, and the dispatcher's untyped defaults are None.
     """
-    body: Dict[str, Any] = {"name": name}
+    body: dict[str, Any] = {"name": name}
     if hoist is not None:
         body["hoist"] = bool(hoist)
     if mentionable is not None:
         body["mentionable"] = bool(mentionable)
     if color:
-        body["color"] = int(color.lstrip("#"), 16)
+        value, error = _parse_color(color)
+        if error:
+            return json.dumps({"success": False, "error": error})
+        body["color"] = value
     role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
     return json.dumps({"success": True, "role_id": role["id"], "name": role.get("name")})
 
@@ -590,11 +631,14 @@ def _edit_role(
     non-None for booleans) are included in the request. Omitted fields are left
     unchanged. Passing all empty/None values returns an error.
     """
-    body: Dict[str, Any] = {}
+    body: dict[str, Any] = {}
     if name:
         body["name"] = name
     if color:
-        body["color"] = int(color.lstrip("#"), 16)
+        value, error = _parse_color(color)
+        if error:
+            return json.dumps({"success": False, "error": error})
+        body["color"] = value
     if hoist is not None:
         body["hoist"] = hoist
     if mentionable is not None:
@@ -613,7 +657,7 @@ def _edit_server(
     Parameters:
         verification_level: 0=None, 1=Email, 2=5min, 3=10min, 4=Bot verification.
     """
-    body: Dict[str, Any] = {}
+    body: dict[str, Any] = {}
     if name:
         body["name"] = name
     if verification_level is not None:
@@ -647,7 +691,7 @@ def _edit_channel_permissions(
     type_int = 0 if (overwrite_type or "").strip().lower() == "role" else 1
     parsed_allow = _parse_permission_flags(allow) if allow else None
     parsed_deny = _parse_permission_flags(deny) if deny else None
-    unknown: List[str] = []
+    unknown: list[str] = []
     if parsed_allow is not None:
         unknown += parsed_allow[1]
     if parsed_deny is not None:

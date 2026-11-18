@@ -1130,6 +1130,18 @@ _PERMISSION_FLAG_CASES = [
     ("SEND_MESSAGES_IN_THREADS", 1 << 38),
     ("USE_EMBEDDED_ACTIVITIES", 1 << 39),
     ("MODERATE_MEMBERS", 1 << 40),
+    ("VIEW_CREATOR_MONETIZATION_ANALYTICS", 1 << 41),
+    ("USE_SOUNDBOARD", 1 << 42),
+    ("CREATE_EXPRESSIONS", 1 << 43),
+    ("CREATE_EVENTS", 1 << 44),
+    ("USE_EXTERNAL_SOUNDS", 1 << 45),
+    ("SEND_VOICE_MESSAGES", 1 << 46),
+    # 1 << 47 is unassigned in the Discord permission list.
+    ("SET_VOICE_CHANNEL_STATUS", 1 << 48),
+    ("SEND_POLLS", 1 << 49),
+    ("USE_EXTERNAL_APPS", 1 << 50),
+    ("PIN_MESSAGES", 1 << 51),
+    ("BYPASS_SLOWMODE", 1 << 52),
 ]
 
 
@@ -1146,4 +1158,58 @@ class TestPermissionFlagTable:
     def test_flag_table_is_exactly_the_frozen_set(self):
         from tools.discord_tool import _PERMISSION_FLAGS
         assert set(_PERMISSION_FLAGS) == {name for name, _ in _PERMISSION_FLAG_CASES}
+
+    def test_table_reaches_the_highest_defined_bit(self):
+        """A table that stops early answers "Unknown permission name" for a real
+        permission — the caller silently loses the capability."""
+        from tools.discord_tool import _MAX_PERMISSION_BIT, _PERMISSION_FLAGS
+        assert max(bit.bit_length() - 1 for bit in _PERMISSION_FLAGS.values()) == _MAX_PERMISSION_BIT
+
+    def test_parse_permission_flags_knows_the_high_bits(self):
+        from tools.discord_tool import _parse_permission_flags
+        value, unknown = _parse_permission_flags("PIN_MESSAGES,CREATE_EVENTS")
+        assert unknown == []
+        assert value == (1 << 51) | (1 << 44)
+
+
+class TestRoleColorValidation:
+    """`color` is advertised as #RRGGBB. Anything else must come back as an error
+    naming the format, not as a base-16 ValueError through the generic handler."""
+
+    @pytest.mark.parametrize("color, expected", [
+        ("#FF5733", 0xFF5733),
+        ("FF5733", 0xFF5733),
+        ("#f0f", 0xFF00FF),
+        ("  #00FF00  ", 0x00FF00),
+    ])
+    def test_valid_colors_become_decimal(self, color, expected):
+        from tools.discord_tool import _parse_color
+        value, error = _parse_color(color)
+        assert error is None
+        assert value == expected
+
+    @pytest.mark.parametrize("color", ["#GGG", "rgb(1,2,3)", "red", "#12", "#1234567", "#"]) 
+    def test_invalid_colors_return_a_message(self, color):
+        from tools.discord_tool import _parse_color
+        value, error = _parse_color(color)
+        assert value is None
+        assert error is not None and "#RRGGBB" in error
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_refuses_a_bad_color_before_the_request(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="create_role", guild_id="1", name="R", color="rouge"))
+        assert result["success"] is False
+        assert "#RRGGBB" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_role_refuses_a_bad_color_before_the_request(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="edit_role", guild_id="1", role_id="7", color="#12"))
+        assert result["success"] is False
+        assert "#RRGGBB" in result["error"]
+        mock_req.assert_not_called()
 

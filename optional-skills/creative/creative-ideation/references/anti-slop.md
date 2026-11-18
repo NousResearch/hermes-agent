@@ -39,15 +39,15 @@ For high-risk slop terrain ("AI ideas", "startup ideas", "habit tracker", produc
 
 ### 2. Force specificity
 
-Replace abstractions with proper nouns. Not "a city" — Lisbon, Lagos, Sapporo, Marfa. Not "a workflow tool" — a `git` subcommand named after a 17th-century English vice. Not "a community of users" — the 230 people who restore vintage Tannoy speakers.
+Replace abstractions with proper nouns. Not "a city": Lisbon, Lagos, Sapporo, Marfa. Not "a workflow tool": a `git` subcommand named after a 17th-century English vice. Not "a community of users": the 230 people who restore vintage Tannoy speakers.
 
 Test: every noun in the idea answers "which one specifically?".
 
-**Name-dropping a tech stack is NOT specificity.** "Built with React Native, SQLite, GPT-4, Pinecone, Stripe" sounds concrete but is generic — those tokens fit any product. Listing a stack is the slop disguise that fools shallow specificity checks. Real specificity is a concrete *mechanism*, a named real person / place / work, or an exact unusual material or constraint — something that pins the idea to *one situation* and could not be swapped into a different prompt. "Uses an embedding model" is name-drop; "ranks your unread tabs by how semantically far they've drifted from anything you've opened in 30 days" is a mechanism.
+**Name-dropping a tech stack is NOT specificity.** "Built with React Native, SQLite, GPT-4, Pinecone, Stripe" sounds concrete but is generic: those tokens fit any product. Listing a stack is the slop disguise that fools shallow specificity checks. Real specificity is a concrete *mechanism*, a named real person / place / work, or an exact unusual material or constraint; something that pins the idea to *one situation* and could not be swapped into a different prompt. "Uses an embedding model" is name-drop; "ranks your unread tabs by how semantically far they've drifted from anything you've opened in 30 days" is a mechanism.
 
 ### 3. Weirdness budget
 
-At least one element of every idea requires explanation. Doesn't have to be the central element — sometimes the medium, the audience, the failure mode, the unit of measure. If everything is conventional, reject. If everything is weird, you've gone too far.
+At least one element of every idea requires explanation. Doesn't have to be the central element: sometimes the medium, the audience, the failure mode, the unit of measure. If everything is conventional, reject. If everything is weird, you've gone too far.
 
 ### 4. Avoid trending-tech combinations
 
@@ -62,7 +62,7 @@ Cite actual works, actual people, actual places, actual numbers. Ideas grounded 
 | Slop | Specific |
 |---|---|
 | "A tool for writers to track manuscript revisions" | "A `git`-style version control system for novelists, modeled on Toni Morrison's numbered binders for *Beloved*, with a `morrison diff` subcommand that prints the difference between two binders as if read aloud" |
-| "An app for runners" | "A heart-rate sonifier that turns your zone-2 pace into the rhythm of Steve Reich's *Music for 18 Musicians* — slowing the piece when you slow down" |
+| "An app for runners" | "A heart-rate sonifier that turns your zone-2 pace into the rhythm of Steve Reich's *Music for 18 Musicians*: slowing the piece when you slow down" |
 
 ### 6. Embrace failure modes
 
@@ -74,11 +74,11 @@ Right number is rarely 5 or 10. Use 3 (smallest that shows variation) or 7 (unco
 
 ### 8. Drop the marketing tone
 
-No "exciting", "innovative", "revolutionary", "game-changing", "powerful", "seamless". Describe ideas the way a working artist or engineer describes their work to a peer — flat, specific, sometimes self-deprecating, never selling.
+No "exciting", "innovative", "revolutionary", "game-changing", "powerful", "seamless". Describe ideas the way a working artist or engineer describes their work to a peer: flat, specific, sometimes self-deprecating, never selling.
 
 ### 9. Specify medium and material
 
-Every idea answers "what is this physically made of?" — code in a language, paper in a format, a sound on an instrument, an installation in a room of certain dimensions. "An app" is not a medium. "A 200-line Python script with SQLite and a Textual TUI" is.
+Every idea answers "what is this physically made of?": code in a language, paper in a format, a sound on an instrument, an installation in a room of certain dimensions. "An app" is not a medium. "A 200-line Python script with SQLite and a Textual TUI" is.
 
 ### 10. Refuse generic domains for fiction and essay
 

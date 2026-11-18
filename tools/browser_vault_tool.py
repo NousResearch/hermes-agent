@@ -118,16 +118,24 @@ def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> 
 
 
 @contextmanager
-def _pinned_page_session(task_id: str) -> Iterator[None]:
+def _pinned_page_session(task_id: str) -> Iterator[Optional[dict[str, Any]]]:
     """Pin every eval inside this block to the page session the supervisor is on now.
 
     Entered once a fill has its bound origin (``_bound_page_origin`` may focus another tab first).
     A plugin page backend owns its page and has no CDP session, so there is nothing to pin.
+    Yields the refusal to return when a supervisor holds no page session (it is reconnecting):
+    an unpinned fill would follow whichever tab the reconnect lands on.
     """
     supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
-    token = _fill_session.set(supervisor.current_page_session() if supervisor is not None else None)
+    pinned = supervisor.current_page_session() if supervisor is not None else None
+    refusal = None
+    if supervisor is not None and not pinned:
+        refusal = {"success": False, "error_type": "supervisor_required",
+                   "error": "The browser supervisor has no attached page right now (it is reconnecting). "
+                            "Nothing was written; retry in a moment."}
+    token = _fill_session.set(pinned)
     try:
-        yield
+        yield refusal
     finally:
         _fill_session.reset(token)
 
@@ -466,7 +474,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         origin = _current_page_origin(effective_task_id)
         if not origin:
             return json.dumps({"success": False, "error": "No page with a code field is open."})
-    with _pinned_page_session(effective_task_id):
+    with _pinned_page_session(effective_task_id) as unpinned:
+        if unpinned is not None:
+            return json.dumps(unpinned)
         return _enter_code_on_page(backend, handle, meta, origin, effective_task_id)
 
 
@@ -565,8 +575,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    with backend.fill_context(), _pinned_page_session(effective_task_id):
-        refusal = snapshot_refusal(backend, handle, meta, page_origin)
+    with backend.fill_context(), _pinned_page_session(effective_task_id) as unpinned:
+        refusal = unpinned or snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
         return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)

@@ -768,6 +768,26 @@ class TestBrowserVaultTools:
         unstamp = [sid for expr, sid in sup.sent if "unstamped" in expr]
         assert inspection == ["S1"] and unstamp == ["S1"]
 
+    def test_a_supervisor_without_a_page_session_refuses_the_fill(self, store):
+        """A supervisor that is reconnecting has no page session to pin. The fill refuses instead of
+        running unpinned, where every script would follow whichever tab the reconnect lands on."""
+        from tools import browser_vault_tool
+
+        class _Reconnecting(self._RecordingSup):
+            def evaluate_runtime(self, expression, **kwargs):
+                self.sid = self.sid or "S2"  # the reconnect lands on some tab once the fill is underway
+                return super().evaluate_runtime(expression, **kwargs)
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = _Reconnecting([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                              "label": "", "name": "pw", "type": "password"}], sid=None)
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3], \
+             patch.object(browser_vault_tool, "_bound_page_origin", return_value="https://example.com"):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []
+
     def test_a_read_back_on_another_origin_stops_at_once(self):
         """The read-back carries the values: once the page has left the bound origin, it is not
         polled again until the ceiling, and the result names the cause."""

@@ -1,0 +1,19 @@
+name: hook-desk
+title: Hook Desk
+repo: https://github.com/KellerAI/hermes-plugins
+sha: b4b6df4da6a21e493b09628d7ca1d28a10348f40
+subdir: hook-desk
+description: "Skills-only plugin. Studies the opening lines of posts you paste, names the pattern, keeps a sourced formula file and drafts opening lines in your voice for your approval. Never posts or browses. Disclosure: no network calls, no model calls of its own, no shell, no stored credentials; reads only text the user provides."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KellerAI/hermes-plugins/tree/main/hook-desk#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

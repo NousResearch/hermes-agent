@@ -1,0 +1,20 @@
+name: toolrecall-light
+repo: https://github.com/whiskybeer/toolrecall-light
+sha: 96c2cfdb1952518c90d02d4e67a5ab470c2bb443
+description: "Deduplicates byte-identical repeated tool results inside Hermes Agent: repeats of terminal, search_files, MCP, web and connector output are saved to a local SQLite table and replaced by a one-line stub before they enter model context, with a recall_result tool that restores the original bytes on demand. Fail-open, stdlib only, no core patches. Disclosure — stores the full text of every successful tool result of 2,000+ characters (terminal, search, MCP, web and connector output, which can include secrets the tool printed) in plaintext in Hermes's plugin storage (<HERMES_HOME>/plugin-data/toolrecall-light/data.db, SQLite WAL), pruned after about 24 hours; any session in the profile can recall a stored result by its id; no network calls, no credentials, no shell commands, no background processes."
+maintainer: whiskybeer
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/whiskybeer/toolrecall-light#readme
+version: "0.1.1"
+screenshots: []
+platforms: []
+capabilities:
+  provides_tools:
+    - recall_result
+  provides_hooks:
+    - transform_tool_result
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

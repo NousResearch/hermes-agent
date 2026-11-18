@@ -1,0 +1,34 @@
+# Draft catalog entry — submit only after ROCK's final GO.
+name: ideacut
+repo: "https://github.com/ranggaoscar/ideacut"
+sha: "b78cdff6327a2d3baf2023a1d7798207e4334dff"
+version: "1.2.0"
+title: "IDEA CUT"
+image: "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/covers/catalog-cover.png"
+screenshots:
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/01-gallery.png"
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/02-studio.png"
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/03-export.png"
+description: "Turns a chat brief into an editable, art-directed video: seven agent tools capture and record a public page, write typed scenes, revise them and export H.264 MP4 locally with Chromium and FFmpeg. Capture goes through a loopback validating proxy that refuses private/loopback/metadata targets. Optional narration is sent to the user's configured TTS provider; the live preview is silent. Disclosure — ideacut_capture and ideacut_record open model-chosen public web pages in your installed Chrome/Edge (headless) and can scroll, click and type into them (forms included); every connection goes through a loopback-only proxy that refuses private, loopback and cloud-metadata addresses. Scene images, clips and music may be any local file path the agent names and are copied into the plugin's data folder. Rendering runs your system FFmpeg/ffprobe. Voice-over (off by default) sends each scene's narration text to your configured Hermes TTS provider (directly via edge-tts when that provider is Edge)."
+maintainer: "ROCK"
+tier: community
+category: desktop
+platforms: [windows, macos, linux]
+requires_hermes: ">=0.23.0"
+capabilities:
+  provides_tools:
+    - ideacut_create
+    - ideacut_edit
+    - ideacut_get
+    - ideacut_capture
+    - ideacut_record
+    - ideacut_preview
+    - ideacut_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Narration uses an internal Hermes TTS import (catalog rule 9 warning); a public seam is not available yet."
+  - "Clip audio is discarded on import. Desktop/mobile capture requires separate host tools or imported recordings."
+  - "The preview is silent; music and voice exist only in the exported file."
+docs_url: "https://github.com/ranggaoscar/ideacut#readme"

@@ -9,7 +9,7 @@ from agent.interrupt_control import InterruptControlMixin
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
-from hermes_state import SessionDB
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
 
 
@@ -26,7 +26,7 @@ class Agent(InterruptControlMixin):
 async def test_run_steer_before_adoption_reaches_the_turns_agent_not_the_cached_one(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    db = SessionDB(tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     stale, fresh = Agent(), Agent()
     claimed, steered = asyncio.Event(), threading.Event()
     seen = {}
@@ -45,8 +45,8 @@ async def test_run_steer_before_adoption_reaches_the_turns_agent_not_the_cached_
         return "ok"
 
     # The previous turn's reusable agent is what the route resolves to before adoption.
-    runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False, _handle_message=answer,
-                             _cached_agent_for=lambda route: stale)
+    runner = SimpleNamespace(session_store=store, _draining=False, _handle_message=answer,
+                             _cached_agent_for=lambda route: stale, persistence=db)
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="api-steer")
     adapter = _adapter(runner, db)
     runner._adapter_for_source = lambda source: adapter

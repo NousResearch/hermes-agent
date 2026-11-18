@@ -381,11 +381,12 @@ export function ChatRuntimeBoundary({
           // checking the live atoms (not captured props) discards a page that
           // resolves after the user moved on — same pattern as isCurrentResume.
           isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+          heldMessages: () => view.$messages.get(),
           applyOlderPage: olderPage => {
             const current = view.$messages.get()
 
             if (mergeOlderTranscriptPage(current, olderPage) === current) {
-              return
+              return false
             }
 
             beforePrepend?.()
@@ -420,6 +421,7 @@ export function ChatRuntimeBoundary({
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
+  const historicalMessages = history.page?.messages
 
   const transcriptWindow = useMemo(
     () => ({
@@ -427,11 +429,13 @@ export function ChatRuntimeBoundary({
       expandWindow,
       revealRow,
       returnToLatest,
-      currentMessages,
+      // Live navigation reads the session store. Broadcasting the changing
+      // live tail here invalidates the entire transcript's navigation context.
+      currentMessages: historicalMessages ?? [],
       isHistorical,
       newerAvailable
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [expandWindow, olderAvailable, revealRow, returnToLatest, historicalMessages, isHistorical, newerAvailable]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({

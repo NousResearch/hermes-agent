@@ -1,0 +1,23 @@
+name: cospark
+title: Cospark ad creation
+repo: https://github.com/corift/cospark-ai
+sha: 535535a8006b5b6b44c6a3acefa6273cf9d26a0c
+subdir: plugins/cospark
+version: "0.5.0"
+description: >-
+  Workflow skill for ad research, image and video generation, voiceovers, and media inspection with Cospark.
+  Disclosure: skill-only portable package; the user separately connects api.cospark.so/mcp through Hermes native OAuth.
+  Hosted tools process supplied prompts and media and can spend Cospark credits or change project files.
+  No executable plugin code, credential access, bridge, background process, self-updater or package telemetry.
+maintainer: Cospark
+tier: community
+category: tools
+docs_url: https://github.com/corift/cospark-ai/tree/535535a8006b5b6b44c6a3acefa6273cf9d26a0c/plugins/cospark
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

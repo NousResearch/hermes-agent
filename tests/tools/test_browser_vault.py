@@ -18,6 +18,7 @@ import re
 import os
 import stat
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -322,6 +323,9 @@ class TestBrowserVaultTools:
 
             def get_meta(self, handle):
                 return meta if handle == meta.id else None
+
+            def fill_context(self):
+                return nullcontext()
 
             def resolve_password(self, handle):
                 return "s3cret-pw"

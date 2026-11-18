@@ -47,7 +47,7 @@ def pty_keepalive_harness(monkeypatch):
         return b
 
     monkeypatch.setattr(_web_server_chat.PtyBridge, "spawn", staticmethod(fake_spawn))
-    monkeypatch.setattr(_web_server_chat, "_ws_auth_reason", lambda ws: (None, "test"))
+    monkeypatch.setattr(_web_server_chat, "_ws_auth_reason", lambda ws, **_kwargs: (None, "test"))
     monkeypatch.setattr(_web_server_chat, "_ws_host_origin_reason", lambda ws: None)
     monkeypatch.setattr(_web_server_chat, "_ws_client_reason", lambda ws: None)
 
@@ -57,6 +57,9 @@ def pty_keepalive_harness(monkeypatch):
         return (["x", resume or "fresh"], "/tmp", env)
 
     monkeypatch.setattr(_web_server_chat, "_resolve_chat_argv_async", fake_argv)
+    # TestClient without ``with`` skips the lifespan, which reopens the registry
+    # on startup; a test that ran close_all() must not shut it for the next one.
+    monkeypatch.setattr(_web_server_chat.PTY_REGISTRY, "_closed", False)
 
     try:
         yield spawned
@@ -95,6 +98,88 @@ async def test_stalled_input_closes_only_the_keepalive_socket(
 
     assert exc_info.value.code == 1013
     assert web_server.PTY_REGISTRY._sessions["TOK1"].alive is False
+
+
+def test_chat_without_a_pty_bridge_says_what_to_install_as_on_main(pty_keepalive_harness, monkeypatch):
+    """On a host whose PTY bridge cannot load, the dashboard's /chat tab prints main's message, which
+    says the rest of the dashboard works and where to install Hermes for chat, and closes 1011."""
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setattr(_web_server_chat, "_PTY_BRIDGE_AVAILABLE", False)
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1") as ws:
+        text = ws.receive_text()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+
+    assert "Chat unavailable: the embedded terminal requires a POSIX PTY" in text
+    assert "Install Hermes inside WSL2 to use the dashboard's /chat tab" in text
+    assert closed.value.code == 1011
+    assert pty_keepalive_harness == []
+
+
+@pytest.mark.asyncio
+async def test_a_takeover_during_input_leaves_the_chat_session_to_the_new_tab():
+    """Dashboard /chat keep-alive: when another tab takes the session over while this tab's input
+    waits on the PTY, that write is cancelled and the session stays alive for the new tab, which
+    closes this one as superseded (4409), never as stalled input (1013). Only the attached tab's
+    resize reaches the PTY."""
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+    from hermes_cli.web_routers.chat_ws import _pump_keepalive_input
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class BlockingBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.resized = []
+
+        async def write(self, data):
+            if data == b"old":
+                entered.set()
+                await release.wait()
+            return await super().write(data)
+
+        def resize(self, cols, rows):
+            self.resized.append((cols, rows))
+
+    class Tab:
+        def __init__(self, *frames):
+            self.frames = asyncio.Queue()
+            for frame in frames:
+                self.frames.put_nowait(frame)
+            self.closes = []
+
+        async def receive(self):
+            return await self.frames.get()
+
+        async def send_bytes(self, data):
+            pass
+
+        async def close(self, code=1000, reason=None):
+            self.closes.append(code)
+
+    bridge = BlockingBridge()
+    session = PtySession("k", bridge, buffer_cap=64, read_timeout=0.01)
+    await session.start()
+    old = Tab({"type": "websocket.receive", "bytes": b"old"})
+    await session.attach(old)
+    pump = asyncio.create_task(_pump_keepalive_input(old, session))
+    await entered.wait()
+    new = Tab()
+    await session.attach(new)
+    release.set()
+    await asyncio.wait_for(pump, timeout=5)
+    session.resize(old, cols=5, rows=6)
+    session.resize(new, cols=80, rows=24)
+
+    assert session.alive
+    assert old.closes == [WS_CLOSE_SUPERSEDED]
+    assert bridge.resized == [(80, 24)]
+    assert await session.write(new, b"new")
+    assert bytes(bridge.written) == b"new"
+    await session.close()
 
 
 @pytest.mark.asyncio

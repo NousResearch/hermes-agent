@@ -42,6 +42,7 @@ function installTitleBridge(title: string) {
 afterEach(() => {
   __resetLinkTitleCache()
   closeRightRail()
+  globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
   setAlwaysExternalLinks(false)
   vi.restoreAllMocks()
   cleanup()
@@ -121,9 +122,9 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
-  // A web link belongs in the in-app browser now; the OS browser is the
-  // ⌘/Ctrl-click escape hatch.
-  it('opens a web link in the in-app browser', async () => {
+  // In Electron a web link belongs in the in-app browser; the OS browser is the
+  // ⌘/Ctrl-click escape hatch. The connection mode does not change that.
+  it('opens an Electron web link in-app', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
 
@@ -134,6 +135,23 @@ describe('external link helpers', () => {
     expect(openExternal).not.toHaveBeenCalled()
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
   })
+
+  it.each([false, true])(
+    'opens a Webapp web link synchronously without adding a preview when always external is %s',
+    alwaysExternal => {
+      globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+      setAlwaysExternalLinks(alwaysExternal)
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal })
+
+      render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+      fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/path/to/resource')
+      expect($previewTabs.get()).toHaveLength(0)
+    }
+  )
 
   // Platform-specific on purpose (same rule as terminal links / middle-click):
   // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
@@ -149,7 +167,7 @@ describe('external link helpers', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
-  it('sends a plain click to the OS browser when "always external" is on', () => {
+  it('sends an Electron plain click to the OS browser when always external is on', () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
     setAlwaysExternalLinks(true)
@@ -158,7 +176,7 @@ describe('external link helpers', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
 
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/path/to/resource')
     expect($previewTabs.get()).toHaveLength(0)
   })
 
@@ -315,6 +333,21 @@ describe('external link helpers', () => {
     // Bare filename-shaped tokens stay as plain text, not links.
     expect(screen.queryByText(content => content.includes('agent.log'))).toBeTruthy()
     expect(links.some(a => (a.textContent ?? '').includes('.log'))).toBe(false)
+  })
+
+  it('explicitOnly keeps www.-prefixed local filenames literal but links a standalone www. URL', () => {
+    installDesktopBridge()
+
+    render(
+      <LinkifiedText
+        explicitOnly
+        pretty={false}
+        text={'wrote /tmp/www.config and C:\\Users\\test-user\\Documents\\www.config; docs at www.example.com'}
+      />
+    )
+
+    const links = screen.getAllByRole('link')
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://www.example.com'])
   })
 
   it('without explicitOnly, bare filename tokens are still linkified (default behavior)', () => {

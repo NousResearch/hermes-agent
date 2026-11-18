@@ -1,5 +1,6 @@
 /** Electron consumes the launch contract completed by the PM bundle builder. */
 import { createHash } from 'node:crypto'
+import os from 'node:os'
 import path from 'node:path'
 
 import { INSTALL_STAMP, type InstallStamp, type PayloadRuntime } from './install-stamp'
@@ -47,15 +48,41 @@ export function payloadPythonPath(payload: Pick<PayloadInfo, 'repoDir' | 'sitePa
 }
 
 /**
+ * The bytecode cache the POSIX bin/ launchers give the payload python
+ * (scripts/build/launchers.py): a pyc written into a macOS bundle breaks its
+ * code signature. The Windows launcher sets none for a baked payload, whose
+ * install tree is read-only.
+ */
+export function payloadPycacheEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): NodeJS.ProcessEnv {
+  if (platform === 'win32') {
+    return {}
+  }
+
+  const cache = env.XDG_CACHE_HOME || path.posix.join(env.HOME || os.homedir(), '.cache')
+
+  return { PYTHONPYCACHEPREFIX: env.PYTHONPYCACHEPREFIX || path.posix.join(cache, 'hermes-pycache') }
+}
+
+/**
  * The bundled shim is the Hermes CLI, not an interpreter, so it rejects the
  * ticket bridge's `-P -u -c`. Ticket minting runs the payload python against
- * the same import closure the shim gives the CLI.
+ * the same import closure and bytecode cache the shim gives the CLI.
  */
-export function payloadTicketRuntime(payload: Pick<PayloadInfo, 'storePython' | 'repoDir' | 'sitePackages'>): {
+export function payloadTicketRuntime(
+  payload: Pick<PayloadInfo, 'storePython' | 'repoDir' | 'sitePackages'>,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): {
   ticketCommand: string
   ticketEnv: NodeJS.ProcessEnv
 } {
-  return { ticketCommand: payload.storePython, ticketEnv: { PYTHONPATH: payloadPythonPath(payload) } }
+  return {
+    ticketCommand: payload.storePython,
+    ticketEnv: { PYTHONPATH: payloadPythonPath(payload), ...payloadPycacheEnv(env, platform) }
+  }
 }
 
 /**

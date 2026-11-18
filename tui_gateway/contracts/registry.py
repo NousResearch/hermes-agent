@@ -44,12 +44,34 @@ class EventContract:
     doc: str = ""
 
 
+@dataclass(frozen=True)
+class NamespaceContract:
+    """A family of canonical methods whose names exist only at runtime (``plugin.<plugin_id>.<name>``).
+    ``name`` is the pattern, every member starts with ``prefix``, and ``capability`` is the
+    ``runtime.describe`` string a client checks before calling one. A member's result is its own
+    JSON value; an unknown member answers ``-32601`` like any unknown method."""
+
+    name: str
+    prefix: str
+    capability: str
+    params: type[Params]
+    doc: str = ""
+
+
 METHODS: dict[str, MethodContract] = {}
 # ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
 # (``contracts/canonical.py``), plus explicit overrides where a shared name has a different wire.
 CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
+# Dynamic ``hermes-gateway-v1`` namespaces the session authority serves after its own verbs.
+CANONICAL_NAMESPACES: dict[str, NamespaceContract] = {}
+
+
+def unknown_method_message(method: str) -> str:
+    """The ``-32601`` text both routes send. A JSON-RPC client sends no version, so a missing
+    method says only what the backend knows: this backend does not serve it."""
+    return f"unknown method: {method} — not available on this Hermes backend"
 
 
 def _declare(table: dict, entry) -> None:
@@ -69,6 +91,15 @@ def method(name: str, *, params: type[Params], result: type[Result], doc: str = 
 def canonical_method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(CANONICAL_METHODS, entry)
+    return entry
+
+
+def canonical_namespace(name: str, *, prefix: str, capability: str, params: type[Params],
+                        doc: str = "") -> NamespaceContract:
+    if not name.startswith(prefix):
+        raise RuntimeError(f"namespace {name!r} must start with its prefix {prefix!r}")
+    entry = NamespaceContract(name, prefix, capability, params, doc)
+    _declare(CANONICAL_NAMESPACES, entry)
     return entry
 
 

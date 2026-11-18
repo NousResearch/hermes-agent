@@ -1262,7 +1262,7 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
-            ca-certificates git build-essential cmake file xz-utils zstd \
+            ca-certificates git build-essential rustc cmake file xz-utils zstd \
             libatomic1 libx11-dev libxi-dev libxkbcommon0 \
             libgtk-3-0 libnss3 libgbm1 "$ALSA_PACKAGE" "$BOOTSTRAP_PYTHON"
           ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python3

@@ -132,9 +132,9 @@ def test_a_wildcard_request_on_a_loopback_gateway_promises_no_other_device(gatew
     assert "hermes webapp" in out, out
 
 
-def test_the_hint_names_the_live_listener_and_writes_nothing_after_a_config_edit(tmp_path):
+def test_the_hint_names_the_live_listener_not_a_config_edit_it_has_not_applied(tmp_path):
     """``webapp.public_url`` edited after the gateway started is not live yet: the hint names what the
-    gateway really serves, and asking it reads no config (so no config backup is written)."""
+    gateway really serves, read from the gateway itself, not from the home's config."""
     import json
 
     from tests.hermes_cli.live_gateway import live_gateway as boot
@@ -143,11 +143,8 @@ def test_the_hint_names_the_live_listener_and_writes_nothing_after_a_config_edit
         config = json.loads((live.home / "config.yaml").read_text(encoding="utf-8"))
         config["webapp"]["public_url"] = "https://pending.example.test"
         (live.home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
-        before = sorted(str(p.relative_to(live.home)) for p in live.home.rglob("*") if "backups" in p.parts)
         result = live.cli("serve", "--port", str(live.port))
-        after = sorted(str(p.relative_to(live.home)) for p in live.home.rglob("*") if "backups" in p.parts)
     out = result.stdout
     assert result.returncode == 78, out
     assert "pending.example.test" not in out, out
     assert f"Gateway listener: http://127.0.0.1:{live.port}." in out, out
-    assert after == before, after

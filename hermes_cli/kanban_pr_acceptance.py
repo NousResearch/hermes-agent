@@ -45,6 +45,13 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            if denied[1] == "403" and _is_plan_limited(exc.stdout):
+                # Rulesets/branch-protection reads 403 "Upgrade to GitHub Pro or make
+                # this repository public" on every free-tier PRIVATE repo regardless
+                # of the token's scopes or the user's admin rights on the repo (#128841).
+                # That is a plan-tier limitation, not an identity/credentials problem —
+                # raising it as _GateAuthError misdiagnosed it as a broken GitHub login.
+                raise _PlanLimitedError(f"HTTP 403 (plan-limited) on {endpoint.split('?')[0]}") from None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -55,10 +62,29 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     return value
 
 
+def _is_plan_limited(stdout: str | None) -> bool:
+    """True if gh's JSON error body is GitHub's free-tier plan-limit message,
+    e.g. on ``repos/{repo}/rules/branches/{branch}`` for a private repo without
+    Pro/Team/Enterprise. Distinguishes "this feature needs a paid plan" from a
+    real 403 (no read access to the repo/endpoint)."""
+    try:
+        body = json.loads(stdout or "")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    message = body.get("message", "") if isinstance(body, dict) else ""
+    return "upgrade to github pro" in message.lower()
+
+
 class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _PlanLimitedError(RuntimeError):
+    """The repository's GitHub plan (free-tier private repo) doesn't support the
+    rulesets/branch-protection feature queried. Not an identity/credentials
+    problem — the caller treats this the same as "no rules configured"."""
 
 
 # Every key gh can read a login from, github.com and GitHub Enterprise alike. All of them are
@@ -164,8 +190,15 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _PlanLimitedError:
+            # Free-tier private repo: the rulesets API is unavailable regardless of
+            # token scope or admin rights. The GraphQL branchProtectionRule check above
+            # already covers classic branch protection, so treat this as "no additional
+            # ruleset-based required checks" rather than failing the whole read.
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":

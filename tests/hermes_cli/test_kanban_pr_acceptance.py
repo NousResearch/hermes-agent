@@ -347,3 +347,54 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+def test_free_tier_rulesets_403_is_not_misclassified_as_auth(tmp_path, monkeypatch):
+    """A private repo on GitHub's free tier 403s "Upgrade to GitHub Pro..." on the
+    rulesets endpoint for every token/identity, admin rights included (#128841). That must
+    fall back to "no ruleset-based required checks" (classic branch-protection checks from
+    the graphql query still apply), not be misdiagnosed as a broken gh login/credentials."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    # Mirrors real `gh api`: non-zero exit, stderr carries "HTTP 403", stdout carries
+    # GitHub's JSON error body (the plan-limit message `_is_plan_limited` matches on).
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        "endpoint = sys.argv[2]\n"
+        "if '/rules/branches/' in endpoint:\n"
+        "    print(json.dumps({'message': 'Upgrade to GitHub Pro or make this repository "
+        "public to enable this feature.', 'status': '403'}))\n"
+        "    sys.stderr.write('gh: Upgrade to GitHub Pro or make this repository public "
+        "to enable this feature. (HTTP 403)')\n"
+        "    sys.exit(1)\n"
+        "if endpoint == 'graphql':\n"
+        "    print(json.dumps({'data': {'repository': {'pullRequest': {\n"
+        "        'headRefOid': 'a'*40, 'baseRefName': 'main', 'state': 'OPEN',\n"
+        "        'baseRef': {'branchProtectionRule': None}}}}}))\n"
+        "elif '/check-runs' in endpoint:\n"
+        "    print(json.dumps([{'total_count': 0, 'check_runs': []}]))\n"
+        "elif '/statuses' in endpoint:\n"
+        "    print(json.dumps([[]]))\n"
+        "elif '/pulls/' in endpoint:\n"
+        "    print(json.dumps({'head': {'sha': 'a'*40}, 'base': {'ref': 'main'}, 'state': 'open'}))\n"
+        "else:\n"
+        "    sys.exit(1)\n"
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="free-tier-private-repo", completion_contract="acme/repo")
+        # No branch-protection or ruleset required checks exist here, so there is nothing
+        # to gate on: this is the same outcome as a repo with no required checks at all,
+        # never `auth` — the plan-limit 403 must not be mistaken for a credentials problem.
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "missing"
+    assert "No repository-required checks are configured" in receipt["detail"]

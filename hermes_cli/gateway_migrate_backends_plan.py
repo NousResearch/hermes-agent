@@ -43,7 +43,8 @@ _UNSUPPORTED = {
     "systemd-system": "The backend is a systemd SYSTEM unit: this command changes no system unit, and "
                       "hermes cannot run as root on a per-user install. Run the steps below as yourself; only "
                       "the one `sudo systemctl` line needs root.",
-    "windows": "Automatic migration is not verified on Windows yet. Do it by hand with the steps below.",
+    "windows": "Automatic migration is not available on Windows. Run the steps below in PowerShell or Command "
+               "Prompt, one line at a time; `hermes gateway install` asks how to start the gateway.",
     "unknown": "Its supervisor could not be identified, so it cannot be stopped safely. Stop it yourself, "
                "then run the steps below.",
     "no-service": "The gateway cannot be installed as a service on this host (no systemd user manager or "
@@ -364,6 +365,15 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
     address = _address_of(item, host) if item else None
     old_host, old_port = address if address else (None, None)
     why = _UNSUPPORTED[kind] if address or item is None else _UNSUPPORTED[kind] + " " + _UNSUPPORTED["unknown-address"]
+    if kind == "windows":
+        from hermes_cli.gateway_migrate_backends_windows import manual_steps as windows_steps
+        env = (host.process_env(item.pid) if item is not None and item.pid else None) or {}
+        dotenv = host.dotenv()
+        keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
+        if item is not None and item.pid and (turns := host.running_turns(item.pid, host.start_time(item.pid))):
+            why += f" {turns} turn(s) are running on it now: stopping it interrupts them, so let them finish first."
+        return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home),
+                                        public_url=resolve_public_url(host.read_config(), env))
     keys: list[str] = []
     env: dict = {}
     if item is not None and item.supervisor == "systemd" and item.unit and item.scope:

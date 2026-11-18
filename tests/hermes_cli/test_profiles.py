@@ -13,6 +13,7 @@ import stat
 import sys
 import tarfile
 import types
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -1273,21 +1274,15 @@ class TestRenameProfile:
         receipt = {"route": route, "profile_id": str(original), "session_id": "local-existing",
                    "entry": {"session_key": route, "origin": {"profile": "firstbot"}},
                    "policy": {"config_secret_ref": PREFIX + json.dumps(ref)}}
-        store = open_persistence(profile_scope(home=original))
-        try:
+        with closing(open_persistence(profile_scope(home=original))) as store:
             store.state_meta.set(key, json.dumps(receipt))
-        finally:
-            store.close()
 
         for old, new in (("firstbot", "secondbot"), ("secondbot", "thirdbot")):
             with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
                  patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
                 home = rename_profile(old, new)
-            store = open_persistence(profile_scope(home=home))
-            try:
+            with closing(open_persistence(profile_scope(home=home))) as store:
                 saved = json.loads(store.state_meta.get(key))
-            finally:
-                store.close()
             assert saved["profile_id"] == str(original)
             assert json.loads(saved["policy"]["config_secret_ref"][len(PREFIX):]) == dict(
                 ref, home=str(home), profile=str(home))

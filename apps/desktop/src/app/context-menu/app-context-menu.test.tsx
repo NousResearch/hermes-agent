@@ -453,6 +453,65 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
+  // Chromium resolves its own context-menu params (misspelled word,
+  // suggestions) after the DOM listener returns. A menu opened synchronously
+  // makes the page inert first, so Chromium saw no editable and never sent
+  // the spell-check facts. The menu opens a task later instead.
+  it('opens the editable menu after the gesture, not inside it', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(await screen.findByText('Select all')).toBeTruthy()
+  })
+
+  it('keeps spell-check facts that arrive before the menu opens', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the', 'ten'] })
+
+    expect(await screen.findByText('Add to dictionary')).toBeTruthy()
+    expect(screen.getByText('ten')).toBeTruthy()
+  })
+
+  it('never hands early spell-check facts to a non-editable or later menu', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<a href="https://example.com/docs">Docs</a><textarea></textarea>')
+
+    fireEvent.contextMenu(host.querySelector('a')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+
+    expect(await screen.findByText('Copy URL')).toBeTruthy()
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
+
+    $contextMenu.set(null)
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+
+  it('drops spell-check facts that waited too long for a menu', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<textarea></textarea>')
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+    now.mockReturnValue(1_000_000 + 5_000)
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
+  })
+
   // A browser host whose bridge can run the edit verbs keeps the app menu too, cancelling its own.
   it.each(['electron', 'browser'])('%s: edit verbs run after the menu closed, field refocused', async hostKind => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)

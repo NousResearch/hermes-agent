@@ -1,13 +1,13 @@
 name: ciphervault
 repo: https://github.com/samuel-1-avson/CipherVault
-sha: 6009fedc857c9835e3fdbb00301f5dc2fd94db97
+sha: f10d15f0d3a464d98bb9075b2e78b54db9693bf3
 subdir: "plugins/ciphervault"
-description: "Zero-knowledge secret backup for AI coding agents — masked sprawl scan, RAM-only run with exact-value output scrubbing, encrypted snapshots, pre_tool_call leak guard, and a secret source for Hermes itself. Disclosure — `ciphervault_run` runs a model-chosen command with vault secrets in its environment after Hermes's approval prompt, and an \"always\" grant covers every later command for that program (e.g. all `bash` or `python` invocations); in a workspace with a vault, or when a tool call names a path inside one, every other tool result is passed through the CipherVault CLI for scrubbing (withheld if that scrub or its audit receipt fails) and logged by hash to that vault's audit chain, each `ciphervault_run` approval request and replicated push sends a signed audit checkpoint (entry count + head hash) to your configured operator fleet (default `op1`–`op3.cipherv.online`), recovery drills query that fleet, and `hermes ciphervault bootstrap` downloads a checksum-pinned CLI binary from the author's GitHub releases into the plugin's folder."
+description: "Zero-knowledge secret backup for AI coding agents — masked sprawl scan, RAM-only run with exact-value output scrubbing, encrypted snapshots, pre_tool_call leak guard, and a secret source for Hermes itself. Disclosure — `ciphervault_run` runs a model-chosen command with vault secrets in its environment after Hermes's approval prompt, and an \"always\" grant covers every later command matching that execution envelope (program, profile, inline code hash, network mode, and allow_keys); in a workspace with a vault, or when a tool call names a path inside one, every other tool result is passed through the CipherVault CLI for scrubbing (withheld if that scrub or its audit receipt fails) and logged by hash to that vault's audit chain, each `ciphervault_run` approval request and replicated push sends a signed audit checkpoint (entry count + head hash) to your configured operator fleet (default `op1`–`op3.cipherv.online`), recovery drills query that fleet, and `hermes ciphervault bootstrap` downloads a checksum-pinned CLI binary from the author's GitHub releases into the plugin's folder."
 maintainer: samuel-1-avson
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.6.5"
+version: "0.7.0"
 readme: true
 capabilities:
   provides_tools:
@@ -18,6 +18,11 @@ capabilities:
     - ciphervault_recovery_drill
     - ciphervault_redact
     - ciphervault_audit
+    - ciphervault_env_doctor
+    - ciphervault_secret_generate
+    - ciphervault_diff
+    - ciphervault_proxy_doctor
+    - ciphervault_secret_prompt
   provides_hooks:
     - pre_tool_call
     - transform_tool_result

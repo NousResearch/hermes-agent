@@ -466,7 +466,9 @@ connection; it exits 0 even when a scan fails. Normal Hermes startup still runs 
 install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.log`, and prunes
 `cache/scratch`. Running backends are found by what they run, whatever the unit is called; units
 that are enabled but not running are listed only when they are named `hermes-serve*`,
-`hermes-dashboard*` or `hermes-backend*`.
+`hermes-dashboard*` or `hermes-backend*`. On macOS a backend started through the install's `hermes`
+launcher is found too, and its `runs:` line shows the launcher's inline source as
+`'<inline launcher source>'`.
 
 ### Planning a move to the gateway (dry run)
 

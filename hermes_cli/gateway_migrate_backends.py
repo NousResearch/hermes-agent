@@ -229,7 +229,16 @@ def _running_backends() -> list[tuple[int, str]]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):  # same failures the update sweep tolerates
         return []
     me = os.getpid()
-    found = [(pid, cmd) for pid, cmd in rows if pid != me and _hermes_holder_subcommand(cmd) in ("serve", "dashboard")]
+    recover = os_family() == "darwin"  # only macOS ``ps`` loses the launcher's argv boundaries
+    found = []
+    for pid, cmd in rows:
+        if pid == me:
+            continue
+        if _hermes_holder_subcommand(cmd) in ("serve", "dashboard"):
+            found.append((pid, cmd))
+        elif recover and " -c " in cmd and "hermes" in cmd and (exact := _exact_argv(pid)) and \
+                _hermes_holder_subcommand(shlex.join(exact)) in ("serve", "dashboard"):
+            found.append((pid, shlex.join(exact)))
     if _windows_without_wmic():
         from hermes_cli.gateway_migrate_backends_windows import drop_launchers
         found = drop_launchers(found)  # hermes.exe runs the backend as a child with the same argv
@@ -245,6 +254,20 @@ def _windows_without_wmic() -> bool:
     return wmic_missing()
 
 
+def _exact_argv(pid: int) -> Optional[list[str]]:
+    """*pid*'s argv exactly as exec'd, or None when unreadable.
+
+    macOS ``ps`` prints a process's arguments joined by spaces and spells newlines ``\\012``, so the
+    install launcher's ``python -I -c <multi-line bootstrap> dashboard ...`` loses the boundaries of
+    its inline source and the token matcher cannot see the subcommand behind it. The kernel's argv
+    (psutil: ``KERN_PROCARGS2``) keeps them. Linux ``ps`` text still matches, so it is never read there."""
+    with contextlib.suppress(Exception):
+        import psutil
+        argv = psutil.Process(pid).cmdline()
+        return [str(a) for a in argv] if argv else None
+    return None
+
+
 def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids, desktop_pids,
                       seen_units: set[str]) -> BackendItem:
     from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
@@ -254,7 +277,10 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         _launchd_job_owning_backend,
         _systemd_owner_for_pid,
     )
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     argv = _dashboard_cmdline_for_pid(pid)
+    if argv and os_family() == "darwin" and _hermes_holder_subcommand(shlex.join(argv)) is None:
+        argv = None  # macOS ``ps`` text lost the launcher's argv boundaries; *command* is the exact argv then
     if not argv and _windows_without_wmic():
         from hermes_cli.gateway_migrate_backends_windows import argv_of
         argv = argv_of(pid)
@@ -356,6 +382,13 @@ def collect_backends() -> list[BackendItem]:
 # --------------------------------------------------------------------------- output
 
 
+def _display_argv(argv: list[str]) -> str:
+    """*argv* for the macOS report: the install launcher's multi-line inline source is a placeholder.
+    Elsewhere the ``runs:`` line is the whole argv, as before (Windows spells it as a Windows command)."""
+    return shlex.join("<inline launcher source>" if i and argv[i - 1] == "-c" and "\n" in a else a
+                      for i, a in enumerate(argv))
+
+
 def format_report(items: list[BackendItem]) -> list[str]:
     lines = ["Serve/dashboard background services (report only; nothing was changed)", ""]
     if not items:
@@ -366,7 +399,8 @@ def format_report(items: list[BackendItem]) -> list[str]:
         scope = f" ({item.scope})" if item.scope else ""
         lines.append(f"• {item.supervisor}{where}{scope}: {head}")
         if item.argv:
-            runs = subprocess.list2cmdline(item.argv) if _windows_without_wmic() else shlex.join(item.argv)
+            runs = subprocess.list2cmdline(item.argv) if _windows_without_wmic() else \
+                _display_argv(item.argv) if os_family() == "darwin" else shlex.join(item.argv)
             lines.append(f"    runs:    {runs}")
         if item.unit_path:
             lines.append(f"    file:    {item.unit_path}")

@@ -530,17 +530,47 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)
 
 
-def _identifier_fill(classified: list, password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
-    """The username/email/phone control for a user-chosen login (the Desktop key button fills both fields;
-    the agent types the identifier itself). Prefers a control in the password field's form; on an
-    identifier-only step (no password field yet) it is the whole fill."""
-    fields = [c for c in classified if c.token in ("username", "email", "tel")]
-    if not identifier or not fields:
+def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
+                     password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+    """The username/email/phone control for a user-chosen login.
+
+    Prefers a classified control in the password field's form; on an identifier-only step (no
+    password field yet) it is the whole fill. When nothing was classified, falls back to the single
+    other text box in the password's form — a phone entry on a framework form often carries no
+    autocomplete, name, id or placeholder at all, so there is nothing to score.
+    """
+    if not identifier:
         return []
     anchor = password_fill[0]["index"] if password_fill else None
     form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
-    best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
-    return [{"index": best.control.index, "token": best.token, "value": identifier}]
+    if form is None:
+        raw_anchor = next((r for r in raw_controls if int(r.get("index", -1) or -1) == anchor), None)
+        form = raw_anchor.get("formIndex", raw_anchor.get("form_index")) if raw_anchor else None
+
+    fields = [c for c in classified if c.token in ("username", "email", "tel")]
+    if fields:
+        best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
+        return [{"index": best.control.index, "token": best.token, "value": identifier}]
+
+    from agent.vault_login_classifier import LoginControl
+
+    taken = {f["index"] for f in password_fill}
+    candidates = []
+    for raw in raw_controls:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            control = LoginControl.from_dict(raw)
+        except (TypeError, ValueError):
+            continue
+        if control.index in taken or control.type not in ("text", "tel", "email"):
+            continue
+        if control.form_index != form:
+            continue
+        candidates.append(control)
+    if len(candidates) != 1:  # ambiguous: fill nothing rather than guess
+        return []
+    return [{"index": candidates[0].index, "token": "username", "value": identifier}]
 
 
 def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[str, Any]],
@@ -820,7 +850,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
             if with_identifier:
-                fills += _identifier_fill(classified, fills, str(meta.identifier or ""))
+                fills += _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""))
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)

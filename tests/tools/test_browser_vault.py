@@ -567,6 +567,43 @@ class TestBrowserVaultTools:
         assert typed[0] == "s3cret-pw"
         assert typed[1:] == list("s3cret-pw")
 
+    def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
+        """A framework login form can expose a phone box with no autocomplete, name, id, label or
+        placeholder — nothing to classify. When the password's form holds exactly one other text
+        box, that is the identifier; when it holds several, the fill writes none of them."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True and out["filled_fields"] == 2
+        assert '"index": 0' in secret_exprs[0]      # the unlabelled box was included
+        assert "user@example.com" in secret_exprs[0]
+
     def test_fill_writes_the_identifier_by_default(self, store):
         """A login fill covers both fields of a login. The identifier goes through the same trusted
         path as the password: a normal input tool writes the value into the DOM without the

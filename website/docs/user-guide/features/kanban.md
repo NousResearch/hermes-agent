@@ -62,7 +62,9 @@ required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. When a required check ran more than once on that head
 (a rerun, or a workflow re-triggered under `cancel-in-progress`), only each app's
 newest run counts, so a cancelled earlier attempt never vetoes its green rerun and
-a queued rerun keeps the card pending. Optional failed/skipped telemetry does not
+a queued rerun keeps the card pending. A required gate job that failed only
+because its run was cancelled (its check suite concluded `cancelled`) also reads
+as pending until the replacement run reports. Optional failed/skipped telemetry does not
 veto accepted required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required

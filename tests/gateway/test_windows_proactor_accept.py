@@ -11,6 +11,7 @@ import socket
 import struct
 from types import SimpleNamespace
 from unittest.mock import Mock
+import weakref
 
 import pytest
 
@@ -139,6 +140,28 @@ def test_peer_reset_while_issuing_an_accept_retries_on_the_loop():
         waiting = GuardedAccept(loop, accept)(object())
         assert accept.call_count == 1  # Never spin inline, even on consecutive resets.
         assert await asyncio.wait_for(waiting, 2) is connection
+
+    asyncio.run(scenario())
+
+
+def test_retryable_reset_does_not_keep_the_failed_accept_frame_alive():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        failure = ConnectionResetError("peer went away")
+        failed_sockets = []
+        success = loop.create_future()
+        connection = (object(), ("127.0.0.1", 50000))
+        success.set_result(connection)
+
+        def accept(_):
+            if not failed_sockets:
+                conn = socket.socket()
+                failed_sockets.append(weakref.ref(conn))
+                raise failure
+            return success
+
+        assert await asyncio.wait_for(GuardedAccept(loop, accept)(object()), 2) is connection
+        assert failed_sockets[0]() is None
 
     asyncio.run(scenario())
 

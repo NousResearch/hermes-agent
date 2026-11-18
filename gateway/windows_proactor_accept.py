@@ -47,7 +47,8 @@ class GuardedAccept:
             if not dropped_peer(exc) or getattr(exc, "winerror", None) == 10014:
                 raise
             failed = self._loop.create_future()
-            failed.set_exception(exc)
+            # The accept frame holds its unused socket; a retry needs only the error.
+            failed.set_exception(exc.with_traceback(None))
             return failed
 
     def __call__(self, listener):

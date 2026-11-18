@@ -104,7 +104,7 @@ class StatusReporter:
         self._last_poll_at = now
         if now < self._due_at:
             return
-        if not self._is_sender and not await self._become_sender():
+        if not await self._become_sender():
             self._due_at = now + _interval_s()
             return
         retry, self._retry_body = self._retry_body, None
@@ -140,18 +140,24 @@ class StatusReporter:
         logger.info("status report: goodbye %s (%s)", outcome.kind, outcome.status or "no reply")
 
     async def _become_sender(self) -> bool:
-        """Take the machine-local sender lock. Every gateway of one machine inherits the same report
-        URL, so the lock decides which of them reports; one that died is replaced on a later poll,
-        and so is a lock directory that was repaired."""
+        """Take, or confirm, the machine-local sender lock before each report. Every gateway of one
+        machine inherits the same report URL, so the lock decides which of them reports; one that
+        died is replaced on a later poll, and so is a lock directory that was repaired. Confirming
+        it each time matters because a stopped owner counts as gone: a sender that resumes after
+        another gateway took its lock stands by instead of reporting beside it."""
         try:
             acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
             # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
+            # A sender keeps sending: no other gateway can take the lock from this directory either.
+            if self._is_sender:
+                return True
             self._stand_by(logging.WARNING, "the gateway lock directory is not usable")
             return False
+        self._is_sender = acquired
         if acquired:
-            self._is_sender = True
+            self._standing_by_for = None
         else:
             self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired

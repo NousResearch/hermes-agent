@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { composerPlainText, insertComposerLineBreak, RICH_INPUT_SLOT } from './rich-editor'
+import { composerPlainText, insertComposerLineBreak, RICH_INPUT_SLOT, serializeTextBefore } from './rich-editor'
 
 /** An editor element carrying `text` with a collapsed caret at the given offset. */
 function mountedEditor(text: string, caret = text.length) {
@@ -78,5 +78,43 @@ describe('insertComposerLineBreak', () => {
     range?.insertNode(document.createTextNode('y'))
 
     expect(composerPlainText(editor)).toBe('x\ny')
+  })
+})
+
+// The trigger patterns in text-utils.ts only fire at a line start or after
+// whitespace, so anything the break leaves in front of the caret disables every
+// completion list on the new line.
+const AT_TRIGGER = /(?:^|[\s\uFFFC])(@)([^\s@\uFFFC]*)$/
+
+describe('a touch line break and the caret text', () => {
+  it('does not leave its zero-width caret host in the text before the caret', () => {
+    const editor = mountedEditor('hi')
+
+    insertComposerLineBreak(editor)
+
+    const range = window.getSelection()!.getRangeAt(0)
+    const before = serializeTextBefore(editor, range.startContainer, range.startOffset)
+
+    expect(before).not.toContain('\u200B')
+    expect(before).toBe('hi\n')
+  })
+
+  // Regression: typing @ on the line a Return just opened matched nothing,
+  // because the text before the caret ended "\n\u200B@".
+  it('lets a mention open on the line a Return just opened', () => {
+    const editor = mountedEditor('hi')
+
+    insertComposerLineBreak(editor)
+
+    const range = window.getSelection()!.getRangeAt(0)
+    const typed = document.createTextNode('@')
+
+    range.insertNode(typed)
+
+    // The caret sits after what was just typed, as it does when a key lands.
+    const before = serializeTextBefore(editor, typed, 1)
+
+    expect(before.endsWith('\n@')).toBe(true)
+    expect(AT_TRIGGER.test(before)).toBe(true)
   })
 })

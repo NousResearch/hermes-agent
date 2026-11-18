@@ -277,7 +277,12 @@ export function serializeTextBefore(editor: HTMLElement, container: Node, offset
     br.replaceWith('\n')
   }
 
-  return scratch.textContent ?? ''
+  // A touch line break parks the caret in a zero-width node so the browser draws
+  // a line. That node is not part of what the person typed: leaving it in makes
+  // the text before the caret read "\n@", and the trigger patterns require a
+  // line start or whitespace before the sigil — so @ mentions, inline /skill and
+  // :emoji completions never opened on the line a Return just created.
+  return (scratch.textContent ?? '').replace(/\u200B/g, '')
 }
 
 /** True when the insertion point starts a token — the editor's start, or after

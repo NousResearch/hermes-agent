@@ -19,9 +19,16 @@ import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
+import { createTouchSubmitGesture } from './touch-submit-gesture'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceFan } from './voice-fan'
 import { VoiceMenu } from './voice-menu'
+
+/** A pointer event this gesture cares about: pointerType is absent on synthetic
+ *  events, which the browser dispatches for real touches, so treat it as touch. */
+function isTouchPointer(type: string | undefined): boolean {
+  return !type || type === 'touch' || type === 'pen'
+}
 
 // Re-exported: `context-menu.tsx` and other row neighbours have always reached
 // for these here, and the row is where they read as belonging.
@@ -98,9 +105,11 @@ export function ComposerControls({
   // Touch keeps the button tappable; submitDraft() reads the live editor DOM
   // and no-ops on a genuinely empty tap.
   const touch = useStore($touchPointer)
-  // A touch press submits on pointerdown (see the button below); the synthetic
-  // click that follows must not submit the same message a second time.
-  const touchSubmitAt = useRef(0)
+  // The press only ARMS; the release inside the button submits once and owns the
+  // click that follows (see touch-submit-gesture). Submitting on pointerdown sent
+  // on a drag-off, and a press held past the click-swallow window submitted twice
+  // — the second one landing on the busy composer's Stop.
+  const touchGesture = useRef(createTouchSubmitGesture())
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -202,9 +211,10 @@ export function ComposerControls({
             disabled={disabled || (!canSubmit && !touch)}
             onClick={event => {
 
-              // A touch press already submitted on pointerdown; the synthetic
-              // click that follows must not send the same message twice.
-              if (touch && Date.now() - touchSubmitAt.current < 700) {
+              // A touch gesture (submit, drag-off or cancel) owns the click it
+              // produces; only a real click — mouse, keyboard, or a press this
+              // button never handled — reaches the action.
+              if (touch && touchGesture.current.takeClick()) {
                 event.preventDefault()
 
                 return
@@ -213,25 +223,46 @@ export function ComposerControls({
               recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')
             }}
             onMouseDown={keepEditorFocus}
+            onPointerCancel={() => {
+              if (touch) {
+                touchGesture.current.cancel()
+              }
+            }}
             onPointerDown={event => {
 
               // A phone keyboard made this button read dead: the press blurs the
               // editor, the keyboard closes and the reflow moves the button out
               // from under the finger, so Chromium never dispatches the click —
               // sends only worked once the keyboard was already down (the
-              // "press twice" report). Submit from the press itself, before the
-              // blur lands, and keep the keyboard where it is.
-              if (!touch) {
-                return
-              }
-
-              if (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen') {
+              // "press twice" report). Keep focus and the keyboard where they are
+              // and let the release decide, so a press that slides off the button
+              // (or a scroll started on it) never sends.
+              if (!touch || !isTouchPointer(event.pointerType)) {
                 return
               }
 
               event.preventDefault()
-              touchSubmitAt.current = Date.now()
-              event.currentTarget.form?.requestSubmit()
+              touchGesture.current.down()
+            }}
+            onPointerEnter={() => {
+              if (touch) {
+                touchGesture.current.enter()
+              }
+            }}
+            onPointerLeave={() => {
+              if (touch) {
+                touchGesture.current.leave()
+              }
+            }}
+            onPointerUp={event => {
+              if (!touch || !isTouchPointer(event.pointerType)) {
+                return
+              }
+
+              if (touchGesture.current.up()) {
+                event.preventDefault()
+                event.currentTarget.form?.requestSubmit()
+              }
             }}
             type="submit"
           >

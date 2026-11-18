@@ -181,6 +181,7 @@ class MattermostAdapter(BasePlatformAdapter):
         card: dict[str, Any] = {
             "post_id": post_id, "chat_id": prompt.chat_id, "session_key": prompt.session_key,
             "message": prompt.text,  # full wording — the ntfy escalation message body
+            "request_id": getattr(prompt, "request_id", None),  # the ONE request this card answers
             "resolved": False,
             "escalate_task": None, "expire_task": None,
         }
@@ -189,7 +190,49 @@ class MattermostAdapter(BasePlatformAdapter):
             card["escalate_task"] = asyncio.create_task(self._escalate_approval(card, escalate_after))
         if timeout_s > 0:
             card["expire_task"] = asyncio.create_task(self._expire_approval_card(card, timeout_s))
+        self._observe_card_settle(card)
         return SendResult(success=True, message_id=post_id)
+
+    def _observe_card_settle(self, card: dict[str, Any]) -> None:
+        """Retire ``card`` when ITS request settles by any path (typed /approve, another surface,
+        the gateway's own timeout) — never because a different request in the session moved."""
+        request_id = card.get("request_id")
+        if not request_id:
+            return  # legacy prompt without a request id: the timers' session-wide fallback applies
+        from tools.approval import observe_gateway_settle
+        loop = asyncio.get_running_loop()
+
+        def settled(reason):
+            loop.call_soon_threadsafe(self._retire_settled_card, card, reason)
+
+        if not observe_gateway_settle(card["session_key"], request_id, settled):
+            self._retire_settled_card(card, "resolved")  # already settled before the card landed
+
+    def _retire_settled_card(self, card: dict[str, Any], reason: str) -> None:
+        if card.get("resolved"):
+            return  # a button press on this card already answered it and updated the post
+        self._mark_approval_card_resolved(card["post_id"])
+        card["resolved"] = True  # also when the card had already been evicted from the bounded map
+        if reason == "timeout":
+            from gateway.platforms.base_exec_approval import (approval_timeout_seconds,
+                                                              format_approval_timed_out_notice)
+            notice = format_approval_timed_out_notice(int(approval_timeout_seconds()))
+        elif reason == "resolved":
+            notice = "✅ This approval was answered elsewhere; these buttons are retired."
+        else:
+            notice = "This approval was withdrawn before it was answered; the command was not run."
+        payload = _with_mentions_disabled({"message": f"⚠️ Approval needed\n\n{notice}", "props": {}})
+        task = asyncio.ensure_future(self._api("PUT", f"posts/{card['post_id']}/patch", payload))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # never an unretrieved error
+
+    @staticmethod
+    def _card_request_pending(card: dict[str, Any]) -> bool:
+        """Whether THIS card's request is still pending (not merely any request in its session)."""
+        from tools.approval import has_blocking_approval, list_gateway_approvals
+        request_id = card.get("request_id")
+        if not request_id:
+            return has_blocking_approval(card["session_key"])
+        return any(a.get("request_id") == request_id for a in list_gateway_approvals(card["session_key"]))
 
     async def _ensure_approval_actions_server(self) -> bool:
         """Lazily bind the action-callback HTTP endpoint (idempotent)."""
@@ -287,10 +330,9 @@ class MattermostAdapter(BasePlatformAdapter):
             return
         if card.get("resolved"):
             return
-        from tools.approval import has_blocking_approval
         try:
-            if not has_blocking_approval(card["session_key"]):
-                return  # resolved by text reply (/approve) rather than a button
+            if not self._card_request_pending(card):
+                return  # this card's request settled elsewhere (text /approve, another surface)
         except Exception:
             pass  # fail loud: still send the nudge rather than silently skip
         import aiohttp
@@ -328,6 +370,14 @@ class MattermostAdapter(BasePlatformAdapter):
             return
         if card.get("resolved"):
             return
+        try:
+            if not self._card_request_pending(card):
+                # Settled outside this card: the settle observer retires it with the true outcome.
+                # Never stamp "timed out / NOT run" on a request that was in fact answered.
+                self._retire_settled_card(card, "resolved")
+                return
+        except Exception:
+            pass  # cannot tell: fall through to the timeout patch, which removes the zombie buttons
         card["resolved"] = True
         from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
         notice = format_approval_timed_out_notice(int(timeout_s))

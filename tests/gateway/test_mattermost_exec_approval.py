@@ -348,3 +348,109 @@ class TestApprovalCardLifecycle:
         assert list(adapter._approval_cards) == ["post7", "post8", "post9"]  # newest kept
         await adapter.disconnect()  # resolving pops during disconnect: must not raise
         assert adapter._approval_cards == {}
+
+
+@pytest.mark.usefixtures("_clean_queues")
+class TestTimersBindToTheirOwnRequest:
+    """Review on #124063: the escalation guard used the session-wide ``has_blocking_approval`` and the
+    expiry patch never checked the card's request. With A settled outside the card while B is pending
+    in the same session, A's timers must neither ring ntfy for B nor stamp A "timed out / NOT run"."""
+
+    async def _card_for(self, monkeypatch, entry, post_id="postA"):
+        import gateway.platforms.base_exec_approval as bea
+
+        monkeypatch.setattr(bea, "approval_timeout_seconds", lambda: 600)
+        adapter = _make_adapter({**_ACTIONS_CFG, "approval_escalate_after": 300})
+        patches = []
+
+        async def fake_api_post(path, payload):
+            return {"id": post_id}
+
+        async def fake_api(method, path, payload=None):
+            patches.append((method, path, payload))
+            return {}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        monkeypatch.setattr(adapter, "_api", fake_api)
+        prompt = SimpleNamespace(**{k: getattr(_FakePrompt, k) for k in dir(_FakePrompt) if not k.startswith("_")})
+        prompt.session_key, prompt.request_id = _SK, entry.data["request_id"]
+        assert (await adapter._send_exec_approval_prompt(prompt)).success
+        return adapter, adapter._approval_cards[post_id], patches
+
+    @staticmethod
+    def _ntfy_recorder(adapter, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "approvals")
+        sent = []
+
+        class _Resp:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        adapter._session = SimpleNamespace(post=lambda url, **kw: sent.append(url) or _Resp(), closed=True)
+        return sent
+
+    @pytest.mark.asyncio
+    async def test_escalation_ignores_another_pending_request(self, monkeypatch):
+        from tools.approval import resolve_gateway_approval
+
+        a, b = _alice_pending(), _alice_pending()
+        adapter, card, _ = await self._card_for(monkeypatch, a)
+        sent = self._ntfy_recorder(adapter, monkeypatch)
+        resolve_gateway_approval(_SK, "once", request_id=a.data["request_id"])  # host/typed approve of A
+        await adapter._escalate_approval(card, 0)
+        assert sent == [] and not b.event.is_set()
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_escalation_still_rings_for_its_own_pending_request(self, monkeypatch):
+        a = _alice_pending()
+        adapter, card, _ = await self._card_for(monkeypatch, a)
+        sent = self._ntfy_recorder(adapter, monkeypatch)
+        monkeypatch.setattr(adapter, "_team_name_for_channel", lambda chat_id: asyncio.sleep(0, result="team"))
+        await adapter._escalate_approval(card, 0)
+        assert len(sent) == 1
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_expiry_never_stamps_timeout_on_a_settled_request(self, monkeypatch):
+        from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
+        from tools.approval import resolve_gateway_approval
+
+        a, _b = _alice_pending(), _alice_pending()
+        adapter, card, patches = await self._card_for(monkeypatch, a)
+        resolve_gateway_approval(_SK, "once", request_id=a.data["request_id"])
+        await adapter._expire_approval_card(card, 0)
+        await asyncio.sleep(0)
+        assert len(patches) == 1
+        message = patches[0][2]["message"]
+        assert format_approval_timed_out_notice(600) not in message and "answered elsewhere" in message
+        assert "attachments" not in patches[0][2]["props"] and "postA" not in adapter._approval_cards  # buttons gone
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_expiry_still_times_out_its_own_pending_request(self, monkeypatch):
+        from gateway.platforms.base_exec_approval import format_approval_timed_out_notice
+
+        a = _alice_pending()
+        adapter, card, patches = await self._card_for(monkeypatch, a)
+        await adapter._expire_approval_card(card, 0)
+        assert format_approval_timed_out_notice(0) in patches[-1][2]["message"]
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_settle_of_its_request_retires_the_card_promptly(self, monkeypatch):
+        a, b = _alice_pending(), _alice_pending()
+        adapter, card, patches = await self._card_for(monkeypatch, a)
+        assert len(a.observers) == 1 and b.observers == []  # observes ITS request only
+        a.observers[0]("resolved")  # what the waiter does when A settles via any surface
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert card["resolved"] and "postA" not in adapter._approval_cards
+        assert card["escalate_task"].done() and card["expire_task"].done()  # timers stopped (they swallow CancelledError)
+        assert "answered elsewhere" in patches[-1][2]["message"]
+        await adapter.disconnect()

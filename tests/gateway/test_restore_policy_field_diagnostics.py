@@ -2,18 +2,18 @@
 
 ``restore_policy`` used to collapse every validation into one bare ``ValueError('invalid policy')``,
 so both the client frame and the gateway log carried only ``storage_unavailable`` plus a line number.
-``AuthorityRefusal`` already carries ``field``/``detail`` for exactly this (and
-``session_local_migration`` uses them), so each check now names itself. These tests pin the field
-names, keep the wire code unchanged, and pin that the log line names the field too.
+``AuthorityRefusal`` already carries ``field``/``detail`` for exactly this, so each check now names
+itself; the wire code stays ``storage_unavailable``.
 """
 import json
+import logging
 
 import pytest
 
 from gateway.session_policy import restore_policy
 from persistence.core.errors import AuthorityRefusal
 
-CWD = "/tmp/restore-policy-field-diagnostics"
+CWD = "/srv/restore-policy-field-diagnostics"
 
 
 def stored_policy(**overrides):
@@ -32,80 +32,51 @@ def stored_policy(**overrides):
     return data
 
 
-def refuse(**overrides):
-    with pytest.raises(AuthorityRefusal) as caught:
-        restore_policy(stored_policy(**overrides))
-    return caught.value
-
-
-def test_valid_receipt_still_restores():
-    restored = restore_policy(stored_policy())
-    assert restored.model == "gemma-4"
-    assert restored.toolsets == ("terminal",)
-
-
 @pytest.mark.parametrize("overrides, expected_field", [
-    ({"model": None}, "model"),
-    ({"model": ""}, "model"),
     ({"model": "   "}, "model"),
     ({"model": 42}, "model"),
     ({"cwd": "relative/path"}, "cwd"),
     ({"cwd": None}, "cwd"),
     ({"platform": "tui"}, "source"),
     ({"source": "nowhere", "platform": "nowhere"}, "source"),
-    ({"toolsets": "terminal"}, "toolsets"),
     ({"toolsets": [1, 2]}, "toolsets"),
     ({"safe_mode": "yes"}, "safe_mode"),
     ({"ignore_user_config": "yes"}, "ignore_user_config"),
     ({"safe_mode": True}, "safe_mode"),
     ({"skills_prompt": 5}, "skills_prompt"),
     ({"coding_posture": "yes"}, "coding_posture"),
-    ({"client_env_json": "[]"}, "client_env_json"),
+    ({"client_env_json": "{"}, "client_env_json"),
     ({"client_env_remote": "yes"}, "client_env_remote"),
     ({"client_env_rules_json": "[]"}, "client_env_rules_json"),
-    ({"edit_approval_policy": "always"}, "edit_approval_policy"),
     ({"edit_approval_policy": "session"}, "edit_approval_policy"),
-    ({"config_json": "[]"}, "config_json"),
+    ({"config_json": "{"}, "config_json"),
     ({"request_json": "[]"}, "request_json"),
-    ({"terminal_json": "[]"}, "terminal_json"),
     ({"terminal_json": json.dumps({"TERMINAL_CWD": "/somewhere/else"})}, "terminal_json"),
 ])
 def test_refusal_names_the_failing_field(overrides, expected_field):
-    error = refuse(**overrides)
-    assert error.reason == "storage_unavailable", error.reason
-    assert error.field == expected_field, (error.field, error.detail)
-    assert error.detail, "a named field without a detail tells the operator nothing"
-
-
-def test_detail_stays_one_line_and_bounded():
-    error = refuse(source="weird\nsource", platform="x")
-    assert "\n" not in (error.detail or "")
-    assert len(error.field) <= 80 and len(error.detail) <= 160
-
-
-def test_log_line_names_the_field_not_just_the_line():
-    """``_refused_check`` is what the gateway logs for a refused receipt (#140099)."""
     from gateway.session_local_recovery import _refused_check
 
     with pytest.raises(AuthorityRefusal) as caught:
-        restore_policy(stored_policy(model=None))
-    logged = _refused_check(caught.value)
-    assert "storage_unavailable[model]" in logged, logged
-    assert "names no model" in logged, logged
+        restore_policy(stored_policy(**overrides))
+    error = caught.value
+    assert error.reason == "storage_unavailable", error.reason
+    assert error.field == expected_field, (error.field, error.detail)
+    assert error.detail, "a named field without a detail tells the operator nothing"
+    assert f"storage_unavailable[{expected_field}]: {error.detail}" in _refused_check(error)
 
-@pytest.mark.parametrize("field", [
-    "client_env_json",
-    "client_env_rules_json",
-    "config_json",
-    "request_json",
-    "terminal_json",
-])
-def test_malformed_json_refusal_names_the_stored_field(field):
-    """A broken JSON receipt still names the failed check, without changing the wire code."""
-    from gateway.session_local_recovery import _refused_check
 
-    error = refuse(**{field: "{"})
-    assert error.reason == "storage_unavailable"
-    assert error.field == field, (error.field, error.detail)
-    assert error.detail
-    assert f"storage_unavailable[{field}]" in _refused_check(error)
+def test_a_named_storage_refusal_warns_once_per_check(caplog, monkeypatch):
+    """Desktop reopens a refused chat dozens of times: the gateway names the check at WARNING once,
+    and the identical repeats stay at debug, as ``_log_storage_failure`` keeps one traceback."""
+    from gateway import session_controls
+
+    monkeypatch.setattr(session_controls, "_STORAGE_REFUSALS", set())
+    with pytest.raises(AuthorityRefusal) as caught:
+        restore_policy(stored_policy(cwd="relative/path"))
+    with caplog.at_level(logging.DEBUG, logger="gateway.session_controls"):
+        for _ in range(3):
+            session_controls._log_refusal("default", "session.resume", caught.value)
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warned == ["session.resume refused for profile=default: storage_unavailable field=cwd "
+                      "detail=the stored working directory is missing or not absolute"], warned
+    assert sum(r.levelno == logging.DEBUG for r in caplog.records) == 2

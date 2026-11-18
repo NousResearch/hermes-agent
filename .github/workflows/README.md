@@ -156,9 +156,11 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 `windows-latest` (standard, free on a public repository), `windows-latest-32-core`
 and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
 install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
-No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
-`docker buildx imagetools` cannot commit manifest lists to Docker Hub from
-Blacksmith.
+No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
+(manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`
+and `driver: docker`, never `useblacksmith/setup-docker-builder`: its no-`cache-key`
+fallback builder marks docker.io plain-HTTP, so the manifest PUT is redirected into a
+GET and the commit 404s.
 
 ---
 

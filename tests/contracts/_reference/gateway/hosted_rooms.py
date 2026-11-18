@@ -211,7 +211,8 @@ class InMemoryHostedRoomRepository(HostedRoomLogMixin, HostedRoomHandoffMixin):
                 raise AuthorityRefusal("not_found")
             for row in staged.authority["admissions"].values():
                 if (row["target_session_id"] == session_id and row["request_id"].startswith("hosted:")
-                        and json.dumps(task_id) in row["request_id"] and same_owner(row["principal_id"], principal, owner)):
+                        and (task_id in row["request_id"] or r"\u" in row["request_id"])
+                        and same_owner(row["principal_id"], principal, owner)):
                     identity, attempt = parse_hosted_attempt(row["request_id"], room_id)
                     if (identity.task_id, attempt) == (task_id, generation):
                         return {key: row[key] for key in ("admission_id", "status", "outcome")}

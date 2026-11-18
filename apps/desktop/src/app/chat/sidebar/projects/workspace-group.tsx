@@ -19,6 +19,7 @@ import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from
 import { rankSessions } from '../order'
 
 import { PROJECT_PREVIEW_COUNT, SIDEBAR_GROUP_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
+import type { WorkspaceGroupPresentation } from './row-presentation'
 import { laneSwitchTarget, type SidebarSessionGroup } from './workspace-groups'
 import {
   WorkspaceAddButton,
@@ -28,7 +29,8 @@ import {
   WorkspaceShowMoreRow
 } from './workspace-header'
 
-interface SidebarWorkspaceGroupProps {
+export interface SidebarWorkspaceGroupProps {
+  presentation?: WorkspaceGroupPresentation
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
@@ -68,7 +70,8 @@ export function SidebarWorkspaceGroup({
   onNewSession,
   onNewSessionSplit,
   onRemove,
-  owner
+  owner,
+  presentation: Presentation
 }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -103,16 +106,6 @@ export function SidebarWorkspaceGroup({
       : lane.shown
 
   const nextCount = isProfileGroup || showAllSessions ? 0 : lane.more
-
-  // Leading glyph: a home mark for the repo's primary checkout (labeled by its
-  // live branch), a branch/kanban mark otherwise.
-  const leadingIcon = (
-    <Codicon
-      className="shrink-0 text-(--ui-text-tertiary)"
-      name={group.isKanban ? 'checklist' : group.isHome ? 'home' : 'git-branch'}
-      size="0.75rem"
-    />
-  )
 
   const prepareWorkspaceTarget = async () => {
     // Reveal the lane the new session targets — an empty worktree/branch lane
@@ -164,6 +157,37 @@ export function SidebarWorkspaceGroup({
       profile: isProfileGroup ? group.id : placement.profile
     })
   }
+
+  if (Presentation) {
+    return (
+      <Presentation
+        model={{
+          group,
+          isProfileGroup,
+          usage,
+          open,
+          toggleOpen,
+          empty: sessions.length === 0,
+          rows: renderRows(sessions),
+          canCreate: Boolean(onNewSession || isProfileGroup),
+          handleNewSession,
+          handleNewSessionSplit,
+          onNewSessionSplit,
+          onRemove
+        }}
+      />
+    )
+  }
+
+  // Leading glyph: a home mark for the repo's primary checkout (labeled by its
+  // live branch), a branch/kanban mark otherwise.
+  const leadingIcon = (
+    <Codicon
+      className="shrink-0 text-(--ui-text-tertiary)"
+      name={group.isKanban ? 'checklist' : group.isHome ? 'home' : 'git-branch'}
+      size="0.75rem"
+    />
+  )
 
   // Profile groups start a fresh session in that profile but keep the
   // all-profiles browse view; workspace groups seed the new session's cwd.

@@ -35,6 +35,7 @@ import {
   useRevealedRows,
   useWorkspaceNodeOpen
 } from './model'
+import type { ProjectOverviewPresentation } from './row-presentation'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton, WorkspaceShowMoreRow } from './workspace-header'
@@ -81,7 +82,8 @@ export function ProjectBackRow({ label, onClick }: { label: string; onClick: () 
   )
 }
 
-interface ProjectOverviewRowProps {
+export interface ProjectOverviewRowProps {
+  presentation?: ProjectOverviewPresentation
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   /** `owner` is set for a project another gateway owns: the session starts there. */
@@ -119,6 +121,7 @@ export function ProjectOverviewRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  presentation: Presentation,
   ref,
   style
 }: ProjectOverviewRowProps) {
@@ -138,7 +141,13 @@ export function ProjectOverviewRow({
   const [expanding, setExpanding] = useState(false)
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
   const fetched = (previewSessions ?? []).slice(0, limit)
-  const recent = fetched.length ? fetched : latestProjectSessions(project, limit)
+  const recent = Presentation
+    ? previewSessions?.length
+      ? previewSessions
+      : latestProjectSessions(project, Infinity)
+    : fetched.length
+      ? fetched
+      : latestProjectSessions(project, limit)
   // The hydrated lanes come straight from the backend, so — like the drill-in
   // (index.tsx) — they haven't been through the tree's exclusion filter yet.
   const visible = expanded && isSessionHidden ? excludeProjectSessions(expanded, isSessionHidden) : expanded
@@ -160,6 +169,31 @@ export function ProjectOverviewRow({
     !project.isNoProject && !(project.path ?? '').trim()
       ? ((project.repos ?? []).map(repo => repo.path).find(root => (root ?? '').trim()) ?? project.path)
       : project.path
+
+  if (Presentation) {
+    return (
+      <Presentation
+        ref={ref}
+        style={style}
+        model={{
+          project,
+          isActive,
+          open,
+          toggleOpen,
+          onEnter,
+          onNewSession,
+          onNewSessionSplit,
+          newSessionPath,
+          rowRef,
+          reorderable,
+          dragging,
+          dragHandleProps,
+          hasRows: recent.length > 0,
+          rows: renderRows?.(recent)
+        }}
+      />
+    )
+  }
 
   const showAll = () => {
     // All-profiles view has no single backend to ask for one project's lanes;

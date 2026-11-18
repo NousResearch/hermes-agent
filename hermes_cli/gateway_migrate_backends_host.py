@@ -3,7 +3,7 @@
 The plan (:mod:`hermes_cli.gateway_migrate_backends_plan`) asks the machine everything through
 :class:`SystemHost`: the old backend (``collect_backends``, ``systemctl show``, ``/proc``, a launchd
 plist), the home's config and ``.env``, the gateway's user service, lingering, the Webapp bundle and
-``GET /api/status`` on the old address. Every method only reads: none starts, stops, installs or
+lightweight health and interactive-provider reads on the old address. None starts, stops, installs or
 writes anything. This module owns no decisions.
 
 Process identity comes from Hermes' own detection (``gateway_migrate_backends.collect_backends``,
@@ -273,16 +273,25 @@ class SystemHost:
     # ------------------------------------------------------------------ network
 
     def http_status(self, host: str, port: int) -> Optional[dict]:
-        """``GET /api/status`` JSON on *host:port*, or None when it does not answer 200."""
+        """Read sign-in state without invoking /api/status's install-ID or stale-record maintenance."""
         from hermes_cli.url_utils import format_url_host
-        url = f"http://{format_url_host(host)}:{port}/api/status"
+        origin = f"http://{format_url_host(host)}:{port}"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        def read(path):
+            request = urllib.request.Request(origin + path, headers={"Accept": "application/json"})
+            with opener.open(request, timeout=5) as resp:
+                return json.load(resp) if resp.status == 200 else None
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"Accept": "application/json"}),
-                                        timeout=5) as resp:
-                if resp.status != 200:
-                    return None
-                data = json.loads(resp.read().decode("utf-8", "replace"))
+            data = read("/api/health")
+            if not isinstance(data, dict) or not isinstance(data.get("auth_required"), bool):
+                return None
+            if data["auth_required"]:
+                try:
+                    providers = read("/api/auth/providers")
+                except (OSError, ValueError, urllib.error.URLError):
+                    providers = None
+                data["auth_providers"] = providers.get("providers") if isinstance(providers, dict) else None
         except (OSError, ValueError, urllib.error.URLError):
             return None
-        return data if isinstance(data, dict) else None
+        return data
 

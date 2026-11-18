@@ -1,7 +1,7 @@
 """``hermes gateway migrate --backends --apply --dry-run``: the plan and preflight of the backend migration.
 
 A fake host stands in for the service manager, the process table and the network (the gateway's user
-service, the old backend's unit, ``/api/status``); config.yaml and .env are the real files in a temp
+service, the old backend's unit, ``/api/health``); config.yaml and .env are the real files in a temp
 ``HERMES_HOME``, and the bind check is the gateway's own ``webapp.host`` validation. A dry run changes
 nothing: no file in the home is written or added. (The real command on a scratch machine:
 ``test_gateway_migrate_backends_dry_run_readonly.py``.)
@@ -28,7 +28,7 @@ _GATEWAY_PID = 5151
 
 class FakeHost(SystemHost):
     """The machine as the plan reads it: one old backend (a systemd unit by default), the gateway's user
-    service and ``GET /api/status``. Reads only, like :class:`SystemHost`; config.yaml and .env are real."""
+    service and its ``GET /api/health`` read. Reads only, like :class:`SystemHost`; config.yaml and .env are real."""
 
     def __init__(self, home, *, host="0.0.0.0", supervisor="systemd", scope="user", gateway_installed=False,
                  gateway_active=False):
@@ -563,3 +563,64 @@ def test_a_config_yaml_that_cannot_be_parsed_blocks_the_dry_run(home, capsys):
     assert "cannot be read or parsed" in text and "fix it and re-run the dry run" in text
     assert "sk-never-printed" not in text
     _nothing_changed(home, before)
+
+
+# --- review round 1: the probe reads /api/health (+ /api/auth/providers), never /api/status
+
+
+class _Answer:
+    def __init__(self, status, body):
+        self.status, self._body = status, json.dumps(body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, *a):
+        return self._body
+
+
+def test_the_probe_reads_health_and_providers_never_status(home, monkeypatch):
+    """GET /api/status creates the home's install id and prunes a stale gateway.pid on its first call."""
+    import urllib.request
+    seen, proxies = [], []
+    answers = {"/api/health": {"ok": True, "auth_required": True},
+               "/api/auth/providers": {"providers": [{"name": "basic"}]}}
+
+    class Opener:
+        def open(self, request, timeout=None):
+            path = request.full_url.split(":9119", 1)[1]
+            seen.append(path)
+            return _Answer(200, answers[path])
+
+    real = urllib.request.build_opener
+    monkeypatch.setattr(urllib.request, "build_opener",
+                        lambda *handlers: (proxies.extend(handlers), Opener())[1])
+    got = SystemHost(home).http_status("127.0.0.1", 9119)
+    monkeypatch.setattr(urllib.request, "build_opener", real)
+
+    assert seen == ["/api/health", "/api/auth/providers"] and got["auth_required"] is True
+    # No proxy for the on-machine check: an HTTP_PROXY without a loopback exemption would divert it.
+    (handler,) = proxies
+    assert isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}
+
+
+def test_signin_choices_unknown_when_the_provider_list_cannot_be_read(home, capsys, monkeypatch):
+    host = FakeHost(home)
+    monkeypatch.setattr(host, "http_status", lambda h, p: {"ok": True, "auth_required": True, "auth_providers": None})
+
+    engine.cmd_apply(host, _args(dry_run=True))
+
+    assert "sign-in:       required (interactive providers: unknown)" in capsys.readouterr().out
+
+
+def test_a_running_backend_whose_health_probe_fails_is_not_called_stopped(home, capsys, monkeypatch):
+    host = FakeHost(home)
+    monkeypatch.setattr(host, "http_status", lambda h, p: None)
+
+    assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert "unknown (health probe failed)" in out and "backend not running" not in out

@@ -59,7 +59,7 @@ def test_exact_argv_of_a_gone_process_is_none():
     assert gmb._exact_argv(proc.pid) is None
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="the placeholder is macOS-only")
+@pytest.mark.platforms("macos")  # the placeholder is macOS-only
 def test_the_report_shows_the_launcher_source_as_a_placeholder(launcher_dashboard):
     item = next(i for i in gmb.collect_backends() if i.pid == launcher_dashboard.pid)
     runs = next(line for line in gmb.format_report([item]) if line.lstrip().startswith("runs:"))
@@ -67,7 +67,7 @@ def test_the_report_shows_the_launcher_source_as_a_placeholder(launcher_dashboar
     assert "time.sleep" not in runs
 
 
-@pytest.mark.skipif(sys.platform in ("darwin", "win32"), reason="the report on Linux and other POSIX hosts")
+@pytest.mark.platforms("linux")  # the report on Linux
 def test_off_macos_the_runs_line_is_the_whole_argv_as_before(launcher_dashboard):
     # The report for a user who never migrates stays as it was: ``runs:`` is ``shlex.join`` of the argv.
     item = next(i for i in gmb.collect_backends() if i.pid == launcher_dashboard.pid)
@@ -89,7 +89,7 @@ def launcher_proxy():
         proc.wait(timeout=10)
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="macOS re-reads the argv of such rows")
+@pytest.mark.platforms("linux")  # off macOS no argv is re-read; checked on the Linux lane
 def test_off_macos_the_scan_reads_no_argv_for_a_launcher_row_that_is_not_a_backend(launcher_proxy, monkeypatch):
     read: list[int] = []
     monkeypatch.setattr(gmb, "_exact_argv", lambda pid: read.append(pid), raising=False)  # main has none

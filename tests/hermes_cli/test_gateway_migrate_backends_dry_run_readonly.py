@@ -27,7 +27,7 @@ import pytest
 from tests.hermes_cli.live_gateway import REPO_ROOT, free_port, home_env, write_config
 from tests.waiting import wait_until
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the scratch account is a POSIX home")
+pytestmark = pytest.mark.platforms("linux")  # a scratch POSIX account with a systemd user unit dir
 
 _UNIT = """[Unit]
 Description=Hermes backend (written by hand from the docs)

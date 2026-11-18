@@ -286,6 +286,43 @@ delegate_task(
 
 **费用警告：** 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 的情况下，树可达到 3×3×3 = 27 个并发叶子智能体。每增加一层都会成倍增加开销——请谨慎提高 `max_spawn_depth`。
 
+## 无中间消息的消息平台会话 {#messaging-chats-without-interim-messages}
+
+在消息平台上，后台委派会让父智能体先发一条状态说明、再结束本轮。当该平台关闭了 `display.interim_assistant_messages` 时，这条状态就成了本轮的最终答复，于是聊天里会先收到一条“正在处理”，真正的答案作为第二条消息才到。`delegation.gateway_mode` 控制这件事：
+
+```yaml
+delegation:
+  gateway_mode: auto   # auto（默认） | inline | background
+```
+
+- **`auto`：** 解析后 `display.interim_assistant_messages` 为关闭状态的消息会话（全局值、`display.platforms.<平台>` 覆盖值或该平台的默认值）会把子智能体并入本轮：父智能体在 `delegate_task` 调用处等待，就地拿到结果，只发出一条完整答复。开启中间消息的会话、API server、本地会话与 webhook 仍使用后台委派。
+- **`inline`：** 每个网关会话都把子智能体并入本轮。
+- **`background`**（别名 `async`）：每个网关会话都保持后台委派。
+
+内联会话的 `delegate_task` 会声明结果在调用中返回，并去掉实时控制参数（`action` 的 list/steer/stop、`subagent_id`、`message`），schema 与一次性运行相同。等待期间输入状态提示保持点亮，本轮的行为和任何长时间工具调用一样。`/stop` 会停止子智能体，每个子智能体返回被中断的完成结果并带上已产出的部分输出。纯文本的后续消息按 `display.busy_input_mode` 处理：
+
+| 模式 | 子智能体运行时收到后续消息的行为 |
+|------|----------------------------------|
+| `queue` | 等待；等子智能体结束、父智能体答复之后，作为下一轮运行。 |
+| `steer` | 在下一个工具调用边界注入父智能体和每个活跃子智能体。不中断，不开新轮次。 |
+| `interrupt`（默认） | 有子智能体在运行时降级为 `queue`——中断父智能体会连带中止它们。回执会说明子智能体仍在工作、消息已排队。只有没有子智能体在运行时才真正中断。 |
+
+嵌套委派的行为不变。
+
+超过 `agent.gateway_notify_interval`（默认 180 秒）的内联轮次仍会收到周期性的“仍在处理”提示；该提示由 `display.long_running_notifications` 单独控制，在 Telegram、Slack、Discord 和 WhatsApp 上默认开启。要做到每轮只发一条消息，把该平台的这个开关也设为 `off`（`generic` 只改变提示措辞）：
+
+```yaml
+display:
+  interim_assistant_messages: false
+  platforms:
+    telegram:
+      long_running_notifications: false
+```
+
+模式是会话工具 schema 的一部分，并随会话固定。修改 `gateway_mode` 或 `interim_assistant_messages` 从下一个会话（`/new`）起生效。正在进行的聊天会保持它启动时的模式，跨网关重启、agent 缓存淘汰、上下文压缩和 `/reload-mcp` 都不变。定时心跳轮次只静音自己的中间消息，不改变聊天模式的设置。有一个例外：Hermes 更新后的第一轮会用新代码重建会话的工具定义，因此该轮会采用当前设置。
+
+把 `delegate_task` 列进 `tools.tool_search.defer` 会让该会话关闭内联：模型通过 `tool_describe` 加载常规（后台）`delegate_task` schema，委派行为跟随模型看到的 schema。
+
 ## 生命周期与持久性
 
 :::warning 后台完成事件持久化并不等于执行持久化

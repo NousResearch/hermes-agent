@@ -19,6 +19,7 @@ import pytest
 
 from agent.runtime_scope import bind_profile_scope
 from gateway import status as gateway_status
+from gateway.status_report.payload import read_status_source
 from gateway.status_report.reporter import StatusReporter, status_reporter_from_launch_env
 from gateway.status_report.target import STATUS_REPORT_URL_ENV, report_target_from_env
 from hermes_constants import get_hermes_home, get_process_hermes_home
@@ -251,6 +252,34 @@ async def test_the_status_is_read_under_the_launch_profile_whatever_scope_is_amb
         await reporter.poll()
 
     assert homes == [get_process_hermes_home()]
+
+
+@pytest.fixture
+def unreadable_profile_env():
+    """The launch profile's ``.env`` as an elevated write leaves it: there, and not readable by this user."""
+    env_file = get_process_hermes_home() / ".env"
+    env_file.write_text("UNRELATED=1\n", encoding="utf-8")
+    env_file.chmod(0)
+    yield env_file
+    env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    env_file.unlink()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
+async def test_an_unreadable_profile_env_file_neither_warns_nor_costs_the_status(clock, unreadable_profile_env, caplog):
+    """A report reads the gateway's own record and the sign-in state, nothing a ``.env`` holds."""
+    assert gateway_status.write_runtime_status(gateway_state="running", wait_timeout=10.0)
+    receiver = Receiver()
+    reporter = make_reporter(receiver, source=read_status_source)
+
+    await reporter.poll()
+    await _expect_next_report_at_the_interval(clock, reporter, receiver)
+
+    assert [seen.body["status"] for seen in receiver.requests] == [{
+        "gateway_running": True, "gateway_state": "running", "gateway_exit_reason": None,
+        "gateway_platforms": {}, "nous_session_valid": "unknown"}] * 2
+    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
 
 
 async def test_neither_the_url_nor_the_credential_reaches_the_logs(clock, caplog, monkeypatch):

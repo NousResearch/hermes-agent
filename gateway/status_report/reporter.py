@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from agent.runtime_scope import bind_profile_scope
+from agent.runtime_scope import bind_state, scope_for_profile
 from gateway.status import acquire_scoped_lock
 from gateway.status_report.payload import ReportKind, build_report, read_status_source
 from gateway.status_report.target import ReportTarget, report_target_from_env
@@ -168,7 +168,9 @@ class StatusReporter:
         return build_report(kind, seq=seq, boot_id=self.boot_id, source=source)
 
     def _read_scoped_source(self) -> Mapping[str, Any]:
-        with bind_profile_scope(self._launch_home, hydrate_secrets=False):
+        # The launch profile's home alone: the status is two files under it. Its secrets and its
+        # terminal policy are left unbuilt, so a .env or config.yaml that cannot be read warns on no beat.
+        with bind_state(scope_for_profile(self._launch_home), secrets={}, terminal=False):
             return self._read_source()
 
     def _settle(self, outcome: Outcome, body: bytes, *, retried: bool) -> None:

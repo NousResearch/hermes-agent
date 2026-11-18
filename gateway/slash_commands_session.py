@@ -291,7 +291,9 @@ class GatewaySessionCommandsMixin:
         event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         source = event.source
         session_key = self._session_key_for_source(source)
-        await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
+        await self._hm_stop_owner_turn(
+            session_key, stamp_event=event if getattr(event, "_fresh_reset", False) else None
+        )
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently

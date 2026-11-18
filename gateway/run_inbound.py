@@ -697,7 +697,7 @@ class GatewayInboundMixin(
         if (adapter := self._intake_adapter_for(event.source)) is not None:
             adapter._discard_text_debounce(adapter._event_session_key(event))
 
-    async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
+    async def _hm_stop_owner_turn(self, _quick_key: str, stamp_event=None) -> None:
         """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
         cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
         ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
@@ -708,8 +708,9 @@ class GatewayInboundMixin(
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
         if not sid or sid not in authority.sessions:
             if authority is not None:
-                # The chat's first input, and a command's turn, not committed yet never commit.
                 authority.fence_route(_quick_key)
+                if stamp_event is not None:
+                    stamp_event._fresh_stop_epoch = authority.route_epoch(_quick_key)
             return
         from gateway.session_contract import SessionActor, SessionRef
         from gateway.session_persistence import authority_persistence
@@ -728,6 +729,8 @@ class GatewayInboundMixin(
             # commits after it; one that committed before the fence is in the second listing and
             # cancelled below. A paused FIFO keeps both, like its queued followers.
             authority.fence_route(_quick_key)
+            if stamp_event is not None:
+                stamp_event._fresh_stop_epoch = authority.route_epoch(_quick_key)
             if (ordered := getattr(authority, '_ordered_writes', None)) is not None:
                 # An input that passed the fence before it moved commits before the listing, which cancels it.
                 async with ordered:
@@ -977,6 +980,22 @@ class GatewayInboundMixin(
             self._handle_reset_command,
         )
 
+    async def _hm_cmd_fresh(self, event, source, _quick_key):
+        """/fresh <query>: reset this chat, then run the query as its first turn."""
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            return True, self._telegram_topic_root_new_message()
+        query = event.get_command_args().strip()
+        if not query:
+            return True, "Usage: /fresh <prompt>"
+        # /new consumes arguments as a title; clear them before the reset.
+        event.text = "/fresh"
+        event._fresh_reset = True  # _handle_reset_command pins the epoch it just produced
+        notice = await self._handle_reset_command(event)
+        if notice:
+            await self._send_command_ack(source, str(notice), "fresh")
+        event.text = query
+        return False, None
+
     async def _hm_cmd_start(self, event, source, _quick_key):
         logger.info("Ignoring /start platform ping for session %s", _quick_key)
         return True, ""
@@ -1083,7 +1102,7 @@ class GatewayInboundMixin(
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "fresh", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
     })
 
     async def _hm_dispatch_canonical_command(
@@ -1252,6 +1271,12 @@ class GatewayInboundMixin(
                 self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
         if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
+            if getattr(event, "_fresh_reset", False):
+                stamped = getattr(event, "_fresh_stop_epoch", None)
+                if stamped is None:
+                    # No epoch from this reset means we cannot prove the turn is fenced.
+                    return True, "Could not start a fresh session safely — please resend your prompt."
+                stop_epoch = stamped
             _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)
         return _handled, _result
 

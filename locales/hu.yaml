@@ -542,6 +542,7 @@ gateway:
     finished: "✅ A Hermes frissítése befejeződött."
     timed_out: "❌ A Hermes frissítése 30 perc után időtúllépéssel leállt."
     finished_success: "✅ A Hermes frissítése sikeresen befejeződött."
+    local_changes_parked: "⚠️ A legutóbbi Hermes-frissítés helyi forráskód-módosításokat hagyott egy git stash-ben. Mielőtt újra alkalmaznád őket, nézd meg, mi van már a checkoutban.\n\n{notice}"
     last_lines: "{msg}\n\nUtolsó sorok:\n```\n{tail}\n```"
     managed_action: "a Hermes Agent frissítése"
     not_applicable: "✗ A `hermes update` nem alkalmazható erre a telepítésre ({method}).\nFrissítés így: {command}"

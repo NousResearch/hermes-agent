@@ -539,6 +539,7 @@ gateway:
     finished: "✅ Hermes güncellemesi tamamlandı."
     timed_out: "❌ Hermes güncellemesi 30 dakika sonra zaman aşımına uğradı."
     finished_success: "✅ Hermes güncellemesi başarıyla tamamlandı."
+    local_changes_parked: "⚠️ Son Hermes güncellemesi yerel kaynak kodu değişikliklerini bir git stash içinde bıraktı. Yeniden uygulamadan önce checkout'ta zaten neler olduğunu kontrol edin.\n\n{notice}"
     last_lines: "{msg}\n\nSon satırlar:\n```\n{tail}\n```"
     managed_action: "Hermes Agent'ı güncelle"
     not_applicable: "✗ `hermes update` bu kuruluma uygulanamaz ({method}).\nŞununla güncelleyin: {command}"

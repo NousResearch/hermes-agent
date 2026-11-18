@@ -539,6 +539,7 @@ gateway:
     finished: "✅ Обновление Hermes завершено."
     timed_out: "❌ Обновление Hermes прервано по тайм-ауту через 30 минут."
     finished_success: "✅ Обновление Hermes успешно завершено."
+    local_changes_parked: "⚠️ Последнее обновление Hermes оставило локальные изменения исходного кода в git stash. Прежде чем применять их снова, проверьте, что уже есть в рабочей копии.\n\n{notice}"
     last_lines: "{msg}\n\nПоследние строки:\n```\n{tail}\n```"
     managed_action: "обновить Hermes Agent"
     not_applicable: "✗ `hermes update` не применимо к этой установке ({method}).\nОбновляйте так: {command}"

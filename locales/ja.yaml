@@ -539,6 +539,7 @@ gateway:
     finished: "✅ Hermes の更新が終了しました。"
     timed_out: "❌ Hermes の更新は 30 分でタイムアウトしました。"
     finished_success: "✅ Hermes の更新が正常に完了しました。"
+    local_changes_parked: "⚠️ 直近の Hermes 更新で、ローカルのソース変更が git stash に残されました。再適用する前に、チェックアウトに既に含まれている内容を確認してください。\n\n{notice}"
     last_lines: "{msg}\n\n最後の行:\n```\n{tail}\n```"
     managed_action: "Hermes Agent の更新"
     not_applicable: "✗ `hermes update` はこのインストール方法 ({method}) には適用できません。\n更新方法: {command}"

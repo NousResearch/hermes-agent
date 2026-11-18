@@ -321,7 +321,7 @@ class GatewayStartupMixin:
         ``_send_restart_notification`` and ``_redeliver_pending_obligations`` used to be awaited inline
         *before* ``_finish_startup_restore`` released the gate. See #91969.
         """
-        from gateway.run import _startup_restore_drain_timeout_secs
+        from gateway.run import _hermes_home, _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
@@ -329,6 +329,7 @@ class GatewayStartupMixin:
             if planned_restart_notification_pending:
                 await self._replay_pending_planned_restart_notification()
             await self._redeliver_claimed_obligations(claimed)
+            await self._send_parked_local_changes_notice(_hermes_home)
 
         boot_task = asyncio.create_task(_boot_sends())
         timeout = _startup_restore_drain_timeout_secs()

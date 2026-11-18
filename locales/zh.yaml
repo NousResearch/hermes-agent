@@ -539,6 +539,7 @@ gateway:
     finished: "✅ Hermes 更新已完成。"
     timed_out: "❌ Hermes 更新已超时（30 分钟）。"
     finished_success: "✅ Hermes 更新成功完成。"
+    local_changes_parked: "⚠️ 上次 Hermes 更新把源代码的本地修改留在了 git stash 中。重新应用之前，请先确认工作目录中已经有哪些内容。\n\n{notice}"
     last_lines: "{msg}\n\n最后几行：\n```\n{tail}\n```"
     managed_action: "更新 Hermes Agent"
     not_applicable: "✗ `hermes update` 不适用于此安装方式（{method}）。\n请使用以下命令更新：{command}"

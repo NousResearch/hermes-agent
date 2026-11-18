@@ -18,7 +18,11 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.run_shutdown import _log_suppressed
+from gateway.run_shutdown import _log_suppressed, _notice_target_key
+from gateway.warning_notifications import present_notification
+from hermes_cli._startup_fast import project_root_str
+from hermes_cli.update_receipt import read_latest_run_record
+from utils import atomic_json_write
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -40,6 +44,46 @@ _UPDATE_WATCH_TIMEOUT_SECONDS = 1800.0
 def _update_output_tail(output: str, limit: int) -> str:
     """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
     return output if len(output) <= limit else "…" + output[-limit:]
+
+
+# Per launch home: the home channels already told about one update run's parked local changes.
+_PARKED_NOTICE_MARKER = ".update_local_changes_notice.json"
+# Gateway starts that may still try a home channel not told yet (platform down, send refused).
+_PARKED_NOTICE_MAX_STARTS = 3
+
+
+def _serving_checkout() -> Path:
+    """The source checkout this gateway process runs from (the updater records its own ``PROJECT_ROOT``)."""
+    return Path(project_root_str()).resolve()
+
+
+def _parked_local_changes(run: Any, checkout: Path) -> Optional[tuple[str, str]]:
+    """``(update_id, recorded reason)`` when update *run* left local changes in a stash of *checkout*.
+
+    The trigger is the run's own ``local_changes`` user action (#122557), recorded before the
+    update restarts any gateway, so a run that is still ``running`` counts. An action without a
+    ``checkout`` (written before the field existed) or naming another checkout is not ours.
+    """
+    action = run.get("user_action") if isinstance(run, dict) else None
+    if not isinstance(action, dict) or action.get("step") != "local_changes" or not action.get("checkout"):
+        return None
+    if Path(str(action["checkout"])).resolve() != checkout:
+        return None
+    update_id, reason = str(run.get("update_id") or ""), str(action.get("reason") or "").strip()
+    return (update_id, reason) if update_id and reason else None
+
+
+def _read_parked_notice_marker(marker: Path, update_id: str) -> tuple[set, int]:
+    """``(settled targets, starts so far)`` for *update_id*; a fresh state for any other run or bad file."""
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return set(), 0
+    if not isinstance(data, dict) or data.get("update_id") != update_id:
+        return set(), 0
+    settled = {tuple(key) for key in data.get("settled") or () if isinstance(key, list) and len(key) == 3}
+    starts = data.get("starts")
+    return settled, starts if isinstance(starts, int) else 0
 
 
 class GatewayUpdateNotificationsMixin:
@@ -403,3 +447,55 @@ class GatewayUpdateNotificationsMixin:
                 for p in (active_pending_path, paths.claimed, paths.output, paths.exit_code):
                     p.unlink(missing_ok=True)
         return True
+
+    async def _send_parked_local_changes_notice(self, home: Path) -> None:
+        """Tell the launch profile's home channels that the newest update left local changes stashed.
+
+        An unattended update whose autostash it could not restore exits 1 and restarts this
+        gateway; nobody reads that terminal. Only the newest update run counts (its own record,
+        never ``latest.json``) and only when it names the checkout this process runs. Only the
+        launch profile's home channels: a multiplexer's served profiles are tenants, not the
+        operator. ``home`` keeps the settled targets per run: sent, or muted by
+        ``display.suppress_warning_notifications``. A target whose platform is down or refuses is
+        tried again at the next start, for at most ``_PARKED_NOTICE_MAX_STARTS`` starts. Best
+        effort: a crash after a send, or a marker that cannot be written, repeats it at the next
+        start. Never raises.
+        """
+        try:
+            owed = _parked_local_changes(read_latest_run_record(), _serving_checkout())
+            if owed is None:
+                return
+            update_id, reason = owed
+            marker = home / _PARKED_NOTICE_MARKER
+            settled, starts = _read_parked_notice_marker(marker, update_id)
+            targets = {
+                _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                for platform, cfg in self.config.platforms.items()
+                if cfg.enabled and cfg.home_channel and cfg.home_channel.chat_id
+            }
+            if not targets:
+                logger.info("Update %s left local changes parked; the launch profile has no home channel", update_id)
+            if not targets - settled or starts >= _PARKED_NOTICE_MAX_STARTS:
+                return
+            message = t("gateway.update.local_changes_parked", notice=reason)
+            for platform, _cfg, home_channel, transport in list(self._home_channel_transports()):
+                key = _notice_target_key(platform.value, home_channel.chat_id, home_channel.thread_id)
+                if key not in targets or key in settled:
+                    continue
+                sent: list[bool] = []
+
+                async def _send(platform=platform, home_channel=home_channel, transport=transport) -> None:
+                    sent.append(await self._send_home_channel_message(
+                        platform, home_channel, transport, message, "Parked local changes notice failed for %s:%s: %s"))
+
+                if not await present_notification(_send, platform=platform) or any(sent):
+                    settled.add(key)
+            logger.warning("Update %s left local changes parked: %d of %d home channel(s) settled",
+                           update_id, len(settled & targets), len(targets))
+            try:
+                atomic_json_write(marker, {"update_id": update_id, "settled": [list(key) for key in settled],
+                                           "starts": starts + 1})
+            except OSError as exc:
+                logger.warning("Parked local changes notice not recorded (%s); the next start may repeat it", exc)
+        except Exception:
+            logger.warning("Parked local changes notice failed", exc_info=True)

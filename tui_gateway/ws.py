@@ -391,7 +391,7 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
 
 
 async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport,
-                            **routing: str) -> Any:
+                            **routing: str | Exception) -> Any:
     """One request through the authority when attached, else the legacy dispatcher. A request from the
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
@@ -486,7 +486,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         client_gone.set()
         held_dropped.update(key for key, started in held_waiting.items() if not started.is_set())
 
-    async def _dispatch_one(req: Any, **routing: str) -> None:
+    async def _dispatch_one(req: Any, **routing: str | Exception) -> None:
         """Dispatch one request and write its inline reply."""
         nonlocal dispatch_crashes
         req_id = req.get("id") if isinstance(req, dict) else None

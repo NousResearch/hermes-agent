@@ -206,7 +206,9 @@ class AuthorityConnection:
             raise AuthorityRefusal('runtime_draining', field='profile', detail='the profile is still starting')
         raise AuthorityRefusal('profile_mismatch')
 
-    def _request_target(self, profile, queued_profile):
+    def _request_target(self, profile, queued_profile, profile_error):
+        if profile_error is not None:
+            raise profile_error
         routed = self._sibling_for(profile)
         # A mutable selector must still name the profile whose FIFO admitted this control.
         if queued_profile is not None and (routed or self).authority.profile_id != queued_profile:
@@ -299,7 +301,7 @@ class AuthorityConnection:
         handlers.update(stored_read_handlers(self))
         return handlers
 
-    async def dispatch(self, request, *, queued_profile=None):
+    async def dispatch(self, request, *, queued_profile=None, profile_error=None):
         from gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
@@ -325,7 +327,7 @@ class AuthorityConnection:
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
-                routed = self._request_target(profile, queued_profile)
+                routed = self._request_target(profile, queued_profile, profile_error)
             except AuthorityRefusal as exc:
                 _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {

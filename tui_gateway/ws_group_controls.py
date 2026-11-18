@@ -11,7 +11,6 @@ def _group_key(connection, request):
         return None
     from gateway.hosted_rooms import _room_id
     from gateway.session_group_controls import GROUP_METHODS
-    from persistence.core.errors import AuthorityRefusal
 
     if request.get("method") not in GROUP_METHODS:
         return None
@@ -20,11 +19,11 @@ def _group_key(connection, request):
         return None
     try:
         room_id = _room_id(params["room_id"])
-        profile = params.get("profile")
-        if isinstance(profile, str) and profile:
-            connection = connection._sibling_for(profile) or connection
-    except (ValueError, AuthorityRefusal):
-        return None  # dispatch supplies the normal wire refusal
+    except ValueError:
+        return None
+    profile = params.get("profile")
+    if isinstance(profile, str) and profile:
+        connection = connection._sibling_for(profile) or connection
     return connection.actor.profile_id, room_id
 
 
@@ -38,7 +37,13 @@ class GroupControlLanes:
         self.tasks = set()
 
     async def queue(self, connection, request, wait):
-        key = _group_key(connection, request)
+        try:
+            key = _group_key(connection, request)
+        # health: allow BLE001 -- canonical dispatch logs or translates the original lookup failure
+        except Exception as exc:
+            # Retrying a transient lookup here could run the request outside its room's FIFO.
+            await self.dispatch(request, profile_error=exc)
+            return True
         if key is None:
             return False
         # Running and waiting frames share one connection-wide bound, including distinct rooms.

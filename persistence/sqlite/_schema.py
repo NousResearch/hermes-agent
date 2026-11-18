@@ -410,20 +410,18 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     reopened_by_older_release = not stale_view and not _fts_index_is_misaligned_source(cursor)
     if reopened_by_older_release and not _retired_tool_high_water_reinstated(cursor):
         return
-    has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
-    def do_align() -> None:
+    def populated() -> bool:
+        return cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
+
+    def do_align(*, has_messages: bool) -> None:
         for name in _FTS_BASE_TRIGGERS:
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute("DROP TABLE IF EXISTS messages_fts")
         if stale_view:
             # CREATE VIEW IF NOT EXISTS never replaces a differing view; the index is rebuilt from it below.
             cursor.execute("DROP VIEW messages_fts_src")
-        if has_messages:
-            _ensure_fts_schema(holder, cursor, "messages_fts", FTS_SQL)
-        else:
-            # Runs inside SAVEPOINT fts_align_empty, which executescript's implicit COMMIT would end.
-            _execute_ddl_script_transactional(cursor, FTS_SQL)
+        _execute_ddl_script_transactional(cursor, FTS_SQL)
         if has_messages:
             cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             # The cleared markers below are shared with the trigram backfill: finish that index too, or rows
@@ -447,19 +445,19 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
                 "index tokens behind on delete; rebuilt messages_fts from the aligned projection in %.1fs. "
                 "Downgrading is unsupported.", FTS_STORAGE_VERSION, holder.db_path, time.monotonic() - started)
 
+    def align_locked(*, admitted: bool) -> bool:
+        with cursor.connection:
+            cursor.execute("BEGIN IMMEDIATE")
+            has_messages = populated()
+            if has_messages and not admitted:
+                return False
+            do_align(has_messages=has_messages)
+            return True
+
     started = time.monotonic()
-    if not has_messages:
-        # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
-        cursor.execute("SAVEPOINT fts_align_empty")
-        try:
-            do_align()
-            cursor.execute("RELEASE SAVEPOINT fts_align_empty")
-        except BaseException:
-            cursor.execute("ROLLBACK TO SAVEPOINT fts_align_empty")
-            cursor.execute("RELEASE SAVEPOINT fts_align_empty")
-            raise
-        return
-    _run_admitted_startup_rebuild(holder, cursor, do_align)
+    # The unlocked check only routes to admission; the decision to skip a rebuild is always locked.
+    if populated() or not align_locked(admitted=False):
+        _run_admitted_startup_rebuild(holder, cursor, lambda: align_locked(admitted=True))
 
 
 def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:

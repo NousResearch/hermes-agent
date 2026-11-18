@@ -4,7 +4,10 @@ import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useSta
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,19 +16,23 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
-import { toggleHud } from '@/store/hud'
+import { canUseHud, toggleHud } from '@/store/hud'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $leftSideOpen,
   $panesFlipped,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
 } from '@/store/layout'
+import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
@@ -44,6 +51,7 @@ export interface TitlebarTool extends Tiered {
   id: string
   label: string
   active?: boolean
+  expanded?: boolean
   className?: string
   disabled?: boolean
   hidden?: boolean
@@ -134,13 +142,52 @@ function useModifierHeld(): boolean {
   return held
 }
 
+interface SidebarEdge {
+  /** Whether the side reads as open, which picks the button's Show or Hide label. */
+  open: boolean
+  /** The button's aria-expanded; only the browser-hosted Desktop reports it. */
+  expanded?: boolean
+  toggle: () => void
+}
+
+/** The titlebar's two sidebar buttons. The browser-hosted Desktop's narrow layout has no hover to
+ * reveal by, so there the buttons read and drive the overlay itself, and they send an explicit open
+ * or close: a visible hover reveal is not pinned, and a generic toggle would pin it rather than
+ * perform the labelled Hide. A narrow native window keeps the docked toggles, which already route
+ * through the overlay's toggle. */
+function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
+  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const leftSideOpen = useStore($leftSideOpen)
+  const narrow = useStore($narrowViewport)
+  const overlayPanes = useStore($narrowOverlayPaneIds)
+  const browserHost = hostHas('narrowOverlayChrome')
+  const overlayChrome = narrow && browserHost
+  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
+
+  const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
+    const open = overlayChrome ? overlayPanes.has(id) : dockedOpen
+    const revealMode = open ? 'close' : 'open'
+
+    return {
+      open,
+      expanded: browserHost ? open : undefined,
+      toggle: overlayChrome
+        ? () => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: revealMode } }))
+        : toggleDocked
+    }
+  }
+
+  return {
+    left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
+    right: edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
+  }
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
-  const fileBrowserOpen = useStore($fileBrowserOpen)
-  const leftSideOpen = useStore($leftSideOpen)
   const panesFlipped = useStore($panesFlipped)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
@@ -164,8 +211,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
-  const leftEdge = { open: leftSideOpen, toggle: toggleLeftSide }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleRightSide }
+  const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
@@ -175,6 +221,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
+    expanded: leftEdge.expanded,
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -200,6 +247,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
+    expanded: rightEdge.expanded,
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -250,6 +298,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
       // from the action registry, same as every other tool here.
       actionId: 'view.toggleHud',
+      hidden: !canUseHud(),
       icon: <TitlebarIcon name="comment-discussion" />,
       id: 'hud',
       label: t.titlebar.enterHud,
@@ -390,6 +439,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   return (
     <Tip label={tooltipLabel} placement="toolbar">
       <Button
+        aria-expanded={tool.expanded}
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}
         className={className}

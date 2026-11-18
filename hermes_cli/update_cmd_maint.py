@@ -70,9 +70,9 @@ def _purge_stale_hermes_modules() -> None:
 
 def _reload_updated_runtime_modules() -> None:
     # Historical updater hook: dependency activation belongs to the next process.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._reload_updated_runtime_modules")
 
 
 def _print_curator_first_run_notice() -> None:
@@ -120,11 +120,13 @@ def _print_fts_optimize_available_notice() -> None:
 
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from persistence.core.admin import AdminUnsupported
+        from persistence_assembly import open_store_admin, profile_scope, store_location
     except Exception:
         return
-    db_path = get_hermes_home() / "state.db"
-    if not db_path.exists():
+    scope = profile_scope(home=get_hermes_home())
+    db_path = store_location(scope)
+    if db_path is None or not db_path.exists():
         return
     try:
         size_gb = db_path.stat().st_size / (1024 ** 3)
@@ -133,37 +135,16 @@ def _print_fts_optimize_available_notice() -> None:
     # Small DBs: the win isn't worth the nag.
     if size_gb < 0.5:
         return
-    db = None
-    legacy_inline = False
-    drift: list[str] = []
     try:
-        db = SessionDB(db_path=db_path, read_only=True)
-        # read_only opens skip schema init; probe the stored layout directly.
-        from hermes_state_fts import fts_layout_drift
-        drift = fts_layout_drift(db._conn)
-        legacy_inline = db._db_has_legacy_inline_fts(db._conn)
-        # Interrupted optimize-storage: v23 table shape but backfill markers / trash
-        # tables remain. Re-running resumes it, so offer the command again.
-        interrupted = bool(
-            db._conn.execute(
-                "SELECT 1 FROM state_meta "
-                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
-            ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
-            ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM state_meta WHERE key IN "
-                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
-            ).fetchone()
-        )
+        admin = open_store_admin(scope)
+        if isinstance(admin, AdminUnsupported):
+            return
+        # One read-only probe of the stored layout; an interrupted optimize-storage (v23 table shape but
+        # backfill markers / trash tables remain) resumes on a re-run, so the command is offered again.
+        notice = admin.fts_storage_notice()
     except Exception:
         return
-    finally:
-        if db is not None:
-            with suppress(Exception):
-                db.close()
+    drift, legacy_inline, interrupted = notice["drift"], notice["legacy_inline"], notice["interrupted"]
     if not drift and not interrupted:
         return  # current layout already present (fresh/optimized)
 
@@ -274,9 +255,9 @@ def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: set[str] | None = None
 ) -> None:
     """Historical updater hook; do not continue a pre-PM update after the swap."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._finish_dashboard_update_cleanup")
 
 
 def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
@@ -408,9 +389,9 @@ def _print_verified_update_completion(message: str) -> bool:
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
     """Historical updater hook; old soft-build results cannot establish completion."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._print_update_summary")
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -441,8 +422,9 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
     Never raises: a guard that crashes the update tail is worse than what it detects."""
     try:
         from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
-        state_path = home / "state.db"
-        if not state_path.exists():
+        from persistence_assembly import profile_scope, store_location
+        state_path = store_location(profile_scope(home=home))
+        if state_path is None or not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
         if ok.get("valid"):
@@ -505,6 +487,14 @@ def _invalidate_live_plugin_catalog_caches() -> None:
         from hermes_cli.backup import _sibling_profile_homes
         for _name, profile_home in _sibling_profile_homes(home):
             invalidate_live_cache_for_home(profile_home)
+
+
+def _report_catalog_plugin_updates() -> None:
+    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_cli.plugins_auto_update import report_catalog_updates_after_hermes_update
+    from hermes_cli.update_cmd import get_hermes_home
+    home = get_hermes_home()
+    report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
 
 
 def _print_bundled_skills_sync_report() -> None:
@@ -649,8 +639,9 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
     from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
-    _src_path = get_hermes_home() / "state.db"
-    if not _src_path.exists():
+    from persistence_assembly import profile_scope, store_location
+    _src_path = store_location(profile_scope(home=get_hermes_home()))
+    if _src_path is None or not _src_path.exists():
         return
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
@@ -800,13 +791,18 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     Never fails the committed update: a failed sweep is a ``bytecode_sweep`` follow-up and the
     fingerprint stays un-stamped, so the launch-time sweep (fingerprint mismatch) retries it.
     """
+    from hermes_cli.main_web_build import _prune_dropped_directories, _recorded_bytecode_fingerprint
     from hermes_cli.update_cmd import _m
     from hermes_cli.update_receipt import record_followup
     # Timestamp-based .pyc validation can accept old bytecode after the source swap.
     try:
-        removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
+        root = _m().PROJECT_ROOT
+        recorded = _recorded_bytecode_fingerprint(root)
+        removed = _m()._clear_bytecode_cache(root)
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        if pruned := _prune_dropped_directories(root, recorded):
+            print(f"  ✓ Removed {pruned} director{'y' if pruned == 1 else 'ies'} the new version no longer has")
         _m()._record_bytecode_fingerprint()
     except Exception as exc:  # health: allow BLE001 -- owed to the next launch's fingerprint sweep
         record_followup("bytecode_sweep", str(exc) or type(exc).__name__)
@@ -831,7 +827,7 @@ def _profile_skill_sync_status(r) -> str:
 
 
 def _sync_profiles_after_update() -> None:
-    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill, Honcho profiles."""
+    """Best-effort per-profile syncs: bundled skills, ``.env`` backfill."""
     # All profiles incl. the active one: seed_profile_skills() subprocesses with an explicit
     # HERMES_HOME, so sync_skills()'s module-level HERMES_HOME cache can't skew it.
     with suppress(Exception):
@@ -846,21 +842,14 @@ def _sync_profiles_after_update() -> None:
                 except Exception as pe:
                     print(f"  {p.name}: error ({pe})")
 
-    # Backfill .env for profiles created before .env seeding (copy the default's) so they
-    # keep the credentials they were effectively using.
+    # Seed the placeholder .env into any named profile lacking one (never a copy of the default's).
     with suppress(Exception):
         # See #44792.
         from hermes_cli.profiles import backfill_profile_envs
         backfilled = backfill_profile_envs(quiet=True)
         if backfilled:
             print()
-            print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
-
-    with suppress(Exception):
-        from plugins.memory import import_provider_module
-        synced = import_provider_module("honcho", "cli").sync_honcho_profiles_quiet()
-        if synced:
-            print(f"\n-> Honcho: synced {synced} profile(s)")
+            print(f"→ Seeded .env for {len(backfilled)} profile(s) (empty placeholder): {', '.join(backfilled)}")
 
 
 def _refresh_cua_driver_after_update() -> None:
@@ -890,8 +879,8 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give the install its optional default tools: the PM defaults (agent-browser +
-    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
+    """Give the install its optional default tools: the PM defaults (Chromium,
+    cua-driver). browser_exec's engine (browser-harness) is a venv dependency.
 
     Runs at the end of both the installers (via the source completion) and
     ``hermes update``: a source update re-syncs only the venv, so a tool that became
@@ -910,6 +899,11 @@ def _install_default_tools_after_update() -> None:
         return
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
+            # The entry found may be a row another checkout recorded: claim it, or that
+            # checkout's upgrade drops the row and `pm gc` deletes this one's tool. Claiming
+            # an installed tool downloads and re-hashes nothing.
+            with suppress(pm.InstallError, OSError):
+                pm.ensure(name, explicit=True, verify=False)
             continue
         print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
@@ -921,7 +915,7 @@ def _install_default_tools_after_update() -> None:
 
 def _print_checkpoint_footprint_notice() -> None:
     """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
-    from tools.checkpoint_maintenance import checkpoint_footprint_notice
+    from agent.checkpoints.maintenance import checkpoint_footprint_notice
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")
@@ -1028,6 +1022,10 @@ def _run_post_update_maintenance(
     except (OSError, subprocess.SubprocessError) as exc:
         detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
         print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
+    with _best_effort('Commit-graph refresh failed to start: %s'):
+        from hermes_cli.git_commit_graph import spawn_commit_graph_refresh
+        spawn_commit_graph_refresh(Path(_m().PROJECT_ROOT))
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
@@ -1040,6 +1038,10 @@ def _run_post_update_maintenance(
     # rest of the cache TTL (#119340).
     with _best_effort('Live plugin catalog cache invalidation failed: %s'):
         _invalidate_live_plugin_catalog_caches()
+    # New catalog pins are not applied by this update: name them per profile and re-arm each
+    # profile's plugin check so an opted-in (plugins.auto_apply) gateway applies them next tick.
+    with _best_effort('Plugin catalog update notice failed: %s'):
+        _report_catalog_plugin_updates()
 
     with _best_effort('Skills sync during update failed: %s'):
         print()
@@ -1051,6 +1053,11 @@ def _run_post_update_maintenance(
     owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     ))
+    # Catalog plugins marked ``default: true`` that a profile never had: a fresh install's home, or a
+    # default added since the last update. A failed fetch is retried from a later boot, so nothing is owed.
+    with _best_effort('Default plugin install failed: %s'):
+        from hermes_cli.default_plugins import install_and_record
+        install_and_record()
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))

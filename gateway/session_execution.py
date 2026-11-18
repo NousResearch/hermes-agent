@@ -75,14 +75,15 @@ class GatewaySessionAgentMixin:
     def _current_message_count(self):
         """Cross-process write guard input: the session's current DB message_count (or None)."""
         ctx = self._ctx
-        if self._runner._session_db is None or not ctx.session_id:
+        store = getattr(self._runner, "persistence", None)
+        if store is None or not ctx.session_id:
             return None
         count = None
         with suppress(Exception):
             # run_sync is off-loop (executor); sync DB is fine.
-            row = self._runner._session_db._db.get_session(ctx.session_id)
+            row = store.sessions.get(ctx.session_id)
             if row:
-                count = row.get("message_count", 0)
+                count = row.message_count
         return count
 
     def _pop_cached_agent_for_eviction(self):
@@ -101,7 +102,12 @@ class GatewaySessionAgentMixin:
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                # Another route (a one-turn /moa, a refreshed credential): the fresh build replaces
+                # this entry, so release the displaced agent instead of orphaning its clients.
+                out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.
@@ -145,7 +151,7 @@ class GatewaySessionAgentMixin:
         """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop."""
         self._runner._spawn_release_thread(
             self._runner._release_evicted_agent_soft, (agent,), f"agent-xproc-evict-{str(self._ctx.session_key)[:24]}",
-            inline_fallback=True,
+            inline_fallback=True, session_key=self._ctx.session_key,
         )
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
@@ -165,7 +171,7 @@ class GatewaySessionAgentMixin:
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=(session_prefill(active_authority(runner), policy, src.chat_id) if policy
                               else runner._prefill_messages) or None,
-            reasoning_config=reasoning_config, service_tier=runner._service_tier,
+            reasoning_config=reasoning_config, service_tier=turn_route.get("service_tier"),
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
@@ -173,8 +179,7 @@ class GatewaySessionAgentMixin:
             session_id=ctx.session_id, platform=platform_key,
             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
-            gateway_session_key=ctx.session_key,
-            session_db=getattr(runner._session_db, "_db", runner._session_db),
+            gateway_session_key=ctx.session_key, persistence=getattr(runner, "persistence", None),
             # Reload from disk — do not reuse the startup snapshot.
             # See #60955.
             fallback_model=None if api_runtime_locked() else self._runner._refresh_fallback_model(),
@@ -221,9 +226,17 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
-            agent = self._build_fresh_agent(
-                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
-            )
+            from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+            # delegation.gateway_mode from this turn's own (profile-scoped) config and the chat's resolved interim
+            # setting (never muted for a heartbeat turn, which shares the user's session and its cached agent);
+            # read once, by the agent's first tool build, then carried by its delegate_task schema and pin.
+            inline = gateway_delegation_inline(
+                ctx.user_config, platform_key, interim_enabled=ctx.interim_assistant_messages_enabled)
+            with gateway_delegation_inline_scope(inline):
+                agent = self._build_fresh_agent(
+                    turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                    skip_context_files,
+                )
             if cache_lock and cache is not None:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard

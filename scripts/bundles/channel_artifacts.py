@@ -8,9 +8,7 @@ from pathlib import Path
 
 from hermes_cli.release_channels import ChannelError, build_prefix, canonical_json, validate_manifest
 from scripts.bundles.release_artifacts import single, validate_windows_bundle, write_appinstaller
-
-
-ALL_TARGETS = tuple((platform, arch) for platform in ("macos", "windows") for arch in ("arm64", "x64"))
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 
 
 def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
@@ -31,10 +29,8 @@ def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
 
 
 def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
-             targets=ALL_TARGETS, local_bytes: bool = True) -> tuple[dict, list[Path]]:
-    """``targets`` defaults to every native target. A stable release that did not
-    opt into macOS Intel passes the three it built; arm64 macOS and both Windows
-    arches are always required.
+             local_bytes: bool = True) -> tuple[dict, list[Path]]:
+    """Every native target (desktop_targets.MANIFEST_TARGETS) is required.
 
     ``local_bytes=False`` trusts the receipts instead of downloaded packages:
     every artifact is bound by its receipt sha256 (and was validated when the
@@ -42,12 +38,8 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     per-arch feed legs, and no multi-GB package needs to be on disk."""
     files = native["files"]
     rows = native["packages"]
-    targets = sorted(targets)
-    if not {("macos", "arm64"), ("windows", "arm64"), ("windows", "x64")} <= set(targets) \
-            or not set(targets) <= set(ALL_TARGETS):
-        raise ChannelError("Native targets must include macOS arm64 and both Windows architectures")
-    if sorted((row["platform"], row["arch"]) for row in rows) != targets:
-        raise ChannelError("Native metadata must cover both platforms and architectures")
+    if sorted((row["platform"], row["arch"]) for row in rows) != sorted(MANIFEST_TARGETS):
+        raise ChannelError("Native metadata must cover macOS arm64 and both Windows architectures")
     prefix = build_prefix(request["buildId"])
     base = request["publicBase"]
     windows = [row for row in rows if row["platform"] == "windows"]

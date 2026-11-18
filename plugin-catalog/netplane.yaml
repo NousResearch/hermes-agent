@@ -1,0 +1,16 @@
+name: netplane
+repo: https://github.com/lEWFkRAD/netplane
+sha: 8a1dc6afbe744f1bf19903de27a2efed8d677d5c
+description: "Install, configure and operate a self-hosted Headscale control plane from Hermes. netplane_setup previews a configuration and, after approval, installs the pinned official Headscale v0.29.6 DEB on a fresh Debian 12+ or Ubuntu 22.04+ systemd host (amd64/arm64). Installation runs on the Hermes host, requires root or noninteractive sudo, refuses existing deployments, and verifies the package SHA-256. It configures SQLite, MagicDNS, embedded DERP/STUN, local admin gRPC, and either Let's Encrypt HTTPS or a loopback backend for an existing reverse proxy. It starts the system service, creates the first user, and saves a 90-day API key and connection settings through Hermes's active-profile APIs. netplane_status reports health, netplane_nodes lists devices, and netplane_preauth lists metadata without stored join secrets or creates an approval-gated, single-use-by-default join key with a 1–168 hour lifetime. Desktop includes setup preview/confirmation, health, nodes, join keys and confirmed node expiration, with a FastAPI backend. Management requires NETPLANE_APIKEY; setup works before a key exists. Bundled protobuf stubs use pinned sources and a compatible toolchain. Disclosure — the netplane_setup tool (after Hermes approval) and the Desktop pane (after confirmation) install the pinned official Headscale v0.29.6 DEB as root through noninteractive sudo on the Hermes host, downloading it from GitHub (SHA-256 verified) and possibly contacting configured APT repositories; it writes /etc/headscale, /var/lib/headscale and a systemd drop-in, and enables a persistent headscale service that in Let's Encrypt mode listens publicly on TCP 80/443 and UDP 3478 (admin gRPC and metrics stay on loopback); Let's Encrypt receives the chosen domain and email; setup saves a new 90-day Headscale API key as NETPLANE_APIKEY in the active Hermes profile; management reads credentials only from Hermes and uses TLS with system trust off-host; approved join-key creation returns the key into the chat; status runs systemctl is-active headscale and tailscale serve status; no telemetry and no automatic software updates."
+maintainer: lEWFkRAD
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/lEWFkRAD/netplane#readme
+version: "0.3.1"
+platforms: []
+capabilities:
+  provides_tools: [netplane_setup, netplane_status, netplane_nodes, netplane_preauth]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

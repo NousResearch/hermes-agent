@@ -1,5 +1,6 @@
 """Codex Responses API adapter: stateless format conversion and normalization for the
-OpenAI Responses API (OpenAI Codex, xAI, GitHub Models and other compatible endpoints)."""
+OpenAI Responses API (OpenAI Codex, xAI and other compatible endpoints; per-endpoint quirks come from the
+provider profile that claims the endpoint, see :func:`responses_endpoint_quirks`)."""
 
 from __future__ import annotations
 
@@ -19,13 +20,48 @@ from hermes_cli.route_identity import normalize_route_base_url
 logger = logging.getLogger(__name__)
 
 
+class ResponsesEndpointQuirks(NamedTuple):
+    """Responses wire quirks of the endpoint, from the ``responses_*`` fields of the profile claiming it
+    (``providers.profile_for_host``). Defaults are the generic wire."""
+    replay_item_ids: bool = True
+    prompt_cache_key: bool = True
+    issuer_kind: str = ""
+    native_compaction: bool = True
+    profile_reasoning: bool = False
+
+
+_GENERIC_ENDPOINT = ResponsesEndpointQuirks()
+
+
+def responses_endpoint_quirks(base_url: Any) -> ResponsesEndpointQuirks:
+    """Quirks for *base_url*; the generic wire when no registered profile claims it (or none is installed).
+    Pure function of the URL and the registry, so every turn replays the same bytes for the same history."""
+    from providers import profile_for_host
+
+    profile = profile_for_host(str(base_url or ""))
+    if profile is None:
+        return _GENERIC_ENDPOINT
+    return ResponsesEndpointQuirks(
+        replay_item_ids=profile.responses_replay_item_ids, prompt_cache_key=profile.responses_prompt_cache_key,
+        issuer_kind=profile.responses_issuer_kind, native_compaction=profile.responses_native_compaction,
+        profile_reasoning=profile.responses_profile_reasoning,
+    )
+
+
+def drops_replay_item_ids(base_url: Any) -> bool:
+    """Preflight flag: True when *base_url*'s endpoint binds replayed message-item ids to a connection."""
+    return not responses_endpoint_quirks(base_url).replay_item_ids
+
+
 def _classify_responses_issuer(
-    *, is_xai_responses: bool = False, is_github_responses: bool = False, is_codex_backend: bool = False,
-    base_url: Optional[str] = None,
+    *, is_xai_responses: bool = False, is_codex_backend: bool = False, base_url: Optional[str] = None,
+    endpoint: Optional[ResponsesEndpointQuirks] = None,
 ) -> str:
     """Stable identifier for the endpoint that mints ``reasoning.encrypted_content``. Blobs are sealed to their
-    issuer (HTTP 400 ``invalid_encrypted_content``), so stamping lets replay drop foreign blobs after a model switch."""
-    for flag, kind in ((is_xai_responses, "xai_responses"), (is_github_responses, "github_responses"), (is_codex_backend, "codex_backend")):
+    issuer (HTTP 400 ``invalid_encrypted_content``), so stamping lets replay drop foreign blobs after a model switch.
+    ``endpoint`` contributes the claiming profile's persisted ``responses_issuer_kind``."""
+    endpoint_kind = endpoint.issuer_kind if endpoint is not None else ""
+    for flag, kind in ((is_xai_responses, "xai_responses"), (bool(endpoint_kind), endpoint_kind), (is_codex_backend, "codex_backend")):
         if flag:
             return kind
     if not base_url:
@@ -447,15 +483,16 @@ def _role_message_item(role: str, content: Any, phase: Any = None) -> dict[str, 
 
 
 def _assistant_message_item(
-    raw: dict[str, Any], content: list[dict[str, Any]], *, is_github_responses: bool,
+    raw: dict[str, Any], content: list[dict[str, Any]], *, drop_replay_item_ids: bool,
     current_issuer_kind: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never for
-    GitHub Copilot (ids bind to a backend connection; stale → 401); ``phase`` is preserved per OpenAI's cache guidance.
+    """Replayable assistant ``message`` item from a stored one. ``id`` is kept only when short enough and never on an
+    endpoint that binds ids to a backend connection (``drop_replay_item_ids``; stale → 401); ``phase`` is preserved
+    per OpenAI's cache guidance.
     The ChatGPT Codex backend additionally rejects ids that do not begin with ``msg`` (foreign Responses issuers
     mint short UUIDs), so those are dropped there while other issuers' policies are unchanged."""
     item_id, phase = raw.get("id"), raw.get("phase")
-    keep_id = not is_github_responses and _nonblank(item_id) and len(item_id.strip()) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+    keep_id = not drop_replay_item_ids and _nonblank(item_id) and len(item_id.strip()) <= _MAX_RESPONSES_ITEM_ID_LENGTH
     if keep_id and current_issuer_kind == "codex_backend" and not item_id.strip().startswith("msg"):
         keep_id = False
     return _message_item(
@@ -505,7 +542,7 @@ def _replay_reasoning_items(
 
 
 def _replay_message_items(
-    msg: dict[str, Any], *, is_github_responses: bool, current_issuer_kind: Optional[str] = None,
+    msg: dict[str, Any], *, drop_replay_item_ids: bool, current_issuer_kind: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Replay exact assistant message items (id/phase) for prefix-cache hits.
 
@@ -532,7 +569,7 @@ def _replay_message_items(
             if linked_to_reasoning and raw_item.get("id"):
                 raw_item = {k: v for k, v in raw_item.items() if k != "id"}
             replayed.append(_assistant_message_item(
-                raw_item, content, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+                raw_item, content, drop_replay_item_ids=drop_replay_item_ids, current_issuer_kind=current_issuer_kind,
             ))
     return replayed
 
@@ -609,7 +646,7 @@ def _tool_output_items(msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
 
 
 def _chat_messages_to_responses_input(
-    messages: list[dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
+    messages: list[dict[str, Any]], *, is_xai_responses: bool = False, drop_replay_item_ids: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
 ) -> list[dict[str, Any]]:
@@ -618,7 +655,7 @@ def _chat_messages_to_responses_input(
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
     ``AIAgent._disable_codex_reasoning_replay`` after a repeat ``invalid_encrypted_content`` 400.
-    ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
+    ``drop_replay_item_ids``: drops ``id`` from replayed message items (endpoint quirk ``replay_item_ids=False``).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
@@ -632,11 +669,10 @@ def _chat_messages_to_responses_input(
     cross-turn coherence (the whole point of their partnership integration). We now replay encrypted
     reasoning on every Responses transport (xAI, native Codex, custom relays) and let xAI tell us explicitly
     if a specific surface ever rejects a payload.
-    The Copilot backend (api.githubcopilot.com/responses) binds these ids to a specific backend "connection"
-    — credential-pool rotation, a gateway restart, or routine load-balancer churn between turns all
-    invalidate it — and rejects a stale id with HTTP 401 "input item ID does not belong to this connection"
-    even for short ids (see #32716). ``phase``/ ``status``/``content`` are still replayed; only ``id`` is
-    unsafe to reuse across a Copilot connection.
+    Some backends bind these ids to a specific backend "connection" — credential-pool rotation, a gateway
+    restart, or routine load-balancer churn between turns all invalidate it — and reject a stale id with HTTP 401
+    "input item ID does not belong to this connection" even for short ids (see #32716). ``phase``/``status``/
+    ``content`` are still replayed there; only ``id`` is unsafe to reuse across such a connection.
     ``native_compaction_eligible`` mirrors, for THIS request, the decision made by
     ``native_compaction.native_compaction_context_management`` — it is True only when that gate returned a
     payload, i.e. when the request actually carries ``context_management``. It controls two things that must
@@ -694,7 +730,7 @@ def _chat_messages_to_responses_input(
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(
-            msg, is_github_responses=is_github_responses, current_issuer_kind=current_issuer_kind,
+            msg, drop_replay_item_ids=drop_replay_item_ids, current_issuer_kind=current_issuer_kind,
         )
         emit(message_items, msg)
         fallback = None
@@ -731,7 +767,7 @@ def _chat_messages_to_responses_input(
 
 class ResponsesRouteFlags(NamedTuple):
     """Which special Responses-API route an agent is talking to. Single owner of the
-    codex/xai/github predicates — every site must call :func:`classify_responses_route`.
+    codex/xai predicates and the endpoint quirks — every site must call :func:`classify_responses_route`.
 
     Every site that needs these flags (request kwargs build, preflight estimation, silent- reject hints)
     must call :func:`classify_responses_route` instead of re-implementing the string comparisons inline —
@@ -739,12 +775,12 @@ class ResponsesRouteFlags(NamedTuple):
     """
     is_codex_backend: bool
     is_xai_responses: bool
-    is_github_responses: bool
+    endpoint: ResponsesEndpointQuirks
 
 
 def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     """Classify the agent's Responses route from provider + base URL. Host checks are
-    exact-host-or-subdomain, never substring (``evil.com/models.github.ai`` is not GitHub)."""
+    exact-host-or-subdomain, never substring (``evil.com/chatgpt.com`` is not ChatGPT)."""
     from utils import base_url_hostname
     provider = getattr(agent, "provider", None)
     base_url = str(getattr(agent, "base_url", "") or "")
@@ -755,7 +791,7 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     return ResponsesRouteFlags(
         is_codex_backend=provider == "openai-codex" or (_host_is("chatgpt.com") and "/backend-api/codex" in lower),
         is_xai_responses=provider in {"xai", "xai-oauth"} or hostname == "api.x.ai",
-        is_github_responses=_host_is("models.github.ai") or _host_is("githubcopilot.com"),
+        endpoint=responses_endpoint_quirks(base_url),
     )
 
 
@@ -774,7 +810,8 @@ def _native_responses_replay_items(
     effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
     try:
         items = _chat_messages_to_responses_input(
-            messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
+            messages, is_xai_responses=route["is_xai_responses"],
+            drop_replay_item_ids=not route["endpoint"].replay_item_ids,
             replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
             current_issuer_model=_wire_model_identity(effective_model),
@@ -822,7 +859,7 @@ def estimate_native_responses_preflight_tokens(
 class _PreflightCtx(NamedTuple):
     sanitize_text: Callable[[str], str]
     sanitize_harmony_tokens: bool
-    is_github_responses: bool
+    drop_replay_item_ids: bool
     seen_ids: set
 
 
@@ -901,7 +938,7 @@ def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> di
         normalized_content.append({"type": "output_text", "text": ctx.sanitize_text(_str_or_empty(part.get("text", "")))})
     if not normalized_content:
         raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
-    return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
+    return _assistant_message_item(item, normalized_content, drop_replay_item_ids=ctx.drop_replay_item_ids)
 
 
 def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
@@ -944,12 +981,12 @@ _PREFLIGHT_ITEM_HANDLERS: dict[str, Callable[..., Optional[dict[str, Any]]]] = {
 
 
 def _preflight_codex_input_items(
-    raw_items: Any, *, is_github_responses: bool = False, sanitize_harmony_tokens: bool = False,
+    raw_items: Any, *, drop_replay_item_ids: bool = False, sanitize_harmony_tokens: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
     sanitize_text = _neutralize_harmony_tokens if sanitize_harmony_tokens else (lambda text: text)
-    ctx = _PreflightCtx(sanitize_text, sanitize_harmony_tokens, is_github_responses, set())
+    ctx = _PreflightCtx(sanitize_text, sanitize_harmony_tokens, drop_replay_item_ids, set())
     normalized: list[dict[str, Any]] = []
     for idx, item in enumerate(raw_items):
         if not isinstance(item, dict):
@@ -1014,7 +1051,7 @@ def _optional_dict(api_kwargs: dict[str, Any], key: str) -> Optional[dict[str, A
 
 
 def _preflight_codex_api_kwargs(
-    api_kwargs: Any, *, allow_stream: bool = False, is_github_responses: bool = False,
+    api_kwargs: Any, *, allow_stream: bool = False, drop_replay_item_ids: bool = False,
     sanitize_harmony_tokens: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(api_kwargs, dict):
@@ -1028,7 +1065,7 @@ def _preflight_codex_api_kwargs(
     if sanitize_harmony_tokens:
         instructions = _neutralize_harmony_tokens(instructions)
     input_items = _preflight_codex_input_items(
-        api_kwargs.get("input"), is_github_responses=is_github_responses, sanitize_harmony_tokens=sanitize_harmony_tokens,
+        api_kwargs.get("input"), drop_replay_item_ids=drop_replay_item_ids, sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
     normalized: dict[str, Any] = {
         "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
@@ -1218,6 +1255,15 @@ class _OutputScan:
         ))
 
 
+def _untrusted_completed_issuers() -> frozenset:
+    """Issuer kinds whose reasoning-only ``completed`` status is not final (once per normalized response)."""
+    from providers import list_providers
+
+    declared = (p.responses_issuer_kind for p in list_providers()
+                if p.responses_issuer_kind and not p.responses_trusts_completed_status)
+    return frozenset({"codex_backend", "xai_responses", *declared})
+
+
 def _normalize_codex_response(
     response: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
     recover_leaked_tool_call: bool = True,
@@ -1290,11 +1336,12 @@ def _normalize_codex_response(
         # Leaked text must not be replayed as a completed assistant message on the continuation.
         codex_message_items=None if leaked_tool_call_text else (scan.message_items_raw or None),
     )
-    # Reasoning-only: for Codex/xAI/GitHub, status=completed means "still thinking" → incomplete so the continuation
-    # retries. Other backends trust response.status — forcing incomplete there stalls for minutes on a final state.
+    # Reasoning-only: for Codex/xAI (and endpoints declaring ``responses_trusts_completed_status=False``),
+    # status=completed means "still thinking" → incomplete so the continuation retries. Other backends trust
+    # response.status — forcing incomplete there stalls for minutes on a final state.
     reasoning_only = (scan.reasoning_items_raw or reasoning_parts or scan.saw_reasoning_item) and not final_text
     trusted_final = (
-        response_status == "completed" and issuer_kind not in ("codex_backend", "xai_responses", "github_responses")
+        response_status == "completed" and issuer_kind not in _untrusted_completed_issuers()
     )
     if tool_calls:
         finish_reason = "tool_calls"

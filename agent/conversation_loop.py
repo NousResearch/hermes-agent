@@ -23,6 +23,7 @@ from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_su
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+from agent.prompt_refresh import rebuild_for_refresh, requested_epoch, stamp_prompt_epoch, stored_prompt_refresh_epoch
 from agent.prompt_caching import (
     build_prompt_cache_plan,
     effective_cache_ttl,
@@ -34,8 +35,9 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
+from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -61,6 +63,17 @@ from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
+from session_rules.turns import (
+    _CODEX_ACK_CONTINUATION_NUDGE,
+    _CODEX_INCOMPLETE_NUDGE,
+    _DEGENERATE_FINAL_NUDGE,
+    _DROPPED_TOOLCALL_NUDGE_CONTENT,
+    _EMPTY_TOOL_RESPONSE_NUDGE,
+    _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
+    _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+    _LENGTH_CONTINUATION_NETWORK_STUB,
+    _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,32 +374,15 @@ def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text
     agent._stream_needs_break = True
 
 
-def _is_copilot_provider(agent: Any) -> bool:
-    """Delegate to ``AIAgent._is_copilot_provider``; the fallback keeps the ``github-copilot`` /
-    ``github`` aliases so credential recovery is not skipped for them."""
-    try:
-        return bool(agent._is_copilot_provider())
-    except Exception:
-        return (getattr(agent, "provider", "") or "").strip().lower() in {
-            "copilot",
-            "github-copilot",
-            "github",
-        }
+def _credential_refresh_profile(agent: Any) -> Any:
+    """The profile owning the live credential's runtime refresh: the agent's provider by name, else
+    (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
+    that override ``refresh_runtime_credentials`` qualify."""
+    from agent.provider_route_hooks import route_profiles
 
-
-def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
-    """Detect a Copilot 400 that is really a STALE / DEGRADED credential (status 400 AND an
-    integrator/model-not-supported marker, so a wrong model name never triggers the
-    single-shot re-exchange). Caller enforces scoping/guard."""
-    lowered = (error_message or "").lower()
-    if status_code != 400 and "error code: 400" not in lowered:
-        return False
-    return any(marker in lowered for marker in (
-        "model_not_available_for_integrator",
-        "not available for integrator",
-        "model_not_supported",
-        "the requested model is not supported",
-    ))
+    profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
+                              str(getattr(agent, "base_url", "") or ""))
+    return profiles[0] if profiles else None
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
@@ -479,13 +475,18 @@ def _ra():
     return run_agent
 
 
-def _nous_entitlement_message(capability: str) -> str:
+def _nous_entitlement_message(capability: str, *, billing: bool = False) -> str:
+    """``billing``: the request hit a billing wall. A usage-window account then gets its own next
+    step (top-up link); its plan is still live, so the entitlement copy alone would say nothing."""
     try:
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message,
+            format_usage_window_block_guidance,
             get_nous_portal_account_info,
         )
         account_info = get_nous_portal_account_info(force_fresh=True)
+        if billing and (window_guidance := format_usage_window_block_guidance(account_info)):
+            return window_guidance
         return format_nous_portal_entitlement_message(
             account_info, capability=capability, in_chat=True
         ) or ""
@@ -529,7 +530,7 @@ def _billing_or_entitlement_message(
     *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False
 ) -> str:
     if _is_nous_inference_route(provider, base_url):
-        return _nous_entitlement_message(capability)
+        return _nous_entitlement_message(capability, billing=True)
 
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
@@ -606,20 +607,83 @@ def _billing_terminal_label(summary: str, unverified: bool) -> str:
     return f"Billing or credits exhausted: {summary}"
 
 
+def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Optional[float], Optional[dict]]:
+    """A usage-window 402 in the words of the credits limit line ("You've hit your daily limit · resets
+    15:56 · /topup to add credits") plus when that allowance frees up (epoch
+    seconds), so the chat and the error card say exactly what the notice says and the card can offer
+    a retry at the reset. The third item is the structured limit (:class:`agent.plan_limits.LimitHit`
+    payload: what ran out, the recommended models that still work, the credits option) every surface
+    renders as buttons or a sentence. ``("", None, None)`` for every other billing failure."""
+    context = getattr(classified, "error_context", None) or {}
+    if not context.get("usage_window"):
+        return "", None, None
+    try:
+        from agent.credits_tracker import _window_hard_stop, window_stop_resets_at_ms
+        from agent.plan_limits import current_model_is_top_tier
+        state = getattr(agent, "_credits_state", None)
+        top_tier = current_model_is_top_tier(agent)
+        stop = _window_hard_stop(state, model_is_free=False, model_is_top_tier=top_tier) if state is not None else None
+        # The server may word the refusal itself (``display_message`` on the 402): shown verbatim, so a
+        # reword ships with the API. Without it, the stop line Hermes builds from the gauges.
+        display = context.get("display_message")
+        server_message = str(getattr(classified, "message", "") or "").strip()
+        if isinstance(display, str) and display.strip():
+            message = display.strip()
+        elif stop:
+            message = stop.removeprefix("✕ ").strip()
+        elif server_message:
+            # Local state says nothing is spent (stale snapshot, or it thinks credits will pay) but the
+            # server refused with the window code: its own sentence still beats the generic "out of
+            # credits" wall, and keeps the turn on the window card (one place, Open billing) instead of
+            # a billing toast + banner + Switch provider card.
+            message = server_message
+        else:
+            return "", None, None
+        resets_ms = window_stop_resets_at_ms(state, model_is_top_tier=top_tier) if state is not None else None
+        limit = None
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.plan_limits import limit_hit
+            hit = limit_hit(agent, message=message,
+                            needed_tokens=estimate_messages_tokens_rough(api_messages or []) if api_messages else None)
+            limit = hit.to_payload() if hit is not None else None
+        except Exception:
+            logger.debug("Usage-window limit payload unavailable", exc_info=True)
+            limit = None
+        return (message, resets_ms / 1000 if isinstance(resets_ms, int) and resets_ms > 0 else None, limit)
+    except Exception:
+        logger.debug("Usage-window refusal parse failed", exc_info=True)
+        return "", None, None
+
+
 def _billing_failure_result(
     *, classified, summary: str, messages, api_call_count: int, provider: str, base_url, model: str,
     guidance: Optional[str] = None,
+    usage_window: tuple[str, Optional[float], Optional[dict]] = ("", None, None),
 ) -> dict:
     """Structured terminal result for a billing-classified failure — the single construction
-    point for the non-retryable abort and max-retries paths (#82154)."""
+    point for the non-retryable abort and max-retries paths (#82154). A usage-window refusal
+    reads as its one stop-line sentence instead of the generic "billing exhausted" text."""
     unverified = bool(getattr(classified, "billing_unverified", False))
-    if guidance is None:
+    if guidance is None and not (tuple(usage_window) + ("",))[0]:  # a window refusal is its own message: no portal fetch
         guidance = _billing_or_entitlement_message(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=unverified,
         )
-    final = _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else "")
+    usage_window_message, usage_window_resets_at, usage_limit = (tuple(usage_window) + (None, None, None))[:3]
+    final = usage_window_message or (
+        _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else ""))
+    extra: dict = {}
+    if usage_window_message:
+        extra["usage_window_message"] = usage_window_message
+        if usage_window_resets_at is not None:
+            extra["failure_resets_at"] = usage_window_resets_at
+        if usage_limit:
+            # Structured: the CLI and the messaging gateway read it off the result; the error surface
+            # carries it to the TUI and the desktop card.
+            extra["usage_limit"] = usage_limit
     return {
+        **extra,
         "final_response": final, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": summary,
         "failure_reason": classified.reason.value,
@@ -670,7 +734,10 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
         title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not title and agent._session_db and agent.session_id:
             try:
-                title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
+                from agent.agent_init_session import agent_interface
+                store = agent_interface(agent)
+                title = str((store.sessions.get_title(agent.session_id) if store is not None
+                             else agent._session_db.get_session_title(agent.session_id)) or "").strip()
             except Exception:
                 title = ""
         return title == BOT_CHAT_TITLE and bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
@@ -685,7 +752,10 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        (store.sessions if store is not None else agent._session_db).update_system_prompt(
+            agent.session_id, agent._cached_system_prompt)
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
@@ -757,7 +827,17 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     session_row = None
     if conversation_history and agent._session_db:
         try:
-            session_row = agent._session_db.get_session(agent.session_id)
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(agent)
+            if store is not None:
+                record = store.sessions.get(agent.session_id)
+                session_row = None if record is None else {
+                    "system_prompt": record.system_prompt,
+                    "tool_names": None if record.tool_pin is None else json.dumps(record.tool_pin),
+                    "model_config": record.model_config,
+                }
+            else:
+                session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
                 raw_prompt = session_row.get("system_prompt")
                 stored_state = "null" if raw_prompt is None else ("empty" if raw_prompt == "" else "present")
@@ -778,6 +858,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id,
             )
             agent._session_title_hint = "Bot Chat"
+            # Read BEFORE the build: this rebuild also satisfies any pending prompt refresh.
+            refresh_request = requested_epoch(agent)
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:
@@ -799,6 +881,14 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "(session=%s): %s. The refresh will re-fire next turn.",
                 persist_tools=True,
             )
+            stamp_prompt_epoch(agent, refresh_request)
+            return
+        refresh_epoch = stored_prompt_refresh_epoch(agent, session_row)
+        if refresh_epoch:
+            # `hermes sessions refresh-prompts` ran after this prompt was built. Pin tools[] first
+            # (the refresh is about instructions; the frozen tool array stays), then rebuild once.
+            _restore_pinned_tools(agent, session_row)
+            rebuild_for_refresh(agent, system_message, conversation_history, refresh_epoch)
             return
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
@@ -850,6 +940,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # surface's own build (the -q footprint, its tool_search catalog) would otherwise be
     # persisted over the pin below. Pinned first, so the prompt describes the tools sent.
     built_for_this_surface = _restore_pinned_tools(agent, session_row)
+    # Read before the build: a refresh request landing mid-build still fires next turn.
+    refresh_epoch = requested_epoch(agent)
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
     if conversation_history:
         record_prompt_rebuild(agent, stored_prompt, stored_state, agent._cached_system_prompt)
@@ -886,6 +978,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         "rebuild the system prompt and miss the prefix cache.",
         persist_tools=True,
     )
+    stamp_prompt_epoch(agent, refresh_epoch)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
@@ -918,27 +1011,6 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     return True
 
 
-# Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by
-# content (SessionDB projection strips the _length_continuation_nudge tag).
-_LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream — a transport "
-    "interruption, NOT a change in your capabilities. Your tools are still fully available; call "
-    "them as normal and ignore any earlier claim that you lack tool access. Continue the task "
-    "from where you left off. Do not restart or repeat prior text.]"
-)
-_LENGTH_CONTINUATION_OUTPUT_LIMIT = (
-    "[System: Your previous response was truncated by the output length limit. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
-)
-# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
-_LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
-)
-# The dropped-tools variant interpolates tool names; matched by prefix.
-_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
-
-
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
@@ -951,45 +1023,6 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list
             "interruption, not a capability change — your tools remain fully available.]"
         )
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
-
-
-# Codex/Responses turns that returned only internal reasoning: a bare retry would be
-# byte-identical, so the model repeats it.
-_CODEX_INCOMPLETE_NUDGE = (
-    "[System: Your previous response contained only internal reasoning and never produced a "
-    "visible answer or tool call. Do not keep thinking. Produce your final answer as plain text "
-    "now (or make the tool call you were planning).]"
-)
-
-
-# Re-prompt after an acknowledgment-only Codex/Responses reply.
-_CODEX_ACK_CONTINUATION_NUDGE = (
-    "[System: Continue now. Execute the required tool calls and only send your final answer "
-    "after completing the task.]"
-)
-
-# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
-# for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
-_DEGENERATE_FINAL_NUDGE = (
-    "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
-    "If the task is unfinished, continue it and then give the complete answer. If that fragment "
-    "WAS your complete answer, send it again exactly as before.]"
-)
-
-# Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
-_DROPPED_TOOLCALL_NUDGE_CONTENT = (
-    "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "
-    "restate intent — issue the actual tool call now to continue the task."
-)
-
-# Re-prompt for an empty response after tool calls (#9400); the metadata flag does not
-# survive SessionDB projection, so it is matched by content.
-_EMPTY_TOOL_RESPONSE_NUDGE = (
-    "You just executed tool calls but returned an empty response. Please process the tool "
-    "results above and continue with the task."
-)
-
-
 
 
 # Memo for send-path tool-call argument canonicalization (re-run on every historical call
@@ -1072,15 +1105,21 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
 
 
 def _content_policy_blocked_result(
-    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str
+    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str,
+    boundary_row_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """Terminal turn result for a content-policy block (deterministic for the unchanged
-    prompt, so no retry); shared by the HTTP-200 and exception paths."""
-    return {
+    prompt, so no retry); shared by the HTTP-200 and exception paths. ``messages`` is the
+    CLEAN pre-refusal history (the refused turn is dropped from it). ``boundary_row_id`` is
+    the durable row that started the refused run, so the owner drops the exact turn."""
+    result = {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
         "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
+    if boundary_row_id is not None:
+        result["refused_turn_boundary_row_id"] = boundary_row_id
+    return result
 
 
 def _partial_turn_result(
@@ -1169,10 +1208,10 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     if len(content) == 1:
         content[0]["text"] = effective
         return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head):]:
-            content[1]["text"] = effective[len(head):]
+    if len(content) in (2, 3):  # [static, volatile] or [static, session rest, ephemeral tail]
+        head = "".join(part.get("text") or "" for part in content[:-1])
+        if all(part.get("text") for part in content[:-1]) and effective.startswith(head) and effective[len(head):]:
+            content[-1]["text"] = effective[len(head):]
             return True
     return False
 
@@ -1250,9 +1289,11 @@ def _redecorate_prompt_cache_for_provider(
             planned_tools,
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
-            cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
+            cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model,
+                                          base_url=getattr(agent, "base_url", "") or ""),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),
@@ -1534,13 +1575,32 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
+def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
+    """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
+    return finalize_turn(agent, **{
+        name: getattr(s, name)
+        for name in inspect.signature(finalize_turn).parameters if name != "agent"
+    })
+
+
+def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optional[dict[str, Any]]:
+    """The turn's result when it never enters the generic loop, else None. A ``pre_llm_call``
+    veto finalizes with no inference request (the block message closes the transcript pair);
+    the opt-in codex app-server runtime runs the whole turn in its subprocess
+    (agent/transports/codex_app_server_session.py)."""
+    if block_message:
+        s.final_response, s._turn_exit_reason = block_message, PRE_LLM_BLOCK_EXIT_REASON
+        return _finalize_from_state(agent, s)
+    return _codex_app_server_turn(agent, s) if agent.api_mode == "codex_app_server" else None
+
+
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
-        should_review_memory=s._should_review_memory,
+        should_review_memory=s._should_review_memory, turn_id=s.turn_id,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):
@@ -1597,6 +1657,12 @@ def _run_conversation_turn(
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
+    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
+    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
+    # before any exit, so an early one never reads the previous turn's hold.
+    agent._held_transforms = held_stream_transforms()
+    agent._hold_stream = bool(agent._held_transforms)
+
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(
@@ -1645,10 +1711,8 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
-    # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
-    # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
-        return codex_result
+    if (early_result := _turn_without_loop(agent, s, _ctx.plugin_block_message)) is not None:
+        return early_result
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
@@ -1702,11 +1766,7 @@ def _run_conversation_turn(
             if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
                 break
 
-    # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
-    result = finalize_turn(agent, **{
-        name: getattr(s, name)
-        for name in inspect.signature(finalize_turn).parameters if name != "agent"
-    })
+    result = _finalize_from_state(agent, s)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).
@@ -1739,6 +1799,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1767,6 +1828,11 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    fence_result_reply(result)
+    # Joined before settle_held_final so a held transform sees the lead, unless a collapsed partial already ran it.
+    from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
+    lead_failed_turn_with_primary_auth(agent, result)
+    settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
@@ -1832,23 +1898,33 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
-    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
-    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
-    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    #1630 growth loop; their repair is rotation or a retry. ``content_policy_blocked`` too: the
+    WHOLE refused turn is erased from the conversation — the user message, any tool rounds that ran,
+    and the refusal (the owner rewinds it durably: the gateway owner-side for Bot Chat, the CLI/ACP
+    owner for their direct DB; in-memory surfaces return the pre-refusal history). Erasing the whole
+    turn (tool rounds included) is deliberate: the user keeps SEEING the message in the chat, but the
+    model is never re-sent the content that tripped the filter, so the chat is not locked. A closing
+    boundary would only be written to be rewound. Idempotence
+    is keyed on the DURABLE tail (``latest_conversation_role``), so a redelivery or a tail
+    already closed by another writer is a no-op, and the gateway's own closer then no-ops in turn.
     """
     try:
         if not isinstance(result, dict) or result.get("completed") is True:
             return
         if (
             result.get("compression_exhausted") or result.get("compression_deferred")
-            or result.get("failure_reason") == "context_overflow"
+            or result.get("failure_reason") in ("context_overflow", "content_policy_blocked")
         ):
             return
         messages = result.get("messages")
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES:
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        if getattr(agent, "_persist_disabled", False) or (
+            (store.messages if store is not None else db).latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES
+        ):
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.

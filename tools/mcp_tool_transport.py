@@ -12,8 +12,9 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
+from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
@@ -150,10 +151,20 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
     return list(_stdio_launch(config)), set()
 
 
+def _sdk_unavailable_error(server_name: str) -> ImportError:
+    """The connect error when the core ``mcp`` SDK did not import: its own cause when the import
+    failed (a broken or mid-update install, retried on the next connect), else not installed."""
+    cause = _core._MCP_SDK_IMPORT_ERROR
+    if cause:
+        return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but importing it "
+                           f"failed ({cause}). It is retried on the next connect; if this persists, "
+                           "run `hermes pm repair`.")
+    return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but it is not "
+                       "installed. Run `hermes setup` to install MCP support, then retry.")
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
-
-    __slots__ = ()
 
     def _advertises_tools(self) -> bool:
         """False only when captured capabilities omit ``tools`` (prompt-/resource-only servers,
@@ -330,7 +341,6 @@ class MCPServerTransportMixin:
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
-                from hermes_cli.process_identity import register_child
                 register_child(_pid, "mcp-helper")
             except Exception:
                 logger.debug("spawn-ledger register_child failed for MCP helper pid %s", _pid, exc_info=True)
@@ -338,7 +348,7 @@ class MCPServerTransportMixin:
         # process (kill -9, crash, force-quit) can't leave this server — or its descendants, e.g.
         # mcp-remote's spawned `node` — running forever. The graceful paths (shutdown,
         # _kill_orphaned_mcp_children) still reap as before; this only covers when they never run.
-        _core._update_death_supervisor("register", new_pgids.values())
+        own_process_groups(new_pgids.values())
 
     def _release_spawned_children(self, new_pids: set[int]) -> None:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
@@ -360,16 +370,17 @@ class MCPServerTransportMixin:
                     if dropped is not None:
                         released_pgids.append(dropped)
                     _stdio_starttimes.pop(pid, None)
-        _core._update_death_supervisor("unregister", released_pgids)
+        release_process_groups(released_pgids)
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        from tools.hosted_tool_policy import require_host_feature
+        require_host_feature("mcp_stdio", f"MCP server '{self.name}' (stdio)")
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)
         if not _core._ensure_mcp_sdk():
-            raise ImportError(f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                              "it is not installed. Run `hermes setup` to install MCP support, then retry.")
+            raise _sdk_unavailable_error(self.name)
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
@@ -484,7 +495,9 @@ class MCPServerTransportMixin:
         if not _non_mcp_2xx(resp):
             return
         ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at {url} returned Content-Type '{ct_base}', not an MCP "
+        from agent.redact import redact_sensitive_text  # error text reaches the model: no ?token= credential
+        shown = redact_sensitive_text(str(url), redact_url_credentials=True)
+        raise NonMcpEndpointError(f"MCP server '{self.name}' at {shown} returned Content-Type '{ct_base}', not an MCP "
             f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
             "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
@@ -589,16 +602,23 @@ class MCPServerTransportMixin:
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
             async with _build_client(**client_kwargs) as http_client:
-                async with _core.streamable_http_client(url, http_client=http_client) as streams:
+                # Without max_sse_event_size the SDK parses each event against httpx2's 1 MiB default,
+                # a tighter second cap under our wire cap: a large tools/list or tool result (an
+                # editor screenshot) failed outright.
+                async with _core.streamable_http_client(url, http_client=http_client,
+                                                        max_sse_event_size=_MCP_HTTP_MAX_BODY_BYTES) as streams:
                     yield streams
         return _owned_client_streams()
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
-        _core._ensure_mcp_sdk()
+        if not _core._ensure_mcp_sdk():
+            raise _sdk_unavailable_error(self.name)
         if not _core._MCP_HTTP_AVAILABLE:
+            cause = _core._MCP_HTTP_IMPORT_ERROR
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
-                              "mcp.client.streamable_http is not available. "
+                              "mcp.client.streamable_http is not available"
+                              + (f" ({cause})" if cause else "") + ". "
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.
@@ -693,10 +713,14 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
+        if self._registered_tool_names:
+            # A reconnect keeps the registered tools, but the trust gate must judge the session that will
+            # run the call: refresh readOnlyHint from this listing (#144380).
+            for key in owned:
+                _registration._record_tool_trust_metadata(self.name, self._config, self._tools, key)
+            return
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)

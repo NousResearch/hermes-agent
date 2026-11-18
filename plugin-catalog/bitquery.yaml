@@ -1,0 +1,35 @@
+name: bitquery
+title: Bitquery
+repo: https://github.com/bitquery/hermes-plugin
+sha: a37f548a7e7f3c03a99a89655dfaf9d4c07a60db
+description: >-
+  On-chain data in Hermes: token prices and candles, DEX trades, trader PnL, transfer tracing on 19
+  chains, address labels and risk reports, Hyperliquid and Polymarket data, through Bitquery's
+  hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE), with
+  eight workflow skills bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json +
+  skills/). Disclosure — hosted-only connector with no local code: every tool call goes to
+  Bitquery's MCP server at mcp.bitquery.io, signed in as the user through Bitquery's sign-in, and
+  a first sign-in creates a Bitquery account on a free 7-day trial. The addresses, tokens and
+  questions in a call are sent to Bitquery, each call uses credits from the user's Bitquery plan,
+  and results are pulled into the session context, so they reach the user's model provider. Every
+  tool is read-only (readOnlyHint on all of them): none signs or sends a transaction, places an
+  order or changes the user's account. The tool list comes from Bitquery's server at run time, so
+  the pinned commit doesn't cover it. Hermes stores and refreshes the OAuth tokens. OAuth must be
+  enabled with
+  `hermes mcp add bitquery --url https://mcp.bitquery.io/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: bitquery
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/bitquery/hermes-plugin/blob/a37f548a7e7f3c03a99a89655dfaf9d4c07a60db/README.md
+version: "1.0.0"
+image: https://raw.githubusercontent.com/bitquery/hermes-plugin/a37f548a7e7f3c03a99a89655dfaf9d4c07a60db/assets/catalog-card.png
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add bitquery --url https://mcp.bitquery.io/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

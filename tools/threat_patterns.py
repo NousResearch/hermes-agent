@@ -68,33 +68,7 @@ _MODIFY = r"(update|modify|edit|write|change|append|add\s{1,64}to)\s{1,64}[^\n]{
 _TRANSLATED_FILLER = r"(?:\w{1,32}\s{1,32}){0,3}"
 _FILLER_CJK = r"[\s\S]{0,12}"
 
-_PATTERNS: list[tuple[str, str, str]] = [
-    # ── Classic prompt injection (applies everywhere) ────────────────
-    (rf'ignore\s{{1,64}}{_FILLER}(previous|all|above|prior)\s{{1,64}}{_FILLER}instructions', "prompt_injection", "all"),
-    (r'system\s{1,64}prompt\s{1,64}override', "sys_prompt_override", "all"),
-    (rf'disregard\s{{1,64}}{_FILLER}(your|all|any)\s{{1,64}}{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
-    # The determiner must follow `forget` directly and the filler is short, so docs like "don't forget to
-    # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
-    (FORGET_RULES_RE, "forget_rules", "all"),
-    (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
-    (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
-    (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),
-    (
-        r"translate\s{1,64}[^\n]{0,512}\s{1,64}into\s{1,64}\w{1,64}(?:[\s-]{1,64}\w{1,64}){0,2}\s{1,64}and\s{1,64}(execute|run|eval)\b",
-        "translate_execute",
-        "all",
-    ),
-    (rf'do\s{{1,64}}not\s{{1,64}}{_FILLER}tell\s{{1,64}}{_FILLER}the\s{{1,64}}user', "deception_hide", "all"),
-
-    # ── Role-play / identity hijack (scraped web content, poisoned context files) ──
-    (rf'you\s{{1,64}}are\s{{1,64}}{_FILLER}now\s{{1,64}}(?:a|an|the)\s{{1,64}}', "role_hijack", "context"),
-    (rf'pretend\s{{1,64}}{_FILLER}(you\s{{1,64}}are|to\s{{1,64}}be)\s{{1,64}}', "role_pretend", "context"),
-    (rf'output\s{{1,64}}{_FILLER}(system|initial)\s{{1,64}}prompt', "leak_system_prompt", "context"),
-    (rf'(respond|answer|reply)\s{{1,64}}without\s{{1,64}}{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
-    (rf'you\s{{1,64}}have\s{{1,64}}been\s{{1,64}}{_FILLER}(updated|upgraded|patched)\s{{1,64}}to', "fake_update", "context"),
-    # Brainworm tell: identity override via spec. Verb pair anchored so "name your variables" is safe.
-    (r'\bname\s{1,64}yourself\s{1,64}\w{1,64}', "identity_override", "context"),
-
+_TRANSLATED_PATTERNS: list[tuple[str, str, str]] = [
     # ── Non-English variants of the classic-injection prose classes
     #    (#81056) — the prose patterns above are English-only, so a
     #    payload expressed in another language sailed through the
@@ -192,6 +166,35 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (r'(?:不受限制|无限制)[\s\S]{0,6}(?:回答|回复)',
      "remove_filters", "context"),  # zh: "不受限制地回答 / 无限制回复"
 
+]
+
+_PATTERNS: list[tuple[str, str, str]] = [
+    # ── Classic prompt injection (applies everywhere) ────────────────
+    (rf'ignore\s{{1,64}}{_FILLER}(previous|all|above|prior)\s{{1,64}}{_FILLER}instructions', "prompt_injection", "all"),
+    (r'system\s{1,64}prompt\s{1,64}override', "sys_prompt_override", "all"),
+    (rf'disregard\s{{1,64}}{_FILLER}(your|all|any)\s{{1,64}}{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
+    # The determiner must follow `forget` directly and the filler is short, so docs like "don't forget to
+    # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
+    (FORGET_RULES_RE, "forget_rules", "all"),
+    (rf'act\s{{1,64}}as\s{{1,64}}(if|though)\s{{1,64}}{_FILLER}you\s{{1,64}}{_FILLER}(have\s{{1,64}}no|don\'t\s{{1,64}}have)\s{{1,64}}{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
+    (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
+    (r'<\s{0,64}div\s{1,64}style\s{0,64}=\s{0,64}["\'][^>]{0,2048}display\s{0,64}:\s{0,64}none', "hidden_div", "all"),
+    (
+        r"translate\s{1,64}[^\n]{0,512}\s{1,64}into\s{1,64}\w{1,64}(?:[\s-]{1,64}\w{1,64}){0,2}\s{1,64}and\s{1,64}(execute|run|eval)\b",
+        "translate_execute",
+        "all",
+    ),
+    (rf'do\s{{1,64}}not\s{{1,64}}{_FILLER}tell\s{{1,64}}{_FILLER}the\s{{1,64}}user', "deception_hide", "all"),
+
+    # ── Role-play / identity hijack (scraped web content, poisoned context files) ──
+    (rf'you\s{{1,64}}are\s{{1,64}}{_FILLER}now\s{{1,64}}(?:a|an|the)\s{{1,64}}', "role_hijack", "context"),
+    (rf'pretend\s{{1,64}}{_FILLER}(you\s{{1,64}}are|to\s{{1,64}}be)\s{{1,64}}', "role_pretend", "context"),
+    (rf'output\s{{1,64}}{_FILLER}(system|initial)\s{{1,64}}prompt', "leak_system_prompt", "context"),
+    (rf'(respond|answer|reply)\s{{1,64}}without\s{{1,64}}{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
+    (rf'you\s{{1,64}}have\s{{1,64}}been\s{{1,64}}{_FILLER}(updated|upgraded|patched)\s{{1,64}}to', "fake_update", "context"),
+    # Brainworm tell: identity override via spec. Verb pair anchored so "name your variables" is safe.
+    (r'\bname\s{1,64}yourself\s{1,64}\w{1,64}', "identity_override", "context"),
+
     # ── C2 / Brainworm-style promptware (context scope) ──────────────
     # Anchored on C2 vocabulary. "register as a node" appears in legitimate distributed-systems
     # docs, so this is WARN not block: a researcher reading the Brainworm post keeps their session.
@@ -270,6 +273,8 @@ EMOJI_TAG_SEQUENCE_RE = re.compile(
 _SCOPE_SETS = {"all": ("all", "context", "strict"), "context": ("context", "strict"), "strict": ("strict",)}
 
 
+_PATTERNS += _TRANSLATED_PATTERNS
+
 def _compile() -> dict[str, list[tuple[re.Pattern, str]]]:
     compiled: dict[str, list[tuple[re.Pattern, str]]] = {"all": [], "context": [], "strict": []}
     for pattern, pid, scope in _PATTERNS:
@@ -286,10 +291,11 @@ def _compile() -> dict[str, list[tuple[re.Pattern, str]]]:
 _COMPILED = _compile()
 
 
-def patterns_for_ids(pattern_ids) -> list[tuple[str, str]]:
+def patterns_for_ids(pattern_ids, *, translated_only: bool = False) -> list[tuple[str, str]]:
     """Canonical regexes shared by the context, cron and install scanners."""
     wanted = set(pattern_ids)
-    return [(pattern, pid) for pattern, pid, _scope in _PATTERNS if pid in wanted]
+    catalog = _TRANSLATED_PATTERNS if translated_only else _PATTERNS
+    return [(pattern, pid) for pattern, pid, _scope in catalog if pid in wanted]
 
 
 _WS_RUN = re.compile(r"\s{2,}")

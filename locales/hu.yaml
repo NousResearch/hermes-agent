@@ -4038,7 +4038,7 @@ plan_usage:
   large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
   large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
     more: "+{count} további"

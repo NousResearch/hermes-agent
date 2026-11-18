@@ -1,6 +1,6 @@
 """Tests for BaseEnvironment unified execution model.
 
-Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
+Tests _wrap_command(), _parse_cwd_marker(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
@@ -222,7 +222,7 @@ class TestExtractCwdFromOutput:
         result = {
             "output": f"hello\n{marker}/home/user{marker}\n",
         }
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == "/home/user"
         assert marker not in result["output"]

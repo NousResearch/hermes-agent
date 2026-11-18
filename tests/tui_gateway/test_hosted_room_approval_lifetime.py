@@ -11,24 +11,26 @@ from tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _ApprovalPeerClient, _FakeRPC, _server
 
 from gateway import hosted_room_driver as driver, hosted_rooms
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.tui_gateway.test_hosted_room_stop_replay import _service
 
 
 @pytest.fixture
 def pending_approval(tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     service = _service(db)
     service.create_room(room_id="room", name="Approval lifetime", members=[
         {"member_id": "default", "profile": "default", "handle": "hermes"},
         {"member_id": "ops", "profile": "ops", "handle": "ops"}])
     service.send(room_id="room", event_id="ask", payload={"text": "@ops Inspect", "thread_id": "ask"})
-    task, = driver.list_tasks(db, room_id="room", status="queued")
+    task, = driver.list_tasks(db, placement="profile", room_id="room", status="queued")
     binding, = service.bindings()
     lease = driver.acquire_lease(
-        db, room_id="room", gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+        db, placement="profile", room_id="room", gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
         process_generation="worker", ttl_seconds=30, clock=time.time)
-    driver.start_task(db, task["identity"], lease, expected_cancel_generation=0, clock=time.time)
-    task = driver.get_task(db, task["identity"])
+    driver.start_task(db, task["identity"], lease, placement="profile", expected_cancel_generation=0, clock=time.time)
+    task = driver.get_task(db, task["identity"], placement="profile")
     service.runtime._report_pending_action(task, session_id="ops-session", info={"pending_approval": {
         "request_id": "approval", "command": "echo example", "choices": ["once", "deny"]}})
     assert service.status("room")["pending_actions"][0]["request_id"] == "approval"
@@ -45,12 +47,12 @@ def _serve_tasks(monkeypatch, rows):
 
 def test_stop_withdraws_cached_approval_before_and_after_acknowledgement(pending_approval):
     service, task, _lease = pending_approval
-    db = service.db_path
+    db = service.store
     stopping = driver.begin_task_cancel(
-        db, task["identity"], cancel_id="stop", expected_cancel_generation=0, clock=time.time)
+        db, task["identity"], placement="profile", cancel_id="stop", expected_cancel_generation=0, clock=time.time)
     assert service.status("room")["pending_actions"] == []
     driver.complete_task_cancel(
-        db, task["identity"], cancel_id="stop",
+        db, task["identity"], placement="profile", cancel_id="stop",
         expected_cancel_generation=stopping["cancel_generation"], clock=time.time)
     # No new RPC info poll clears the cached action after cancellation.
     assert service.status("room")["pending_actions"] == []
@@ -58,19 +60,19 @@ def test_stop_withdraws_cached_approval_before_and_after_acknowledgement(pending
 
 def test_deferred_attempt_keeps_its_live_approval(pending_approval):
     service, task, lease = pending_approval
-    db = service.db_path
+    db = service.store
     def clock():
         return lease.expires_at + 1
     recovered = driver.acquire_lease(
-        db, room_id="room", gateway_id=lease.gateway_id, authority_epoch=lease.authority_epoch,
+        db, placement="profile", room_id="room", gateway_id=lease.gateway_id, authority_epoch=lease.authority_epoch,
         process_generation="recovered", ttl_seconds=30, clock=clock)
-    driver.recover_room(db, recovered, clock=clock)
-    assert driver.get_task(db, task["identity"])["status"] == "indeterminate"
+    driver.recover_room(db, recovered, placement="profile", clock=clock)
+    assert driver.get_task(db, task["identity"], placement="profile")["status"] == "indeterminate"
     assert any(a.get("request_id") == "approval" for a in service.status("room")["pending_actions"])
     driver.defer_indeterminate_task(
-        db, task["identity"], recovered, expected_execution_generation=task["execution_generation"],
+        db, task["identity"], recovered, placement="profile", expected_execution_generation=task["execution_generation"],
         expected_cancel_generation=0, reason="observation_lost", clock=clock)
-    assert driver.get_task(db, task["identity"])["status"] == "deferred"
+    assert driver.get_task(db, task["identity"], placement="profile")["status"] == "deferred"
     assert any(a.get("request_id") == "approval" for a in service.status("room")["pending_actions"])
     service.rpc = rpc = _FakeRPC()
     assert service.approve_room_task(
@@ -94,7 +96,7 @@ def test_stopped_approval_cannot_dispatch_and_is_retired(pending_approval, monke
     for hook in ("_interrupt_stopping_task", "_settle_stopping_completion", "_peer_stop_acknowledged"):
         monkeypatch.setattr(service.runtime, hook, lambda *_args: False)
     service.stop_room("room", cancel_id="stop")
-    assert driver.get_task(service.db_path, task["identity"])["status"] == "stopping"
+    assert driver.get_task(service.store, task["identity"], placement="profile")["status"] == "stopping"
     with pytest.raises(RuntimeError, match="room approval is no longer pending"):
         service.approve_room_task(
             "room", member_id="ops", task_id=task["identity"].task_id,
@@ -104,9 +106,8 @@ def test_stopped_approval_cannot_dispatch_and_is_retired(pending_approval, monke
     assert ("room", "ops") not in service._pending_actions
 
 
-
 def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypatch):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
@@ -121,7 +122,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
         grant="signed.room.grant",
     )
     peer = _ApprovalPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=db, placement="profile")
     service.register_peer_route(
         room_id="room-1",
         member_id="member-peer",
@@ -153,7 +154,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
             }
         ],
     )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     _serve_tasks(monkeypatch, [{
         "identity": identity, "execution_generation": 2, "status": "running",
         "payload": {"target_member_id": "member-peer", "target_profile": "reviewer"}}])
@@ -227,14 +228,13 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
     assert service.status("room-1")["pending_actions"] == []
 
 
-
 def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path, monkeypatch):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service = HostedRoomService(_server(), store=storage_handle(tmp_path), placement="profile")
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
     _serve_tasks(monkeypatch, [{
-        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+        "identity": HostedTaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
         "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     action = {
         "kind": "approval",
@@ -275,7 +275,7 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
 
     class _RecordingRPC(_FakeRPC):
         def approve(self, **kwargs):
-            statuses_at_dispatch.append(driver.get_task(service.db_path, task["identity"])["status"])
+            statuses_at_dispatch.append(driver.get_task(service.store, task["identity"], placement="profile")["status"])
             return super().approve(**kwargs)
 
     service.rpc = service.runtime.rpc = _RecordingRPC()
@@ -322,5 +322,5 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
     assert not stopper.is_alive()
     # Either the member got its answer while the attempt still ran, or the Allow was refused.
     assert statuses_at_dispatch in ([], ["running"]), (statuses_at_dispatch, result)
-    assert driver.get_task(service.db_path, task["identity"])["status"] == "stopping"
+    assert driver.get_task(service.store, task["identity"], placement="profile")["status"] == "stopping"
     assert ("room", "ops") not in service._pending_actions

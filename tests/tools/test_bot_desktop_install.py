@@ -19,7 +19,8 @@ def _isolated_host(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y tigervnc-standalone-server")
     yield
-    install._running.clear()
+    for key in list(install._slot_files):
+        install.release(key)
 
 
 def test_empty_password_cancels_without_spawning(monkeypatch):

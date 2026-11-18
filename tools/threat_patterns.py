@@ -1,9 +1,9 @@
-"""Shared threat-pattern library (prompt injection / promptware / exfiltration) for
-``agent/prompt_builder.py``, ``tools/memory_tool.py`` and ``agent/tool_dispatch_helpers.py``.
+"""Shared threat-pattern library (prompt injection / promptware / exfiltration).
 Each pattern is ``(regex, pattern_id, scope)``; scope is cumulative: ``"all"`` everywhere,
 ``"context"`` adds promptware / C2 / role hijack for context files, memory and tool results
 (warn-level: that content is not user-authored), ``"strict"`` adds aggressive checks only for
-user-mediated writes (memory, skill installs) where a block is resolvable. New patterns must
+memory writes, where a block is resolvable. Skill installs are scanned by ``skills_guard``,
+not here. New patterns must
 anchor on C2 vocabulary or unambiguous attack behavior, NOT bossy English ("you must" is common
 in legitimate AGENTS.md); filler between tokens is the bounded ``_FILLER``."""
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Optional
 
 # Hard cap on scanned text: scanners are advisory, so bound worst-case runtime.
 # The whole input is still scanned — just in bounded chunks of this size — so a
@@ -27,14 +27,14 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
-# "forget your original instructions" (#26977); shared with tools/skills_guard.py and tools/cronjob_prompt_scan.py.
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py and cron/prompt_scan.py.
 # The word before `forget` is consumed rather than looked behind so a "don't / never / do not forget" exclusion holds
 # across any run of spaces or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent`
 # negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
 _NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
             r"|cannot|not|never)")
 # FORGET_RULES_RAW_RE is the unbounded rule for the raw-line scanners (tools/skills_guard.py,
-# tools/cronjob_prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
+# cron/prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
 FORGET_RULES_RAW_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’'])+[ \t]+"
                        r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
                        r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"

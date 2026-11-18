@@ -27,7 +27,8 @@ from hermes_cli.web_server_cron import (
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
-from hermes_state_keys import legacy_cron_run_job
+from persistence.authority.bindings import legacy_cron_run_job
+from persistence.conversation.sessions import SessionWindow
 from hermes_constants import (
     get_hermes_home as _get_hermes_home,
     reset_hermes_home_override as _reset_hermes_home_override,
@@ -101,7 +102,7 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
     # The tool path's canonicalizer: a JSON list joins to "a,b" instead of a
     # Python list repr that the bot-chat guard and the scheduler cannot parse.
-    from tools.cronjob_job_args import _normalize_deliver_param
+    from cron.job_args import _normalize_deliver_param
     if "deliver" in normalized:
         normalized["deliver"] = _normalize_deliver_param(normalized["deliver"]) or "local"
     if "failure_deliver" in normalized:
@@ -558,11 +559,12 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         limit_n = 20
 
     with _owner_home_scope(selected):
-        db = _open_session_db_for_profile(selected, read_only=True)
+        store = _open_session_db_for_profile(selected, read_only=True)
         try:
-            session_runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+            session_runs = [run.as_cron_row() for run in
+                            store.sessions.list_cron_job_runs(canonical, SessionWindow(limit=limit_n))]
         finally:
-            db.close()
+            store.close()
 
         now = time.time()
         inflight = _live_inflight_execution(canonical)

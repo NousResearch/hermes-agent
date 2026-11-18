@@ -133,7 +133,7 @@ def test_session_store_open_runs_no_state_db_or_checkpoint_maintenance(monkeypat
     from cli import HermesCLI
     calls = []
     monkeypatch.setattr(cli_mod, "_run_state_db_auto_maintenance", lambda db: calls.append("state.db"))
-    import tools.checkpoint_maintenance as ckpt
+    import agent.checkpoints.maintenance as ckpt
     monkeypatch.setattr(ckpt, "auto_prune_from_config", lambda *a, **k: calls.append("checkpoints"))
     cli = types.SimpleNamespace()
     HermesCLI._init_session_store(cli)

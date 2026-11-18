@@ -118,14 +118,17 @@ interface KeptChatRoutesProps {
   chat: ReactNode
   /** Every other route (workspace pages, plugin pages, overlay paths), painted over the chat. */
   pages: ReactNode
+  /** Painted over whichever of the two is showing, which it covers while set (a splash). */
+  cover?: ReactNode
 }
 
 /** The workspace pane's routes with the chat kept alive under pages. Until the chat has been shown
  *  once (a deep link straight to a page) there is nothing to keep, so nothing renders under it. */
-export function KeptChatRoutes({ chat, pages }: KeptChatRoutesProps) {
+export function KeptChatRoutes({ chat, cover, pages }: KeptChatRoutesProps) {
   const current = useRouterLocation()
   const onChat = appViewForPath(current.location.pathname) === 'chat'
   const [kept, setKept] = useState<RouterLocation | null>(onChat ? current : null)
+  const covered = Boolean(cover)
 
   if (onChat && (!kept || !samePlace(kept.location, current.location))) {
     setKept(current)
@@ -134,15 +137,16 @@ export function KeptChatRoutes({ chat, pages }: KeptChatRoutesProps) {
   return (
     <>
       {kept && (
-        <CoveredRegion className="absolute inset-0" covered={!onChat}>
+        <CoveredRegion className="absolute inset-0" covered={!onChat || covered}>
           <ChatAt chat={chat} location={kept} />
         </CoveredRegion>
       )}
       {!onChat && (
-        <div className="absolute inset-0" data-slot="workspace-page-layer">
+        <CoveredRegion className="absolute inset-0" covered={covered} slot="workspace-page-layer">
           <Routes>{pages}</Routes>
-        </div>
+        </CoveredRegion>
       )}
+      {cover}
     </>
   )
 }

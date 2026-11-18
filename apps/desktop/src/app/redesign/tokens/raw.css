@@ -6,6 +6,22 @@
   --portal-raw-blue: #0000f2;
   /* The blue lightened to AA for thin marks (rings, links, counts) on navy. */
   --portal-raw-blue-ink-dark: #8585ff;
+  /* "Make it yours" (first-time splash 1A 477:4004): the four other colours the brand gesture can wear,
+     each a fill (white ink on it, and the brand ink on light) and its ink lightened for navy. Every
+     pair keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink on every light
+     and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). */
+  --portal-raw-violet: #6d28d9;
+  --portal-raw-violet-ink-dark: #b79cff;
+  --portal-raw-green-deep: #086b36;
+  --portal-raw-green-ink-dark: #3fd68a;
+  --portal-raw-orange-deep: #a33f00;
+  --portal-raw-orange-ink-dark: #ff9a52;
+  --portal-raw-pink: #b0124f;
+  --portal-raw-pink-ink-dark: #ff80b0;
+  /* The accent the brand gesture wears: the blue, or the person's pick (data-portal-accent, below). The
+     navy family (veils, panels, the composer card) stays on the blue whatever the accent. */
+  --portal-raw-accent: var(--portal-raw-blue);
+  --portal-raw-accent-ink-dark: var(--portal-raw-blue-ink-dark);
   /* Figma primary/white: ink on the brand fill. */
   --portal-raw-white: #f2f2f2;
   --portal-raw-pure-white: #fff;
@@ -55,18 +71,39 @@
   --portal-raw-ink-22: color-mix(in srgb, var(--ui-base) 22%, transparent);
   --portal-raw-ink-28: color-mix(in srgb, var(--ui-base) 28%, transparent);
   --portal-raw-ink-40: color-mix(in srgb, var(--ui-base) 40%, transparent);
-  /* Brand tints: row selection 8, info banner 10, light brand selection 12, dark brand selection 25,
-     info banner stroke 60. */
-  --portal-raw-brand-8: color-mix(in srgb, var(--portal-raw-blue) 8%, transparent);
-  --portal-raw-brand-10: color-mix(in srgb, var(--portal-raw-blue) 10%, transparent);
-  --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-blue) 12%, transparent);
-  --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-blue) 25%, transparent);
+  /* Brand tints, in the accent: row selection 8, info banner 10, light brand selection 12, dark brand
+     selection 25, info banner stroke 60. */
+  --portal-raw-brand-8: color-mix(in srgb, var(--portal-raw-accent) 8%, transparent);
+  --portal-raw-brand-10: color-mix(in srgb, var(--portal-raw-accent) 10%, transparent);
+  --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-accent) 12%, transparent);
+  --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-accent) 25%, transparent);
   /* The blue under a sidebar agent card (16292:15630). */
-  --portal-raw-brand-30: color-mix(in srgb, var(--portal-raw-blue) 30%, transparent);
-  --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-blue) 60%, transparent);
+  --portal-raw-brand-30: color-mix(in srgb, var(--portal-raw-accent) 30%, transparent);
+  --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-accent) 60%, transparent);
   /* Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. */
   --portal-raw-danger-8: color-mix(in srgb, var(--portal-raw-danger) 8%, transparent);
   --portal-raw-danger-14: color-mix(in srgb, var(--portal-raw-danger) 14%, transparent);
   --portal-raw-danger-20: color-mix(in srgb, var(--portal-raw-danger) 20%, transparent);
   --portal-raw-danger-50: color-mix(in srgb, var(--portal-raw-danger) 50%, transparent);
+}
+
+/* The accent picked in "Make it yours" (store/portal-accent.ts). Blue sets no attribute. */
+:root[data-shell='portal'][data-portal-accent='violet'] {
+  --portal-raw-accent: var(--portal-raw-violet);
+  --portal-raw-accent-ink-dark: var(--portal-raw-violet-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='green'] {
+  --portal-raw-accent: var(--portal-raw-green-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-green-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='orange'] {
+  --portal-raw-accent: var(--portal-raw-orange-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-orange-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='pink'] {
+  --portal-raw-accent: var(--portal-raw-pink);
+  --portal-raw-accent-ink-dark: var(--portal-raw-pink-ink-dark);
 }

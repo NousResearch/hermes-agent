@@ -1,14 +1,19 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useFirstTimeCopy } from '@/app/discovery/first-time-copy'
 import { useI18n } from '@/i18n'
 import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { usePortalShell } from '@/store/shell-variant'
+import { $starterIdeas } from '@/store/starter-ideas'
 
 import { pickPlaceholder } from '../composer-utils'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
+  /** The redesign's empty-chat landing lays a newcomer's starter ideas under this composer. */
+  ideasBelow: boolean
   reconnecting: boolean
   /** The composer's durable draft scope: a stored session key, or a fresh draft's. */
   scope: null | string | undefined
@@ -56,9 +61,16 @@ function movedConversation(prev: Identity, next: Identity, created: null | strin
  * mid-stream) or the user opening an existing chat from the landing (re-roll);
  * only the send's create handoff, reporting the scope it created through
  * `sessionCreated`, tells them apart. While the transport is down, it swaps to a reconnecting / starting
- * message instead.
+ * message instead. A newcomer's new chat in the redesign says one fixed thing instead of rotating: that
+ * a task can be picked from the ideas below it while they are there, else to give the agent a task.
  */
-export function useComposerPlaceholder({ disabled, reconnecting, scope, sessionId }: UseComposerPlaceholderOptions): {
+export function useComposerPlaceholder({
+  disabled,
+  ideasBelow,
+  reconnecting,
+  scope,
+  sessionId
+}: UseComposerPlaceholderOptions): {
   placeholder: string
   sessionCreated: (scope: string) => void
 } {
@@ -67,6 +79,15 @@ export function useComposerPlaceholder({ disabled, reconnecting, scope, sessionI
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
   const identity = redesign ? scope : sessionId
+  const ideas = useStore($starterIdeas)
+  const newcomerCopy = useFirstTimeCopy().landing
+
+  const newcomerPlaceholder =
+    redesign && ideas !== 'none' && !inConversation(identity, redesign)
+      ? ideas === 'ideas' && ideasBelow
+        ? newcomerCopy.placeholderIdeas
+        : newcomerCopy.placeholderRetired
+      : null
 
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
     pickPlaceholder(inConversation(identity, redesign) ? followUpPlaceholders : newSessionPlaceholders)
@@ -106,7 +127,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, scope, sessionI
     ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
-    : restingPlaceholder
+    : (newcomerPlaceholder ?? restingPlaceholder)
 
   return { placeholder, sessionCreated: created => (createdScopeRef.current = created) }
 }

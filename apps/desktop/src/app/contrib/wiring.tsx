@@ -63,7 +63,7 @@ import {
   newSessionInProfile,
   normalizeProfileKey
 } from '@/store/profile'
-import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -103,6 +103,9 @@ import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
+import { useHeldPromptRun } from '../discovery/held-prompt-run'
+import { NewVersionNotice } from '../discovery/new-version-notice'
+import { NotificationBell } from '../discovery/notification-tray'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
@@ -185,6 +188,7 @@ import {
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { useDesktopMetrics } from './hooks/use-desktop-metrics'
+import { useNewProjectSessionRequest } from './hooks/use-new-project-session-request'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
@@ -297,6 +301,8 @@ function useStatusbarSurfaces(
         <SimplifiedNavigationSurface
           footer={
             <>
+              <NotificationBell />
+              <NewVersionNotice />
               <PortalFreeTierSignIn />
               <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
               <PortalStatusBarSource
@@ -736,30 +742,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useFirstRunOnboarding(requestGateway, adoptSessionRoute, gatewayState === 'open')
 
-  // "New project" DRAG completion: the dialog created a project that was
-  // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
-  // its fresh session draft exactly there — the same `openNewSessionTile`
-  // create path the new-session drags use — so the project starts, and stays,
-  // where it was dropped. Consume-once: drop the request after handling.
-  const newProjectSessionRequest = useStore($newProjectSessionRequest)
-
-  useEffect(() => {
-    if (!newProjectSessionRequest) {
-      return
-    }
-
-    const { path, placement } = newProjectSessionRequest
-
-    $newProjectSessionRequest.set(null)
-    void openNewSessionTile(placement.dir, {
-      anchor: placement.anchor,
-      before: placement.before,
-      cwd: path,
-      // Same draft-tab contract as onNewSessionSplit: a center/strip drop is
-      // an unlisted draft tab until its first turn; an edge split lists.
-      listed: placement.dir === 'center' ? false : undefined
-    })
-  }, [newProjectSessionRequest, openNewSessionTile])
+  useNewProjectSessionRequest(openNewSessionTile)
 
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 
@@ -834,10 +817,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
 
-  // The global-hotkey Quick Entry window's bridge: its captured text rides the
-  // SAME submit machinery the normal composer uses (current chat / picked
-  // session / new session), and it hears gateway truth from this window.
+  // The Quick Entry window's captured text, and a message held until sign up (held-prompt-run.ts),
+  // ride the SAME submit machinery the normal composer uses (current chat / picked session / new
+  // session), hearing gateway truth from this window.
   useQuickEntryBridge({ submitText, submitTextToNewSession })
+  useHeldPromptRun(submitTextToNewSession)
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })

@@ -33709,6 +33709,28 @@
             "default": {},
             "title": "Coverage",
             "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
+          },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
+          "learned": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Learned"
           }
         },
         "required": [

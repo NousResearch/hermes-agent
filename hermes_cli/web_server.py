@@ -68,7 +68,6 @@ _log = logging.getLogger(__name__)
 
 
 from hermes_cli.web_server_lifecycle import (
-    PORT_IN_USE_EXIT_CODE,
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
     _maybe_open_browser,
@@ -1374,7 +1373,7 @@ def _windows_serve_loop_factory(config):
     return factory
 
 
-def _run_serve(serve, config, host: str, port: int) -> None:
+def _run_serve(serve, config, host: str, port: int, *, headless: Optional[bool] = None) -> None:
     """Drive ``serve()`` on the loop uvicorn expects.
 
     POSIX keeps ``asyncio.run`` (already a SelectorEventLoop / uvloop). On
@@ -1413,8 +1412,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         # Probe-to-bind race (#93608): uvicorn's bind_socket() exits 1 — re-check
         # and translate a confirmed conflict into the sentinel + distinct code.
         if exc.code == 1 and _port_bind_conflict(host, port):
-            _report_port_in_use(host, port)
-            raise SystemExit(PORT_IN_USE_EXIT_CODE) from None
+            raise SystemExit(_report_port_in_use(host, port, headless=headless)) from None
         raise
 
 
@@ -1504,8 +1502,7 @@ def _start_server_runtime(
     # surfaces as the BACKEND_PORT_IN_USE sentinel + distinct exit code.
     # ``--port 0`` is skipped by the probe.
     if _port_bind_conflict(host, port):
-        _report_port_in_use(host, port)
-        raise SystemExit(PORT_IN_USE_EXIT_CODE)
+        raise SystemExit(_report_port_in_use(host, port, headless=headless))
 
     # LAST boot step, deliberately. One host process serves every profile and this one can be asked
     # for any of them via ``?profile=``, so the decision is made here instead of on the first such
@@ -1552,4 +1549,4 @@ def _start_server_runtime(
             if server.started:
                 await server.shutdown()
 
-    _run_serve(_serve, config, host, port)
+    _run_serve(_serve, config, host, port, headless=headless)

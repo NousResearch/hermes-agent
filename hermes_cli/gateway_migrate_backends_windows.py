@@ -277,4 +277,4 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item, *, env_
     else:
         steps += [kill[0] if kill else "# stop the old backend (Ctrl+C in its window)",
                   "# and remove whatever starts it at sign-in"]
-    return steps + gateway_tail(hermes)
+    return steps + gateway_tail(hermes, windows=True)

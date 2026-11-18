@@ -502,8 +502,10 @@ gateway would refuse, a public URL it would refuse, or the Webapp already enable
 6 this kind of backend cannot be migrated automatically (Nix, s6 or another container, a systemd
 system unit, Windows, or a host where the gateway cannot be a service). Exit 6 prints the steps to do
 it by hand, one per line, each `hermes` command naming this home (`hermes -p PROFILE ...`; for the default
-home `hermes -p default ...`, so a profile chosen with `hermes profile use` does not redirect it). They stop the old backend first, then install, start or restart the gateway by what `hermes
-gateway status` says, and end with `hermes webapp --status`. For a system unit only one line, `sudo
+home `hermes -p default ...`, so a profile chosen with `hermes profile use` does not redirect it). They stop the old backend first, then install, start or restart the gateway by the line `hermes
+gateway status` prints (the steps quote it), and end with `hermes webapp --status`. A gateway that has just
+started takes a few seconds to serve the address; until then that prints "The gateway is not running", so
+wait a few seconds and run it again. For a system unit only one line, `sudo
 systemctl disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix
 and containers the steps say what to change in the Nix configuration or the container definition
 instead (Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where

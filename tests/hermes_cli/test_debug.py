@@ -235,7 +235,7 @@ class TestCaptureLogSnapshotRedaction:
     ):
         """Regression test: redact_sensitive_text short-circuits without force=True.
 
-        If a future refactor drops `force=True` from `_redact_log_text`, this
+        If a future refactor drops `force=True` from `redact_debug_support_text`, this
         test fails immediately. Without `force=True`, the redactor returns the
         input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
         redaction feature ships silently broken for users who opted out of
@@ -287,6 +287,38 @@ class TestCaptureLogSnapshotRedaction:
         assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
         assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
 
+    def test_redacts_complete_log_lines_before_applying_byte_limits(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        max_bytes = 512
+        raw_window = 8192
+        tail_canary = "r36_REDACTED_tail_boundary_canary_012345"
+        full_canary = "r36_REDACTED_full_boundary_canary_678901"
+        payload = bytearray(b"x" * 12_000)
+
+        # The backwards-read window and the final full-log window each begin
+        # inside a credential field. Truncating first drops ``accessToken=``
+        # while retaining its complete value, which the redactor cannot then
+        # classify. A redacted share must either scrub the complete logical
+        # line before either cap or omit that partial line.
+        for boundary, canary in (
+            (len(payload) - raw_window, tail_canary),
+            (len(payload) - max_bytes, full_canary),
+        ):
+            marker = f"accessToken={canary}".encode()
+            start = boundary - len("accessToken=")
+            payload[start:start + len(marker)] = marker
+
+        (hermes_home_with_secret / "logs" / "agent.log").write_bytes(payload)
+
+        snap = _capture_log_snapshot("agent", tail_lines=1, max_bytes=max_bytes)
+
+        assert tail_canary not in snap.tail_text
+        assert snap.full_text is not None
+        assert full_canary not in snap.full_text
+
 
 
 # ---------------------------------------------------------------------------
@@ -305,58 +337,28 @@ class TestRunDebugShare:
 
 
 
-    def test_share_uploads_five_pastes(self, hermes_home, capsys):
-        """Successful share uploads report + agent.log + gateway.log + gui.log + desktop.log."""
+    def test_share_uploads_one_summary_paste(self, hermes_home, capsys):
+        """The public share is a single allowlisted summary paste; no full-log pastes (#46006)."""
         from hermes_cli.debug import run_debug_share
 
-        args = MagicMock()
-        args.lines = 50
-        args.expire = 7
-        args.local = False
-        args.nous = False
-
-        call_count = [0]
+        args = MagicMock(lines=50, expire=7, local=False, nous=False, no_redact=False)
         uploaded_content = []
-        def _mock_upload(content, expiry_days=7):
-            call_count[0] += 1
-            uploaded_content.append(content)
-            return f"https://paste.rs/paste{call_count[0]}"
 
-        with patch("hermes_cli.dump.run_dump") as mock_dump, \
-             patch("hermes_cli.debug.upload_to_pastebin",
-                    side_effect=_mock_upload):
-            mock_dump.side_effect = lambda a: print("--- hermes dump ---\nversion: test\n--- end dump ---")
+        def _mock_upload(content, expiry_days=7):
+            uploaded_content.append(content)
+            return f"https://paste.rs/paste{len(uploaded_content)}"
+
+        with patch("hermes_cli.debug.upload_to_pastebin", side_effect=_mock_upload):
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        # Should have 5 uploads: report, agent.log, gateway.log, gui.log, desktop.log
-        assert call_count[0] == 5
-        assert "paste.rs/paste1" in out  # Report
-        assert "paste.rs/paste2" in out  # agent.log
-        assert "paste.rs/paste3" in out  # gateway.log
-        assert "paste.rs/paste4" in out  # gui.log
-        assert "paste.rs/paste5" in out  # desktop.log
-        assert "Report" in out
-        assert "agent.log" in out
-        assert "gateway.log" in out
-        assert "gui.log" in out
-        assert "desktop.log" in out
-
-        # Each log paste should start with the dump header
-        agent_paste = uploaded_content[1]
-        assert "--- hermes dump ---" in agent_paste
-        assert "--- full agent.log ---" in agent_paste
-        gateway_paste = uploaded_content[2]
-        assert "--- hermes dump ---" in gateway_paste
-        assert "--- full gateway.log ---" in gateway_paste
-        gui_paste = uploaded_content[3]
-        assert "--- hermes dump ---" in gui_paste
-        assert "--- full gui.log ---" in gui_paste
-        desktop_paste = uploaded_content[4]
-        assert "--- hermes dump ---" in desktop_paste
-        assert "--- full desktop.log ---" in desktop_paste
-
-
+        assert len(uploaded_content) == 1
+        assert "paste.rs/paste1" in out and "Report" in out
+        assert "hermes debug share --nous" in out  # where full logs go instead
+        summary = uploaded_content[0]
+        assert "--- hermes debug summary ---" in summary
+        assert "session started" not in summary and "connection lost" not in summary
+        assert "gateway.run" in summary  # the ERROR's logger name is counted
 
 
 # ---------------------------------------------------------------------------
@@ -409,75 +411,192 @@ class TestRunDebugShareRedaction:
              patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
             run_debug_share(args)
 
-        # At least the report plus one full log paste reached the upload path.
-        assert len(captured) >= 2
+        # Only the allowlisted summary reaches the public paste (#46006).
+        assert len(captured) == 1
         for content in captured:
             assert _REDACT_FIXTURE_TOKEN not in content, (
                 "raw token leaked into upload-bound content"
             )
 
-    def test_default_share_includes_redaction_banner(
+    def test_fallback_provider_key_never_reaches_upload_bound_content(self, hermes_home_with_secret):
+        """``hermes dump`` quotes ``fallback_providers`` from config.yaml; neither the CLI share
+        bundle nor the gateway /debug report may carry a fallback entry's api_key."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        fallback_key = "fbk-opaque-0123456789abcdefghij"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    base_url: https://backup.example/v1\n"
+            f"    api_key: {fallback_key}\n", encoding="utf-8")
+
+        uploads = [*collect_share_bundle(log_lines=20).values(),
+                   collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert any("backup-model" in text for text in uploads)  # the dump really ran
+        assert not [text for text in uploads if fallback_key in text]
+
+    @pytest.mark.parametrize(("yaml_value", "secret"), [
+        ("87419362508741936250", "87419362508741936250"),  # unquoted: YAML int
+        ("'opaque***Fallback0123456789'", "opaque***Fallback0123456789"),  # looks pre-masked
+        ("{value: nestedOpaque0123456789abcdef}", "nestedOpaque0123456789abcdef"),
+    ])
+    def test_fallback_api_key_masked_whatever_its_yaml_shape(self, hermes_home_with_secret, yaml_value, secret):
+        """The runtime ``str()``s any ``api_key`` value (fallback_config.resolve_entry_api_key), so the
+        dump masks the field itself rather than relying on text redaction to recognise the value."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    api_key: {yaml_value}\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert "backup-model" in texts[0]
+        assert not [text for text in texts if secret in text]
+
+    @pytest.mark.parametrize(("field", "yaml_value", "secret"), [
+        ("token", "87419362508741936250", "87419362508741936250"),
+        ("auth_token", "'opaque***AuthToken0123456789'", "opaque***AuthToken0123456789"),
+        ("client_secret", "{value: clientSecretOpaque0123456789}", "clientSecretOpaque0123456789"),
+        ("password", "98127364509812736450", "98127364509812736450"),
+        ("clientApiKey", "'opaque***CamelKey0123456789'", "opaque***CamelKey0123456789"),
+    ])
+    def test_fallback_secret_fields_masked_by_repo_policy(self, hermes_home_with_secret, field, yaml_value, secret):
+        """Every field ``agent.redact`` treats as a credential is masked by field, not only ``api_key``;
+        env-var names and token budgets stay readable."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, run_debug_share
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    key_env: BACKUP_KEY_ENV_NAME\n"
+            "    api_key_env: BACKUP_API_KEY_ENV_NAME\n"
+            "    max_tokens: 4321\n"
+            f"    {field}: {yaml_value}\n", encoding="utf-8")
+
+        uploaded: list[str] = []
+        args = MagicMock(lines=20, expire=1, local=False, nous=False, no_redact=False)
+        with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug._schedule_auto_delete"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   side_effect=lambda content, expiry_days=1: uploaded.append(content) or "https://paste.rs/x"):
+            run_debug_share(args)  # what actually reaches the paste service
+
+        assert any("fallback_providers" in text for text in uploaded)  # the summary reached the sink
+        assert not [text for text in uploaded if secret in text]  # checked first: the sink alone catches a leak
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all(s in texts[0] for s in ("backup-model", "BACKUP_KEY_ENV_NAME", "BACKUP_API_KEY_ENV_NAME", "4321"))
+        assert not [text for text in texts if secret in text]
+
+    @pytest.mark.parametrize("base_url", [
+        "https://user:{s}@backup.example/v1",
+        "https://backup.example/v1?key={s}",
+        "https://backup.example/v1?X-Amz-Signature={s}",
+        "https://backup.example/v1?X-Goog-Signature={s}",
+        "https://backup.example/v1?sv=2024-11-04&sig={s}",
+        "https://backup.example/v1#access_token={s}&view=public",
+    ])
+    def test_fallback_base_url_credential_never_reaches_upload_bound_content(self, hermes_home_with_secret, base_url):
+        """A fallback ``base_url`` can carry its credential in the URL (userinfo, query, fragment). The
+        dump is config made to be pasted, so ``hermes dump`` itself and every upload of it get strict
+        URL-credential redaction, not the log policy."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        secret = "urlCredOpaque0123456789abcdef"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    base_url: '{base_url.format(s=secret)}'\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all("backup-model" in text and "backup.example" in text for text in texts[:2])
+        assert not [text for text in texts if secret in text]
+
+    def test_capture_dump_is_independent_strict_redaction_boundary(self):
+        """A future dump formatting mistake cannot leak through debug upload paths."""
+        from hermes_cli.debug import _capture_dump
+
+        raw_key = "opaqueBoundaryKeyABC123456789"
+        raw_password = "boundaryPasswordABC123456789"
+        raw_signature = "boundarySignatureABC123456789"
+
+        def leaky_dump(_args):
+            print(
+                "{'api_key': '" + raw_key + "', "
+                "'base_url': 'https://user:" + raw_password
+                + "@example.test/v1?X-Amz-Signature=" + raw_signature + "'}"
+            )
+
+        with patch("hermes_cli.dump.run_dump", side_effect=leaky_dump):
+            safe = _capture_dump()
+            raw = _capture_dump(redact=False)
+
+        for secret in (raw_key, raw_password, raw_signature):
+            assert secret not in safe
+            assert secret in raw
+
+    def test_public_paste_carries_the_summary_banner(
         self, hermes_home_with_secret, capsys
     ):
-        """Each upload-bound paste carries the visible redaction banner."""
+        """The public paste says what it is: an allowlisted summary, full logs via --nous."""
         from hermes_cli.debug import run_debug_share
 
-        args = MagicMock()
-        args.lines = 50
-        args.expire = 7
-        args.local = False
-        args.nous = False
-        args.no_redact = False
-
+        args = MagicMock(lines=50, expire=7, local=False, nous=False, no_redact=False)
         captured: list[str] = []
 
         def fake_upload(content, expiry_days=7):
             captured.append(content)
             return f"https://paste.rs/{len(captured)}"
 
-        with patch("hermes_cli.dump.run_dump"), \
-             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+        with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
              patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
             run_debug_share(args)
 
-        for content in captured:
-            assert "redacted at upload time" in content, (
-                "redaction banner missing from upload-bound content"
-            )
+        assert len(captured) == 1
+        assert "PUBLIC SUMMARY" in captured[0] and "--nous" in captured[0]
 
-    def test_no_redact_flag_disables_redaction_and_banner(
-        self, hermes_home_with_secret, capsys
+    def test_no_redact_flag_disables_redaction_and_banner_in_the_private_bundle(
+        self, hermes_home_with_secret
     ):
-        """--no-redact preserves original log content and omits the banner."""
+        """--no-redact leaves the --nous/--local bundle raw and drops its banner; the default
+        bundle is redacted and bannered."""
+        from hermes_cli.debug import collect_share_bundle
+
+        with patch("hermes_cli.dump.run_dump"):
+            raw = collect_share_bundle(log_lines=50, redact=False)
+            safe = collect_share_bundle(log_lines=50, redact=True)
+
+        assert _REDACT_FIXTURE_TOKEN in raw["agent.log"]
+        assert not [c for c in raw.values() if "redacted at upload time" in c]
+        assert not [c for c in safe.values() if _REDACT_FIXTURE_TOKEN in c]
+        assert all("redacted at upload time" in c for c in safe.values())
+
+    def test_no_redact_flag_cannot_put_logs_on_the_public_paste(self, hermes_home_with_secret):
         from hermes_cli.debug import run_debug_share
 
-        args = MagicMock()
-        args.lines = 50
-        args.expire = 7
-        args.local = False
-        args.nous = False
-        args.no_redact = True
-
         captured: list[str] = []
-
-        def fake_upload(content, expiry_days=7):
-            captured.append(content)
-            return f"https://paste.rs/{len(captured)}"
-
-        with patch("hermes_cli.dump.run_dump"), \
-             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
-             patch("hermes_cli.debug.upload_to_pastebin", side_effect=fake_upload):
+        args = MagicMock(lines=50, expire=7, local=False, nous=False, no_redact=True)
+        with patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                   side_effect=lambda c, expiry_days=7: captured.append(c) or "https://paste.rs/x"):
             run_debug_share(args)
 
-        # The agent.log paste should now contain the raw token.
-        assert any(_REDACT_FIXTURE_TOKEN in c for c in captured), (
-            "expected raw token in --no-redact upload"
-        )
-        # No banner anywhere when redaction is disabled.
-        for content in captured:
-            assert "redacted at upload time" not in content, (
-                "banner present with --no-redact"
-            )
+        assert len(captured) == 1
+        assert _REDACT_FIXTURE_TOKEN not in captured[0]
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +768,34 @@ class TestSweepExpiredPastes:
         assert remaining == 1
         assert len(_load_pending()) == 1
 
+    def test_share_scheduled_during_sweep_deletes_is_kept(self, hermes_home):
+        """A paste scheduled while the sweep waits on network DELETEs must survive its save."""
+        import threading
+        import time
+
+        from hermes_cli.debug import _load_pending, _save_pending, _schedule_auto_delete, _sweep_expired_pastes
+
+        _save_pending([{"url": "https://paste.rs/old", "expire_at": time.time() - 100}])
+        in_delete = threading.Event()
+        share_done = threading.Event()
+
+        def blocking_delete(url):
+            in_delete.set()
+            assert share_done.wait(10)
+            return True
+
+        result = []
+        with patch("hermes_cli.debug.delete_paste", side_effect=blocking_delete):
+            sweeper = threading.Thread(target=lambda: result.append(_sweep_expired_pastes()))
+            sweeper.start()
+            assert in_delete.wait(10)
+            _schedule_auto_delete(["https://paste.rs/new"])
+            share_done.set()
+            sweeper.join(10)
+
+        assert result == [(1, 1)]
+        assert [e["url"] for e in _load_pending()] == ["https://paste.rs/new"]
+
 
 
 
@@ -694,26 +841,13 @@ class TestBuildDebugShare:
         joined = "\n".join(uploaded)
         assert secret not in joined, "secret leaked into upload payload"
 
-    def test_optional_log_failure_is_collected_not_raised(self, hermes_home):
+    def test_summary_upload_failure_raises_for_the_caller(self, hermes_home):
         from hermes_cli.debug import build_debug_share
 
-        count = [0]
-
-        def _upload(content, expiry_days=7):
-            count[0] += 1
-            # First call (the required Report) succeeds; a later one fails.
-            if count[0] == 2:
-                raise RuntimeError("paste service hiccup")
-            return f"https://paste.rs/p{count[0]}"
-
-        with patch("hermes_cli.dump.run_dump"), patch(
-            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
-        ), patch("hermes_cli.debug._schedule_auto_delete"):
-            result = build_debug_share(log_lines=50, redact=True)
-
-        assert "Report" in result.urls
-        assert len(result.failures) == 1
-        assert "paste service hiccup" in result.failures[0]
+        with patch("hermes_cli.debug.upload_to_pastebin", side_effect=RuntimeError("down")), \
+                patch("hermes_cli.debug._schedule_auto_delete"), \
+                pytest.raises(RuntimeError):
+            build_debug_share(log_lines=50, redact=True)
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +872,48 @@ class TestCollectShareBundle:
         assert secret in "\n".join(unredacted.values())
         # With redaction it must be scrubbed everywhere.
         assert secret not in "\n".join(redacted.values())
+
+    def test_redaction_masks_url_credentials(self, hermes_home):
+        """Log-time redaction leaves ``?token=`` and ``user:pass@`` in URLs for tool flows;
+        the upload must not carry them."""
+        from hermes_cli.debug import collect_share_bundle
+
+        query_token = "Q7fK2mZp9RtX4vLb8NcW1yHs"
+        password = "Pw7Kq2Lm9Xs4Vb"
+        (hermes_home / "logs" / "agent.log").write_text(
+            "2026-09-29 01:00:00 INFO plugins.web.firecrawl.provider: Firecrawl scraping: "
+            f"https://files.example.com/export.csv?token={query_token}&page=2\n"
+            f"2026-09-29 01:00:01 INFO agent: using proxy http://alice:{password}@10.0.0.5:3128\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert query_token not in bundle
+        assert password not in bundle
+        # Query credentials are masked in place; strict URL redaction masks the
+        # complete userinfo field while preserving the host and port.
+        assert "export.csv?token=***&page=2" in bundle
+        assert "***:***@10.0.0.5:3128" in bundle
+
+    def test_redaction_masks_credentials_pasted_into_a_chat(self, hermes_home):
+        """#64351: the gateway logs an inbound preview; a pasted OAuth client secret or access
+        token has no secret-named key beside it once the preview cuts the JSON."""
+        from hermes_cli.debug import collect_share_bundle
+
+        client_secret = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
+        access_token = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
+        (hermes_home / "logs" / "gateway.log").write_text(
+            "2026-07-14 11:00:00 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='client_secret\":\"{client_secret}\",\"redirect_uris\":[' reply_to_id=None\n"
+            "2026-07-14 11:00:01 INFO gateway.run: inbound message: platform=telegram user=u chat=1 "
+            f"msg='my token is {access_token}' reply_to_id=None\n"
+        )
+        with patch("hermes_cli.dump.run_dump"):
+            bundle = "\n".join(collect_share_bundle(log_lines=50, redact=True).values())
+
+        assert "inbound message: platform=telegram" in bundle
+        assert client_secret not in bundle
+        assert access_token not in bundle
 
 
 
@@ -857,17 +1033,60 @@ class TestDebugSlashCommand:
             self._handler()(cmd_original)
         return captured
 
-    def test_bare_debug_defaults_to_paste(self):
-        c = self._captured("/debug")
+    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please",
+                                     "/debug do not upload", "/debug nous no upload"])
+    def test_without_upload_word_prints_notice_and_uploads_nothing(self, cmd, capsys):
+        """The privacy notice must precede any upload: no ``upload`` word, no network (#94876)."""
+        with patch("hermes_cli.debug.upload_to_pastebin") as paste, \
+             patch("hermes_cli.diagnostics_upload.share_to_nous") as nous, \
+             patch("hermes_cli.debug.collect_share_bundle") as collect:
+            self._handler()(cmd)
+        paste.assert_not_called()
+        nous.assert_not_called()
+        collect.assert_not_called()
+        out = capsys.readouterr().out
+        assert "⚠️" in out and "upload" in out
+
+    def test_debug_upload_is_the_consent(self):
+        c = self._captured("/debug upload")
         assert c["nous"] is False and c["local"] is False
-        # The slash command IS the consent action → skip the [y/N] prompt
+        # The explicit `upload` word IS the consent → skip the [y/N] prompt
         # (input() would hang inside prompt_toolkit's event loop).
         assert c["yes"] is True
 
+    def test_debug_upload_dpaste_fallback_matches_one_day_consent(self, capsys):
+        """A classic slash upload must not outlive the 1-day fallback disclosed before consent."""
+        from hermes_cli.debug import run_debug_slash
+
+        expiry_days = []
+
+        def _fake_dpaste(_content, expiry_days=1):
+            requested_days.append(expiry_days)
+            return "https://dpaste.com/TEST"
+
+        requested_days = expiry_days
+        with patch("hermes_cli.debug._best_effort_sweep_expired_pastes"), \
+             patch("hermes_cli.debug.collect_share_bundle",
+                   return_value={"report": "redacted summary"}), \
+             patch("hermes_cli.debug._upload_paste_rs",
+                   side_effect=OSError("paste.rs offline")), \
+             patch("hermes_cli.debug._upload_dpaste_com",
+                   side_effect=_fake_dpaste), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_slash("/debug upload")
+
+        output = capsys.readouterr().out
+        assert "default: 1 day" in output
+        assert expiry_days == [1]
+        assert "stay public for 1 day(s)" in output
 
     def test_word_parsing_is_case_insensitive(self):
-        c = self._captured("/debug NOUS")
-        assert c["nous"] is True
+        c = self._captured("/debug NOUS Upload")
+        assert c["nous"] is True and c["yes"] is True
+
+    def test_local_needs_no_upload_word(self):
+        c = self._captured("/debug local")
+        assert c["local"] is True and c["nous"] is False
 
 
 

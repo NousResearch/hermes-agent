@@ -1,0 +1,23 @@
+name: coldstart
+repo: https://github.com/zvporter-ops/coldstart
+sha: "2f8d036e070f7a4bc593ab9fa5b60dcdd820cab3"
+title: Coldstart
+description: "Evidence-gated answering with a provenance hierarchy, for any local AI deployment. Material you feed it (internal: transcripts, contracts, code, spreadsheets, PDFs, emails) is retrieved first and cited first; public reference material is used only when internal material does not cover the question, and every answer that leans on it is labelled as public; when nothing covers the question the reply is refused instead of invented. Every reply is then checked mechanically against the passages that turn actually retrieved -- quoted spans must be verbatim, and figures, dates, URLs and identifiers must appear in a retrieved passage (line and passage references are masked so citations are not mistaken for claims); prose paraphrase is reported but never blocked. No model is asked to grade its own answer. The clearance rule covers every path that touches private material: the model is taken from the turn the host actually runs (`pre_llm_call` reports it, recorded per session), so a session switched with `/model` or a turn that lands on a cloud fallback counts as remote; when it is not local, internal passages are withheld, `corpus_ask` requires both its endpoint and the turn to be local and otherwise answers from public material only, and `corpus_audit` / `/trust` refuse rather than sample internal passages into it. `/trust` runs a battery against the configured deployment and scores it: invented quote and invented figure must be caught, verbatim quote and paraphrase must pass, and the pipeline must abstain on questions the corpus cannot answer. Ships an agent half (2 hooks, 3 tools, 1 command, 1 skill) and a Desktop half (evidence pane, status-bar chip, mode switch, audit button) over the plugin's own `/api/plugins/` backend. Stdlib only -- no embeddings, no third-party dependency, no model call for retrieval. Disclosure -- reads only the directories configured in `corpus_roots` / `public_roots` plus its own index under `$HERMES_HOME/plugin-data/coldstart/`; makes model calls through Hermes's configured model or the OpenAI-compatible `endpoint` the user sets; shells out to `pdftotext` and `tesseract` only when present and only for the user's own files; optional `COA_API_KEY` is read through Hermes's secret scope, never from a file; no telemetry, no self-update. Enabling the plugin holds the reply until the gate has run, so token-by-token streaming is off while it is enabled. Disclosure — reads only the directories configured in `corpus_roots` / `public_roots` plus its own index under `$HERMES_HOME/plugin-data/coldstart/`, which stores copies of the indexed passages; makes model calls through Hermes's configured model or the OpenAI-compatible `endpoint` the user sets; judges a model local from its URL host (loopback, RFC1918, Tailscale `100.64.0.0/10`, `.local`/`.lan`/`.internal`/`.home` names), any configured fallback, and the model name the turn reports compared by its last path segment, so a local proxy that forwards to a cloud API, or a `/model` switch to a cloud model with the same name, counts as local; shells out to `pdftotext` and `tesseract` only when present and only for the user's own files, with a minimal environment; optional `COA_API_KEY` is read through Hermes's secret scope, never from a file; the Desktop pane's mode switch writes `plugins.entries.coldstart.settings.strictness`; no telemetry, no self-update. Enabling the plugin holds the reply until the gate has run, so token-by-token streaming is off while it is enabled, even with the gate set to `off`."
+maintainer: zvporter-ops
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/zvporter-ops/coldstart#readme
+version: "0.3.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - corpus_ask
+    - evidence_report
+    - corpus_audit
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

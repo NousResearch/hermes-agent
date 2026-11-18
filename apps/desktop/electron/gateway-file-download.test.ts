@@ -15,6 +15,7 @@ import {
   parseDataUrlToBuffer,
   pumpStreamToFile,
   resolveGatewayFileBackend,
+  saveDialogFilters,
   writeBufferToFile
 } from './gateway-file-download'
 
@@ -304,6 +305,41 @@ test('gatewayFileRequestPaths keeps streaming and fallback requests on the same 
   })
 })
 
+test('an explicit backup download route replaces the workspace route and has no data-URL twin', () => {
+  const archive = '/home/u/.hermes/backups/hermes backup.zip'
+  const downloadPath = `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`
+
+  const paths = gatewayFileRequestPaths(
+    archive,
+    requestPath => pathForRegistryBackendRequest(requestPath, 'research', { sharedRemote: true }),
+    undefined,
+    downloadPath
+  )
+
+  const download = new URL(paths.download, 'http://hermes.local')
+  assert.equal(paths.dataUrl, undefined)
+  assert.equal(download.pathname, '/api/ops/backup/download')
+  assert.deepEqual(
+    [...download.searchParams],
+    [
+      ['archive', archive],
+      ['profile', 'research']
+    ]
+  )
+
+  for (const rejected of [
+    '/api/fs/download?path=%2Fetc%2Fpasswd',
+    '/api/ops/backup/download',
+    '/api/ops/backup/download?archive=a.zip&path=%2Fetc%2Fpasswd',
+    'https://evil.example/api/ops/backup/download?archive=a.zip'
+  ]) {
+    assert.throws(
+      () => gatewayFileRequestPaths(archive, requestPath => requestPath, undefined, rejected),
+      /Unsupported/
+    )
+  }
+})
+
 test('isNotFoundError matches only HTTP 404', () => {
   const notFound: any = new Error('404: missing')
 
@@ -368,4 +404,63 @@ test('resolveGatewayFileBackend preserves the legacy route when no connection ow
   assert.equal(route.connectionId, null)
   assert.equal(route.profile, 'coder')
   assert.deepEqual(route.connection, { baseUrl: 'http://local.invalid' })
+})
+
+// #92480: a .pptx saved through the gateway dialog arrived as a typeless
+// "File". The name reaching the dialog was correct; the dialog had no file
+// type to keep it with, so Windows had no default extension to append.
+test('saveDialogFilters offers the download own type before All Files', () => {
+  assert.deepEqual(saveDialogFilters('Presentation_2026-08-14.pptx'), [
+    { name: 'PPTX File', extensions: ['pptx'] },
+    { name: 'All Files', extensions: ['*'] }
+  ])
+  assert.deepEqual(saveDialogFilters('report.pdf'), [
+    { name: 'PDF File', extensions: ['pdf'] },
+    { name: 'All Files', extensions: ['*'] }
+  ])
+})
+
+test('saveDialogFilters keeps All Files last so any name stays saveable', () => {
+  // The escape hatch must survive every branch: a filter list without it turns
+  // a save dialog into a rename requirement.
+  for (const name of ['a.pptx', 'a.tar.gz', 'noext', '.gitignore', '', null]) {
+    const filters = saveDialogFilters(name)
+
+    assert.deepEqual(filters[filters.length - 1], { name: 'All Files', extensions: ['*'] })
+  }
+})
+
+test('saveDialogFilters normalizes case and reads only the last extension', () => {
+  assert.deepEqual(saveDialogFilters('SHOUTING.PDF')[0], { name: 'PDF File', extensions: ['pdf'] })
+  // Not 'tar.gz': the shell appends one extension, and gz is the one the name
+  // actually ends with.
+  assert.deepEqual(saveDialogFilters('archive.tar.gz')[0], { name: 'GZ File', extensions: ['gz'] })
+})
+
+test('saveDialogFilters falls back to All Files when there is no usable extension', () => {
+  // A dotfile has no extension in path.extname terms, and inventing one from
+  // the basename would offer to save .gitignore as "GITIGNORE File".
+  assert.deepEqual(saveDialogFilters('.gitignore'), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters('README'), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters(''), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters(undefined), [{ name: 'All Files', extensions: ['*'] }])
+})
+
+test('saveDialogFilters refuses an extension it cannot vouch for', () => {
+  // The name can come from a server-supplied Content-Disposition header, so the
+  // extension is whitelisted rather than merely extracted. Rejection is not a
+  // failure: it saves under All Files, which is today's behavior.
+  assert.deepEqual(saveDialogFilters('x.' + 'a'.repeat(17)), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters('x.p p t'), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters('x.pp*t'), [{ name: 'All Files', extensions: ['*'] }])
+  assert.deepEqual(saveDialogFilters('x.p;t'), [{ name: 'All Files', extensions: ['*'] }])
+})
+
+test('saveDialogFilters reads the basename, not a directory component', () => {
+  // filenameFromContentDisposition already reduces to a basename; this makes
+  // the helper safe on its own rather than only in that company.
+  assert.deepEqual(saveDialogFilters('/tmp/a.pdf/report.pptx')[0], {
+    name: 'PPTX File',
+    extensions: ['pptx']
+  })
 })

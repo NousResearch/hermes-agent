@@ -1,0 +1,40 @@
+name: raise
+title: Raise
+repo: https://github.com/GenesisEngine-Triolith/raise
+sha: 7e59187107ae1eed8dd35413ff691447d6b48273
+description: "Fundraising desk for founders: imports your investor pipeline, ranks investors on cited evidence, checks every draft against code gates (one conversation per firm, a pass closes the firm, 3 touches per channel, working-day cool-downs) and lints it against your verified claims before it reaches your mailbox as a draft. Draft-only: Raise has no send tool, and a pre_tool_call hook refuses send, reply and forward calls to pipeline addresses on mail tools and terminal commands alike. Disclosure — Raise opens no network connections; web search, page fetches, mail, CRM and LinkedIn go through the user's own Hermes tools via dispatch_tool, and LinkedIn tools get daily caps plus a 72-hour pause after a login or rate-limit error. Deck text, profile and investor facts are sent to the user's configured model through ctx.llm. Data stays in <HERMES_HOME>/plugin-data/raise (SQLite, plus checked draft files for skill-based mail setups); CSV import reads only an existing .csv at the path the user gives, never inside the Hermes folder or hidden folders. No credentials stored, no .env reads, no telemetry, no background processes; automation blueprints exist only if the user adds them. Export and delete via /raise export and /raise delete confirm. Bundles blader/humanizer v3.1.0 (MIT)."
+maintainer: Triolith
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/GenesisEngine-Triolith/raise/blob/7e59187107ae1eed8dd35413ff691447d6b48273/README.md
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - raise_setup
+    - raise_setup_status
+    - raise_profile_get
+    - raise_profile_set
+    - raise_import
+    - raise_find
+    - raise_evidence_add
+    - raise_evidence_list
+    - raise_rank
+    - raise_focus
+    - raise_explain
+    - raise_can_draft
+    - raise_draft
+    - raise_log
+    - raise_replies_check
+    - raise_brief
+    - raise_stats
+    - raise_export
+    - raise_sync
+    - raise_demo
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

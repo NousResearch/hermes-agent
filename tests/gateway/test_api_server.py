@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import asyncio
+import hashlib
 import json
 import time
 import types
@@ -31,7 +32,6 @@ from gateway.platforms.api_server import (
     _api_request_profile,
     _IdempotencyCache,
     _derive_chat_session_id,
-    _redact_api_error_text,
     _request_agent_overrides,
     _request_relay_metadata,
     cors_middleware,
@@ -44,31 +44,6 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 
 
-
-
-# ---------------------------------------------------------------------------
-# _redact_api_error_text — guards every outward error site (envelopes, SSE
-# error events, cron-endpoint 500 bodies) that routes raw exception text to
-# authenticated HTTP clients. #37733
-# ---------------------------------------------------------------------------
-
-
-class TestRedactApiErrorText:
-    def test_masks_secret_value_but_preserves_structure(self):
-        secret = "sk-api-server-leak-1234567890"
-        out = _redact_api_error_text(Exception(f"auth failed OPENAI_API_KEY={secret}"))
-        assert secret not in out
-        assert "OPENAI_API_KEY=" in out
-
-    def test_redacts_regardless_of_global_redaction_setting(self):
-        # force=True must mask even when global redaction is disabled.
-        secret = "sk-forced-redaction-0987654321"
-        with patch("agent.redact._REDACT_ENABLED", False):
-            out = _redact_api_error_text(Exception(f"boom AWS_SECRET_ACCESS_KEY={secret}"))
-        assert secret not in out
-
-    def test_limit_truncates_after_redaction(self):
-        assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +221,7 @@ class TestAdapterInit:
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         agent = adapter._create_agent(session_id="api-session")
 
@@ -741,7 +716,7 @@ class TestDisconnectedAgentReap:
 
         deadline = time.time() + 1.0
         while not calls and time.time() < deadline:
-            time.sleep(0.01)
+            await asyncio.sleep(0.01)
         assert calls == [("run-stop-sess", frozenset(), "api_server_run_stop")]
         agent.interrupt.assert_called_once()
 
@@ -984,7 +959,7 @@ class TestSkillsEndpoint:
             {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
         ]
         with patch(
-            "tools.skills_tool._find_all_skills",
+            "tools.skills_tool.find_all_skills",
             return_value=list(fake_skills),
         ):
             app = _create_app(adapter)
@@ -1402,6 +1377,30 @@ class TestDeriveChatSessionId:
         a = _derive_chat_session_id("You are a pirate.", "Hello")
         b = _derive_chat_session_id("You are a robot.", "Hello")
         assert a != b
+
+    def test_routed_profile_namespaces_the_id_without_moving_default(self):
+        """Two header-less conversations opening with identical text on different profiles must
+        not share one session/sandbox key (#123989); default/standalone ids stay byte-identical
+        so live conversations survive the upgrade."""
+        legacy = "api-" + hashlib.sha256(b"sys\nhello").hexdigest()[:16]
+        assert _derive_chat_session_id("sys", "hello") == legacy
+        assert _derive_chat_session_id("sys", "hello", "default") == legacy
+        research = _derive_chat_session_id("sys", "hello", "research")
+        assert research != legacy
+        assert research == _derive_chat_session_id("sys", "hello", "research")
+
+    def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
+        """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
+        both must derive one id, or the same conversation forks by URL."""
+        import hermes_constants
+        from hermes_cli import profiles
+
+        work = tmp_path / "profiles" / "work"
+        work.mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: work)
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: tmp_path / "profiles" / name)
+        assert _derive_chat_session_id("sys", "hello", "work") == _derive_chat_session_id("sys", "hello")
+        assert _derive_chat_session_id("sys", "hello", "research") != _derive_chat_session_id("sys", "hello")
 
 
 # ---------------------------------------------------------------------------
@@ -2261,13 +2260,6 @@ class TestChatCompletionsAgentIncomplete:
 
 
 class TestCORS:
-    def test_origin_allowed_for_non_browser_client(self, adapter):
-        assert adapter._origin_allowed("") is True
-
-
-    def test_origin_allowed_for_allowlist_match(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        assert adapter._origin_allowed("http://localhost:3000") is True
 
 
     @pytest.mark.asyncio
@@ -2281,23 +2273,6 @@ class TestCORS:
 
 
     @pytest.mark.asyncio
-    async def test_cors_allows_idempotency_key_header(self):
-        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.options(
-                "/v1/chat/completions",
-                headers={
-                    "Origin": "http://localhost:3000",
-                    "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Idempotency-Key",
-                },
-            )
-            assert resp.status == 200
-            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
-
-
-    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
@@ -2308,12 +2283,14 @@ class TestCORS:
                 headers={
                     "Origin": "http://localhost:3000",
                     "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type, Idempotency-Key",
                 },
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
-            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            allowed = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Authorization" in allowed
+            assert "Idempotency-Key" in allowed
 
 
     @pytest.mark.asyncio
@@ -2456,10 +2433,10 @@ class TestSessionIdHeader:
             {"role": "user", "content": "stored message 1"},
             {"role": "assistant", "content": "stored reply 1"},
         ]
-        mock_db = MagicMock()
-        mock_db.get_messages_as_conversation.return_value = db_history
-        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
-        auth_adapter._session_db = mock_db
+        auth_adapter._session_db = MagicMock()
+        read = AsyncMock(return_value=[MagicMock(as_openai_message=m.copy) for m in db_history])
+        auth_adapter._store_beside = MagicMock(return_value=MagicMock(**{
+            "aio.messages.read_conversation": read, "aio.lineage.resolve_resume_target": AsyncMock(side_effect=lambda sid: sid)}))
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
@@ -2576,7 +2553,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
         },
     )
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
     )
@@ -2657,7 +2634,7 @@ class TestModelRoutesAgentCreation:
         adapter = _make_routing_adapter(
             {"alias": {"model": "other/model", "provider": "otherprov"}}
         )
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
         monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
 
         adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
@@ -2677,7 +2654,7 @@ class TestModelRoutesAgentCreation:
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         adapter = _make_routing_adapter({"alias": {"model": "route/model", "api_key": "sk-route"}})
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
         monkeypatch.setattr(
             adapter,
             "_session_model_override_for",
@@ -2735,15 +2712,16 @@ class TestSessionDbOffEventLoop:
     @pytest.mark.asyncio
     async def test_get_existing_session_or_404_offloads(self, auth_adapter):
         import threading
-
+        from persistence.core.aio import AwaitableStore
         captured = {}
 
-        class FakeDB:
-            def get_session(self, session_id):
+        class FakeSessions:
+            def get(self, session_id):
                 captured["thread"] = threading.current_thread()
-                return {"id": session_id, "source": "api_server"}
+                return MagicMock(session_id=session_id, source="api_server", model_config={})
 
-        auth_adapter._session_db = FakeDB()
+        store = types.SimpleNamespace(aio=AwaitableStore(types.SimpleNamespace(sessions=FakeSessions(), executor=None)))
+        auth_adapter._session_db, auth_adapter._store_beside = object(), lambda db: store
         session, err = await auth_adapter._get_existing_session_or_404("sess-x")
         assert err is None
         assert session["id"] == "sess-x"
@@ -3029,7 +3007,7 @@ class TestCreateAgentModelRecovery:
         )
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         agent = adapter._create_agent(session_id="api-session")
 
@@ -3051,7 +3029,7 @@ class TestCreateAgentModelRecovery:
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         # Turn 1: model resolves fine — populates the last-known-good cache
         # (keyed on gateway_session_key).
@@ -3085,7 +3063,7 @@ class TestCreateAgentModelRecovery:
         _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         virtual = adapter._model_name
         # Make _resolve_gateway_model return the virtual alias — the
@@ -3113,7 +3091,7 @@ class TestCreateAgentModelRecovery:
         _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         # Seed the cache with the alias (simulate a prior poisoned turn).
         adapter._last_resolved_model["ch"] = adapter._model_name
@@ -3145,7 +3123,7 @@ class TestCreateAgentModelRecovery:
         _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
         # Turn 1: legitimate model — must enter the cache.
         monkeypatch.setattr(

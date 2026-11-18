@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
+from agent.i18n import t
 from cli import HermesCLI
 
 
@@ -206,12 +207,12 @@ class TestCliApprovalUi:
         rendered = "".join(text for _style, text in fragments)
 
         # All four choices visible even with a huge command.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        for key in ("approval_once", "approval_session", "approval_always", "approval_deny"):
+            label = t(f"cli.tui.{key}")
             assert label in rendered, f"choice {label!r} missing"
 
         # Command got truncated with a marker.
-        assert "(command truncated" in rendered
+        assert t("cli.tui.approval_command_truncated") in rendered
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.
@@ -456,7 +457,9 @@ class TestPersistPromptSummary:
         result = {}
 
         def _run():
-            result["value"] = cli._clarify_callback("Pick a path?", ["A", "B"])
+            result["value"] = cli._clarify_callback([{
+                "qid": "q0", "question": "Pick a path?", "choices": ["A", "B"],
+                "choices_offered": ["A", "B"], "multi_select": False}])
 
         with patch.object(cli_module, "_cprint", printed.append):
             t = threading.Thread(target=_run, daemon=True)
@@ -464,10 +467,10 @@ class TestPersistPromptSummary:
             deadline = time.time() + 2
             while cli._clarify_state is None and time.time() < deadline:
                 time.sleep(0.01)
-            cli._clarify_state["response_queue"].put("B")
+            cli._clarify_batch_lock(cli._clarify_state, "B")
             t.join(timeout=2)
 
-        assert result["value"] == "B"
+        assert result["value"] == {"answers": {"q0": "B"}, "outcome": "submitted"}
         summary = "\n".join(printed)
         assert "Clarify" in summary
         assert "Pick a path?" in summary
@@ -514,7 +517,7 @@ class TestClearOverlaysForInterrupt:
 
         # Each blocked thread would have received a terminal value.
         assert approval_q.get_nowait() == "deny"
-        assert clarify_q.get_nowait()  # cancellation sentinel string
+        assert clarify_q.get_nowait() is None
         assert sudo_q.get_nowait() == ""
         assert secret_q.get_nowait() == ""
 
@@ -536,7 +539,7 @@ class TestClearOverlaysForInterrupt:
 
         assert cli._approval_state is None  # cleared despite dead queue
         assert cli._clarify_state is None
-        assert clarify_q.get_nowait()
+        assert clarify_q.get_nowait() is None
 
     def test_interrupt_unblocks_thread_blocked_on_approval(self):
         """End-to-end: a worker blocked on the approval queue unblocks when the

@@ -31,7 +31,7 @@ def test_select_cached_history_keeps_expected_replay_cleanup():
 
     assert observed is None
     assert len(persisted) < len(live)
-    assert persisted == [{"role": "user", "content": "check status"}]
+    assert persisted == [{"role": "user", "content": "check status", "_db_persisted": True}]
     assert _select_cached_agent_history(persisted, live) is persisted
 
 

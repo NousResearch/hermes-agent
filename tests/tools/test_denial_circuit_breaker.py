@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from tools import approval as A
-import tools.approval_prompt as approval_prompt
-import tools.approval_detection as approval_detection
+from tools import approval_prompt
+from tools import approval_detection
 from tools import approval_context
 from tools import approval_smart
 
@@ -47,11 +47,6 @@ def breaker_session(monkeypatch):
     monkeypatch.setattr(
         approval_detection, "detect_dangerous_command",
         lambda command: (True, "breaker-test-danger", f"risk:{command}"),
-    )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-        raising=False,
     )
 
     session_key = "breaker-test-session"
@@ -186,11 +181,6 @@ def test_headless_smart_deny_increments_and_trips(monkeypatch):
     monkeypatch.setattr(
         approval_detection, "detect_dangerous_command",
         lambda command: (True, "headless-breaker-danger", f"risk:{command}"),
-    )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-        raising=False,
     )
     # CLI-interactive path: the owner denies via the prompt callback.
     monkeypatch.setattr(A, "prompt_dangerous_approval",

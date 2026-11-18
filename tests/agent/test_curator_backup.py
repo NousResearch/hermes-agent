@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import importlib
+import io
 import json
 import os
 import sys
@@ -82,6 +84,52 @@ def test_snapshot_prunes_to_keep_count(backup_env, monkeypatch):
     assert remaining == ids[2:], f"expected newest 3, got {remaining}"
 
 
+@pytest.mark.platforms("posix")  # directory fsync is a no-op on Windows
+def test_snapshot_is_durable_before_older_snapshots_are_pruned(backup_env, monkeypatch):
+    """A crash after the prune must not leave the only surviving snapshot with a zero-tailed archive."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    backups = backup_env["skills"] / ".curator_backups"
+    synced: set[int] = set()
+    unsynced_at_prune: list[str] = []
+    real_fsync, real_prune = os.fsync, cb._prune_old
+
+    def spy_fsync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        return real_fsync(fd)
+
+    def spy_prune(*args, **kwargs):
+        newest = max(p for p in backups.iterdir() if cb._ID_RE.match(p.name))
+        for path in (newest, *newest.iterdir(), backups, backup_env["skills"]):
+            if path.stat().st_ino not in synced:
+                unsynced_at_prune.append(path.name)
+        return real_prune(*args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(cb, "_prune_old", spy_prune)
+    snap = cb.snapshot_skills(reason="durable")
+
+    assert snap is not None
+    assert unsynced_at_prune == []
+
+
+def test_failed_snapshot_sync_prunes_nothing(backup_env, monkeypatch):
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    monkeypatch.setattr(cb, "get_keep", lambda: 1)
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-01T00-00-00Z")
+    previous = cb.snapshot_skills(reason="previous")
+    assert previous is not None
+
+    def failing_fsync(fd):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-02T00-00-00Z")
+    assert cb.snapshot_skills(reason="unsynced") is None
+    assert [p.name for p in (backup_env["skills"] / ".curator_backups").iterdir()] == [previous.name]
+
+
 # ---------------------------------------------------------------------------
 # list_backups / _resolve_backup
 # ---------------------------------------------------------------------------
@@ -129,7 +177,7 @@ def test_rollback_is_itself_undoable(backup_env):
     )
     # And the transient staging dir must be gone (it's implementation detail)
     backups_dir = skills / ".curator_backups"
-    staging_dirs = [p for p in backups_dir.iterdir() if p.name.startswith(".rollback-staging-")]
+    staging_dirs = [p for p in backups_dir.iterdir() if p.name.startswith(".rollback-")]
     assert staging_dirs == [], (
         f"staging dir should be cleaned up on success, got: {staging_dirs}"
     )
@@ -152,7 +200,7 @@ def test_rollback_aborts_when_safety_snapshot_fails(backup_env, monkeypatch):
     assert not ok
     assert restored is None
     assert skill_file.read_bytes() == current_bytes
-    assert not list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    assert not list((skills / ".curator_backups").glob(".rollback-*"))
 
 
 def test_rollback_no_snapshots_returns_error(backup_env):
@@ -186,6 +234,64 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     ok, msg, _ = cb.rollback()
     assert not ok
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
+def _without_tar_filter(monkeypatch):
+    """Make extractall behave like Python 3.11.0-3.11.3, which has no ``filter`` kwarg."""
+    real_extractall = tarfile.TarFile.extractall
+
+    def extractall(self, path=".", members=None, *, numeric_owner=False, **kwargs):
+        if "filter" in kwargs:
+            raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+        return real_extractall(self, path, members, numeric_owner=numeric_owner, filter="fully_trusted")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", extractall)
+
+
+@pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE])
+def test_rollback_fallback_without_tar_filter_rejects_links(backup_env, monkeypatch, tmp_path, link_type):
+    """The no-filter fallback must not write through a link member to outside skills/ (#23794)."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "victim.md"
+    victim.write_text("safe", encoding="utf-8")
+
+    mal = Path(cb.list_backups()[0]["path"]) / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        link = tarfile.TarInfo(name="evil")
+        link.type = link_type
+        link.linkname = str(outside) if link_type == tarfile.SYMTYPE else str(victim)
+        tf.addfile(link)
+        payload = b"pwned"
+        f = tarfile.TarInfo(name="evil/victim.md" if link_type == tarfile.SYMTYPE else "evil")
+        f.size = len(payload)
+        tf.addfile(f, io.BytesIO(payload))
+    _without_tar_filter(monkeypatch)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "refusing" in msg
+    assert victim.read_text(encoding="utf-8") == "safe"
+    assert not os.path.lexists(skills / "evil")
+    assert (skills / "alpha" / "SKILL.md").exists()
+
+
+def test_rollback_fallback_without_tar_filter_restores_regular_snapshot(backup_env, monkeypatch):
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha", body="original")
+    cb.snapshot_skills(reason="legit")
+    (skills / "alpha" / "SKILL.md").write_text("changed", encoding="utf-8")
+    _without_tar_filter(monkeypatch)
+
+    ok, msg, _ = cb.rollback()
+    assert ok, msg
+    assert "original" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +358,7 @@ def _reload_cron_jobs(home: Path):
         import cron.jobs as _cj
         importlib.reload(_cj)
     else:
-        import cron.jobs as _cj  # noqa: F401
+        import cron.jobs as _cj
     import cron.jobs as cj
     return cj
 
@@ -443,7 +549,7 @@ def test_rollback_recovers_cleanly_from_a_partial_extract(backup_env, monkeypatc
 
     monkeypatch.setattr(cb.tarfile, "open", _open)
 
-    ok, msg, _ = cb.rollback()
+    ok, _msg, _ = cb.rollback()
     assert not ok
 
     assert not (skills / "alpha" / "alpha").exists(), \
@@ -592,7 +698,7 @@ def test_rollback_preserves_nested_git_inside_skill(backup_env):
     assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
     # Live .git state (post-snapshot) is what survives — it was never archived.
     assert (nested_git / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/feature\n"
-    staging = list((skills / ".curator_backups").glob(".rollback-staging-*"))
+    staging = list((skills / ".curator_backups").glob(".rollback-*"))
     assert staging == [], f"staging dir left behind: {staging}"
 
 

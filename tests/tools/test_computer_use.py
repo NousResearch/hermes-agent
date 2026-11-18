@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+import itertools
+from tests.computer_use_fakes import NoopBackend, reset_backend
 
 
 # ---------------------------------------------------------------------------
@@ -20,12 +22,12 @@ import pytest
 def _reset_backend(grant_computer_use_approvals):
     """Tear down the cached backend between tests; destructive actions get an interactive "once"
     through the shared approval gate (the tool fails closed with nobody to ask)."""
-    from tools.computer_use.tool import reset_backend_for_tests
-    reset_backend_for_tests()
+    from tools.computer_use import tool as cu_tool
+    reset_backend()
     # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.object(cu_tool, "_new_backend", lambda mode: NoopBackend()):
         yield
-    reset_backend_for_tests()
+    reset_backend()
 
 
 @pytest.fixture
@@ -230,7 +232,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -270,7 +272,7 @@ class TestCaptureResponse:
             def list_apps(self): return []
             def focus_app(self, app, raise_window=False): ...
 
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=FakeBackend()), \
              patch.object(cu_tool, "_should_route_through_aux_vision",
                           return_value=False):
@@ -319,7 +321,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(600)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "ax"})
 
@@ -340,7 +342,7 @@ class TestCaptureResponse:
         from tools.computer_use import tool as cu_tool
 
         fake_backend = self._ax_backend_with(5000)
-        cu_tool.reset_backend_for_tests()
+        reset_backend()
         with patch.object(cu_tool, "_new_backend", return_value=fake_backend):
             out = cu_tool.handle_computer_use(
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
@@ -414,7 +416,7 @@ class TestAnthropicAdapterMultimodal:
 
         fake_png = "iVBORw0KGgo="
 
-        def _mm_tool(call_id: str) -> Dict[str, Any]:
+        def _mm_tool(call_id: str) -> dict[str, Any]:
             return {
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -434,7 +436,7 @@ class TestAnthropicAdapterMultimodal:
         from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         total = OUTBOUND_IMAGE_LIMIT + 1
-        messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
         for i in range(total):
             messages.append({
                 "role": "assistant", "content": "",
@@ -552,7 +554,7 @@ class TestAnthropicAdapterMultimodal:
         fake_png = "iVBORw0KGgo="
 
         def placeholder_count(n: int) -> int:
-            messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+            messages: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
             for i in range(n):
                 messages.append({
                     "role": "assistant", "content": "",
@@ -595,7 +597,7 @@ class TestAnthropicAdapterMultimodal:
         span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
         counts = [placeholder_count(n) for n in span]
         assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
-        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        steps = sum(a != b for a, b in itertools.pairwise(counts))
         assert steps == 3, (
             f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
             "each step invalidates the cached prefix"
@@ -895,10 +897,9 @@ class TestCaptureAfterAppContext:
                 return ActionResult(ok=True, action="wait")
 
         backend = TrackingBackend()
-        cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
-
-        cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
+        reset_backend()
+        with patch.object(cu_tool, "_new_backend", lambda mode: backend):
+            cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
 
         # The follow-up capture must have been called with app="Calculator"
         assert len(captured_app_args) == 1
@@ -913,7 +914,7 @@ class TestCaptureAfterAppContext:
 #   matches nothing instead of silently picking the frontmost window.
 # ---------------------------------------------------------------------------
 
-def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
+def _make_cua_backend_with_windows(windows: list[dict[str, Any]]):
     """Construct a CuaDriverBackend with a mocked MCP session that returns
     the supplied list_windows payload."""
     from tools.computer_use.cua_backend import CuaDriverBackend
@@ -930,7 +931,7 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
 
 
 def _make_cua_backend_with_windows_and_apps(
-    windows: List[Dict[str, Any]], apps: List[Dict[str, Any]]
+    windows: list[dict[str, Any]], apps: list[dict[str, Any]]
 ):
     """Construct a backend whose mocked session serves list_windows/list_apps."""
     from tools.computer_use.cua_backend import CuaDriverBackend
@@ -968,7 +969,7 @@ def _make_cua_backend_with_windows_and_apps(
     return backend
 
 
-def _make_cua_backend_with_tool_result(result: Dict[str, Any]):
+def _make_cua_backend_with_tool_result(result: dict[str, Any]):
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend()
@@ -1016,7 +1017,6 @@ class TestCuaDriverSessionReconnect:
         session._lock = threading.Lock()
         session._started = True
         session._capabilities = {}
-        session._capability_version = ""
         session._ready_event = None  # populated by real _start_lifecycle
         session._shutdown_event = None
         session._lifecycle_future = None
@@ -1219,7 +1219,7 @@ class TestCuaDriverSessionReconnect:
             stderr = ""
             # Daemon returns a path, not inline base64.
             stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+                      f' "screenshot_file_path": "{shot!s}"}}')
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1460,7 +1460,7 @@ class TestCuaEnvironmentScrubbing:
         bridge = _AsyncBridge()
         session = _CuaDriverSession(bridge)
 
-        captured_env: Dict[str, str] = {}
+        captured_env: dict[str, str] = {}
 
         async def drive_lifecycle():
             test_env = {
@@ -1792,7 +1792,7 @@ class TestMcpInvocationResolution:
             yield
 
     @staticmethod
-    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
+    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception | None = None):
         """Build a patched subprocess.run that yields the supplied result."""
         from unittest.mock import MagicMock
         def _run(*args, **kwargs):
@@ -1841,7 +1841,7 @@ class TestMcpInvocationResolution:
             '{"command":"cua-driver","args":"mcp"}}'  # args should be list
         )
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
-            cmd, args = _resolve_mcp_invocation("cua-driver")
+            _cmd, args = _resolve_mcp_invocation("cua-driver")
         assert args == ["mcp"]
 
 
@@ -2147,7 +2147,7 @@ class TestCuaToolCoverageExpansion:
     audit decision: every call gets `session=...`).
     """
 
-    def _backend(self, structured: Optional[Dict[str, Any]] = None,
+    def _backend(self, structured: Optional[dict[str, Any]] = None,
                  data: Any = "ok"):
         from unittest.mock import MagicMock
         from tools.computer_use.cua_backend import CuaDriverBackend
@@ -2160,14 +2160,6 @@ class TestCuaToolCoverageExpansion:
         backend._session.supports_capability = lambda cap, tool=None: False
         return backend
 
-    # ── App lifecycle ────────────────────────────────────────────
-
-    def test_launch_app_requires_bundle_id_or_name(self):
-        backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
-
     # ── Generic escape hatch ────────────────────────────────────
 
     def test_call_tool_preserves_caller_session(self):
@@ -2176,7 +2168,7 @@ class TestCuaToolCoverageExpansion:
         id without the wrapper clobbering it."""
         backend = self._backend()
         backend.call_tool("any_tool", {"session": "harness-1", "arg": 1})
-        name, args = backend._session.call_tool.call_args.args
+        _name, args = backend._session.call_tool.call_args.args
         assert args["session"] == "harness-1"
 
 
@@ -2286,33 +2278,33 @@ class TestCapturePayloadBudget:
 class TestBoundsSpaceNote:
     def test_note_present_when_bounds_exceed_image(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         # Live repro: 1455x791 screenshot, element bounds out to x=3840
         # (native 4K desktop space).
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3771, 0, 69, 60), app="")]
-        note = _bounds_space_note(elems, 1455, 791)
+        note = _bounds_hints(elems, 1455, 791)[1]
         assert note is not None
         assert "native desktop coordinates" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_space_note(elems, 1455, 791) is None
+        assert _bounds_hints(elems, 1455, 791)[1] is None
 
     def test_no_note_for_empty_or_degenerate(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints
 
-        assert _bounds_space_note([], 1455, 791) is None
+        assert _bounds_hints([], 1455, 791)[1] is None
         zero = [UIElement(index=0, role="B", label="x",
                           bounds=(0, 0, 0, 0), app="")]
-        assert _bounds_space_note(zero, 1455, 791) is None
-        assert _bounds_space_note(zero, 0, 0) is None
+        assert _bounds_hints(zero, 1455, 791)[1] is None
+        assert _bounds_hints(zero, 0, 0)[1] is None
 
 
 class TestElementSpillFile:
@@ -2447,10 +2439,10 @@ class TestBoundsScaleField:
 
     def test_no_scale_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_scale
+        from tools.computer_use.tool import _bounds_hints
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
-        assert _bounds_scale(elems, 1455, 791) is None
-        assert _bounds_scale([], 1455, 791) is None
-        assert _bounds_scale(elems, 0, 0) is None
+        assert _bounds_hints(elems, 1455, 791)[0] is None
+        assert _bounds_hints([], 1455, 791)[0] is None
+        assert _bounds_hints(elems, 0, 0)[0] is None

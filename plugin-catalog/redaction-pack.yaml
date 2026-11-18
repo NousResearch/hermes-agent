@@ -1,0 +1,26 @@
+name: redaction-pack
+repo: https://github.com/pierrenode/hermes-redaction-pack
+sha: febd8bfe9971a3242d0ca18e8e7ca71d685d503b
+subdir: redaction-pack
+description: >-
+  Teaches Hermes's built-in secret redactor 71 more vendor credential formats (HashiCorp Vault,
+  Doppler, Amazon Bedrock, Atlassian, Cloudflare, Supabase, Tailscale, Docker Hub, JFrog
+  Artifactory, CircleCI, HubSpot, PostHog, Grafana, Sentry, Shopify and others) through
+  register_redaction_patterns, so those tokens are masked in logs, tool output and model-bound
+  text like the built-in ones. Disclosure — register() makes one call,
+  ctx.register_redaction_patterns; no tools, hooks, network access, subprocesses, files or
+  environment variables; the patterns can only add masks, and security.redact_secrets: false still
+  turns redaction off.
+maintainer: pierrenode
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/pierrenode/hermes-redaction-pack
+version: "1.4.0"
+image: https://raw.githubusercontent.com/pierrenode/hermes-redaction-pack/febd8bfe9971a3242d0ca18e8e7ca71d685d503b/docs/card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

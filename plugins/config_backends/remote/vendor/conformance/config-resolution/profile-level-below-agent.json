@@ -1,0 +1,94 @@
+{
+  "fixtureVersion": 1,
+  "name": "profile-level-below-agent",
+  "description": "Proves rule-0, rule-3: The profile level overrides the agent level on unlocked keys; an agent-level lock binds the profile level.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b"
+        },
+        "max_concurrent_sessions": 4
+      },
+      "locks": [
+        "max_concurrent_sessions"
+      ]
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "default": "hermes-4-70b"
+        },
+        "max_concurrent_sessions": 10
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": {
+        "default": "hermes-4-70b"
+      },
+      "max_concurrent_sessions": 4
+    },
+    "provenance": {
+      "model.default": "profile",
+      "max_concurrent_sessions": "agent"
+    },
+    "locks": [
+      {
+        "path": "max_concurrent_sessions",
+        "level": "agent"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "max_concurrent_sessions",
+      "value": 8,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "max_concurrent_sessions",
+        "lockedBy": "agent"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-4-8b",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "max_concurrent_sessions",
+      "value": 2,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

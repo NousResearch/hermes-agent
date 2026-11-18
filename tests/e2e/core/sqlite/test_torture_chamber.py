@@ -345,6 +345,7 @@ def test_torture_episode(chamber, episode):
            f"replay: {SEED_ENV}={base_seed()}]")
     _ensure_reader(chamber)
     before = counts(chamber.db) if chamber.db.exists() else {"__total__": 0}
+    hits_mark = chamber.deleted_hits_mark()  # the chamber is shared: an earlier episode's hit is not this one's
     started = time.monotonic()
 
     try:
@@ -359,7 +360,7 @@ def test_torture_episode(chamber, episode):
     assert not stragglers, f"{ctx} roles still running: {stragglers}"
     problems: list[str] = []
     problems += [f"{n}: {e.get('error')}\n{e.get('tb', '')}" for n, e in chamber.errors()]
-    problems += [f"{name} (pid {pid}) held {link}" for name, pid, link in chamber.deleted_hits_snapshot()]
+    problems += [f"{name} (pid {pid}) held {link}" for name, pid, link in chamber.deleted_hits_snapshot(hits_mark)]
     rows = integrity_rows(chamber.db)
     if rows != ["ok"]:
         problems.append(f"integrity_check: {rows[:5]}")

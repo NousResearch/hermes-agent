@@ -11,8 +11,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import secrets
 import sqlite3
+import sys
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +26,13 @@ logger = logging.getLogger(__name__)
 _live_lock = threading.RLock()
 # canonical path -> number of live connections opened by this process
 _live_connections: dict[str, int] = {}
+# Keys whose connection SQLite has closed, queued from wherever that happened (possibly inside a
+# garbage collection) and applied under _live_lock by the next registry read. Lock-free on purpose:
+# a collection can run while any lock is held, so it must never wait for _live_lock.
+_released: deque[str] = deque()
+# Private, randomised name so no caller overloads it by accident (that would free the release
+# object early, while the connection is still open).
+_RELEASE_FUNCTION = f"_hermes_release_{secrets.token_hex(8)}"
 
 
 class UntrackableConnectionError(RuntimeError):
@@ -76,10 +86,54 @@ def untrack_connection(path: Path | str) -> None:
         _track_key(_key(path), -1)
 
 
+def _apply_releases() -> None:
+    """Untrack every connection SQLite has finished closing (caller holds ``_live_lock``)."""
+    while _released:
+        _track_key(_released.popleft(), -1)
+
+
+class _ReleaseOnClose:
+    """Registered as a SQL function on each tracked connection, so SQLite holds the only reference.
+    SQLite frees a connection's functions after it has closed the database files (btrees first,
+    then the function table, in ``sqlite3LeaveMutexAndCloseZombie``; not an API promise, which
+    the tests pin), so this object is released only once the descriptors are gone: after ``close()``, or when pysqlite closes a
+    connection collected without it, on any thread (#149291). It only queues its key."""
+
+    __slots__ = ("armed", "key")
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.armed = False
+
+    def __call__(self) -> None:
+        return None
+
+    def __del__(self) -> None:
+        if self.armed and _released is not None:  # None only during interpreter teardown
+            _released.append(self.key)
+
+
+def _live_main_key(key: str) -> Optional[str]:
+    """The tracked main-database key that makes *key* live, or ``None`` (caller holds ``_live_lock``).
+
+    SQLite locks the main file and its WAL sidecars; a raw ``close()`` of any of those
+    inodes cancels this process's POSIX locks, but the registry is keyed by the main path."""
+    _apply_releases()
+    if key in _live_connections:
+        return key
+    for suffix in ("-wal", "-shm"):
+        if key.endswith(suffix) and key[:-len(suffix)] in _live_connections:
+            return key[:-len(suffix)]
+    return None
+
+
 def has_live_connection(path: Path | str) -> bool:
-    """Whether this process currently holds any connection to *path*."""
+    """Whether this process holds a connection to *path* (or to the database it is a sidecar of).
+
+    Point-in-time answer: a raw open/close right after it returns ``False`` can still race a
+    new connection. Hold :func:`offline_file_access` across the I/O whenever possible."""
     with _live_lock:
-        return _key(path) in _live_connections
+        return _live_main_key(_key(path)) is not None
 
 
 class _TrackingMixin:
@@ -87,22 +141,17 @@ class _TrackingMixin:
 
     The real ``close()`` and the unregister happen together under ``_live_lock`` so a concurrent
     probe can never observe "no live connection" while this descriptor is still open. Unregister
-    runs only after ``close()`` succeeds: untracking before a failing close (e.g. cross-thread
-    ProgrammingError) would leave the FD open while the byte-probe guard thinks nothing is live.
+    runs only after the files are closed, through :class:`_ReleaseOnClose`: a failing close (e.g.
+    cross-thread ProgrammingError) keeps the entry while the FD stays open (#75629).
     """
 
     _hermes_tracked_path: str | None = None
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
-            path = getattr(self, "_hermes_tracked_path", None)
-            # Close first; untrack only once the descriptor is actually gone. Untracking before a failing
-            # close (e.g. cross-thread ProgrammingError) leaves the FD open while the byte-probe guard
-            # thinks nothing is live — see #75629.
             super().close()  # type: ignore[misc]
-            if path is not None:
-                self._hermes_tracked_path = None
-                untrack_connection(path)
+            self._hermes_tracked_path = None
+            _apply_releases()
 
 
 class TrackedConnection(_TrackingMixin, sqlite3.Connection):
@@ -149,8 +198,20 @@ def connect_tracked(
                 # simulating FTS5-less runtimes do this). Retag the instance's class so close()
                 # still releases the registry entry rather than silently losing probe safety.
                 conn = _retrofit_tracking(conn, resolved)
-            conn._hermes_tracked_path = resolved
             _track_key(resolved)
+            release = _ReleaseOnClose(resolved)
+            try:
+                # Confirm registration without running SQL (a statement would read the schema and
+                # wait on locks): sqlite3 holds a reference to the callable while it is registered.
+                before = sys.getrefcount(release)
+                conn.create_function(_RELEASE_FUNCTION, 0, release)
+                if sys.getrefcount(release) == before:  # dropped: nothing would release the entry
+                    raise sqlite3.ProgrammingError("connection factory did not register the release function")
+            except Exception:
+                _track_key(resolved, -1)  # the release object can never fire: take the count back
+                raise
+            release.armed = True
+            conn._hermes_tracked_path = resolved
             return conn
         except Exception:
             try:
@@ -211,7 +272,7 @@ def read_header_bytes_preopen(path: Path | str, *, length: int = 100, force: boo
     overwritten?). Check and open/read/close run together under ``_live_lock`` so a connection
     cannot be opened between deciding "nothing is live" and closing this descriptor."""
     with _live_lock:
-        if not force and _key(path) in _live_connections:
+        if not force and _live_main_key(_key(path)) is not None:
             logger.debug(
                 "refusing byte-level read of %s: a live connection exists in "
                 "this process and close() would cancel its POSIX locks",
@@ -230,19 +291,12 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
     :func:`has_live_connection` and *then* doing raw I/O is a check/use race (a connection opened
     in between loses its POSIX locks to the raw ``close()``). Held only for the raw I/O."""
     with _live_lock:
-        if _key(path) in _live_connections:
+        main = _live_main_key(_key(path))
+        if main is not None:
+            subject = "it" if main == _key(path) else f"its main database {main}"
             raise LiveConnectionError(
-                f"Refusing to {what} {path}: a connection to it is still open "
+                f"Refusing to {what} {path}: a connection to {subject} is still open "
                 "in this process, and raw file access would cancel that "
                 "connection's POSIX advisory locks. Close all database "
                 "handles (stop the gateway/dashboard) and retry.")
         yield
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
-# ---- END PLUGIN-COMPAT ----

@@ -9,6 +9,12 @@
 
 **The native desktop app for [Hermes Agent](../../README.md) — the self-improving AI agent from [Nous Research](https://nousresearch.com).** Same agent, same skills, same memory as the CLI and gateway, in a polished native window — chat with streaming tool output, side-by-side previews, a file browser, voice, and settings, no terminal required. Available for **macOS, Windows, and Linux**.
 
+> **Intel Macs:** the `Hermes-Setup.dmg` bootstrap installer is built for
+> Apple Silicon (arm64) only, so on an Intel Mac it reports "not supported on
+> this Mac". No release builds a native `darwin-x64` bundle; install the
+> [CLI](../../README.md) and run `hermes desktop`. See
+> [Platform Support](../../website/docs/getting-started/platform-support.md#build-targets-and-support-priority).
+
 <table>
 <tr><td><b>Chat with the full agent</b></td><td>Streaming responses, live tool activity, structured tool summaries, and the same conversation history as every other Hermes surface.</td></tr>
 <tr><td><b>Side-by-side previews</b></td><td>Render web pages, files, and tool outputs in a right-hand pane while you keep chatting.</td></tr>
@@ -78,28 +84,32 @@ shortcut helper. Prebuilt installers include it; no compiler is needed at runtim
 Want to hack on the app itself? Install workspace deps from the repo root once, then run the dev server from this directory:
 
 ```bash
-npm install          # from repo root — links apps/desktop, web, apps/shared
+pnpm install         # from repo root — links apps/desktop, web, apps/shared
 cd apps/desktop
-npm run dev          # Vite renderer + Electron, which boots the Python backend
+pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```
+
+`just desktop` runs the same dev server from the repository root.
+
+On Windows x64, the first `pnpm run dev` (and `profile:main`) fetches `get-windows`' native binding into `node_modules`, because the dependency install skips its script; if that fails or takes over two minutes, dev starts without `read_window_below` and retries next time. That fetch reads a mirror or proxy only from the environment (`npm_config_node_get_windows_binary_host_mirror`, `HTTP_PROXY` or `npm_config_proxy`), not from `.npmrc`.
 
 Point the app at a specific source checkout, or sandbox it away from your real config:
 
 ```bash
 # throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
-../../scripts/dev-sandbox.sh npm run dev
-HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
-HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway npm run dev
-npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
+../../scripts/dev-sandbox.sh pnpm run dev
+HERMES_DESKTOP_HERMES_ROOT=/path/to/clone pnpm run dev
+HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
+pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
 ### Building installers
 
 ```bash
-npm run dist:mac     # DMG + zip
-npm run dist:win     # MSIX
-npm run dist:linux   # AppImage + deb + rpm
-npm run pack         # unpacked app under release/ (no installer)
+pnpm run dist:mac     # DMG + zip
+pnpm run dist:win     # MSIX
+pnpm run dist:linux   # AppImage + deb + rpm
+pnpm run pack         # unpacked app under release/ (no installer)
 ```
 
 These are ordinary packaging commands, not complete tagged payload builds.
@@ -112,7 +122,8 @@ publishes Windows and macOS packages; Linux desktop legs are disabled.
 The bundled app carries the Electron shell, native React chat surface, and
 local agent payload. It runs the payload directly from resources. User data
 lives in `HERMES_HOME` outside the app. Bootstrap builds instead provision a
-source installation; Light is a remote-only variant without a local runtime.
+source installation. A remote-only Light variant exists as a build target but
+is not published.
 
 The app has three boundaries:
 
@@ -210,14 +221,14 @@ and retained background sockets continue receiving events from running jobs.
 Run before opening a PR (lint may surface pre-existing warnings but must exit cleanly):
 
 ```bash
-npm run fix
-npm run typecheck
-npm run lint
-npm run test:ui
-npm run test:desktop:platforms
+pnpm run fix
+pnpm run typecheck
+pnpm run lint
+pnpm run test:ui
+pnpm run test:desktop:platforms
 ```
 
-Run `npm run test:desktop:all` for install, boot, update, packaging, or other
+Run `pnpm run test:desktop:all` for install, boot, update, packaging, or other
 release-path changes.
 
 ### Troubleshooting

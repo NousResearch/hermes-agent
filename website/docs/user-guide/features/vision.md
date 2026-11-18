@@ -223,6 +223,8 @@ The `vision_analyze` tool itself follows the same routing. When the active main 
 
 For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
 
+Every other tool that hands the model an image uses this same decision: browser screenshots, `computer_use` captures (which are described by the auxiliary vision model when the main model can't take them natively), and [MCP image results](mcp.md#image-results). `agent.image_input_mode: text` therefore keeps pixels out of all of them.
+
 ### SVG and other non-raster images on Responses backends
 
 Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.
@@ -239,3 +241,20 @@ vision:
 
 - **`embed_target_bytes`** — images above the budget (or wider than 1568 px) are downscaled to a JPEG that fits. 256 KB keeps ordinary screenshots cheap; dense phone screenshots of tables can come out unreadable at that size, so raise it (say `1048576`) when the model keeps calling figures "unreadable". Browser screenshots delivered natively use the same budget.
 - **`max_calls_per_image`** — how often the *same* image (region crops of it included; local paths compare by resolved path) may be embedded per session. Once the cap is hit the tool returns `"vision_analyze refused: this image has already been loaded into context N time(s) …"` instead of another embed, so the model answers from what it already sees. Left unset, only delegated `delegate_task` subagents are capped (at 3): they run unattended and cannot be steered mid-loop from the CLI, and a re-load loop there once burned 158 calls on five files. Set a number to cap every session, or `0` for unlimited everywhere.
+
+### Images in follow-up turns: `vision.replay_recent_images`
+
+The session database stores user messages as text, with one `[screenshot]` line per attached image. A turn whose history is rebuilt from the database (every request to the [API server](api-server.md) that continues a session with `X-Hermes-Session-Id`, `hermes chat --resume`, a gateway restart) used to show the model that placeholder, so a follow-up question about a photo sent one message earlier got a guess.
+
+When the model takes images natively (see [Image Routing](#image-routing-vision-capable-vs-text-only-models)), Hermes now sends the most recent images again, in their original message:
+
+```yaml
+vision:
+  replay_recent_images: 3   # default; 0 = never re-send earlier images
+```
+
+- The bytes come from the copy Hermes already keeps for every attached image under `cache/documents/native-inputs/` in the profile. Nothing new is stored, and the database and session messages API stay text only.
+- A re-sent message is byte-identical to the request that first carried the image, so the provider's prompt cache stays valid. Older images leave the window in batches: with the default 3, the newest 3 to 5 images are re-sent, and every third new image drops the oldest batch at once. An earlier message is rewritten at most once per batch, not on every new photo, and an image that left the window does not come back.
+- Replay reaches only images whose kept copy still exists. On the gateway, the kept copy of an image attached in chat is removed once it is older than the media-cache age (24 hours), so a follow-up more than a day later sees `[screenshot]` again. The removal can also happen in the middle of a session, which changes the request once. Images sent to the API server stay with the API request record that carried them and are not removed by that 24-hour cleanup.
+- Images outside the window, images sent as remote URLs (they can expire, which would fail every later turn), and retained files that are missing or changed keep the `[screenshot]` text.
+- With `agent.image_input_mode: text`, or a model without native vision, nothing is re-sent. A value that is not a non-negative integer logs a warning and disables the replay.

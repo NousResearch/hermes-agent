@@ -112,7 +112,7 @@ def test_acp_background_discovery_does_not_block_startup(monkeypatch):
     )
     elapsed = time.monotonic() - start
 
-    assert elapsed < 0.2, "start_background_mcp_discovery blocked for {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, f"start_background_mcp_discovery blocked for {elapsed:.3f}s"
     thread = mcp_startup._current_home_thread()
     assert thread is not None
     assert thread.is_alive()

@@ -10,7 +10,6 @@ import pytest
 import hermes_constants
 from hermes_platform.host import runtime as host_runtime
 from hermes_constants import (
-    agent_browser_runnable,
     get_default_hermes_root,
     get_hermes_dir,
     get_hermes_home,
@@ -69,6 +68,33 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
 
         assert get_default_hermes_root() == local_appdata / "hermes"
+
+    @pytest.mark.platforms("windows")
+    def test_root_for_another_environment_ignores_this_process(self, tmp_path, monkeypatch):
+        """hermes_root_for_environment applies the root rules to the mapping it gets."""
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "sandbox-local"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "sandbox-home"))
+        local = tmp_path / "local"
+        user = tmp_path / "user"
+        custom = tmp_path / "data"
+        cases = [
+            ({"LOCALAPPDATA": str(local)}, local / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": str(local / "hermes" / "profiles" / "work")},
+             local / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": str(custom / "profiles" / "work")}, custom),
+            ({"LOCALAPPDATA": str(local), "HERMES_DATA_DIR_SUFFIX": "-magic"}, local / "hermes-magic"),
+            ({"localappdata": str(local), "HERMES_HOME": "%LocalAppData%\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "$LOCALAPPDATA\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "${LOCALAPPDATA}\\data"}, local / "data"),
+            ({"LOCALAPPDATA": str(local), "USERPROFILE": str(user), "HERMES_HOME": "~\\data"}, user / "data"),
+            ({"USERPROFILE": str(user)}, user / "AppData" / "Local" / "hermes"),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "relative\\data"}, None),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "%UNDEFINED%\\data"}, None),
+            ({"LOCALAPPDATA": str(local), "HERMES_HOME": "~\\data"}, None),
+            ({}, None),
+        ]
+        for environ, root in cases:
+            assert hermes_constants.hermes_root_for_environment(environ) == root, environ
 
 
 
@@ -478,40 +504,6 @@ class TestSecureParentDir:
         assert called_with[0] == (str(real_dir), 0o700)
 
 
-@pytest.mark.platforms("posix")  # POSIX shell stubs; Windows uses .cmd shims
-class TestAgentBrowserRunnable:
-    """agent_browser_runnable() validates the resolved CLI actually runs.
-
-    Regression coverage for issue #48521: a dangling global symlink left by
-    agent-browser's npm postinstall is reported by ``which`` but fails at exec
-    with exit 127, silently breaking every browser tool. The validator must
-    reject it (and other non-runnable candidates) so callers fall through.
-    """
-
-    def _stub(self, tmp_path, name, body, mode=0o755):
-        p = tmp_path / name
-        p.write_text(body)
-        p.chmod(mode)
-        return p
-
-    def test_none_and_empty_rejected(self):
-        assert agent_browser_runnable(None) is False
-        assert agent_browser_runnable("") is False
-
-    def test_dangling_symlink_rejected(self, tmp_path):
-        link = tmp_path / "agent-browser"
-        link.symlink_to(tmp_path / "does-not-exist")
-        # exists() follows the link → False, so it's rejected without exec.
-        assert agent_browser_runnable(str(link)) is False
-
-
-
-
-
-
-
-
-
 class TestGetHermesDir:
     """Tests for ``get_hermes_dir(new_subpath, old_name)``.
 
@@ -664,3 +656,14 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+@pytest.mark.parametrize("name", ["HERMES_MANAGED_DIR", "hermes_managed_dir", "Hermes_Home", "HERMES_HOME"])
+def test_is_launch_only_env_key_folds_case(name):
+    """Windows env names are case-insensitive, so every guard must fold case (#135200)."""
+    assert hermes_constants.is_launch_only_env_key(name)
+
+
+@pytest.mark.parametrize("name", ["HERMES_MANAGED_DIRX", "HERMES_HOMEDIR", "PATH", ""])
+def test_is_launch_only_env_key_rejects_other_names(name):
+    assert not hermes_constants.is_launch_only_env_key(name)

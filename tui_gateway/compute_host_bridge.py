@@ -62,9 +62,18 @@ def _compute_host_turn_frame(
         **({"display_metadata": display_metadata} if display_metadata else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
+        # Workspace provenance rides with the cwd: a sandbox backend registers an unpicked host cwd as nothing.
+        "explicit_cwd": bool(session.get("explicit_cwd")),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
         "model_override": session.get("model_override"),
+        # A model switch queued while the session was busy (config.set model ->
+        # pending_model_switch) must cross the process boundary — the live agent is in
+        # the compute host, and the server-side _apply_pending_model_switch would
+        # pop-and-drop it against agent=None. COPIED (not popped): the stash is
+        # cleared only after a successful isolated turn (_on_compute_host_turn_done),
+        # so the fail-open in-process path can still apply it if the host dispatch fails.
+        "pending_model_switch": session.get("pending_model_switch"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
@@ -139,9 +148,13 @@ def _relay_compute_host_rpc(message: dict) -> bool:
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
         if session is not None:
+            from tui_gateway.server_requests import can_replay_request
+
+            replayable = can_replay_request(message["method"], params)
             with _history_lock(session):
                 session["_compute_host_open_request"] = {
-                    "id": message["id"], "method": message["method"], "params": dict(params)}
+                    "id": message["id"], "method": message["method"],
+                    **({"params": dict(params)} if replayable else {"replayable": False})}
     elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
@@ -179,15 +192,60 @@ def _relay_compute_host_response(frame: dict) -> bool:
         return False
     sid, session = located
     with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request")
+        method = mirrored.get("method") if isinstance(mirrored, dict) else None
         session.pop("_compute_host_open_request", None)
+    # Vault-secret egress across the process boundary (#150283): a UI key-button fill registers the
+    # filled password in THIS (parent) process's redaction registry, keyed by the owning profile; the
+    # compute-host child has a separate registry, so a preview read/action it runs would forward an
+    # echoed password unredacted. Scrub the window's reply here, in the owning profile's scope, before it
+    # reaches the child — the same vault-secret boundary every browser result crosses.
+    forwarded = _scrub_preview_vault_reply(session, method, frame)
     try:
-        _get_compute_host_supervisor().respond(sid, {"frame": dict(frame)})
+        _get_compute_host_supervisor().respond(sid, {"frame": dict(forwarded)})
     except Exception:
         logger.debug("compute-host response relay failed sid=%s", sid, exc_info=True)
     return True
 
 
-def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+def _scrub_preview_vault_reply(session: dict, method: str | None, frame: dict) -> dict:
+    """Redact registered vault secrets from a ``preview.read`` / ``preview.act`` reply before it is
+    forwarded to the compute-host child, under the request-owning profile's scope. Any other method, or a
+    frame with no scrubbable ``result.value``, is returned unchanged."""
+    if method not in ("preview.read", "preview.act"):
+        return frame
+    result = frame.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("value"), str):
+        return frame
+    from tools.browser_vault_preview import redact_preview_result
+    with _session_profile_runtime_scope(session):
+        scrubbed = redact_preview_result(result["value"])
+    if scrubbed == result["value"]:
+        return frame
+    return {**frame, "result": {**result, "value": scrubbed}}
+
+
+def _cancel_session_requests(sid: str, reason: str, *, method: str) -> None:
+    """Withdraw *sid*'s open *method* requests wherever they wait: in this process, or in the compute-host
+    child that minted them (the parent holds only a mirror, so a local cancel never reaches that wait).
+    The child's ``request.cancel`` comes back through ``_relay_compute_host_rpc``, which drops the mirror."""
+    from tui_gateway import server_requests
+    server_requests.cancel(sid, reason, method=method)
+    session = _sessions.get(sid)
+    if session is None:
+        return
+    with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request")
+        hosted = isinstance(mirrored, dict) and mirrored.get("method") == method
+    if not hosted or not _session_uses_compute_host(session):
+        return
+    try:
+        _get_compute_host_supervisor().respond(sid, {"cancel": {"method": method, "reason": reason}})
+    except Exception:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; the child's own deadline still ends the wait
+        logger.warning("compute-host request cancel failed sid=%s method=%s", sid, method, exc_info=True)
+
+
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
     located = _compute_host_request_session(request_id)
@@ -241,6 +299,11 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
+    # The isolated turn carried the queued model switch to the compute host, whose
+    # turn thread applied it. Clear the server-side stash so it isn't re-forwarded
+    # (kept on error so the fail-open in-process path can still apply it).
+    if frame.get("type") != "turn.error":
+        session.pop("pending_model_switch", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -304,6 +367,13 @@ def _send_compute_host_control(
         on_late_ack=on_late_ack)
 
 
+def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
+    """``_err`` for a ``control.error``/``error`` ack, else None."""
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, code, str(ack.get("message") or default))
+    return None
+
+
 def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:
     """RPC wait budget for a compute-host compress control: the configured compression
     ceiling plus slack, capped below the desktop's RPC timeout (a fixed waiter reported
@@ -338,6 +408,65 @@ def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *,
     _apply_compute_host_metadata_mirror(session, ack)
     _emit("session.info", sid, _compute_host_session_info(session))
     _status_update(sid, "compacted", "✓ Context compression complete")
+
+
+def _send_claimed_compute_host_control(sid: str, session: dict, *, route_name: str, command: str, compress: bool):
+    """A transcript-writing control (``/compress``, ``/model``) sent under a parent-side transcript claim: the host
+    works under a borrowed token while ``running`` stays False here, so without the claim the idle reaper could
+    release the real lease mid-compression. Released when the ack lands; on ``queue.Empty`` (a compress waiter
+    giving up) the late-ack adopter releases it instead, since the host is still writing."""
+    release = _hold_transcript_claim(session)  # raises SessionNotOwned when another surface took the chat
+    handed_to_late_ack = False
+
+    def _on_late_ack(late: dict, _sid=sid) -> None:
+        try:
+            _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
+        finally:
+            release()
+    try:
+        return _send_compute_host_control(
+            sid, route_name=route_name, command=command, wait=True,
+            # compression.context_total_ceiling_seconds: the host legitimately runs that long.
+            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if compress else {}))
+    except queue.Empty:
+        handed_to_late_ack = compress
+        raise
+    finally:
+        if not handed_to_late_ack:
+            release()
+
+
+def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
+    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
+    sid = str(params.get("session_id") or "")
+    focus_topic = _str_param(params, "focus_topic")
+    try:
+        ack = _send_claimed_compute_host_control(
+            sid, session, route_name="session.compress",
+            command="/compress" + (f" {focus_topic}" if focus_topic else ""), compress=True)
+    except queue.Empty:
+        # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
+        # lands. Not an error (a 5019 here reported timeouts that later succeeded).
+        return _ok(rid, {"status": "pending", "turn_isolation": True,
+                         "message": ("compression still running in the background; "
+                                     "the transcript will refresh when it finishes")})
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: the dispatcher answers 4090, not a host failure
+    except Exception as exc:
+        return _err(rid, 5019, f"compute-host compress failed: {exc}")
+    if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
+        return resp
+    _apply_compute_host_metadata_mirror(session, ack)
+    if isinstance(host_result := ack.get("result"), dict):
+        # Host-owned result verbatim (carries `status: aborted` / `summary.aborted`).
+        return _ok(rid, {**host_result, "turn_isolation": True})
+    host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+    return _ok(rid, {
+        "status": "compressed", "turn_isolation": True,
+        # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
+        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
+        "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
 
 
 def register(server) -> None:

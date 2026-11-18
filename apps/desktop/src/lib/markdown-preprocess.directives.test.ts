@@ -4,6 +4,7 @@ import { unified } from 'unified'
 import { describe, expect, it } from 'vitest'
 
 import { preprocessMarkdown } from './markdown-preprocess'
+import { remarkTranscriptDirectives, segmentTranscriptDirectives } from './transcript-directives'
 
 /**
  * A transcript directive (`::onboarding{...}`) is a card only while the parser
@@ -66,3 +67,52 @@ describe('preprocessMarkdown / directive lines', () => {
     expect(preprocessMarkdown(text)).toBe('Use std::vector&lt;int&gt; for *speed*.')
   })
 })
+
+describe('preprocessMarkdown / directive attributes holding URLs', () => {
+  // A signed CDN URL: `_`, `~`, `*`, `&` in the query, exactly what the prose
+  // rewrites (autolinker, tilde/currency escaping) and the parser each read
+  // as markup.
+  const url =
+    'https://assets.example.com/t/01a/model.glb?Expires=1761000000&Signature=ab~cd_ef-gh__ij*k&Key-Pair-Id=K2X_Y'
+
+  // The renderer's pipeline: preprocess, parse with GFM, then the directive fold.
+  function rendered(markdown: string) {
+    const processor = unified().use(remarkParse).use(remarkGfm).use(remarkTranscriptDirectives)
+
+    return processor.runSync(processor.parse(preprocessMarkdown(markdown))) as unknown as {
+      children: { children?: { type: string; url?: string; value?: string }[] }[]
+    }
+  }
+
+  it.each([
+    `::meshy-model{url="${url}" title="Fox_v2" task="01a"}`,
+    `Here it is: ::meshy-model{url="${url}" title="Fox_v2" task="01a"}`
+  ])('reaches the directive parser exactly as written: %s', line => {
+    const children = rendered(line).children[0]?.children ?? []
+
+    expect(children.map(child => child.type)).toEqual(['text'])
+    expect(directiveAttrs(children[0]?.value ?? '')).toEqual({ url, title: 'Fox_v2', task: '01a' })
+  })
+
+  it('still autolinks a URL in the prose around it', () => {
+    const tree = rendered(`See https://example.com/a_b and [docs](https://ex.com/d).\n\n::meshy-model{url="${url}"}`)
+
+    expect(tree.children[0]?.children?.filter(child => child.type === 'link').map(child => child.url)).toEqual([
+      'https://example.com/a_b',
+      'https://ex.com/d'
+    ])
+    expect(directiveAttrs(tree.children[1]?.children?.[0]?.value ?? '')).toEqual({ url })
+  })
+
+  it('keeps an explicit markdown link inside directive-like text clickable', () => {
+    const children = rendered('::example{\nSee [docs](https://example.com)\n}').children[0]?.children ?? []
+
+    expect(children.filter(child => child.type === 'link').map(child => child.url)).toEqual(['https://example.com'])
+  })
+})
+
+function directiveAttrs(text: string) {
+  const segment = segmentTranscriptDirectives(text)?.find(part => part.kind === 'directive')
+
+  return segment?.kind === 'directive' ? segment.directive.attrs : null
+}

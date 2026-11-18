@@ -1,8 +1,9 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
-import { NO_SKILLS_INSTALLED } from '../app/userMessages.js'
+import { noSkillsInstalled } from '../app/userMessages.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { useT } from '../i18n/useT.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -15,6 +16,7 @@ const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
 export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
+  const { list: L, skills: T } = useT().hubs
   const [skillsByCat, setSkillsByCat] = useState<Record<string, string[]>>({})
   const [selectedCat, setSelectedCat] = useState('')
   const [catIdx, setCatIdx] = useState(0)
@@ -184,14 +186,14 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading skills…</Text>
+    return <Text color={t.color.muted}>{T.loading}</Text>
   }
 
   if (err && stage === 'category') {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.label}>{L.errorLine(err)}</Text>
+        <OverlayHint t={t}>{T.hintCancel}</OverlayHint>
       </Box>
     )
   }
@@ -199,24 +201,24 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
   if (!cats.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.muted}>{NO_SKILLS_INSTALLED}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.muted}>{noSkillsInstalled()}</Text>
+        <OverlayHint t={t}>{T.hintCancel}</OverlayHint>
       </Box>
     )
   }
 
   if (stage === 'category') {
-    const rows = cats.map(c => `${c} · ${skillsByCat[c]?.length ?? 0} skills`)
+    const rows = cats.map(c => T.categoryRow(c, skillsByCat[c]?.length ?? 0))
     const { items, offset } = windowItems(rows, catIdx, VISIBLE)
 
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent}>
-          Skills Hub
+          {T.title}
         </Text>
 
-        <Text color={t.color.muted}>select a category</Text>
-        {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+        <Text color={t.color.muted}>{T.selectCategory}</Text>
+        {offset > 0 && <Text color={t.color.muted}>{L.moreAbove(offset)}</Text>}
 
         {items.map((row, i) => {
           const idx = offset + i
@@ -229,8 +231,10 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           )
         })}
 
-        {offset + VISIBLE < rows.length && <Text color={t.color.muted}> ↓ {rows.length - offset - VISIBLE} more</Text>}
-        <OverlayHint t={t}>↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel</OverlayHint>
+        {offset + VISIBLE < rows.length && (
+          <Text color={t.color.muted}>{L.moreBelow(rows.length - offset - VISIBLE)}</Text>
+        )}
+        <OverlayHint t={t}>{T.hintCategory}</OverlayHint>
       </Box>
     )
   }
@@ -244,9 +248,9 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
           {selectedCat}
         </Text>
 
-        <Text color={t.color.muted}>{skills.length} skill(s)</Text>
-        {!skills.length ? <Text color={t.color.muted}>no skills in this category</Text> : null}
-        {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+        <Text color={t.color.muted}>{T.skillCount(skills.length)}</Text>
+        {!skills.length ? <Text color={t.color.muted}>{T.emptyCategory}</Text> : null}
+        {offset > 0 && <Text color={t.color.muted}>{L.moreAbove(offset)}</Text>}
 
         {items.map((row, i) => {
           const idx = offset + i
@@ -260,11 +264,9 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
         })}
 
         {offset + VISIBLE < skills.length && (
-          <Text color={t.color.muted}> ↓ {skills.length - offset - VISIBLE} more</Text>
+          <Text color={t.color.muted}>{L.moreBelow(skills.length - offset - VISIBLE)}</Text>
         )}
-        <OverlayHint t={t}>
-          {skills.length ? '↑/↓ select · Enter open · 1-9,0 quick · Esc back · q close' : 'Esc back · q close'}
-        </OverlayHint>
+        <OverlayHint t={t}>{skills.length ? T.hintSkill : T.hintSkillEmpty}</OverlayHint>
       </Box>
     )
   }
@@ -277,12 +279,12 @@ export function SkillsHub({ gw, maxWidth, onClose, t }: SkillsHubProps) {
 
       <Text color={t.color.muted}>{info?.category ?? selectedCat}</Text>
       {info?.description ? <Text color={t.color.text}>{info.description}</Text> : null}
-      {info?.path ? <Text color={t.color.muted}>path: {info.path}</Text> : null}
-      {!info && !err ? <Text color={t.color.muted}>loading…</Text> : null}
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {installing ? <Text color={t.color.accent}>installing…</Text> : null}
+      {info?.path ? <Text color={t.color.muted}>{T.pathLine(info.path)}</Text> : null}
+      {!info && !err ? <Text color={t.color.muted}>{T.loadingOne}</Text> : null}
+      {err ? <Text color={t.color.label}>{L.errorLine(err)}</Text> : null}
+      {installing ? <Text color={t.color.accent}>{T.installing}</Text> : null}
 
-      <OverlayHint t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayHint>
+      <OverlayHint t={t}>{T.hintActions}</OverlayHint>
     </Box>
   )
 }

@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 class _GetcwdPatcher:

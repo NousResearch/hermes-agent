@@ -1,7 +1,7 @@
 name: pandora
 repo: https://github.com/36North/Pandora-for-Hermes
 subdir: pandora
-sha: b2016f1687e3b51dc6daa8c39b52debd2748aca3
+sha: 5f53d65390c0bc79992eb8d37448fdc0a20fa9bd
 description: >-
   Unofficial Pandora (pandora.com) client for Hermes: play your stations on this PC or cast
   to networked speakers, see the Now Playing artist and song in the desktop status bar.
@@ -13,25 +13,26 @@ description: >-
   (or run `hermes pandora setup`) — that downloads mpv, the audio engine the plugin streams
   music through, as a SHA-256-verified official portable build (~27 MB, once per PC). Nothing
   is downloaded until you ask. Disclosure - sign-in uses your
-  own Pandora account email + password (`hermes pandora login`); the password is stored in the
-  OS keychain (Windows Credential Manager on Windows, entry "Hermes pandora" / your account
-  email, shared by every Hermes profile of that OS user) and read back from that same entry,
-  both through a plugin-registered Hermes secret source and directly. No plaintext password is
-  written unless you explicitly pass `--save-to env`. The session token and cookie jar live in
-  the active profile's auth.json under providers.pandora. Credentials are sent only to
-  pandora.com. Disclosure - this plugin uses automated access to pandora.com that may violate
-  Pandora's Terms of Use; use is at your own account risk. Unofficial and unaffiliated; no
-  Pandora logo or artwork is bundled. Windows only (exercised end to end).
+  own Pandora account email + password (`hermes pandora login`); the password is stored only
+  in the OS keychain (Windows Credential Manager on Windows, entry "Hermes pandora" / your
+  account email, shared by every Hermes profile of that OS user) and read back from that same
+  entry, both through a plugin-registered Hermes secret source and directly. The plugin never
+  writes a plaintext password. The session token and cookie jar live in the active profile's
+  plugin-data/pandora/session.json (mode 0600). Credentials are sent only to pandora.com, and
+  credential-bearing requests never follow redirects. Disclosure - this plugin uses automated
+  access to pandora.com that may violate Pandora's Terms of Use; use is at your own account
+  risk. Unofficial and unaffiliated; no Pandora logo or artwork is bundled. Windows only
+  (exercised end to end).
 maintainer: 36North
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/36North/Pandora-for-Hermes#readme
-version: "0.5.2"
+version: "0.5.3"
 title: Pandora for Hermes
-image: https://raw.githubusercontent.com/36North/Pandora-for-Hermes/b2016f1687e3b51dc6daa8c39b52debd2748aca3/assets/card.jpg
+image: https://raw.githubusercontent.com/36North/Pandora-for-Hermes/5f53d65390c0bc79992eb8d37448fdc0a20fa9bd/assets/card.jpg
 screenshots:
-  - https://raw.githubusercontent.com/36North/Pandora-for-Hermes/b2016f1687e3b51dc6daa8c39b52debd2748aca3/assets/chip-store.jpg
+  - https://raw.githubusercontent.com/36North/Pandora-for-Hermes/5f53d65390c0bc79992eb8d37448fdc0a20fa9bd/assets/chip-store.jpg
 readme: true
 platforms:
   - windows

@@ -1,4 +1,4 @@
-"""gpt-6-astra (and its ``-900k`` picker alias) is native-compaction eligible only on official
+"""gpt-6-astra (and its ``-900k`` picker alias) and gpt-6.2-astra are eligible only on official
 Codex OAuth (#103720).
 
 Both the destination capability (``resolve_native_compaction_capabilities``) and the

@@ -441,7 +441,10 @@ async def _admission_scope(authority, ref, home, row, event, captured):
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
     from agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+        # The claim's store fences the turn's writes (``persistence.core.fences``): once the lease moves, a late
+        # write of this turn, or of work it started, lands nothing.
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row),
+                                                                store=authority_persistence(authority).scope):
             yield
 
 

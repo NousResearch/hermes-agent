@@ -59,10 +59,12 @@ from persistence.sqlite._state.dbfile import (
 from persistence.sqlite._state.repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from persistence.conversation.messages import ReadCheck
 from persistence.core.errors import CompressionInProgress
+from persistence.core.fences import writes_as, writing_turn
 from sqlite_support import _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback
 from storage_errors import is_malformed_db_error, is_sqlite_lock_error
 from storage_user_copy import set_last_init_error
 
+from ._turn_fence import check_turn_fence, turn_fence_for
 from ._schema import (
     _enter_fts_fail_open, _fts_table_probe, _init_schema, _is_fts_write_corruption_error,
     _try_incremental_merge_fts,
@@ -230,6 +232,12 @@ def _apply_token_delta(holder: "StoreHolder", session_id: str, kwargs: dict[str,
     _token_delta_applier(holder, session_id, kwargs)
 
 
+def _queued(entry: tuple[Any, ...]) -> tuple[str, dict[str, Any], Any]:
+    """One queued token delta as ``(session_id, kwargs, turn)``; an entry queued without a turn applies as no turn's."""
+    session_id, kwargs, *turn = entry
+    return session_id, kwargs, (turn[0] if turn else None)
+
+
 class StoreHolder:
     """SQLite-backed store for one ``state.db``: many reader threads, one writer (WAL)."""
 
@@ -267,6 +275,11 @@ class StoreHolder:
     _reopen_notice = False
     # Set by the registry's ``close_all`` (gateway shutdown) on every holder it closes.
     _closed_by_close_all = False
+    # The store keys (``ProfileScope.store_key``) this file is served under besides its own folder's: each backend
+    # handle adds the key it opened the holder for (``serve_fence_key``). A claimed turn issued by one of them fences
+    # every write here (``_turn_fence``).
+    _fence_keys: frozenset = frozenset()
+    _own_fence_key: Optional[str] = None
 
     @staticmethod
     def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
@@ -805,11 +818,27 @@ class StoreHolder:
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
             self._wal_lock_guard = _lockguard.hold(self.db_path)
 
+    def serve_fence_key(self, key: str) -> None:
+        """Record that this file is served under store key ``key``: a claimed turn that store issued fences the writes
+        made here."""
+        if key not in self._fence_keys:
+            self._fence_keys = self._fence_keys | {key}
+
+    def fence_store_keys(self) -> frozenset:
+        """Every store key a claimed turn fencing this file's writes may carry: the keys it is served under and its
+        own profile folder's (``<home>/state.db``)."""
+        if self._own_fence_key is None:
+            from persistence.core.context import canonical_home_key
+            self._own_fence_key = canonical_home_key(Path(self.db_path).parent)
+        return self._fence_keys | {self._own_fence_key}
+
     def _execute_write(  # health: allow CC -- lock retry, rollback and repair share one deadline
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
+        Inside a claimed turn this store issued, the turn's fence is checked first, in the same
+        transaction (``_turn_fence``): a turn that lost its lease writes nothing.
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
@@ -825,6 +854,7 @@ class StoreHolder:
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        fence = turn_fence_for(self)
         while True:
             self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
@@ -845,6 +875,8 @@ class StoreHolder:
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
+                        # Before the callback: a transient I/O error in the check is retried like BEGIN's.
+                        check_turn_fence(self._conn, fence)
                         fn_started = True
                         result = fn(self._conn)
                         self._conn.commit()
@@ -1451,12 +1483,15 @@ class StoreHolder:
         synchronous path and may raise."""
         if _token_delta_applier is None:
             from . import SQLiteBackend  # loads the repositories; the usage family registers the applier
+        # The delta carries the claimed turn it was queued under: the writer applies it as that turn's write, so a
+        # turn that lost its lease accounts nothing, however late its delta lands (``persistence.core.fences``).
+        turn = writing_turn()
         with self._token_queue_cond:
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
             writer_stopped = self._token_writer_stop and not writer_alive
             if not writer_stopped:
-                self._token_queue.append((session_id, kwargs))
+                self._token_queue.append((session_id, kwargs, turn))
                 if not writer_alive:
                     # Daemon so exit never hangs on accounting; the atexit hook drains
                     # leftovers. ``not is_alive()`` respawns a writer that died unexpectedly.
@@ -1477,7 +1512,8 @@ class StoreHolder:
                 self._token_queue_cond.notify_all()
         if writer_stopped:
             # close() ran: enqueueing would drop the delta silently, so apply inline.
-            _apply_token_delta(self, session_id, kwargs)
+            with writes_as(turn):
+                _apply_token_delta(self, session_id, kwargs)
 
     def _apply_claimed_batch(self, batch) -> bool:
         """Apply a batch whose ``busy`` flag the caller already claimed, then release. False when part
@@ -1550,8 +1586,9 @@ class StoreHolder:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> bool:
-        """Apply queued deltas in order, coalescing where safe. Never raises. False when a delta was
+    def _apply_token_batch(self, batch: list[tuple[Any, ...]]) -> bool:
+        """Apply queued deltas in order, coalescing where safe, each as the claimed turn that queued it
+        (``persistence.core.fences.writes_as``). Never raises. False when a delta was
         handed back to the queue: a write refused on the in-process writer mutex (``WriterMutexTimeout``
         is raised before BEGIN, so nothing ran) goes back to the FRONT with everything after it, in
         order, for the next pass. Dropping it would lose usage the old unbounded mutex wait kept."""
@@ -1560,10 +1597,11 @@ class StoreHolder:
         except Exception as exc:  # health: allow BLE001 -- coalescing only optimizes; the raw batch applies
             # Coalescing must never kill the writer; the merge is only an optimization.
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
-            coalesced = batch
-        for index, (session_id, kwargs) in enumerate(coalesced):
+            coalesced = [_queued(entry) for entry in batch]
+        for index, (session_id, kwargs, turn) in enumerate(coalesced):
             try:
-                _apply_token_delta(self, session_id, kwargs)
+                with writes_as(turn):
+                    _apply_token_delta(self, session_id, kwargs)
             except WriterMutexTimeout:
                 with self._token_queue_cond:
                     self._token_queue.extendleft(reversed(coalesced[index:]))
@@ -1575,14 +1613,15 @@ class StoreHolder:
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
         return True
 
-    def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
-        """Merge adjacent incremental deltas with an identical route, so ordering across
-        sessions and /model switches is preserved exactly. absolute=True never merges."""
-        groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
-        for session_id, kwargs in batch:
+    def _coalesce_token_deltas(self, batch: list[tuple[Any, ...]]) -> list[tuple[str, dict[str, Any], Any]]:
+        """Merge adjacent incremental deltas with an identical route and the same claimed turn, so ordering across
+        sessions and /model switches is preserved exactly and one claim's delta never rides another's fence.
+        absolute=True never merges."""
+        groups: list[tuple[Optional[tuple], str, dict[str, Any], Any]] = []
+        for session_id, kwargs, turn in map(_queued, batch):
             key = None
             if not kwargs.get("absolute"):
-                key = (session_id, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
+                key = (session_id, turn, *(kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS))
             if groups and key is not None and groups[-1][0] == key:
                 merged = groups[-1][2]
                 for f in self._TOKEN_DELTA_SUM_FIELDS:
@@ -1593,8 +1632,8 @@ class StoreHolder:
                         # All-None runs stay None so COALESCE keeps the stored value.
                         merged[f] = (merged.get(f) or 0.0) + value
             else:
-                groups.append((key, session_id, dict(kwargs)))
-        return [(sid, kw) for _, sid, kw in groups]
+                groups.append((key, session_id, dict(kwargs), turn))
+        return [(sid, kw, turn) for _, sid, kw, turn in groups]
 
     def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
         """Stop the writer thread and drain remaining deltas. Never raises."""

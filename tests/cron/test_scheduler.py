@@ -24,6 +24,7 @@ from cron.scheduler import (
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.cron.conftest import claim_stamp
 
 
 def _run_owned_job(job, tmp_path, db=None):
@@ -48,7 +49,9 @@ def _run_owned_job(job, tmp_path, db=None):
         pending_results={})
     row = {
         "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
+        "principal_id": "cron-owner", "payload": {"text": ""},
+        # A real claim of the seeded session: the owner bridge fences the run's writes by its stamp.
+        **(claim_stamp(persistence, ref.session_id) if owns_db else {"owner_epoch": 1, "generation": 1}),
     }
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,

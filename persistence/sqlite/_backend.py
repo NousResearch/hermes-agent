@@ -340,6 +340,7 @@ class SQLiteStore:
         """The open holder for this profile's store, acquired on first touch. ``reacquire=False`` keeps the holder a
         registry sweep closed, so a read through it with ``reopen=False`` refuses instead of opening the store again."""
         self._held = self._backend._holder(self.scope.hermes_home_key, reacquire=reacquire, held=self._held)
+        self._held.serve_fence_key(self.scope.store_key)  # a turn this store issued fences its writes
         return self._held
 
     def ready(self) -> None:

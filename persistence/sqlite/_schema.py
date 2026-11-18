@@ -335,6 +335,17 @@ def _fts_index_is_misaligned_source(cursor: sqlite3.Cursor) -> bool:
     return row is not None and "messages_fts_src" not in (row[0] or "")
 
 
+def _retired_tool_high_water_reinstated(cursor: sqlite3.Cursor) -> bool:
+    """True when a store already realigned to ``messages_fts_src`` carries the retired
+    ``fts_tool_full_content_high_water`` marker again. Only a release before FTS storage v3
+    writes it: reopening a realigned store, it stamps the marker at MAX(id) and reinstalls
+    id-gated triggers whose 'delete'/'update' send FULL content for tool rows at or below the
+    mark, while the v3 rebuild indexed those rows as the bounded prefix. Every such delete
+    leaves the token cut at the prefix boundary behind with no ``_docsize`` row, and bm25 then
+    fails on any query reaching it. The index must be rebuilt from the view again."""
+    return _meta_row(cursor, "fts_tool_full_content_high_water") is not None
+
+
 def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
     """Run *ddl* statement by statement, skipping each ``DROP TRIGGER IF EXISTS x`` /
     ``CREATE TRIGGER IF NOT EXISTS x …`` pair whose trigger already exists with the same body.
@@ -391,12 +402,18 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     from the view, under the shared cross-process rebuild admission. Legacy inline DBs
     skip this entirely (their index is self-contained; they still take the DDL on the
     optimize path), and so does a definition no release of this code created (a newer
-    release's, after a downgrade)."""
+    release's, after a downgrade). A realigned store an older release reopened (the retired
+    high-water marker is back) takes the same rebuild."""
     if legacy or not base_index_recognised(cursor):
         return
     stale_view = base_source_view_is_stale(cursor)
     if not stale_view and not _fts_index_is_misaligned_source(cursor):
-        return
+        if not _retired_tool_high_water_reinstated(cursor):
+            return
+        logger.warning(
+            "A Hermes release older than FTS storage v%d reopened %s and reinstated its tool-row high-water "
+            "triggers; rebuilding messages_fts from the aligned projection so deletes stop leaving index tokens behind.",
+            FTS_STORAGE_VERSION, holder.db_path)
     has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
     def do_align() -> None:

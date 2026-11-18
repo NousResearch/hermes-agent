@@ -247,3 +247,17 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
     ids = list(ids)
     for start in range(0, len(ids), size):
         yield ids[start:start + size]
+
+
+def _in_one_read(holder, read):
+    """``read(conn)`` in one read transaction (inside a ``transcript_read_snapshot``: its transaction)."""
+    def run(conn):
+        began = not conn.in_transaction
+        if began:
+            conn.execute("BEGIN")
+        try:
+            return read(conn)
+        finally:
+            if began and conn.in_transaction:
+                conn.execute("ROLLBACK")
+    return holder._read_retrying_ioerr(run)

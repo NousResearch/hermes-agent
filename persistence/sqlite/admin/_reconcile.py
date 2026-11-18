@@ -22,7 +22,7 @@ from persistence.sqlite._state.dbfile import _connect_tracked_db
 from persistence.core.admin import BROWSE_RECONCILE_BUDGET_S, BROWSE_RECONCILE_PURPOSE
 from persistence.core.errors import CorruptStoreError, DeclarativeDrift
 
-from .._schema import apply_declared_schema, schema_read_probe_statements
+from .._schema import apply_declared_schema, declared_schema_drift, schema_read_probe_statements
 
 # Main's logger name for reconciliation warnings.
 logger = logging.getLogger("hermes_state_reconcile")
@@ -31,15 +31,7 @@ logger = logging.getLogger("hermes_state_reconcile")
 def schema_drift_reason(path: Path):
     """Return a missing declared table/column, not a corruption diagnosis."""
     with closing(_connect_tracked_db(path.resolve().as_uri() + '?mode=ro', uri=True, tracking_path=path)) as conn:
-        try:
-            for statement in schema_read_probe_statements(path.parent):
-                conn.execute(statement).fetchone()
-        except sqlite3.OperationalError as exc:
-            from persistence.sqlite._state.repair import _schema_not_built
-            if _schema_not_built(exc):
-                return str(exc)
-            raise
-    return None
+        return declared_schema_drift(conn, path.parent)
 
 
 def _reconcile_snapshot(path, guard):

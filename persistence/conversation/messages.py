@@ -1176,7 +1176,7 @@ class MessageRepository(Protocol):
         ...
 
     def spillover_reference_rows(self) -> tuple[tuple[Optional[str], Optional[str]], ...]:
-        """``(content, api_content)`` of at most 20001 rows that reference spilled-over tool results, in no defined order."""
+        """``(content, api_content)`` of at most 20001 rows that reference spilled-over tool results or proactive-prune originals (``session_rules.media.ARCHIVE_POINTER_MARKERS``), in no defined order."""
         ...
 
     def read_snapshot(self) -> ContextManager[ReadCheck]:

@@ -112,6 +112,32 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_dockerfile_downloads.py
 
+      # The next three scan files of every lane (catalog YAML, docs, TypeScript, frontend AGENTS.md),
+      # so they run on every PR here, not in lint.yml's python lane, which a catalog-only or
+      # TypeScript-only diff never sets.
+
+      # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
+      # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
+      # through the scratch-dir helper; skills, docs and prompts must not teach the model a
+      # literal /tmp either. `no-tmp: ok — <why>` marks a deliberate line; _BASELINE in the
+      # script is the burn-down list of pre-existing hits. Local: `python scripts/check --only no-tmp`.
+      - name: Forbid literal /tmp paths outside the baseline
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_no_tmp_literals.py
+
+      # Nix and other non-FHS hosts need not provide Bash at a fixed bin path.
+      # Local: `python scripts/check --only shebangs`.
+      - name: Require portable Bash shebangs
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_bash_shebangs.py
+
+      # Every AGENTS.md from the git root down to the working directory loads as one
+      # project-context block (30,720 chars on a 128k window); chains are capped at 30k.
+      # Local: `python scripts/check --only agents-md`.
+      - name: Keep every AGENTS.md under its truncation cap
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_agents_md_size.py
+
       # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
       # merge adds stays in every clone forever. Exact-path exceptions live in
       # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.

@@ -56,6 +56,7 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
+from agent.turn_proactive_prune import route_change_offload
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
@@ -1290,7 +1291,8 @@ def _redecorate_prompt_cache_for_provider(
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model,
-                                          base_url=getattr(agent, "base_url", "") or ""),
+                                          base_url=getattr(agent, "base_url", "") or "",
+                                          auto=getattr(agent, "_cache_ttl_auto", False)),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
             session_system_prompt=agent._cached_system_prompt,
@@ -1723,6 +1725,7 @@ def _run_conversation_turn(
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
+        _run_phase(route_change_offload, agent, s)
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
@@ -1800,6 +1803,7 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
     from agent.turn_finalizer import fence_result_reply, settle_held_final
+    from agent.prompt_cache_lifecycle import end_turn_prompt_cache_warming
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1828,6 +1832,9 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+            # Every turn exit (early returns included): a machine session stops warming; a chat a
+            # person types into keeps its budget of keep-alives while idle (prompt_cache_lifecycle).
+            end_turn_prompt_cache_warming(agent)
     fence_result_reply(result)
     # Joined before settle_held_final so a held transform sees the lead, unless a collapsed partial already ran it.
     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth

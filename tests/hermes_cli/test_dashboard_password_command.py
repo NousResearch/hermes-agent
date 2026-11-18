@@ -291,6 +291,23 @@ def test_a_restart_keeps_sign_ins_and_one_after_a_change_ends_them(tmp_path):
             assert _sign_in(base, PASSWORD)[0] == 401
 
 
+def test_an_override_in_the_checkouts_dotenv_is_named_and_refused(tmp_path):
+    """The CLI and ``gateway.run`` both load ``<checkout>/.env`` after the home's, so a sign-in key there
+    comes back on every restart. Checked in-process against a real file: the shared checkout's own
+    ``.env`` would leak into every other test the runner starts."""
+    from hermes_cli.dashboard_password import _checkout_refusal
+    project_env = tmp_path / ".env"
+    assert _checkout_refusal(project_env) is None  # absent
+    project_env.write_text("OTHER_KEY=x\nHERMES_DASHBOARD_BASIC_AUTH_USERNAME=\n")
+    assert _checkout_refusal(project_env) is None  # empty values override nothing
+    project_env.write_text("export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD='throwaway-checkout-pw'\n")
+    refusal = _checkout_refusal(project_env)
+    assert refusal is not None
+    assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in refusal and str(project_env) in refusal
+    assert "throwaway-checkout-pw" not in refusal
+    assert project_env.read_text().count("throwaway-checkout-pw") == 1  # never edited
+
+
 def _managed_dir(tmp_path, basic_auth: dict):
     managed = tmp_path / "managed"
     managed.mkdir()

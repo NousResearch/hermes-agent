@@ -21,6 +21,7 @@ import os
 import secrets
 import subprocess
 import sys
+from pathlib import Path
 from typing import Callable, NoReturn, Optional
 
 #: The environment names the provider prefers over ``dashboard.basic_auth`` (``basic._settings``).
@@ -142,6 +143,19 @@ def _shadow_refusal() -> Optional[str]:
     return None
 
 
+def _checkout_refusal(project_env: Path) -> Optional[str]:
+    """Why *project_env* (the checkout's ``.env``, which the CLI and the gateway load after the home's
+    own on every start) would bring an override back, or None. Never edits that file: it is shared by
+    every Hermes home run from the checkout."""
+    from agent.secret_scope import load_env_file
+    found = [name for name, value in load_env_file(project_env).items()
+             if name in SHADOWING_ENV and str(value).strip()]
+    if not found:
+        return None
+    return (f"{', '.join(found)} is set in {project_env} (this checkout's .env, loaded on every start "
+            "after the home's) and overrides config.yaml: remove it there, then run this again")
+
+
 def _managed_config_refusal(username: str) -> Optional[str]:
     """Why the administrator's managed config.yaml keeps the new sign-in from taking effect, or None:
     a pinned ``password_hash``, or a pinned ``username`` other than *username*. ``save_config`` drops
@@ -221,7 +235,9 @@ def cmd_dashboard_password(args) -> int:
     if not password:
         print("✗ Empty password; nothing was changed.", file=sys.stderr)
         return EXIT_INVALID
-    refusal = _shadow_refusal() or _managed_config_refusal(username)
+    from hermes_cli._startup_fast import project_root_str
+    refusal = (_shadow_refusal() or _managed_config_refusal(username)
+               or _checkout_refusal(Path(project_root_str()) / ".env"))
     if refusal:
         print(f"✗ {refusal}; nothing was changed.", file=sys.stderr)
         return 1

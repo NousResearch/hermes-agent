@@ -16,7 +16,7 @@ def _agent_pin(self):
     """The pin's agent half alone: another tenant naming the store's home passes."""
     from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_scope import current_scope
-    from hermes_state_port import StoragePinRefused
+    from hermes_storage_levels import StoragePinRefused
     scope = current_scope()
     agent = scope.agent if scope is not None else get_hermes_home()
     if hermes_home_key(agent) != self._home_key:
@@ -72,7 +72,7 @@ def _put_commits_before_refusal(monkeypatch):
     refusal: the caller sees the refusal, the skill changed anyway."""
     from agent.runtime_scope import bind_profile_scope
     from hermes_skills_port_local import LocalSkillIndex
-    from hermes_state_port import StoragePinRefused
+    from hermes_storage_levels import StoragePinRefused
     original = LocalSkillIndex.put
 
     def put(self, name, content, *, category=None, level="agent"):

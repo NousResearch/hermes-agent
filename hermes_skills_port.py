@@ -13,7 +13,7 @@ backend serves them from today's files at today's paths.
 
 Ownership follows the scope, never a path or an argument: every operation reads its pin
 (tenant, agent, owner, actor) from ``hermes_scope.current_scope()`` when it runs, and a backend
-refuses a pin it cannot serve with :class:`~hermes_state_port.StoragePinRefused`. Reads resolve
+refuses a pin it cannot serve with :class:`~hermes_storage_levels.StoragePinRefused`. Reads resolve
 through :func:`resolution_order`: the agent's own skills, then the owner's owner-wide ones, then
 the tenant's — the one documented policy function, the same precedence for a personal and a
 group owner. Writes name their level explicitly (:data:`SKILL_LEVELS`); a backend declares the
@@ -40,9 +40,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from hermes_scope import Owner
-from hermes_state_port import LEVELS, StoragePinRefused
+from hermes_storage_levels import LEVELS, StoragePinRefused
 
-#: The ownership levels a skills index can hold (see :data:`~hermes_state_port.LEVELS`): an
+#: The ownership levels a skills index can hold (see :data:`~hermes_storage_levels.LEVELS`): an
 #: agent's own skills, an owner's skills for every agent it owns, a tenant's for all of them.
 #: There is no participant level: a skill is not part of any one conversation.
 SKILL_LEVELS = frozenset({"agent", "owner", "tenant"})
@@ -140,7 +140,7 @@ class SkillsIndexProvider(ABC):
         """Short identifier, e.g. ``"local"``."""
 
     #: The ownership levels this backend stores (see :data:`SKILL_LEVELS`, a subset of
-    #: :data:`~hermes_state_port.LEVELS`); writes at any other level are refused with
+    #: :data:`~hermes_storage_levels.LEVELS`); writes at any other level are refused with
     #: :class:`SkillsLevelRefused`.
     levels: frozenset[str] = frozenset({AGENT_LEVEL})
 

@@ -657,6 +657,20 @@ def is_reasoning_level_rejection(error_msg: str) -> bool:
     return any(m in near for m in _REASONING_LEVEL_REJECTION_MARKERS)
 
 
+# A model that accepts ONLY adaptive thinking rejects a graded effort by naming its own required
+# shape: "claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive
+# and output_config.effort" (Anthropic-5 family behind a chat-completions relay). The field IS
+# understood — that is why no "unsupported" marker appears next to it — so the generic marker rule
+# misses it and the 400 became a non-retryable client error. Requirement wording is what makes it a
+# rejection; a passing mention ("while adaptive thinking was enabled") must not match.
+_ADAPTIVE_THINKING_REJECTION = re.compile(
+    r"(?:requires?|required|must|only supports?|only accepts?)\s+(?:\w+\s+){0,2}"
+    r"(?:adaptive thinking|thinking\.type\s*=\s*adaptive)"
+    r"|adaptive thinking\s+(?:is\s+)?(?:required|mandatory)"
+    r"|omit (?:the )?thinking(?: parameter)? or use thinking\.type\s*=\s*adaptive"
+)
+
+
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
     this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra) — or refusing the OFF
@@ -688,7 +702,7 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     rule separates it from the forward wordings. Cost is one dropped-disable retry before the
     spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
     msg = (error_msg or "").lower()
-    if _REASONING_PARAM_REJECTION.search(msg):
+    if _REASONING_PARAM_REJECTION.search(msg) or _ADAPTIVE_THINKING_REJECTION.search(msg):
         return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:

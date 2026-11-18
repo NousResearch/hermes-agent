@@ -113,25 +113,61 @@ def copies(dirs: list[str]) -> list[str]:
     return list(dict.fromkeys(c for d in dirs for c in swap.get(os.path.normcase(d), [d])))
 
 
+# The app-alias dir's verdict, keyed by the dir and its mtime: the glob it answers with is
+# 0.6ms, and the terminal asks before every command.
+_STUB_DIRS: dict[tuple[str, int], bool] = {}
+
+
 def _python_stub_dir(directory: str) -> bool:
     """True for the Windows app-alias dir when its ``python.exe`` is only the Store stub.
 
     The stub opens the Microsoft Store instead of running Python. A real Store Python puts its
     aliases in the same dir, and it also ships a ``python3.N.exe``, which the stub does not.
+
+    Asked for every PATH entry before each command, and answering it globs the alias dir: the
+    verdict is remembered until that dir's entries change.
     """
+    # The shape check below builds Paths for every entry; a plain substring test is what
+    # keeps the common (non-alias) entry free.
+    if "windowsapps" not in directory.lower():
+        return False
     parts = [os.path.normcase(part) for part in Path(directory).parts[-2:]]
     if parts != [os.path.normcase("Microsoft"), os.path.normcase("WindowsApps")]:
         return False
     try:
-        return not any(Path(directory).glob("python3.*.exe"))
+        stamp = os.stat(directory).st_mtime_ns
     except OSError:
+        # No readable dir means no real Python beside the alias.
         return True
+    key = (os.path.normcase(directory), stamp)
+    known = _STUB_DIRS.get(key)
+    if known is None:
+        try:
+            known = not any(Path(directory).glob("python3.*.exe"))
+        except OSError:
+            known = True
+        if len(_STUB_DIRS) >= 32:
+            _STUB_DIRS.clear()
+        _STUB_DIRS[key] = known
+    return known
 
 
 def _python_dirs() -> list[str]:
-    from pm.install import env_for
+    """PM's Python dirs, memoized: ``env_for`` parses the lock and the installed state and
+    stats the whole dependency chain, and the terminal asks for this before every command."""
+    from pm import paths
+    from pm.install import _memo_lookup, _memo_store, _state_key, _witness, env_for
 
-    return [d for d in env_for("python", base_env={"PATH": ""}).get("PATH", "").split(os.pathsep) if d]
+    key = ("python_dirs", *_state_key(), env_for)
+    cached = _memo_lookup("python_dirs", key)
+    if cached is not None:
+        return list(cached)
+    dirs = tuple(d for d in
+                 env_for("python", base_env={"PATH": ""}).get("PATH", "").split(os.pathsep) if d)
+    _memo_store("python_dirs", key, dirs,
+                (_witness(paths.facts_path()), _witness(paths.lockfile_path()),
+                 *(_witness(directory) for directory in dirs)))
+    return list(dirs)
 
 
 def user_facing_path(path: str) -> str:

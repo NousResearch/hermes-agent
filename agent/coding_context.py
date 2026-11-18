@@ -27,7 +27,10 @@ logger = logging.getLogger("hermes.coding_context")
 CODING_TOOLSET = "coding"
 
 # Surfaces where ``auto`` may adopt the posture; messaging platforms are deliberately absent.
-INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", ""}
+# ``subagent`` is a delegated worker, not a chat surface: it only adopts the posture when its own cwd
+# is a code workspace, and its skill index is demoted to names-only regardless of config mode
+# (``agent/system_prompt._skills_prompt``) so a leaf prompt is not 80% skill descriptions.
+INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", "subagent", ""}
 # Project-root signals (cheap filename checks) marking a code workspace even without git.
 _PROJECT_MARKERS = (
     "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "package.json", "tsconfig.json", "deno.json",
@@ -136,9 +139,11 @@ _TODO_SENTENCE = (
 )
 _NO_TODO_SENTENCE = "- Reference code as `path:line` instead of pasting whole files."
 # Clearly non-coding skill categories (deny-list; coding-adjacent and custom ones keep full entries).
+# A category here is DEMOTED to a names-only line — never dropped — so `skill_view(name)` keeps working.
 _NON_CODING_SKILL_CATEGORIES = (
-    "apple", "communication", "cooking", "creative", "email", "finance", "gaming", "gifs", "health", "media",
-    "music", "note-taking", "productivity", "shopping", "smart-home", "social-media", "travel", "yuanbao",
+    "apple", "communication", "cooking", "creative", "email", "finance", "finance-imports", "gaming", "gifs",
+    "health", "investment", "media", "music", "note-taking", "productivity", "shopping", "smart-home",
+    "social-media", "travel", "yuanbao",
 )
 _MODE_ALIASES = {
     **dict.fromkeys(("focus", "strict", "lean"), "focus"),

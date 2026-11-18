@@ -11,6 +11,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -1097,6 +1098,8 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
+    with _SKILLS_MANIFEST_LOCK:
+        _SKILLS_MANIFEST_MEMO.clear()
     try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
@@ -1104,8 +1107,49 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
         logger.debug("Could not remove skills prompt snapshot: %s", e)
 
 
-def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """File-signature manifest of every SKILL.md and DESCRIPTION.md."""
+# How long a built manifest is served before it is re-walked (seconds). The manifest is the prompt
+# cache's change detector, so it must be revalidated — but the walk is expensive on Windows: ~900
+# directory opens, 658 file stats and 658 content digests against the real skills tree measured
+# 250-600 ms here, and every entry must be touched for the check to be exact (~0.19 ms per stat).
+# Paying that per call is what made `_skills_prompt` cost seconds: 8.5 s cold, 0.9 s warm. Between
+# revalidations a repeat call answers from the memo after one cheap top-level probe (<1 ms), so the
+# window is sized for "one prompt rebuild per turn" rather than per call.
+_SKILLS_MANIFEST_TTL_SECS = 5.0
+# (skills_dir -> (probe, validated_at, manifest)); bounded like the prompt cache (one profile per entry).
+_SKILLS_MANIFEST_MEMO: dict[str, tuple[tuple, float, dict[str, list[int]]]] = {}
+_SKILLS_MANIFEST_LOCK = threading.Lock()
+
+
+def _skills_dir_probe(skills_dir: Path) -> tuple:
+    """Cheap change probe for one skills root: its own first-level entries and their mtimes.
+
+    One ``os.scandir`` of the root (~0.6 ms for 173 entries on NTFS — ``DirEntry.stat`` rides the
+    same directory enumeration, so the mtimes are free). It catches an entry added, removed or
+    renamed at the top of the tree — a new category or a top-level skill, which is the shape most
+    installs and ``skill_manage`` creates take — without the ~900-directory walk.
+
+    What it can NOT be trusted for is anything below the root: Windows directory timestamps are
+    coarse and only flushed when the directory handle closes, so a skill directory created inside
+    a category can leave that category's mtime unchanged; and a *content* edit changes only the
+    edited file's own mtime either way. Those changes are caught by the TTL revalidation, which is
+    why the probe is an accelerator here and not the correctness boundary.
+    """
+    entries = []
+    try:
+        with os.scandir(str(skills_dir)) as it:
+            for entry in it:
+                try:
+                    entries.append((entry.name, entry.stat().st_mtime_ns))
+                except OSError:
+                    entries.append((entry.name, 0))
+    except OSError:
+        return ()
+    entries.sort()
+    return tuple(entries)
+
+
+def _scan_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
+    """Walk *skills_dir* and build the file-signature manifest (the expensive half)."""
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
@@ -1121,6 +1165,32 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             except OSError:
                 pass
     return manifest
+
+
+def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md, memoized per skills root.
+
+    Findings from the memo are correct by construction; only *when* the tree is re-walked is
+    bounded: the cheap per-call probe (``_skills_dir_probe``) invalidates top-level structural
+    changes immediately, and the TTL bounds how long anything deeper — a content edit, a skill
+    directory added inside a category — can go unseen. Hashing stays (``always_digest=True``) so a
+    revalidated manifest is still an exact detector — a timestamp-preserving replacement
+    (``cp -p``, a tar restore) must not read as "unchanged". A copy goes out so no caller can
+    mutate the memo.
+    """
+    key = str(skills_dir)
+    probe = _skills_dir_probe(skills_dir)
+    now = time.monotonic()
+    with _SKILLS_MANIFEST_LOCK:
+        memo = _SKILLS_MANIFEST_MEMO.get(key)
+        if memo is not None and memo[0] == probe and (now - memo[1]) < _SKILLS_MANIFEST_TTL_SECS:
+            return dict(memo[2])
+    manifest = _scan_skills_manifest(skills_dir)
+    with _SKILLS_MANIFEST_LOCK:
+        _SKILLS_MANIFEST_MEMO[key] = (probe, time.monotonic(), manifest)
+        while len(_SKILLS_MANIFEST_MEMO) > _SKILLS_PROMPT_CACHE_MAX:
+            _SKILLS_MANIFEST_MEMO.pop(next(iter(_SKILLS_MANIFEST_MEMO)))
+    return dict(manifest)
 
 
 def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> Optional[dict]:
@@ -1451,7 +1521,9 @@ def _build_skills_system_prompt_inner(
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
-                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
+                # Reuse the manifest this build already walked: re-deriving it here walked the
+                # whole tree a second time on every cold prompt.
+                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": manifest,
                 "skills": [entry for entry, _ in candidates],
             })
         except Exception as e:

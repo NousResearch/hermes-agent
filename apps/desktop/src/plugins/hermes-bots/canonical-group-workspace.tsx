@@ -579,7 +579,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
       if (alive.current) {
         setNotice('stopped')
-        await refreshAfterChange()
+        void refreshAfterChange().catch(error => { if (alive.current) {setReadError(readFailure(error))} })
       }
     } catch (e) {
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}

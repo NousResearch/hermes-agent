@@ -150,3 +150,16 @@ it.each([
   await open(kind, undefined, supported)
   expect(screen.queryByRole('button', { name: labels.stopGroup })).toBeNull()
 })
+
+it('closes an acknowledged Stop and retries only the room read after a timeout', async () => {
+  await open('stalled', async () => {
+    request.mockRejectedValueOnce(new Error('room read timed out'))
+    return wire.stop
+  })
+  fireEvent.click(screen.getByRole('button', { name: labels.stopGroup }))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: labels.stopGroup }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull())
+  expect(stops()).toHaveLength(1)
+})

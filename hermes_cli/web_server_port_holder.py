@@ -32,7 +32,7 @@ class GatewayHolder:
     pid: Optional[int]
     webapp_state: str  # serving | unavailable | off | starting | unknown
     webapp_reason: Optional[str]
-    public_url: str
+    listener_address: str
 
 
 def _webapp_status(control_home: Path) -> dict:
@@ -136,7 +136,6 @@ def running_gateway(home: Optional[Path] = None, *, port: Optional[int] = None,
     without that proof it is None. Never starts a gateway and never touches the home's files: anything
     it cannot prove (no gateway, one still starting, a refused or slow socket) is None.
     """
-    from gateway.webapp_listener import webapp_settings
     from hermes_constants import get_hermes_home
     target = Path(home) if home is not None else get_hermes_home()
     endpoint = _live_endpoint(target)
@@ -150,7 +149,7 @@ def running_gateway(home: Optional[Path] = None, *, port: Optional[int] = None,
     status = _webapp_status(control_home)
     return GatewayHolder(control_home=control_home, api_origin=endpoint.api_origin, pid=pid,
                          webapp_state=str(status.get("state") or "unknown"),
-                         webapp_reason=status.get("reason"), public_url=webapp_settings(control_home).public_url)
+                         webapp_reason=status.get("reason"), listener_address=status.get("address") or endpoint.api_origin)
 
 
 def gateway_holding_port(port: int, home: Optional[Path] = None, *,
@@ -179,7 +178,7 @@ def gateway_webapp_summary(host: str, port: int, home: Optional[Path] = None) ->
         return None
     pid = f" (PID {holder.pid})" if holder.pid else ""
     line = (f"The Hermes gateway{pid} serves the Webapp for this profile at "
-            f"{holder.public_url or holder.api_origin} (hermes webapp opens it).")
+            f"{holder.listener_address}.")
     if holder.webapp_state != "serving":
         line += f" {holder.webapp_reason}"
     return line
@@ -206,10 +205,8 @@ def describe_gateway_holder(holder: GatewayHolder, host: str, port: int, *,
                  f"Webapp (the dashboard and its chats) at this address now."]
         if holder.webapp_state != "serving":
             lines.append(f"  {holder.webapp_reason}")
-        browser = holder.public_url or holder.api_origin
-        lines.append(f"  Open it in a browser at {browser}/ , or run: hermes webapp")
-        if host in ("0.0.0.0", "::"):
-            lines.append(f"  From another device, use this machine's address on port {port}.")
+        lines.append(f"  Gateway listener: {holder.listener_address}. To open it, run hermes webapp "
+                     "with the same profile selection you used for the original command.")
         lines.append(f"  `{command}` is no longer needed here. Stop whatever starts it (for example its "
                      f"{launcher_examples(sys.platform)}), or pass --port <other> to run it beside the gateway.")
         return lines

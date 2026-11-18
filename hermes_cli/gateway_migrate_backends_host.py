@@ -1,10 +1,11 @@
-"""Host reads for ``hermes gateway migrate --backends --apply --dry-run``.
+"""Host operations for ``hermes gateway migrate --backends --apply/--restore``.
 
-The plan (:mod:`hermes_cli.gateway_migrate_backends_plan`) asks the machine everything through
-:class:`SystemHost`: the old backend (``collect_backends``, ``systemctl show``, ``/proc``, a launchd
-plist), the home's config and ``.env``, the gateway's user service, lingering, the Webapp bundle and
-lightweight health and interactive-provider reads on the old address. None starts, stops, installs or
-writes anything. This module owns no decisions.
+The plan (:mod:`hermes_cli.gateway_migrate_backends_plan`) and the engine
+(:mod:`hermes_cli.gateway_migrate_backends_apply`) reach the machine only through :class:`SystemHost`:
+reads of the old backend (``collect_backends``, ``systemctl show``, ``/proc``, a launchd plist), the
+home's config and ``.env``, the gateway's user service, lingering, the Webapp bundle and
+lightweight health and interactive-provider reads on the old address; and the changes the engine makes (config/``.env`` writes, the gateway service, the
+old backend's supervisor, a detached run). This module owns no decisions.
 
 Process identity comes from Hermes' own detection (``gateway_migrate_backends.collect_backends``,
 ``gateway.status``, ``dashboard_procs``), never from text matching on ``ps`` output.
@@ -14,16 +15,20 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
 _ENV_FILE_ENTRY = re.compile(r"(\S+) \(ignore_errors=(yes|no)\)")
+logger = logging.getLogger(__name__)
+
 _SHOW_PROPS = ("MainPID", "ActiveState", "UnitFileState", "FragmentPath", "ExecStart", "ControlGroup",
                "Environment", "EnvironmentFiles", "User")
 _TIMEOUT = 30
@@ -40,6 +45,11 @@ def _systemctl(scope: str, args: list[str], *, timeout: int = _TIMEOUT) -> subpr
     from hermes_cli import gateway as gw
     return gw._run_systemctl(args, system=scope != "user", check=False, timeout=timeout,
                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+def _launchctl(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=_TIMEOUT, check=False)
 
 
 def plist_environment(path: str) -> dict[str, str]:
@@ -135,6 +145,63 @@ def _unit_file_syntax(path: str) -> Optional[str]:
                         f"differently")
         return None
     return "cannot be read by this user"
+
+
+def run_quietly(fn):
+    """Call *fn* with everything it prints captured: Python output and its children's (fds 1 and 2).
+
+    The captured text is shown only when *fn* fails, before its exception propagates, so a step such
+    as ``hermes gateway install`` cannot fill the migration's output with its own "Next steps"."""
+    import io
+    import sys
+    import tempfile
+    sys.stdout.flush()
+    sys.stderr.flush()
+    py = io.StringIO()
+    with tempfile.TemporaryFile() as raw:
+        saved = (os.dup(1), os.dup(2))
+        ok = False
+        try:
+            os.dup2(raw.fileno(), 1)
+            os.dup2(raw.fileno(), 2)
+            with contextlib.redirect_stdout(py), contextlib.redirect_stderr(py):
+                result = fn()
+            ok = True
+            return result
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for fd, copy in zip((1, 2), saved):
+                os.dup2(copy, fd)
+                os.close(copy)
+            if not ok:
+                raw.seek(0)
+                text = py.getvalue() + raw.read().decode("utf-8", "replace")
+                if text.strip():
+                    print(text.rstrip("\n"))
+
+
+def profile_args(home) -> list[str]:
+    """``["-p", NAME]`` for the profile that owns *home* (``default`` for the root home), [] for a home
+    that is no profile. Every re-launch and printed command carries it: without it a ``hermes`` started
+    with the root home re-reads the sticky ``hermes profile use`` choice and acts on another profile."""
+    from hermes_constants import profile_name_for_home
+    name = profile_name_for_home(home) if home else None
+    return ["-p", name] if name else []
+
+
+def _with_profile(argv: list[str], home: Path) -> list[str]:
+    """*argv* of a ``hermes dashboard``/``serve`` with this home's ``-p NAME`` before the subcommand
+    (unless it names a profile already): replayed without it, a sticky ``hermes profile use`` choice
+    would start it for another profile."""
+    from hermes_cli._parser import scan_profile_flag
+    extra = profile_args(home)
+    if not extra or scan_profile_flag(argv[1:])[0] is not None:
+        return argv
+    for i, word in enumerate(argv):
+        if i and word in ("dashboard", "serve"):
+            return [*argv[:i], *extra, *argv[i:]]
+    return argv
 
 
 class SystemHost:
@@ -275,6 +342,14 @@ class SystemHost:
         from gateway.status import get_process_start_time
         return get_process_start_time(pid)
 
+    def same_process(self, pid: Optional[int], start_time) -> bool:
+        """*pid* is alive and is still the process recorded with *start_time* (reuse guard). Without a
+        recorded start time nothing proves it, so the answer is False."""
+        if not pid or start_time is None:
+            return False
+        now = self.start_time(int(pid))
+        return now is not None and now == start_time
+
     def running_turns(self, pid: int, start_time) -> Optional[int]:
         """Turns the old backend *pid* is running now: its live turn markers in this home, or None when
         activity cannot be determined (an existing marker file cannot be read or parsed, is not a JSON
@@ -348,6 +423,27 @@ class SystemHost:
         )
         merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), self.read_config())
         return _merge_managed_overlay(_expand_env_vars(_canonicalize_config(merged)))[0]
+    def set_config(self, values: dict) -> None:
+        from hermes_cli.config import _set_nested, _write_user_config, require_readable_config_before_write
+        path = self.home / "config.yaml"
+        cfg = require_readable_config_before_write(path)
+        for key, value in values.items():
+            _set_nested(cfg, key, value)
+        _write_user_config(path, cfg)
+
+    def set_env(self, values: dict[str, str]) -> None:
+        """Write sign-in keys into ``.env``, which is private (0600) before the first secret byte lands:
+        an existing file keeps its mode across ``save_env_value``, so it is tightened first, and a new
+        one is created 0600 by it."""
+        from hermes_cli.config import require_env_writable, save_env_value
+        for key in values:
+            require_env_writable(key, "set")
+        env = self.home / ".env"
+        if env.exists():
+            os.chmod(env, 0o600)
+        for key, value in values.items():
+            save_env_value(key, value)
+        os.chmod(env, 0o600)
 
     def webapp_settings(self):
         """The gateway's own ``webapp_settings`` judged on :meth:`effective_config`."""
@@ -380,6 +476,55 @@ class SystemHost:
     def bundle_missing(self) -> Optional[str]:
         from gateway.webapp_listener import bundle_missing_reason
         return bundle_missing_reason(self.webapp_dist())
+
+    def webapp_page_problem(self, host: str, port: int) -> Optional[str]:
+        """None when ``GET /`` on *host:port* serves this install's Webapp bundle; else why not.
+
+        Without sign-in ``/`` must be the bundle's own index.html (it references the build's entry
+        asset), never the "Hermes is unavailable" page. Behind sign-in ``/`` redirects to ``/login``,
+        so the bundle is proven through its entry asset, which the gate serves publicly: it must come
+        back byte for byte as built."""
+        import hashlib
+        import http.client
+        import re
+        if (reason := self.bundle_missing()) is not None:
+            return f"the Webapp bundle cannot be served: {reason}"
+        dist = self.webapp_dist()
+        index = (dist / "index.html").read_text(encoding="utf-8-sig", errors="replace")
+        found = re.search(r'(?:src|href)="\.?(/assets/[^"?#]+\.js)"', index)
+        if found is None:
+            return f"{dist / 'index.html'} references no /assets/*.js entry: not a Webapp build"
+        asset = found.group(1)
+
+        def get(path: str) -> tuple[int, dict, bytes]:
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                conn.request("GET", path, headers={"Accept": "text/html,*/*"})
+                resp = conn.getresponse()
+                return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+            finally:
+                conn.close()
+
+        from hermes_cli.url_utils import format_url_host
+        where = f"http://{format_url_host(host)}:{port}"
+        try:
+            code, headers, body = get("/")
+            if code == 200:
+                return None if asset.encode() in body else f"GET {where}/ is not the Webapp page"
+            if code not in (302, 303, 307) or "/login" not in headers.get("location", ""):
+                return f"GET {where}/ answered {code}, not the Webapp page"
+            code, _headers, body = get(asset)
+        except (OSError, http.client.HTTPException) as exc:
+            return f"GET {where}/ failed: {exc}"
+        built = (dist / asset.lstrip("/")).read_bytes()
+        if code != 200 or hashlib.sha256(body).digest() != hashlib.sha256(built).digest():
+            return f"GET {where}{asset} answered {code} without this install's Webapp bundle"
+        return None
+
+    def build_bundle(self) -> None:
+        from hermes_cli.config import get_project_root
+        from hermes_cli.webapp import prepare_webapp_renderer
+        prepare_webapp_renderer(get_project_root(), explicit=True)
 
     # ------------------------------------------------------------------ gateway service
 
@@ -424,9 +569,316 @@ class SystemHost:
             return str(exc).splitlines()[0]
         return None
 
+    def install_gateway(self) -> None:
+        """``hermes gateway install`` for the user (unit + enable + lingering), non-interactive."""
+        from hermes_cli import gateway as gw
+        if self.gateway_kind() == "launchd":
+            # Written, not loaded: the agent is RunAtLoad, so loading it here would start the gateway
+            # beside the old backend. The start step loads it once the old backend is out.
+            run_quietly(lambda: gw.launchd_install(start_now=False))
+            return
+
+        def install() -> None:
+            try:
+                gw.systemd_install(system=False, non_interactive=True)
+            except SystemExit as exc:
+                raise RuntimeError(f"hermes gateway install refused (exit {exc.code})") from None
+        run_quietly(install)  # its own "Next steps" would contradict the migration's; shown on failure
+        self._require(_systemctl("user", ["enable", gw.get_service_name()]), "enable the gateway service")
+
+    def gateway_verb(self, verb: str) -> None:
+        """``start`` / ``restart`` / ``stop`` / ``enable`` / ``disable`` on the gateway's user service."""
+        from hermes_cli import gateway as gw
+        if self.gateway_kind() == "launchd":
+            # launchd has no separate enablement (an installed agent loads at login), so only the
+            # start/stop/restart verbs reach it; their own "✓ Service started" stays out of the report.
+            run_quietly(lambda: gw._service_call("launchd", verb, False))
+            return
+        if verb == "stop":
+            gw._mark_planned_stop()
+        self._require(_systemctl("user", [verb, gw.get_service_name()], timeout=90), f"{verb} the gateway service")
+
+    def uninstall_gateway(self) -> None:
+        from hermes_cli import gateway as gw
+        if self.gateway_kind() == "launchd":
+            run_quietly(gw.launchd_uninstall)
+            return
+        run_quietly(lambda: gw.systemd_uninstall(system=False))
+
+    def gateway_listens(self, port: int) -> Optional[bool]:
+        """Whether this home's gateway listens on *port*: True / False when its live pid's own sockets
+        prove it, None otherwise. No pid is not proof of absence (the lookup also answers None for an
+        unreadable or invalid identity record): the engine then needs a socket-level proof that nothing
+        listens on the port at all, or keeps the old backend down."""
+        import psutil
+        from gateway.status import live_gateway_pid_for_home
+        try:
+            pid = live_gateway_pid_for_home(self.home)
+        except Exception:  # an unreadable runtime record is "unknown", never "absent"
+            logger.debug("gateway pid lookup failed", exc_info=True)
+            return None
+        if pid is None:
+            return None
+        try:
+            conns = psutil.Process(pid).net_connections(kind="tcp")
+        except (psutil.Error, OSError):
+            logger.debug("gateway listener lookup failed", exc_info=True)
+            return None
+        return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port for c in conns)
+
+    def live_manual_backend(self, port: int) -> Optional[dict]:
+        """``{"pid", "start_time"}`` of a hand-started old backend of this home that listens on *port*
+        now (found by Hermes' own backend scan and the listener's pid), else None."""
+        from hermes_cli.gateway_migrate_backends_plan import backend_address
+        for item in self.backends():
+            address = backend_address(list(item.argv))  # None: not a backend command line
+            if (item.running and item.pid and item.supervisor in ("manual", "detached") and item.this_home
+                    and address is not None and address[1] == port and self.pid_listens_on(item.pid, port)):
+                return {"pid": item.pid, "start_time": self.start_time(item.pid)}
+        return None
+
+    def gateway_pid(self) -> Optional[int]:
+        from gateway.status import live_gateway_pid_for_home
+        with contextlib.suppress(Exception):
+            return live_gateway_pid_for_home(self.home)
+        return None
+
     def linger(self) -> Optional[bool]:
         from hermes_cli import gateway as gw
         return gw.get_systemd_linger_status()[0]
+
+    def set_linger(self, enabled: bool) -> None:
+        import getpass
+        verb = "enable-linger" if enabled else "disable-linger"
+        cmd = ["loginctl", verb, getpass.getuser()]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=_TIMEOUT, check=False)
+        self._require(res, f"loginctl {verb}")
+
+    # ------------------------------------------------------------------ old backend supervisor
+
+    def old_stop(self, rec: dict) -> None:
+        sup = rec["supervisor"]
+        if sup == "systemd":
+            self._require(_systemctl(rec["scope"], ["stop", rec["unit"]], timeout=90), f"stop {rec['unit']}")
+        elif sup == "launchd":
+            if self.launchd_loaded(rec):
+                self._require(_launchctl(["bootout", f"{rec['scope']}/{rec['unit']}"]), f"bootout {rec['unit']}")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and self.launchd_loaded(rec):
+                time.sleep(0.2)
+        else:
+            self._stop_manual(rec)
+
+    # launchd: the job is unloaded (bootout) AND marked disabled in the user's launchd database, so
+    # neither the next login nor a later `launchctl bootstrap` of the plist starts it again (KeepAlive
+    # would otherwise restart the old command every 10 s while the gateway holds its port). The plist
+    # is also renamed to *.disabled; restore and rollback undo both.
+
+    def launchd_loaded(self, rec: dict) -> bool:
+        from hermes_cli.gateway import _launchd_print_service_pid
+        return _launchd_print_service_pid(rec["scope"], rec["unit"])[0]
+
+    def _stop_manual(self, rec: dict) -> None:
+        pid, started = rec.get("pid"), rec.get("start_time")
+        if pid is None:
+            return
+        if started is None:
+            raise RuntimeError(f"the old backend (pid {pid}) has no recorded start time; refusing to signal it")
+        if not self.same_process(pid, started):
+            return  # already gone (or the pid now names another process: never signal it)
+        self._terminate_same_process(int(pid), started)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and self.same_process(pid, rec.get("start_time")):
+            time.sleep(0.2)
+        if self.same_process(pid, rec.get("start_time")):
+            raise RuntimeError(f"the old backend (pid {pid}) did not exit within 30s")
+
+    def _terminate_same_process(self, pid: int, started) -> None:
+        """SIGTERM *pid* only while it is still the recorded process. On Linux the identity is bound to
+        a pidfd opened BEFORE the check, so a pid reused after the check is never signalled; elsewhere
+        the check runs immediately before the signal."""
+        import signal
+        if hasattr(os, "pidfd_open"):
+            try:
+                fd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                return
+            except OSError:
+                fd = None  # kernel without pidfd: the check-then-signal path below
+            if fd is not None:
+                try:
+                    if self.same_process(pid, started):
+                        signal.pidfd_send_signal(fd, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                finally:
+                    os.close(fd)
+                return
+        if self.same_process(pid, started):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+
+    #: systemd unit-file states the migration can put back exactly; any other one is refused before
+    #: anything changes (``linked``: disabling drops the link; ``generated``/``transient``/``masked``/
+    #: ``alias``/``indirect``: not this command's to change).
+    RESTORABLE_UNIT_STATES = frozenset({"enabled", "enabled-runtime", "static", "disabled"})
+
+    @staticmethod
+    def _enable_args(state: Optional[str]) -> Optional[list[str]]:
+        return {"enabled": [], "enabled-runtime": ["--runtime"]}.get(state or "")
+
+    def old_disable(self, rec: dict) -> None:
+        if rec["supervisor"] == "systemd":
+            extra = self._enable_args(rec.get("unit_file_state"))
+            if extra is not None:  # static / disabled: nothing enables it, nothing to undo
+                self._require(_systemctl(rec["scope"], ["disable", *extra, rec["unit"]]), f"disable {rec['unit']}")
+        elif rec["supervisor"] == "launchd":
+            self._require(_launchctl(["disable", f"{rec['scope']}/{rec['unit']}"]), f"disable {rec['unit']}")
+            path = Path(rec["unit_path"]) if rec.get("unit_path") else None
+            if path is not None and path.exists():
+                path.rename(path.with_name(path.name + ".disabled"))
+
+    def old_enable(self, rec: dict) -> None:
+        if rec["supervisor"] == "systemd":
+            want = rec.get("unit_file_state")
+            extra = self._enable_args(want)
+            if extra is not None:
+                self._require(_systemctl(rec["scope"], ["enable", *extra, rec["unit"]]), f"enable {rec['unit']}")
+            now = _systemctl(rec["scope"], ["is-enabled", rec["unit"]]).stdout.strip()
+            if want and now != want:
+                raise RuntimeError(f"{rec['unit']} is {now or 'unknown'} after the restore, not {want} as before")
+        elif rec["supervisor"] == "launchd":
+            if rec.get("unit_path"):
+                path = Path(rec["unit_path"])
+                disabled = path.with_name(path.name + ".disabled")
+                if disabled.exists() and not path.exists():
+                    disabled.rename(path)
+            self._require(_launchctl(["enable", f"{rec['scope']}/{rec['unit']}"]), f"enable {rec['unit']}")
+
+    def old_start(self, rec: dict, launcher_env: Optional[dict], argv: Optional[list[str]] = None) -> Optional[int]:
+        """Start the old backend again; returns the respawned pid for a manual process, which is started
+        from its recorded raw command line *argv* (``rec["argv"]`` is the redacted one, for display)."""
+        sup = rec["supervisor"]
+        if sup == "systemd":
+            self._require(_systemctl(rec["scope"], ["start", rec["unit"]], timeout=90), f"start {rec['unit']}")
+            return None
+        if sup == "launchd":
+            if self.launchd_loaded(rec):  # never unloaded (the run failed before its stop step)
+                return None
+            # Right after a bootout launchd can still refuse the label (EIO) for a moment: retry briefly.
+            for _attempt in range(10):
+                res = _launchctl(["bootstrap", rec["scope"], rec["unit_path"]])
+                if res.returncode == 0 or self.launchd_loaded(rec):
+                    return None
+                time.sleep(1)
+            self._require(_launchctl(["bootstrap", rec["scope"], rec["unit_path"]]), f"bootstrap {rec['unit']}")
+            return None
+        return self._respawn_manual(rec, launcher_env, argv)
+
+    def _respawn_manual(self, rec: dict, launcher_env: Optional[dict], argv: Optional[list[str]]) -> int:
+        from hermes_cli.main_dashboard import _respawnable_command_for_current_install
+        if not argv:
+            raise RuntimeError("the old backend's command line was not recorded; start it again by hand")
+        command = _respawnable_command_for_current_install(_with_profile(list(argv), self.home))
+        if launcher_env is None:  # never the caller's environment: the old one carried its sign-in settings
+            raise RuntimeError("the old backend's environment was not recorded; start it again by hand")
+        env = dict(launcher_env)
+        log = self.home / "logs" / "backend-migration-respawn.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "ab") as fh:
+            proc = subprocess.Popen(command, cwd=rec.get("cwd") or None, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=fh, stderr=subprocess.STDOUT,
+                                    # detached-spawn: ok — restores a hand-started backend the migration stopped
+                                    start_new_session=True, close_fds=True)
+        return proc.pid
+
+    # The old unit stays installed (disabled) after a migration. Started again by hand, the old command
+    # sees the gateway on its port and exits 78 (configuration error); this drop-in makes systemd stop
+    # there instead of looping under Restart=always.
+    DROPIN_NAME = "hermes-migrated.conf"
+    DROPIN_TEXT = ("# Written by `hermes gateway migrate --backends`: the gateway serves this backend's address now.\n"
+                   "# Started by hand, the old command exits 78 (configuration error) and is not restarted.\n"
+                   "# `hermes gateway migrate --backends --restore` removes this file.\n"
+                   "[Service]\nRestartPreventExitStatus=78\n")
+
+    def user_unit_dir(self) -> Path:
+        from hermes_cli.gateway import user_systemd_unit_dir
+        return user_systemd_unit_dir()
+
+    def old_unit_dropin_path(self, rec: dict) -> Optional[str]:
+        """Where the restart guard for the old unit goes: systemd USER units only, else None."""
+        if rec.get("supervisor") != "systemd" or rec.get("scope") != "user" or not rec.get("unit"):
+            return None
+        return str(self.user_unit_dir() / f"{rec['unit']}.d" / self.DROPIN_NAME)
+
+    def write_old_unit_dropin(self, path: str) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self.DROPIN_TEXT, encoding="utf-8")
+        self.daemon_reload("user")
+
+    def remove_old_unit_dropin(self, path: str) -> None:
+        target = Path(path)
+        if not target.exists():
+            return
+        target.unlink()
+        with contextlib.suppress(OSError):
+            target.parent.rmdir()  # only when empty: the operator's own drop-ins stay
+        self.daemon_reload("user")
+
+    def daemon_reload(self, scope: str) -> None:
+        self._require(_systemctl(scope, ["daemon-reload"]), "reload the systemd unit files")
+
+    def spawn_detached(self, flags: list[str], log: Path) -> dict:
+        """Run ``hermes <flags>`` outside this process's session and systemd cgroup; returns at once.
+
+        Under a systemd user manager it becomes its own transient unit, so stopping the old backend's
+        unit (which may be the caller, e.g. the dashboard's button) cannot take it down; elsewhere it is
+        a new session. Output is appended to *log*. Returns ``{"unit": name}`` or ``{"pid": n}``."""
+        from hermes_cli._launchers import runtime_command
+        from hermes_cli.config import get_project_root
+        argv = runtime_command(get_project_root(), flags, home=self.home)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "HERMES_HOME": str(self.home)}
+        unit = f"hermes-backend-migration-{int(time.time())}"
+        import shutil
+        if shutil.which("systemd-run") and self.gateway_kind() == "systemd":
+            cmd = ["systemd-run", "--user", "--collect", f"--unit={unit}", "--quiet",
+                   f"--property=StandardOutput=append:{log}", f"--property=StandardError=append:{log}",
+                   *(f"--setenv={k}={env[k]}" for k in ("HERMES_HOME", "PATH") if k in env),
+                   *argv]
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=30, check=False)
+            if res.returncode == 0:
+                return {"unit": f"{unit}.service"}
+        if (inside := self.own_unit()) is not None:
+            # A new session is still in this unit's cgroup: stopping the unit (the old backend's, or the
+            # gateway's on restore) would end the run half-way. Refuse instead of starting it there.
+            raise RuntimeError(f"cannot start the run outside {inside} (systemd-run is unavailable or failed); "
+                               "run the command from a terminal instead")
+        with open(log, "ab") as fh:
+            proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                                    # detached-spawn: ok — the migration must outlive the caller it may stop
+                                    start_new_session=True, close_fds=True)
+        return {"pid": proc.pid}
+
+    def own_unit(self) -> Optional[str]:
+        """The systemd service whose cgroup this process is in (not the user manager itself), or None:
+        read from ``/proc/self/cgroup``, never inferred from how the process was started."""
+        from hermes_cli.update_cmd_posix_pause import _pid_cgroup
+        units = [part for part in (_pid_cgroup() or "").split("/")
+                 if part.endswith(".service") and not part.startswith("user@")]
+        return units[-1] if units else None
+
+    def old_unit_active(self, rec: dict) -> Optional[bool]:
+        if rec["supervisor"] == "launchd":
+            from hermes_cli.gateway import _launchd_print_service_pid
+            loaded, pid = _launchd_print_service_pid(rec["scope"], rec["unit"])
+            return loaded and pid is not None
+        if rec["supervisor"] != "systemd":
+            return None
+        return _systemctl(rec["scope"], ["is-active", rec["unit"]]).stdout.strip() == "active"
 
     # ------------------------------------------------------------------ network
 
@@ -478,3 +930,43 @@ class SystemHost:
             return None
         return data
 
+    def gateway_status(self, host: str, port: int) -> Optional[dict]:
+        """The migrated gateway's ``GET /api/status`` JSON on *host:port* (its ``gateway_state``, sign-in
+        state and providers), or None when it does not answer 200. Only for the post-move verification:
+        the plan's probe of an old backend is :meth:`http_status`, which never calls /api/status."""
+        from hermes_cli.url_utils import format_url_host
+        url = f"http://{format_url_host(host)}:{port}/api/status"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # on-machine: never a proxy
+        try:
+            with opener.open(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=5) as resp:
+                if resp.status != 200:
+                    return None
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def pid_listens_on(self, pid: int, port: int) -> bool:
+        import psutil
+        with contextlib.suppress(Exception):
+            return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port
+                       for c in psutil.Process(pid).net_connections(kind="tcp"))
+        return False
+
+    def port_in_use(self, host: str, port: int) -> bool:
+        import socket
+        with contextlib.suppress(OSError), socket.create_connection((host, port), timeout=1):
+            return True
+        return False
+
+    @staticmethod
+    def _require(res: subprocess.CompletedProcess, what: str) -> None:
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout or f"exit {res.returncode}").strip().splitlines()
+            raise RuntimeError(f"could not {what}: {detail[-1] if detail else res.returncode}")
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def now(self) -> float:
+        return time.time()

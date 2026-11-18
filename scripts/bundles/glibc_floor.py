@@ -53,7 +53,9 @@ class Violation:
 
 
 def parse_need(name: str) -> tuple[str, Version] | None:
-    """``GLIBCXX_3.4.30`` -> ``("GLIBCXX", (3, 4, 30))``; other version names -> None."""
+    """Return the minimum library version implied by a numeric need or known ABI marker."""
+    if name == "GLIBC_ABI_DT_RELR":
+        return "GLIBC", (2, 36)
     match = _VERSION.fullmatch(name)
     if match is None:
         return None

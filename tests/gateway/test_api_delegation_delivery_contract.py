@@ -8,7 +8,9 @@ import pytest
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_context import clear_session_vars
 from gateway.wake import persist_delegation_delivery
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
 
@@ -63,44 +65,46 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    peer = SessionDB(db_path=tmp_path / "state.db")
+    stores = [open_persistence(profile_scope(home=tmp_path)) for _ in range(2)]
+    db, peer = stores
     try:
-        db.create_session("parent", source="api_server")
-        db.create_session("other", source="api_server")
-        adapters = [SimpleNamespace(_ensure_session_db=lambda: db), SimpleNamespace(_ensure_session_db=lambda: peer)]
+        seed_session(db, "parent", "api_server")
+        seed_session(db, "other", "api_server")
+        adapters = [SimpleNamespace(_ensure_store=lambda: db, _store_beside=lambda _db: stores[0]),
+                    SimpleNamespace(_ensure_store=lambda: peer, _store_beside=lambda _db: stores[1])]
         evt = {"type": "async_delegation", "delegation_id": "unique-unit"}
         async def send(adapter, event=evt):
             await persist_delegation_delivery(adapter, text="RESULT", session_id="parent", evt=event)
         await asyncio.gather(*(send(a) for a in adapters))
-        assert len(db.get_messages("parent")) == 1
-        db.end_session("parent", "compression")
-        db.create_session("child", source="api_server", parent_session_id="parent")
+        assert len(transcript_rows(db, "parent")) == 1
+        db.sessions.end("parent", "compression")
+        seed_session(db, "child", "api_server", parent_session_id="parent")
         await send(adapters[0])
-        assert db.get_messages("child") == []  # old event was already recorded in the lineage
-        from hermes_state_errors import SessionTurnLeaseLostError
-        assert db.acquire_session_turn_lease("child", "client-turn", wait_seconds=0)
+        assert transcript_rows(db, "child") == []  # old event was already recorded in the lineage
+        from persistence import TurnLeaseLost
+        assert db.coordination.try_acquire_turn_lease(session_id="child", holder="client-turn")
         later = {**evt, "delegation_id": "later-unit"}
         try:
-            with pytest.raises(SessionTurnLeaseLostError):
+            with pytest.raises(TurnLeaseLost):
                 await send(adapters[0], later)
-            assert db.get_messages("child") == []
+            assert transcript_rows(db, "child") == []
         finally:
-            db.release_session_turn_lease("child", "client-turn")
+            db.coordination.release_turn_lease(session_id="child", holder="client-turn")
         await send(adapters[0], later)
-        assert len(db.get_messages("child")) == 1
+        assert len(transcript_rows(db, "child")) == 1
         notice = {**later, "task_failure_notice": True, "results": [{"task_index": 0, "status": "failed"}]}
         await send(adapters[0], notice)
         await send(adapters[1], notice)
-        assert len(db.get_messages("child")) == 2  # interim notice cannot consume the final's identity
-        assert db.get_messages("other") == []
+        assert len(transcript_rows(db, "child")) == 2  # interim notice cannot consume the final's identity
+        assert transcript_rows(db, "other") == []
     finally:
-        peer.close()
-        db.close()
+        for store in stores:
+            store.close()
 
 
 async def _deliver(db, sid, text, delegation_id):
-    await persist_delegation_delivery(SimpleNamespace(_ensure_session_db=lambda: db), text=text, session_id=sid,
+    adapter = SimpleNamespace(_ensure_store=lambda: db, _store_beside=lambda _db: db)
+    await persist_delegation_delivery(adapter, text=text, session_id=sid,
                                       evt={"type": "async_delegation", "delegation_id": delegation_id})
 
 
@@ -112,17 +116,17 @@ async def _fold(db, history):
         return db
     run = _RunLaunch(None, "run", None, "s1", None, False, "next", list(history), True,
                      agent_kwargs={}, request_profile=None, fold_deliveries=True)
-    await _fold_caller_history_deliveries(SimpleNamespace(_ensure_session_db_async=ensure), run)
+    adapter = SimpleNamespace(_ensure_store_async=ensure, _store_beside=lambda _db: db)
+    await _fold_caller_history_deliveries(adapter, run)
     return run.conversation_history
 
 
 @pytest.mark.asyncio
 async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="api_server")
-        db.append_message("s1", "user", "go")
-        db.append_message("s1", "assistant", "dispatched")
+        seed_session(db, "s1", "api_server")
+        seed_messages(db, "s1", {"role": "user", "content": "go"}, {"role": "assistant", "content": "dispatched"})
         await _deliver(db, "s1", "RESULT-A", "a")
         await _deliver(db, "s1", "RESULT-B", "b")
         caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "dispatched"},
@@ -133,7 +137,7 @@ async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
         assert all(a["role"] != b["role"] for a, b in pairwise(history))
         assert await _fold(db, caller) == caller  # both rows already consumed
         # Rows stay in the transcript for pollers and session-history continuations.
-        contents = [m["content"] for m in db.get_messages_as_conversation("s1")]
+        contents = [m["content"] for m in conversation(db, "s1")]
         assert contents.count("RESULT-A") == 1 and contents.count("RESULT-B") == 1
     finally:
         db.close()
@@ -141,17 +145,17 @@ async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
 
 @pytest.mark.asyncio
 async def test_caller_history_fold_and_reservation_deliver_single_copy(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("s1", source="api_server")
+        seed_session(db, "s1", "api_server")
         await _deliver(db, "s1", "RESULT-R", "r")
-        lease = db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60)
+        lease = db.messages.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60)
         caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
         assert await _fold(db, caller) == caller  # reserved for the wake turn, not folded
-        assert db.commit_caller_history_deliveries(lease[0]["reservation_token"], "webui") == 1
+        assert db.messages.commit_caller_history_deliveries(lease[0]["reservation_token"], "webui") == 1
         await _deliver(db, "s1", "RESULT-F", "f")
         assert sum("RESULT-F" in m["content"] for m in await _fold(db, caller)) == 1
-        assert db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60) == []
+        assert db.messages.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60) == []
     finally:
         db.close()
 
@@ -165,13 +169,13 @@ async def test_authority_admitted_run_keeps_caller_history_and_folds_or_releases
     from gateway import session_api_turn
     from gateway.platforms import api_server_runs
     from gateway.session_api import bind_api_session
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from persistence import StoreUnavailable
 
     async def no_execution(*_a, **_kw):
         pass
 
     async def unavailable(*_a, **_kw):
-        raise RuntimeStoreError("storage_unavailable")
+        raise StoreUnavailable("storage_unavailable")
 
     monkeypatch.setattr(api_server_runs, "_execute_run", no_execution)
     bind_api_session(owner, "s-auth")
@@ -186,6 +190,6 @@ async def test_authority_admitted_run_keeps_caller_history_and_folds_or_releases
             m.setattr(session_api_turn, "admit_api_turn_async", unavailable)
             assert (await client.post("/v1/runs", json=body)).status == 503
         assert (await client.post("/v1/runs", json=body)).status == 202
-    row, = list_session_admissions(owner.db, session_id="s-auth")
-    stored = row["payload"]["api_turn_v1"]["history"]
+    row, = owner.persistence.admissions.list(session_id="s-auth")
+    stored = row.payload["api_turn_v1"]["history"]
     assert stored is not None and any("DELIV-AUTH" in m["content"] for m in stored)

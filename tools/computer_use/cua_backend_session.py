@@ -263,7 +263,7 @@ class _CuaDriverSession:
     # safe from the bridge-loop thread without taking self._lock (which stop() may hold while awaiting this
     # coro's future). See #55048 Bug 1.
     async def _populate_capabilities(self, session: Any) -> None:
-        """Cache per-tool capability sets, input schemas from tools/list. Soft
+        """Cache per-tool capability sets and input schemas from tools/list. Soft
         prerequisite: on failure the map stays empty (capability False)."""
         self._capabilities, self._tool_schemas = {}, {}
         try:

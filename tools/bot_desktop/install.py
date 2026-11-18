@@ -31,10 +31,9 @@ from tools.bot_desktop import runtime
 logger = logging.getLogger(__name__)
 
 _install_lock = threading.Lock()
-_running: set[str] = set()
 # Installs are host-global but the gateway (Install card) and the CLI (`screen install`) are separate
-# processes: the in-process set alone let both drive dpkg for one profile at once. The slot is also a
-# non-blocking flock on a file in the profile's state dir, held for the life of the install.
+# processes, so the slot is a non-blocking flock on a file in the profile's state dir, held for the life
+# of the install.
 _slot_files: dict[str, object] = {}
 
 
@@ -65,19 +64,17 @@ def claim() -> str:
     two Install clicks both pass the check."""
     key = hermes_home_key()
     with _install_lock:
-        if key in _running:
+        if key in _slot_files:
             raise InstallBusy("an install is already running for this profile")
         fh = _try_flock(runtime.state_dir() / "install.lock")
         if fh is None:
             raise InstallBusy("an install is already running for this profile (another process)")
-        _running.add(key)
         _slot_files[key] = fh
     return key
 
 
 def release(key: str) -> None:
     with _install_lock:
-        _running.discard(key)
         fh = _slot_files.pop(key, None)
     if fh is not None:
         fh.close()  # closing drops the flock

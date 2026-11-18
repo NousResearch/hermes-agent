@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 
+import { readDesktopLaunchConfig } from '../electron/renderer-heap-flags.ts'
+
 import { seedConfigFrom, withPlatformsDisabled } from './perf/lib/seed-home.mjs'
 
 const dirs = []
@@ -90,6 +92,33 @@ platforms:
     for (const block of [config.telegram, config.gateway.discord, config.platforms.photon]) {
       expect(block).toEqual({ enabled: false, token: 'on', label: 'n' })
     }
+  })
+
+  it('pins shorthand blocks that inherit enabled through a YAML merge', () => {
+    const config = parse(
+      withPlatformsDisabled(
+        'defaults: &bot {enabled: true, token: t}\ntelegram:\n  <<: *bot\ngateway:\n  discord:\n    <<: *bot\n',
+        ['telegram', 'discord']
+      ),
+      { version: '1.1' }
+    )
+
+    expect(config.defaults).toEqual({ enabled: true, token: 't' })
+    expect(config.telegram).toEqual({ enabled: false, token: 't' })
+    expect(config.gateway.discord).toEqual({ enabled: false, token: 't' })
+  })
+
+  it('keeps a long one-line electron_flags list readable by the Desktop launch reader', () => {
+    const flags = [
+      '--disable-gpu-compositing',
+      '--disable-features=Vulkan',
+      '--force-device-scale-factor=1',
+      '--ozone-platform=x11'
+    ]
+
+    const source = `desktop:\n  electron_flags: [${flags.join(', ')}]\n`
+
+    expect(readDesktopLaunchConfig(withPlatformsDisabled(source, ['telegram'])).electronFlags).toEqual(flags)
   })
 
   it('seeds the isolated home with bundled plugin platforms pinned off and credentials copied', () => {

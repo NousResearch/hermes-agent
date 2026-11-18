@@ -97,11 +97,13 @@ export function withPlatformsDisabled(configText, platformNames) {
     // bridge then applies an explicit top-level <name>.enabled.
     for (const parent of [doc, gateway]) {
       const shorthand = parent && mapping(doc, parent, name)
-      if (shorthand?.has('enabled')) shorthand.set('enabled', false)
+      // toJS sees keys inherited through a YAML merge, as the Python loader does.
+      if (shorthand && Object.hasOwn(shorthand.toJS(doc), 'enabled')) shorthand.set('enabled', false)
     }
   }
 
-  return doc.toString()
+  // Unwrapped: readDesktopLaunchConfig reads desktop.electron_flags line by line.
+  return doc.toString({ lineWidth: 0 })
 }
 
 export function seedConfigFrom(sourceHome, targetHome, repoRoot) {

@@ -65,6 +65,15 @@ def test_refusal_names_the_failing_field(overrides, expected_field):
     assert f"storage_unavailable[{expected_field}]: {error.detail}" in _refused_check(error)
 
 
+@pytest.mark.parametrize("missing", ["model", "cwd", "toolsets"])
+def test_a_receipt_missing_a_required_field_names_it(missing):
+    stored = stored_policy()
+    del stored[missing]
+    with pytest.raises(AuthorityRefusal) as caught:
+        restore_policy(stored)
+    assert (caught.value.reason, caught.value.field) == ("storage_unavailable", missing)
+
+
 def test_a_named_storage_refusal_warns_once_per_check(caplog, monkeypatch):
     """Desktop reopens a refused chat dozens of times: the gateway names the check at WARNING once,
     and the identical repeats stay at debug, as ``_log_storage_failure`` keeps one traceback."""

@@ -42,3 +42,12 @@ def test_a_non_absolute_cwd_is_still_refused(tmp_path, cwd):
     with pytest.raises(AuthorityRefusal, match="storage_unavailable") as caught:
         restore_policy(_stored_receipt(tmp_path, cwd))
     assert caught.value.field == "cwd"
+
+
+@pytest.mark.platforms("windows")
+def test_a_posix_cwd_never_binds_the_current_drive_on_windows(tmp_path, monkeypatch):
+    """``/<dir>`` restores on Windows but is never ready, even when ``<drive>:\\<dir>`` exists."""
+    drive_relative = "/" + tmp_path.relative_to(tmp_path.anchor).as_posix()
+    monkeypatch.chdir(tmp_path.anchor)
+    policy = restore_policy(_stored_receipt(tmp_path, drive_relative))
+    assert workspace_ready(policy) is False

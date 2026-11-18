@@ -1,0 +1,37 @@
+name: flightdeck
+title: Flightdeck
+repo: https://github.com/freemanconsulting/hermes-flightdeck
+sha: 399b080430f6871d42c1c8d8837f2a05efb63c3e
+description: "Live air-traffic control for your agents and model servers — which agent holds which local GPU slot, who's queued, plan usage on cloud lanes, and opt-in capacity-aware subagent placement. Disclosure — records LLM request metadata (ids, profile, session, model, provider, base_url, timings, token counts, finish/error status, a clipped error message and a subagent's goal text; no prompts, message text, tool arguments or credentials) from every profile into one machine-wide SQLite file at <hermes root>/plugin-data/flightdeck/requests.db; reads every profile's config.yaml (provider base URLs, model names and its own settings only; the files can contain api_key values, which it never extracts, stores or sends) and every profile's state.db (session titles, read-only); sends GET-only metrics probes to declared model servers or to auto-discovered private/loopback provider URLs on each poll; the Desktop page reads plan usage through Hermes's model.options RPC; opt-in capacity routing (off by default) changes which local server delegate_task subagents run on."
+maintainer: freemanconsulting
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/freemanconsulting/hermes-flightdeck#readme
+version: "0.1.1"
+screenshots:
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/by-model.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/swim-lane.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/server-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/cloud-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/by-agent.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/routing.png
+readme: true
+platforms: []
+known_issues:
+  - "Cloud lanes are Hermes-observed only: providers do not publish server load, so cloud numbers cover this machine's Hermes traffic, not the provider's fleet."
+  - "Plan usage on cloud cards depends on the provider's usage hook and can be briefly unavailable; it is shown as unavailable, not as zero."
+  - "Capacity routing is opt-in and local-only: it requires route_delegation: true and delegation.backend: flightdeck, and only inner_backend: default is supported; any other inner_backend reports routing unavailable and refuses to arm."
+capabilities:
+  provides_tools:
+    - fleet_status
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - pre_auxiliary_call
+    - post_auxiliary_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

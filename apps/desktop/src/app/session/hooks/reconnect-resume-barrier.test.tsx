@@ -20,6 +20,8 @@ import {
 import { clearAllSessionStates } from '@/store/session-states'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
+import { handleMessageStreamEvent } from './use-message-stream/gateway-event/message-stream'
+import type { GatewayEventContext } from './use-message-stream/gateway-event/types'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -27,6 +29,14 @@ vi.mock('@/hermes', async original => ({
   ...(await original<Record<string, unknown>>()),
   getLatestSessionMessages: vi.fn()
 }))
+// A watch window skips the REST prefetch and takes the resume's own snapshot.
+const windowKind = vi.hoisted(() => ({ watch: false }))
+
+vi.mock('@/store/windows', async original => ({
+  ...(await original<Record<string, unknown>>()),
+  isWatchWindow: () => windowKind.watch
+}))
+vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterTurn: vi.fn(async () => undefined) }))
 vi.mock('@/store/profile', async original => ({
   ...(await original<Record<string, unknown>>()),
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
@@ -79,8 +89,20 @@ const resumedIdle = {
   info: {}
 } as SessionResumeResult
 
-function mount() {
-  const requestGateway = vi.fn(async (method: string) => (method === 'session.resume' ? resumedIdle : {}))
+// `beforeResumeAnswers` runs while `session.resume` is in flight, with the
+// hook's own view binding (null for the whole of a cold resume).
+function mount(beforeResumeAnswers?: (activeSessionIdRef: { current: null | string }) => void) {
+  let viewBinding: { current: null | string } = { current: null }
+
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method !== 'session.resume') {
+      return {}
+    }
+
+    beforeResumeAnswers?.(viewBinding)
+
+    return resumedIdle
+  })
 
   return renderHook(() => {
     const busyRef = useRef(false)
@@ -95,6 +117,8 @@ function mount() {
       setAwaitingResponse
     })
 
+    viewBinding = cache.activeSessionIdRef
+
     return useSessionActions({
       ...cache,
       activeSessionId: null,
@@ -107,6 +131,43 @@ function mount() {
       requestGateway: requestGateway as never,
       routedSessionId: storedId
     })
+  })
+}
+
+// The turn's message.complete as the new socket's event pump hands it over,
+// read against the view binding the hook really has at that moment.
+function completeOnNewSocket(activeSessionIdRef: { current: null | string }): void {
+  handleMessageStreamEvent({
+    deps: {
+      activeGatewayProfile: 'default',
+      activeSessionIdRef,
+      appendAssistantDelta: vi.fn(),
+      appendReasoningDelta: vi.fn(),
+      compactedTurnRef: { current: new Set() },
+      completeAssistantMessage: vi.fn(),
+      failAssistantMessage: vi.fn(),
+      finalizeInterimAssistantMessage: vi.fn(),
+      flushQueuedDeltas: vi.fn(),
+      dropQueuedDeltas: vi.fn(),
+      hydrateFromStoredSession: vi.fn(async () => undefined),
+      lastCwdInfoSessionRef: { current: null },
+      nativeSubagentSessionsRef: { current: new Set() },
+      queryClient: {} as GatewayEventContext['deps']['queryClient'],
+      refreshHermesConfig: vi.fn(async () => undefined),
+      scheduleSessionsRefresh: vi.fn(),
+      sessionInterrupted: vi.fn(() => false),
+      sessionStateByRuntimeIdRef: { current: new Map() },
+      updateSessionState: vi.fn(),
+      upsertToolCall: vi.fn()
+    },
+    event: { type: 'message.complete' },
+    explicitSid: runtimeId,
+    fromActiveSource: () => true,
+    isActiveEvent: false,
+    occurredAt: Date.now() / 1000,
+    payload: { text: 'A2 answer across the drop', status: 'complete' },
+    scheduleConfigRefresh: vi.fn(),
+    sessionId: runtimeId
   })
 }
 
@@ -166,6 +227,48 @@ it('shows the committed reply when the turn finishes between the reconnect page 
   })
 
   expect(answers($messages.get())).toEqual(['A1firstanswer', 'A2inarratingA2answeracrossthedrop'])
+})
+
+// The complete reaches the NEW socket this time, while the cold resume has the
+// view unbound: it settles the runtime but never paints. The view still holds
+// the first chunk, so the re-read page must win, not that stale view.
+it('shows the whole reply when its message.complete lands while the cold resume has the view unbound', async () => {
+  vi.mocked(getLatestSessionMessages)
+    .mockResolvedValueOnce({ session_id: storedId, messages: beforeCommit })
+    .mockResolvedValue({ session_id: storedId, messages: committed })
+
+  const hook = mount(viewBinding => {
+    expect(viewBinding.current).toBeNull()
+    completeOnNewSocket(viewBinding)
+  })
+
+  await act(async () => {
+    await hook.result.current.resumeSession(storedId, true)
+  })
+
+  expect(answers($messages.get())).toEqual(['A1firstanswer', 'A2inarratingA2answeracrossthedrop'])
+})
+
+it('shows the whole reply in a watch window when its message.complete lands while the view is unbound', async () => {
+  windowKind.watch = true
+  Object.assign(resumedIdle, { messages: committed, messages_omitted: false })
+
+  try {
+    const hook = mount(viewBinding => {
+      expect(viewBinding.current).toBeNull()
+      completeOnNewSocket(viewBinding)
+    })
+
+    await act(async () => {
+      await hook.result.current.resumeSession(storedId, true)
+    })
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(answers($messages.get())).toEqual(['A1firstanswer', 'A2inarratingA2answeracrossthedrop'])
+  } finally {
+    windowKind.watch = false
+    Object.assign(resumedIdle, { messages: [], messages_omitted: true })
+  }
 })
 
 it('reads the page once when the resume still reports the turn running', async () => {

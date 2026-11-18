@@ -23,6 +23,7 @@ def _interaction(user_id=1):
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id, display_name="alice", roles=[]),
         response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock(), defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
         message=SimpleNamespace(embeds=[]),
         data={"values": ["x"]},
         channel_id=5,
@@ -85,6 +86,8 @@ async def test_unauthorized_click_uses_the_shared_notice(monkeypatch, name, call
         ("update", lambda v, i: v._respond(i, "y", None, "x")),
         ("clarify", lambda v, i: v._resolve_choice(i, 0, "a")),
         ("clarify", lambda v, i: v._on_other(i)),
+        ("model", lambda v, i: v._switch_selected_model(i, "m2")),
+        ("model", lambda v, i: v._on_cancel(i)),
     ],
 )
 async def test_answered_view_is_released(monkeypatch, tmp_path, name, call):
@@ -127,3 +130,15 @@ async def test_on_timeout_disables_and_greys_embed(name):
 async def test_on_timeout_without_message_is_safe():
     for view in _views().values():
         await view.on_timeout()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["slash", "update", "clarify", "model"])
+async def test_timeout_after_resolution_keeps_the_resolved_embed(name):
+    """A prompt resolved by a click must not be relabelled 'expired' when the view times out."""
+    view = _views()[name]
+    msg = SimpleNamespace(embeds=[SimpleNamespace(color=None, set_footer=lambda **_: None)], edit=AsyncMock())
+    view._message = msg
+    view.resolved = True
+    await view.on_timeout()
+    msg.edit.assert_not_called()

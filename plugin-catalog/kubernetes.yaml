@@ -1,0 +1,20 @@
+name: kubernetes
+repo: https://github.com/TakeshiTGAL/hermes-plugin-kubernetes
+sha: 5ea185118a5fe74041a4cf894790a92d0a9ba768
+description: "Write one namespace in cluster.json to approve the scope, then use four reads: list pods, get one pod, list events, and read logs. Kubernetes is a registered trademark of The Linux Foundation. kubernetes-mcp-server 0.0.68 is the GitHub release binary. The plugin downloads kubernetes-mcp-server-<os>-<arch> from https://github.com/containers/kubernetes-mcp-server/releases/download/v0.0.68/ into the plugin data directory, checks the sha256 against constants taken from that release's GitHub asset digest, and starts that file. MCP initialize and tools/list are answered before that download. A partial download is kept and continued with HTTP Range. A mismatch, including a file that was already there, is refused. read_only is true, toolsets stay core, and only pods_list_in_namespace, pods_get, events_list, and pods_log are enabled. Helm is not offered. Secret, ConfigMap, and ServiceAccount are denied. configuration_view is not listed. prod, production, live, and prd names are refused unless allow_production is true. Public and link-local hosts are always refused. The host must be local, and DNS is not resolved. readOnlyHint is true, so no approval card is shown. Before the call, name the namespace, the object, and that it only reads, because status, events, and logs reach the model. This plugin does not create a cron job. Disclosure — reads the kubeconfig you name in cluster.json (read-only) and sends its token only to that kubeconfig's API host (plain http sends it unencrypted); on the first tool call downloads the kubernetes-mcp-server 0.0.68 GitHub release binary (~90 MB) into the plugin data directory, refuses it unless its sha256 matches the pinned release digest, and runs it as a subprocess (a file swap between the check and the start is not fully excluded); pod status, events and logs reach the model, with password-like env values and last-applied-configuration redacted; no HTTP proxy is used; gateway users can call these read tools with that kubeconfig; stop with hermes plugins disable kubernetes or hermes tools disable mcp-kubernetes."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-kubernetes#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - mcp__kubernetes__pods_list_in_namespace
+    - mcp__kubernetes__pods_get
+    - mcp__kubernetes__events_list
+    - mcp__kubernetes__pods_log
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

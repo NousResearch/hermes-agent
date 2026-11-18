@@ -362,7 +362,7 @@ function CronJobSidebarRow({
             <SidebarRowBody
               aria-expanded={expanded}
               aria-label={expanded ? c.hideRuns : c.showRuns}
-              className="focus-visible:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="focus-visible:bg-(--chrome-action-hover) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40"
               onClick={onTogglePeek}
             >
               <SidebarRowLead>
@@ -477,7 +477,7 @@ function CronJobSidebarRuns({
               // closed (watchdog kill / crash) opens view-only (#88443).
               <button
                 className={cn(
-                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40',
                   run.id === selectedSessionId
                     ? 'bg-(--ui-row-active-background) text-foreground'
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'

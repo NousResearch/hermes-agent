@@ -19,9 +19,12 @@ export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 180_000
 // caller forever. Every caller of these bounds them with this shared budget.
 export const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
 
-/** Budget for the phase-1 dial of a source switch (store/connections
- * selectConnection). Unlike the two above this await is not one IPC: it is the
- * main process's whole remote bring-up chain — one ssh connect
+/** Budget for each bounded step of a source switch (store/connections
+ * selectConnection): the phase-1 open of the target, the OAuth REST probe and
+ * the activation (ensureGatewayAgent) each get this whole budget, as does a
+ * registry secondary's getConnectionFor in store/gateway. It is sized for the
+ * worst of them, the cold dial. Unlike the two above, the cold dial is not one IPC:
+ * it is the main process's whole remote bring-up chain — one ssh connect
  * (DEFAULT_CONNECT_TIMEOUT_MS 15 s in electron/ssh-connection.ts), the
  * sequential ssh execs that probe platform, locate the runtime and read its
  * version (DEFAULT_EXEC_TIMEOUT_MS 20 s each), the spawned backend's ready

@@ -104,4 +104,29 @@ describe('appendToolShelfMessage', () => {
 
     expect(merged).toHaveLength(3)
   })
+
+  it("keeps a tool's image under its own call: the next call starts a new shelf below it", () => {
+    const image: Msg = { images: ['/tmp/a.png'], kind: 'image', role: 'system', text: '' }
+
+    const events: Msg[] = [
+      { kind: 'trail', role: 'system', text: '', tools: ['read_file a.png ✓'] },
+      image,
+      { kind: 'trail', role: 'system', text: '', tools: ['terminal ls ✓'] }
+    ]
+
+    // The live stream (groupedSegments) and settled history both fold through appendToolShelfMessage.
+    expect(events.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])).toEqual(events)
+  })
+
+  it('does not reach past an image to a thinking holder above it', () => {
+    const merged = appendToolShelfMessage(
+      [
+        { kind: 'trail', role: 'system', text: '', thinking: 'plan' },
+        { images: ['/tmp/a.png'], kind: 'image', role: 'system', text: '' }
+      ],
+      { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+    )
+
+    expect(merged).toHaveLength(3)
+  })
 })

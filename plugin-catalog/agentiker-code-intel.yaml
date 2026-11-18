@@ -1,13 +1,22 @@
 name: agentiker-code-intel
 repo: https://github.com/IVRZ-da/agentiker-code-intel
-sha: ebee5911fce79d4d2df11e09c631ecae10e8edae
-description: "AST-aware code intelligence: symbol search, safe refactoring, go-to-definition and edit-impact analysis via tree-sitter, ast-grep and an LSP bridge (Python, TypeScript, JavaScript, Go, Rust, Java)."
-maintainer: Johannes Lettner
+sha: 475a950fa21ed03e10d94d91c8774b42c0665035
+description: >-
+  AST-aware code intelligence for the local repository: symbol outlines and
+  structural search (tree-sitter), ast-grep pattern queries, LSP
+  go-to-definition and find-all-references, call graphs and dependency
+  analysis, plus safe cross-file refactoring (rename, replace body, insert,
+  move, delete) for 9 languages. Ships 7 namespace dispatchers with an op
+  parameter instead of 70 individual tools, so the schema cost per turn stays
+  small. Works fully offline; LSP and tree-sitter grammars are optional and
+  installed on demand via apt/pip.
+maintainer: IVRZ-da
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-version: "0.6.28"
-readme: true
+docs_url: https://github.com/IVRZ-da/agentiker-code-intel#readme
+version: "0.6.31"
+platforms: []
 capabilities:
   provides_tools:
     - code_search

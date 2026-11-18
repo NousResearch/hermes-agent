@@ -3,9 +3,8 @@
 Sessions carried from a Windows install keep ``C:\\Users\\<user>\\...`` as their frozen cwd. That
 spelling is not ``Path.is_absolute()`` on POSIX, so ``restore_policy`` rejected the whole (otherwise
 well-formed) policy and every control that reloads it answered ``storage_unavailable`` — a storage
-failure for a session whose store was healthy. The turn still refuses, and names the folder, through
-``workspace_ready``/``workspace_unavailable``: only the receipt validation was wrong. Same pairing as
-``test_session_policy_workspace_readiness``: readable and movable, the turn is what refuses.
+failure for a session whose store was healthy (#154192). The turn still refuses, and names the
+folder, through ``workspace_ready``/``workspace_unavailable``: only the receipt validation was wrong.
 """
 import json
 from dataclasses import asdict, replace
@@ -13,6 +12,7 @@ from dataclasses import asdict, replace
 import pytest
 
 from gateway.session_policy import build_policy, policy_scope, restore_policy, workspace_ready
+from persistence.core.errors import AuthorityRefusal
 
 WINDOWS_CWD = r"C:\Users\markl\AppData\Local\hermes"
 
@@ -26,25 +26,19 @@ def _stored_receipt(tmp_path, cwd):
     return asdict(replace(policy, cwd=cwd, terminal_json=json.dumps(terminal)))
 
 
-def test_a_windows_cwd_receipt_restores_on_posix(tmp_path):
-    restored = restore_policy(_stored_receipt(tmp_path, WINDOWS_CWD))
-    assert restored.cwd == WINDOWS_CWD
-    assert restored.model == "fixture"
-
-
-def test_the_foreign_workspace_only_refuses_the_turn(tmp_path):
-    from persistence.core.errors import AuthorityRefusal
-
+@pytest.mark.platforms("linux", "macos")
+def test_a_windows_cwd_receipt_restores_and_only_its_turn_refuses(tmp_path):
     policy = restore_policy(_stored_receipt(tmp_path, WINDOWS_CWD))
+    assert (policy.cwd, policy.model) == (WINDOWS_CWD, "fixture")
     assert workspace_ready(policy) is False
     with pytest.raises(AuthorityRefusal, match="workspace_unavailable"):
         with policy_scope(policy):
             pass
 
 
-@pytest.mark.parametrize("cwd", ["relative/path", "C:hermes"])
+# ``\Users\markl`` is rooted but has no drive: ``ntpath.isabs`` accepted it before Python 3.13.
+@pytest.mark.parametrize("cwd", ["relative/path", "C:hermes", r"\Users\markl"])
 def test_a_non_absolute_cwd_is_still_refused(tmp_path, cwd):
-    from persistence.core.errors import AuthorityRefusal
-
-    with pytest.raises(AuthorityRefusal, match="storage_unavailable"):
+    with pytest.raises(AuthorityRefusal, match="storage_unavailable") as caught:
         restore_policy(_stored_receipt(tmp_path, cwd))
+    assert caught.value.field == "cwd"

@@ -238,6 +238,10 @@ def spawn_background_process(
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
+        if notify_on_complete or watch_patterns:
+            # The spawn checkpointed before these flags and the chat routing were set; persist
+            # them so a restart's recovery re-arms the completion instead of a silent process.
+            process_registry._write_checkpoint()
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
@@ -296,3 +300,4 @@ def _stamp_routing_if_gateway(process_registry, session, session_key) -> None:
     _stamp_gateway_routing(session, get_session_env)
     if session.watcher_platform:
         _register_completion_watcher(process_registry, session, session_key)
+    process_registry._write_checkpoint()  # adopt_local checkpointed before the routing existed

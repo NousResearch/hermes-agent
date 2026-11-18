@@ -72,9 +72,9 @@ _FORWARDED = frozenset(inspect.get_annotations(PersistenceStore)) | {"ready"}
 
 _cache_lock = threading.Lock()
 # store_key -> [shared backend (None until a handle's first use), open handles]
-_shared: dict[str, list[Any]] = {}
+_shared: dict[str, list[Any]] = {}  # health: allow HX018 -- keyed by store_key: a profile home's key, or a hosted scope's pin key
 # provider -> the one backend serving every pinned scope of this process (hosted mode)
-_pinned_backends: dict[str, Any] = {}
+_pinned_backends: dict[str, Any] = {}  # health: allow HX018 -- one per provider; each open is pinned to the bound scope and the boot required assert_isolating
 
 
 class Persistence:

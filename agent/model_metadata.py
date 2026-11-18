@@ -840,7 +840,7 @@ _PRICING_UNIT_DIVISORS = {
     "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
-_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write", "cache_write_1h")
 
 
 def _normalize_token_rates(pricing: dict[str, Any], unit: Any) -> dict[str, Any]:
@@ -879,7 +879,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
-    }
+        "cache_write_1h": ("cache_write_1h", "input_cache_write_1h"),}
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         pricing: dict[str, Any] = {}

@@ -563,34 +563,17 @@ def _init_prompt_cache_config(agent):
         agent._anthropic_prompt_cache_policy()
     )
     agent._cache_disabled = False
-    # cache_ttl: "5m" (default), "1h" (2x write cost; pays off with >5-minute pauses) or "auto"
-    # (1h when a person paces the session, 5m when a machine does); unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans
-    # billing cache writes, proxies adding their own cache_control); the disable survives
-    # /model switches and fallback re-derivation.
-    # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from config.yaml under
-    # prompt_caching.cache_ttl; unknown values keep "5m". 1h tier costs 2x on write vs 1.25x for 5m, but
-    # amortizes across long sessions with >5-minute pauses between turns (#14971). This is useful for OAuth
-    # subscription users where cache writes bill against "extra usage" or for third-party proxies that
-    # inject their own cache_control markers (#13477).
-    agent._cache_ttl = "5m"
+    # cache_ttl: "auto" (default) picks 1h when a person paces the session and 5m when a machine does;
+    # "5m"/"1h" pin a tier (1h writes cost 2x vs 1.25x and only pay off across >5-minute pauses, #14971);
+    # unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans billing cache
+    # writes against "extra usage", proxies injecting their own cache_control, #13477); the disable
+    # survives /model switches and fallback re-derivation. An unreadable config falls back to "auto".
+    from agent.agent_runtime_helpers import cache_ttl_means_disabled
+    from agent.prompt_caching import AUTO_CACHE_TTL, auto_start_cache_ttl
+    ttl = AUTO_CACHE_TTL
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
-        from agent.agent_runtime_helpers import cache_ttl_means_disabled
-        from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
-        _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
-        _ttl = _pc_cfg.get("cache_ttl", "5m")
-        if _ttl in {"5m", "1h"}:
-            agent._cache_ttl = _ttl
-        elif _ttl == AUTO_CACHE_TTL:
-            # Decided once per session from its source (a delegated child is clamped to 5m again
-            # in delegate_tool regardless).
-            from agent.session_source import session_source_for
-            agent._cache_ttl = auto_cache_ttl_for_source(session_source_for(getattr(agent, "platform", None)))
-        elif cache_ttl_means_disabled(_ttl):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-            agent._cache_ttl = None
-            agent._cache_disabled = True
+        ttl = (_load_pc_cfg().get("prompt_caching", {}) or {}).get("cache_ttl", AUTO_CACHE_TTL)
     except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
         # Config values and traceback frames may contain credentials.
         logger.warning(
@@ -600,6 +583,20 @@ def _init_prompt_cache_config(agent):
             "configuration imports work again.",
             type(exc).__name__,
         )
+    agent._cache_ttl = "5m"
+    # Auto takes the send-time route clamp (Bedrock legacy 5m) even when a fork copies a 1h tier.
+    agent._cache_ttl_auto = ttl == AUTO_CACHE_TTL
+    if ttl in ("5m", "1h"):  # a tuple: an unhashable YAML value (a list) must not raise here
+        agent._cache_ttl = ttl
+    elif ttl == AUTO_CACHE_TTL and not getattr(agent, "side_agent", False):
+        # From the session's source (delegate_tool clamps children to 5m; a side agent keeps 5m); a 1h
+        # choice starts on 5m and upgrades at the first pause over 5 minutes (prompt_cache_lifecycle.tier).
+        agent._cache_ttl = auto_start_cache_ttl(agent)
+    elif cache_ttl_means_disabled(ttl):
+        agent._use_prompt_caching = False
+        agent._use_native_cache_layout = False
+        agent._cache_ttl = None
+        agent._cache_disabled = True
 
 
 def _init_turn_state(agent, run_budget_seconds):
@@ -1056,7 +1053,10 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
             source = "Anthropic-compatible endpoint"
         else:
             source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+        from agent.prompt_caching import effective_cache_ttl
+        ttl = effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model,
+                                  base_url=agent.base_url or "", auto=agent._cache_ttl_auto)
+        print(f"💾 Prompt caching: ENABLED ({source}, {ttl} TTL)")
 
 
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,

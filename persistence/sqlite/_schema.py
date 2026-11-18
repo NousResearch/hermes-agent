@@ -335,6 +335,12 @@ def _fts_index_is_misaligned_source(cursor: sqlite3.Cursor) -> bool:
     return row is not None and "messages_fts_src" not in (row[0] or "")
 
 
+def _mark_fts_detached(holder: StoreHolder) -> None:
+    """This holder stops reading and syncing the derived FTS indexes; search answers by LIKE."""
+    holder._fts_stale = True
+    holder._fts_enabled = holder._trigram_available = False
+
+
 def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
     """Run *ddl* statement by statement, skipping each ``DROP TRIGGER IF EXISTS x`` /
     ``CREATE TRIGGER IF NOT EXISTS x …`` pair whose trigger already exists with the same body.
@@ -391,22 +397,49 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     from the view, under the shared cross-process rebuild admission. Legacy inline DBs
     skip this entirely (their index is self-contained; they still take the DDL on the
     optimize path), and so does a definition no release of this code created (a newer
-    release's, after a downgrade)."""
+    release's, after a downgrade). A realigned store carrying the retired tool-row high-water
+    marker again takes the same rebuild (an empty one only swaps the shape)."""
     if legacy or not base_index_recognised(cursor):
         return
-    stale_view = base_source_view_is_stale(cursor)
-    if not stale_view and not _fts_index_is_misaligned_source(cursor):
-        return
-    has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
+    # Only a release before FTS storage v3 writes the retired marker. Reopening a realigned store, it
+    # reinstalls id-gated triggers whose 'delete' sends FULL content for tool rows the v3 rebuild
+    # indexed as a prefix, which can leave postings with no _docsize row; the index must be rebuilt.
+    def needs_align() -> tuple[bool, bool]:
+        """``(needed, marker_only)``; read again under the lock, where a peer may already have aligned."""
+        layout_off = base_source_view_is_stale(cursor) or _fts_index_is_misaligned_source(cursor)
+        if layout_off:
+            return True, False
+        return _meta_row(cursor, "fts_tool_full_content_high_water") is not None, True
 
-    def do_align() -> None:
+    needed, _ = needs_align()
+    if not needed:
+        return
+
+    def populated() -> bool:
+        return cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
+
+    def align_locked(*, admitted: bool) -> bool:
+        """False only when, unadmitted, the store turns out to be populated under the lock."""
+        with cursor.connection:
+            cursor.execute("BEGIN IMMEDIATE")
+            needed, marker_only = needs_align()
+            if not needed:
+                return True  # a peer aligned this store while this opener waited
+            has_messages = populated()
+            if has_messages and not admitted:
+                return False
+            _align(has_messages, marker_only=marker_only, stale_view=base_source_view_is_stale(cursor))
+            return True
+
+    def _align(has_messages: bool, *, marker_only: bool, stale_view: bool) -> None:
+        started = time.monotonic()
         for name in _FTS_BASE_TRIGGERS:
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute("DROP TABLE IF EXISTS messages_fts")
         if stale_view:
             # CREATE VIEW IF NOT EXISTS never replaces a differing view; the index is rebuilt from it below.
             cursor.execute("DROP VIEW messages_fts_src")
-        _ensure_fts_schema(holder, cursor, "messages_fts", FTS_SQL)
+        _execute_ddl_script_transactional(cursor, FTS_SQL)
         if has_messages:
             cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             # The cleared markers below are shared with the trigram backfill: finish that index too, or rows
@@ -422,19 +455,18 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
                         cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
         cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
         cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
+        if marker_only and has_messages:
+            logger.warning(
+                "%s carried the tool-row high-water marker that only Hermes releases older than FTS storage v%d "
+                "write; rebuilt messages_fts from the aligned projection in %.1fs. Downgrading is unsupported.",
+                holder.db_path, FTS_STORAGE_VERSION, time.monotonic() - started)
 
-    if not has_messages:
-        # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
-        cursor.execute("SAVEPOINT fts_align_empty")
-        try:
-            do_align()
-            cursor.execute("RELEASE SAVEPOINT fts_align_empty")
-        except BaseException:
-            cursor.execute("ROLLBACK TO SAVEPOINT fts_align_empty")
-            cursor.execute("RELEASE SAVEPOINT fts_align_empty")
-            raise
-        return
-    _run_admitted_startup_rebuild(holder, cursor, do_align)
+    def align_admitted() -> None:
+        align_locked(admitted=True)
+
+    # The unlocked checks only route to admission; whether to rebuild is decided again under the lock.
+    if populated() or not align_locked(admitted=False):
+        _run_admitted_startup_rebuild(holder, cursor, align_admitted)
 
 
 def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
@@ -1439,8 +1471,7 @@ def _run_admitted_startup_rebuild(holder: StoreHolder, cursor, rebuild_fn) -> No
     )
     cursor.execute(_STALE_KEY_UPSERT_SQL, (FTS_STALE_KEY,))
     _drop_all_fts_triggers(holder, cursor)
-    holder._fts_stale = True
-    holder._fts_enabled = holder._trigram_available = False
+    _mark_fts_detached(holder)
 
 
 def _backfill_gateway_metadata_from_sessions_json(holder: StoreHolder, cursor: sqlite3.Cursor) -> None:
@@ -1638,9 +1669,7 @@ def _enter_fts_fail_open(
                 detach_exc,
             )
             return False
-    holder._fts_stale = True
-    holder._fts_enabled = False
-    holder._trigram_available = False
+    _mark_fts_detached(holder)
     logger.error(
         "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
         "retrying the canonical write. Search temporarily uses LIKE until "

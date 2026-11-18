@@ -20,6 +20,10 @@ string**, except a tool that hands the model pixels: it may return the multimoda
 accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
 private vision check.
 
+**Hosted:** after `registry_freeze.freeze_registries()` (hosted boot) registering or any MCP removal
+path raises; reconnecting keeps the boot's registrations. Details and the per-agent toggle:
+`developer-guide/multiplexing-gateway.md`.
+
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +

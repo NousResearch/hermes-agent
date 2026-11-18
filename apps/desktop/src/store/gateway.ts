@@ -104,7 +104,7 @@ interface GatewayRegistryState {
   reauthFailures: Map<string, { connectionId: string | null; error: Error }>
   // Dial failures outlive the disposable socket too: a background request lease disposes its
   // entry on failure, so history kept on the entry reset on every poll (#121865).
-  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null }>
+  dialFailures: Map<string, { at: number; streak: number; connectionId: string | null; ownerProbe?: boolean }>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
   /** Scopes whose re-activation after a connection redial has not landed yet. */
@@ -379,9 +379,8 @@ async function ridesPrimaryBackend(connectionId: null | string, profile: string)
     return false
   }
 
-  // Route kind is unknown until main finishes bring-up. Local owner routes need the
-  // pooled registry dial's budget; remote probe failures still ride the primary.
-  // Keep one probe alive rather than timing out and repeating the same dial.
+  // Local owner routes need the pooled registry dial's budget: keep one probe alive rather than
+  // timing out and repeating the same dial. Remote probe failures still ride the primary.
   try {
     const conn = await withTimeout(
       desktop.getConnectionFor({ connectionId: id, profile: key }),
@@ -796,7 +795,7 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
   entry.stalledDials = 0
 }
 
-function recordDialFailure(entry: Pick<Secondary, 'connectionId' | 'scope'>, error?: unknown): void {
+function recordDialFailure(entry: Pick<Secondary, 'connectionId' | 'scope'>, error?: unknown, ownerProbe = false): void {
   // Auth rejection has its own ledger (reauthFailures) that already fails background callers fast.
   if (error !== undefined && isGatewayReauthRequired(error)) {
     return
@@ -806,6 +805,7 @@ function recordDialFailure(entry: Pick<Secondary, 'connectionId' | 'scope'>, err
 
   g.dialFailures.set(entry.scope, {
     at: Date.now(),
+    ownerProbe,
     streak: (previous?.streak ?? 0) + 1,
     connectionId: entry.connectionId ?? null
   })
@@ -1133,23 +1133,23 @@ export async function requestGatewayForProfile<T>(
   }
 }
 
-// The owner-route probe is a dial like sharedPrimaryRoute: background callers honor the cooldown, failures feed it.
+// Background callers back off a failed LOCAL owner lookup only: a remote primary may still serve the scope.
 async function probePrimaryRider(
   connectionId: null | string,
   key: string,
   scope: string,
   spawnPriority: SpawnPriority
 ): Promise<boolean> {
-  const existing = g.secondaries.get(scope)
+  const probeFailed = $primaryGatewayRoute.get().mode === 'local' && g.dialFailures.get(scope)?.ownerProbe
 
-  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(scope)) {
+  if (spawnPriority !== 'foreground' && probeFailed && backgroundDialCoolingDown(scope)) {
     throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
   }
 
   const owner = primaryIdentity() // before the await: a stale answer must not bind to a newer primary
 
   const rides = await ridesPrimaryBackend(connectionId, key).catch((error: unknown) => {
-    recordDialFailure({ connectionId, scope }, error)
+    recordDialFailure({ connectionId, scope }, error, true)
     throw error
   })
 

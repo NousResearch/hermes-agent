@@ -140,8 +140,8 @@ for all of it is the same — an ordered ladder of candidates:
    enable a compatibility path or a disabled state; the second should retry.
 5. Retries are bounded and end in a real recovery affordance — never an infinite
    spinner or a hot loop.
-   Background owner-route probes share the dial cooldown; foreground retries bypass
-   it. Local owner bring-up gets the source-switch budget, not the shorter remote probe budget.
+   Background callers back off a failed local owner-route probe; foreground retries and
+   remote primaries bypass it. Local owner bring-up gets the source-switch budget, not the shorter remote probe budget.
 6. One resolver owns each policy so every caller gets the same answer. Scatter is
    how two call sites drift apart.
 

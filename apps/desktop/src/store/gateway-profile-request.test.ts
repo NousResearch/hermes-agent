@@ -950,6 +950,21 @@ describe('session-owner calls for a profile on the shared local host backend (#1
     }
   })
 
+  it('serves a background RPC on a newly attached remote primary despite an earlier failed secondary dial', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+    const getConnectionFor = installLocalHost(profile => ({ profile }))
+    getConnectionFor.mockRejectedValue(new Error('descriptor unavailable'))
+    await expect(requestGatewayForAgent('homelab', 'work', 'session.control.read')).rejects.toThrow()
+
+    const remote = makePrimary()
+    setPrimaryGateway(remote as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab', mode: 'remote' })
+    await requestGatewayForAgent('homelab', 'work', 'session.control.read')
+
+    expect(remote.request).toHaveBeenCalledWith('session.control.read', { profile: 'work' })
+  })
+
   it('waits for a slow pooled local owner bring-up without restarting the probe at 20 seconds', async () => {
     vi.useFakeTimers()
 

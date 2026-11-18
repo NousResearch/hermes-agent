@@ -864,7 +864,7 @@ When `secret` is empty, a random per-process signing key is generated. That's fi
 hermes dashboard password --username admin --password-stdin < /run/secrets/dashboard_password
 ```
 
-The gateway's Webapp and `hermes dashboard` / `hermes serve` all sign in with these credentials. Each reads them when it starts: restart a running one. Starting with a new password ends every earlier sign-in. Add `-p <profile>` for a named profile. See the [CLI reference](../../reference/cli-commands.md#hermes-dashboard-password) for every option.
+The gateway's Webapp and `hermes dashboard` / `hermes serve` all sign in with these credentials. Each reads them when it starts: restart a running one. Starting with a new password ends every earlier sign-in. Add `-p <profile>` for a named profile's own sign-in; it is used by that profile's `--isolated` dashboard and by a gateway the profile runs by itself, while the machine dashboard and a gateway serving several profiles use the credentials of the home they were started from. See the [CLI reference](../../reference/cli-commands.md#hermes-dashboard-password) for every option.
 
 The `/auth/password-login` endpoint is rate-limited per client IP (default 10 attempts/minute → HTTP 429) and returns a single generic `401 Invalid credentials` for both unknown users and wrong passwords, so it can't be used as a username-enumeration oracle.
 

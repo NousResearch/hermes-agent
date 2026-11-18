@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway import session_ingress, session_results, session_settlement_recovery as recovery
-from hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit, ACTOR, REF
 
 
@@ -35,7 +34,7 @@ async def test_native_waiter_only_speaks_committed_success(tmp_path, monkeypatch
         authority.native_waiters.add(receipt.admission_id)
         waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
         await authority._drain(REF)
-        assert get_session_admission(db, admission_id=receipt.admission_id)['outcome'] == outcome
+        assert authority.persistence.admissions.get(admission_id=receipt.admission_id).outcome == outcome
         assert await waiter == answer
         if outcome == 'completed':
             authority.runner._send_voice_reply.assert_awaited_once_with(event, answer)
@@ -65,12 +64,12 @@ async def test_unknown_discard_never_speaks_unproven_retained_candidate(tmp_path
     with db:
         receipt = await _submit(authority, 'voice')
         await authority._drain(REF)
-        row = get_session_admission(db, admission_id=receipt.admission_id)
-        assert row['status'] == 'unknown'
+        row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+        assert row.status == 'unknown'
         # A different captured execution with equal text must not authorize old audio.
         authority.pending_results[receipt.admission_id] = {'result': {'final_response': answer}, 'usage': {}}
         monkeypatch.setattr(session_ingress, 'deliver_response', AsyncMock(return_value=True))
-        await authority.resolve_unknown(ACTOR, REF, receipt.admission_id, row['generation'])
+        await authority.resolve_unknown(ACTOR, REF, receipt.admission_id, row.generation)
         authority.runner._send_voice_reply.assert_not_awaited()
 
 

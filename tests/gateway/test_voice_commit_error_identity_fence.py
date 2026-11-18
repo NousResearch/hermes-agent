@@ -6,7 +6,6 @@ import pytest
 
 from gateway import session_results, session_settlement_recovery as recovery
 from gateway.session_runtime_workers import mutation_tasks
-from hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
 
@@ -61,7 +60,7 @@ async def test_commit_then_error_never_speaks_unproven_streamed_candidate(
         receipt = await _submit(authority, 'voice')
         await authority._drain(REF)
         await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='media cleanup')
-        assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        assert authority.persistence.admissions.get(admission_id=receipt.admission_id).status == 'terminal'
         assert seen_routes == [route]
         authority.runner._send_voice_reply.assert_not_awaited()
         assert not getattr(event, '_voice_result_committed', False)

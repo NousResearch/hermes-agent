@@ -251,11 +251,13 @@ meaning says otherwise.
 | `supports_vision` | API accepts images inside tool-result messages | `False` |
 | `supports_vision_tool_messages` | API accepts list-type (multipart) tool message content | `True` |
 | `supports_prompt_cache_key` | Chat Completions endpoint documents `prompt_cache_key` | `False` |
+| `prompt_cache_max_ttl` | Longest prompt-cache tier the route really keeps (`"5m"`/`"1h"`); Hermes never asks for, or believes, more, and the cache clock declares the tier sent up to it (`None` leaves a `1h` ask on an Anthropic-wire gateway unproven, so it is never warmed or compacted on). Config `prompt_caching.route_ttl_ceilings` overrides it | `None` |
 | `native_reasoning_details_type` | Namespaced `<provider>.native_assistant` reasoning carrier only this profile receives | `None` |
 | `process_command` | External-process default binary | `""` |
 | `process_args` | External-process default argv tail | `()` |
 | `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
 | `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
+| `login_args` | External-process CLI's own sign-in, as an argv tail after the resolved binary; sign-in hints show it | `()` |
 | `fallback_models` | Curated picker list when the live fetch fails | `()` |
 | `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
 | `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
@@ -389,6 +391,7 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args` | Default argv tail, e.g. `("--mode", "acp")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
+| `login_args` | The CLI's own sign-in after the binary, e.g. `("auth", "login")`. Error replies, cron notices and the Desktop sign-in card show the binary plus these; empty keeps `hermes model`. Read from the declaration only, never by running the CLI |
 
 The `process_command_env_vars` and `process_args_env_var` names are executable authority: Hermes' generic env writers (dashboard, MCP and connector installs, `save_env_value`) refuse them, so set them in `.env` or the shell.
 
@@ -701,12 +704,15 @@ for p in list_providers():
 
 ## Testing your plugin
 
-Point `HERMES_HOME` at a temp directory so you don't pollute your real config:
+Point `HERMES_HOME` at a temp directory so you don't pollute your real config, then
+write `$HERMES_HOME/plugins/model-providers/my-provider/__init__.py` (an agent uses
+`write_file`, which creates the directory):
 
 ```bash
 export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
-mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
-cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
+```
+
+```python
 from providers import register_provider
 from providers.base import ProviderProfile
 register_provider(ProviderProfile(
@@ -715,8 +721,9 @@ register_provider(ProviderProfile(
     base_url="https://api.my-provider.example.com/v1",
     auth_type="api_key",
 ))
-EOF
+```
 
+```bash
 export MY_API_KEY=your-test-key
 hermes -z "hello" --provider my-provider -m some-model
 ```

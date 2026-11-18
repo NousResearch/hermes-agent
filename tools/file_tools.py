@@ -51,6 +51,7 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
+_ARCHIVE_GUTTER_CHARS = 16  # '<n>|' line-number gutter plus newline, generously
 def _get_max_read_chars() -> int:
     """Return ``file_read_max_chars`` from config.yaml (default on missing/invalid). No module
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
@@ -429,10 +430,16 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     from tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
+    from tools.tool_output_limits import get_max_line_length
+    from tools.tool_result_storage import is_pruned_archive, pageable_archive_text
     if hosted_scope() is not None:
         return None  # extraction parses the bytes in host temp files and host tools; the binary guard answers
 
-    if not is_extractable_document(str(_resolved)):
+    # A pruned tool result is archived byte-exact, so JSON output (or any one-line output) is a line the
+    # per-line cap would cut with no way to continue: page its text, long lines wrapped at the cap.
+    archived = is_pruned_archive(str(_resolved))
+    wrapped, wrap_width = False, 0
+    if not (archived or is_extractable_document(str(_resolved))):
         return None
     file_ops = _get_file_ops(task_id)
     try:
@@ -440,7 +447,14 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         if binary.error or binary.base64_content is None:
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)
-        extracted_text = extract_document_bytes(document_bytes, str(_resolved))
+        if archived:
+            # Each wrapped line, gutter included, must also fit the read budget: a line the budget cuts
+            # mid-way advances next_offset past its remainder.
+            wrap_width = max(1, min(get_max_line_length(), _get_max_read_chars() - _ARCHIVE_GUTTER_CHARS))
+            extracted_text, wrapped = pageable_archive_text(
+                document_bytes.decode("utf-8", errors="replace"), str(_resolved), wrap_width)
+        else:
+            extracted_text = extract_document_bytes(document_bytes, str(_resolved))
     except (ExtractionError, ValueError, base64.binascii.Error) as exc:
         logger.debug("document extraction failed for %s", path, exc_info=True)
         # Binary formats surface the specific failure (fallthrough would only
@@ -460,7 +474,6 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     total_lines = len(lines)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
-    from tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
@@ -469,6 +482,8 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
         "extracted_document": True}
+    if wrapped:  # the archive file itself is byte-exact; only this view splits its long lines
+        result_dict["long_lines_wrapped_at"] = wrap_width
     if result_dict["truncated"]:
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "

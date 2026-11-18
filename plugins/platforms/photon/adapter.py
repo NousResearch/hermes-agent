@@ -1465,7 +1465,7 @@ class PhotonAdapter(BasePlatformAdapter):
         lost on restart). Soft-fails (False), never raises."""
         return await self._sidecar_try("/unreact", {"spaceId": chat_id, "messageId": message_id}, "remove_reaction")
 
-    # -- Agent-facing reactions (send_message action="react"): deliberate intents, so NOT
+    # -- Agent-facing reactions: deliberate intents, so NOT
     # gated by PHOTON_REACTIONS.
 
     async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:

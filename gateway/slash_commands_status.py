@@ -79,20 +79,24 @@ def history_unreadable() -> str:
     return t("gateway.shared.history_unreadable")
 
 
-def _configured_provider() -> str:
-    """``model.provider`` from the gateway config ("" when unset)."""
-    from gateway.run import _load_gateway_config
-    user_config = _load_gateway_config()
-    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
-
-
 def _quiet_sync(call, default=None):
     """Sync twin of ``_quiet``."""
     try:
         return call()
     except Exception:
         return default
+
+
+# The session-row fields /status reads: the route fallback, the token total and the title.
+_STATUS_ROW_FIELDS = ("model", "billing_provider", "title", "input_tokens", "output_tokens", "cache_read_tokens",
+                      "cache_write_tokens", "reasoning_tokens")
+
+
+def _route_usage_row(usage) -> dict:
+    """A ``RouteUsage`` as the persisted-route dict /status and /usage read."""
+    return {"model": usage.route.model, "billing_provider": usage.route.billing_provider,
+            "billing_base_url": usage.route.billing_base_url, "billing_mode": usage.route.billing_mode,
+            "api_call_count": usage.api_call_count}
 
 
 def _status_model_route(
@@ -385,18 +389,18 @@ class GatewayStatusCommandsMixin:
         Token totals come from the SQLite session DB, not SessionStore: run_agent.py persists per-turn
         token deltas into sessions_db, never into SessionEntry (its total_tokens is always 0).
         """
-        db = self._session_db
-        if not db:
+        store = self.persistence
+        if store is None:
             return None, {}, 0, {}
-        title = await _quiet(lambda: db.get_session_title(session_id))
-        row = await _quiet(lambda: db.get_session(session_id))
-        session_row = row if isinstance(row, dict) else {}
+        title = await _quiet(lambda: store.aio.sessions.get_title(session_id))
+        row = await _quiet(lambda: store.aio.sessions.get(session_id))
+        session_row = {field: getattr(row, field) for field in _STATUS_ROW_FIELDS} if row is not None else {}
         db_total_tokens = sum(
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
-        return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
+        route = await _quiet(lambda: store.aio.usage.recent_route(session_id))
+        return title, session_row, db_total_tokens, _route_usage_row(route) if route is not None else {}
 
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:
@@ -466,9 +470,9 @@ class GatewayStatusCommandsMixin:
         context_length = _n(ctx, "context_length")
         suffix = agent_context_suffix(agent) if context_length else ""
         model_name = _clean_str(getattr(agent, "model", "")) if agent is not None else ""
-        if not model_name and self._session_db:
-            row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
-            model_name = _clean_str(row.get("model", "")) if isinstance(row, dict) else ""
+        if not model_name and (store := self.persistence) is not None:
+            row = await _quiet(lambda: store.aio.sessions.get(session_entry.session_id))
+            model_name = _clean_str(row.model or "") if row is not None else ""
         if not context_length:
             resolved = await self._resolve_route_context(source, model_name)
             if resolved is not None:
@@ -553,7 +557,7 @@ class GatewayStatusCommandsMixin:
     async def _handle_topup_command(self, event: MessageEvent) -> str:
         """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
         or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
+        from agent.account_usage_nous import build_credits_view
         view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
@@ -641,13 +645,16 @@ class GatewayStatusCommandsMixin:
         provider, base_url, api_key = (
             getattr(agent, k, None) if agent else None for k in ("provider", "base_url", "api_key")
         )
-        if not provider and getattr(self, "_session_db", None) is not None:
+        if not provider and getattr(self, "persistence", None) is not None:
             provider, base_url = await self._persisted_billing_route(source)
         if not provider:
-            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
-            # fall back to the configured provider, as /status does, so account limits such as
-            # Codex subscription windows still render from on-disk credentials (#15167).
-            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
+            # Fresh or evicted session with no persisted route (e.g. /usage right after login): the
+            # route its first turn resolves (``provider: auto`` is the saved login), so account limits
+            # such as Codex subscription windows render from on-disk credentials (#15167).
+            _model, route = await _quiet(lambda: asyncio.to_thread(
+                self._resolve_session_agent_runtime, source=source, session_key=session_key, fallback=False,
+            ), (None, {}))
+            provider, base_url, api_key = (route.get(k) or None for k in ("provider", "base_url", "api_key"))
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -666,15 +673,14 @@ class GatewayStatusCommandsMixin:
             render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
         )
 
-        # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
-        # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
-        # a balance. Fail-open: never break /usage.
-        from agent.account_usage import nous_credits_lines
+        # The Nous section (shared with CLI/TUI) after the provider's block, whenever Nous is signed in;
+        # its top-up lines only on a Nous route. Fail-open: never break /usage.
+        from agent.account_usage_nous import nous_usage_lines
+        from agent.billing_links import is_nous_inference_route
         credits_state = getattr(agent, "_credits_state", None) if agent else None
-        credits_lines = await _quiet(
-            lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
-            [],
-        )
+        nous_route = is_nous_inference_route(provider or "", base_url or "")
+        credits_lines = await _quiet(lambda: asyncio.to_thread(
+            nous_usage_lines, nous_route=nous_route, markdown=True, credits_state=credits_state), [])
         # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
         from agent.plan_limits import portal_wording
         credits_lines = [portal_wording(line) for line in credits_lines]
@@ -718,12 +724,12 @@ class GatewayStatusCommandsMixin:
         """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
-            persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_recent_session_model_route(entry.session_id)
-            return persisted, route if isinstance(route, dict) else {}
-        persisted, recent = await _quiet(_rows, ({}, {}))
-        row = recent if recent.get("billing_provider") else persisted
-        return row.get("billing_provider"), row.get("billing_base_url")
+            store = self.persistence
+            return await store.aio.sessions.get(entry.session_id), await store.aio.usage.recent_route(entry.session_id)
+        persisted, recent = await _quiet(_rows, (None, None))
+        if recent is not None and recent.route.billing_provider:
+            return recent.route.billing_provider, recent.route.billing_base_url
+        return (persisted.billing_provider, persisted.billing_base_url) if persisted is not None else (None, None)
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""
@@ -746,19 +752,18 @@ class GatewayStatusCommandsMixin:
                 days = int(flag) if flag.isdigit() else days
                 i += 1
         try:
-            from hermes_state_registry import acquire
             from agent.insights import InsightsEngine
 
             def _run_insights():
-                db = acquire()
+                from persistence_assembly import open_persistence, profile_scope
+                store = open_persistence(profile_scope(), eager=True)
                 try:
-                    engine = InsightsEngine(db)
+                    engine = InsightsEngine(store, persistence=store)
                     return engine.format_gateway(engine.generate(days=days, source=source))
                 finally:
-                    from hermes_state_registry import release_or_close
-                    release_or_close(db)
+                    store.close()
 
-            # Not a bare hop: ``SessionDB()`` resolves ``get_hermes_home()`` at call time, a
+            # Not a bare hop: ``profile_scope()`` resolves ``get_hermes_home()`` at call time, a
             # contextvar set by ``_profile_runtime_scope``; a default-executor hop starts with an
             # EMPTY context and would read the DEFAULT profile's state.db.
             return await self._run_in_executor_with_context(_run_insights)

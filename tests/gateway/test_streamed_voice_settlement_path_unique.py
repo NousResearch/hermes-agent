@@ -9,7 +9,6 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_results import execution_result
-from hermes_state_runtime import get_session_admission
 from tests.gateway.test_auto_voice_reply_format import _make_adapter, _make_runner
 from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit, REF
 
@@ -36,8 +35,8 @@ async def test_streamed_completion_delivers_voice_after_commit_without_resending
     sent = []
     adapter._send_final_text = AsyncMock(side_effect=lambda *a, **k: sent.append('text'))
     async def voice(event, response):
-        row = get_session_admission(db, admission_id=receipt.admission_id)
-        assert (row['status'], row['outcome']) == ('terminal', 'completed')
+        row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+        assert (row.status, row.outcome) == ('terminal', 'completed')
         sent.append(('voice', response))
     runner._send_voice_reply = voice
     async def handle(event):
@@ -84,8 +83,8 @@ async def test_queued_terminal_result_speaks_only_after_commit(tmp_path, monkeyp
     monkeypatch.setattr(ingress, 'deliver_response', AsyncMock(return_value=True))
     sent = []
     async def voice(event, response):
-        row = get_session_admission(db, admission_id=receipt.admission_id)
-        assert (row['status'], row['outcome']) == ('terminal', 'completed')
+        row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+        assert (row.status, row.outcome) == ('terminal', 'completed')
         sent.append(response)
     runner._send_voice_reply = voice
     async def handle(event):

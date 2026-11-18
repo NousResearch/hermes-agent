@@ -193,6 +193,20 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+def _local_claims(target: str, roster: list[str], root: Path) -> set[str]:
+    """Every local folder id ``target`` could name: its exact folder id, or every bot whose
+    friendly name forms match. Unlike ``_resolve_local_name`` an ambiguous friendly name still
+    counts, so two bots titled like a peer cannot hand the bare name to the peer route."""
+    exact = _resolve_local_name(target, roster)  # no root: folder ids only, so aliases are read once
+    if exact is not None:
+        return {exact}
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    want = target.strip().lower()
+    aliases = local_alias_map(root)
+    return set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+
+
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
@@ -312,6 +326,19 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         peer_name, peer_profile = peer_match.groups() if peer_match else (raw_target.lower(), None)
         if peer_name not in peers:
             return sender.roster_err(f"No registered peer named '{peer_name}'.")
+        # A bare name that also resolves to a local teammate is ambiguous (#145241): the peer
+        # route crosses an identity/privacy boundary, so neither side may take it silently.
+        # Refuse and name both routes — 'peer/<agent>' still reaches the peer, a friendly
+        # name / @-slug still reaches the local bot. A name that only matches the caller's
+        # own profile stays peer-bound: local delivery to yourself is refused anyway.
+        claims = _local_claims(raw_target, roster, root) - {me} if peer_match is None else set()
+        if claims:
+            # A friendly-name claim is reachable by its folder handle; an exact folder id only by a friendly name.
+            handles = sorted(h for h in (_handle(n, roster) for n in claims) if h.lower() not in peers)
+            local = " or ".join(f"@{h}" for h in handles) if handles else "a friendly name of the local bot that no peer uses"
+            return sender.roster_err(
+                f"'{raw_target}' is ambiguous: it names both a local profile and a registered peer. "
+                f"Use '{peer_name}/<agent>' for the peer, or {local} to reach it on this install.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
@@ -910,11 +937,12 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
     the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
+    from persistence.conversation.messages import NewMessage
     from tools.process_registry import process_registry
 
-    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    persistence, session_id = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
     proc = process_registry.get(proc_id)
-    if proc is None or not session_id or not callable(getattr(db, "append_message", None)):
+    if proc is None or not session_id or persistence is None:
         return False
 
     def _run() -> None:
@@ -927,9 +955,9 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
             return
         evt = {"type": "completion", "session_id": proc_id, **process_registry._exit_snapshot(proc, "exited")}
         try:
-            db.append_message(session_id, "user", content=format_process_notification(evt),
-                              display_kind="process_complete",
-                              display_metadata={"display_text": process_completion_display_text([evt])})
+            persistence.messages.append(session_id, NewMessage(
+                role="user", content=format_process_notification(evt), display_kind="process_complete",
+                display_metadata={"display_text": process_completion_display_text([evt])}))
         except Exception as exc:
             logger.warning("message_agent: could not persist the reply of %s into session %s: %s",
                            proc_id, session_id, exc)
@@ -1007,11 +1035,11 @@ def _delivery_main(args: list[str]) -> int:
 
 
 def _agent_home(agent: Any) -> str:
-    """The calling agent's OWN home (session-db derived), not ambient env."""
+    """The calling agent's OWN home (its store's profile), not ambient env."""
     with contextlib.suppress(Exception):
-        db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
-        if db_path:
-            return str(Path(db_path).parent)
+        persistence = getattr(agent, "persistence", None)
+        if persistence is not None:
+            return str(persistence.scope.profile_dir)
     return _default_home()
 
 
@@ -1020,17 +1048,27 @@ def _session_title(agent: Any) -> str:
     if title:
         return title
     with contextlib.suppress(Exception):
-        sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
-        if sdb and sid:
-            return str(sdb.get_session_title(sid) or "").strip()
+        from agent.runtime_session_store import RuntimeSessionStore
+
+        persistence, sid = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
+        worker_store = getattr(agent, "_session_db", None)
+        if persistence is not None and sid:
+            return str(persistence.sessions.get_title(sid) or "").strip()
+        if isinstance(worker_store, RuntimeSessionStore) and sid:  # a managed worker reads its owner's row
+            return str(worker_store.get_session_title(sid) or "").strip()
     return ""
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
-    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is this file's
+    # folder, where a subfolder named like an installed package would be imported in its place:
+    # the checkout root takes that entry.
+    _script_dir = Path(__file__).resolve().parent
+    if Path(sys.path[0]).resolve() == _script_dir:
+        del sys.path[0]
+    sys.path.insert(0, str(_script_dir.parent))
     # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:

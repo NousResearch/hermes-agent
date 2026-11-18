@@ -20,7 +20,6 @@ def test_dispatch_captures_voice_from_bound_turn_not_process_environment():
 
 
 def test_real_dispatch_persists_bound_origin(monkeypatch):
-    import json
     import threading
     from tools import async_delegation as ad
 
@@ -40,10 +39,13 @@ def test_real_dispatch_persists_bound_origin(monkeypatch):
             session_key="route", runner=runner,
         )
         assert handle["status"] == "dispatched"
-        with ad._DB_LOCK, ad._transaction() as conn:
-            row = conn.execute("SELECT task_json FROM async_delegations WHERE delegation_id=?",
-                               (handle["delegation_id"],)).fetchone()
-        assert json.loads(row[0])["origin_message_type"] == "voice"
+        with ad._ledger_reader() as store:
+            rows = store.coordination.list_inflight_delegations()
+            row = next(row for row in rows if row.delegation_id == handle["delegation_id"])
+            assert row.task["origin_message_type"] == "voice"
+            recoveries, _ = ad._recoveries(store.coordination, lambda *_: False, {})
+        recovery = next(r for r in recoveries if r.delegation_id == handle["delegation_id"])
+        assert recovery.event["origin_message_type"] == "voice"
     finally:
         release.set()
         finished.wait(5)

@@ -214,7 +214,34 @@ class SystemHost:
 
     def backends(self):
         from hermes_cli.gateway_migrate_backends import collect_backends
-        return collect_backends()
+        items = collect_backends()
+        self._mark_respawned_backend(items)
+        return items
+
+    def _mark_respawned_backend(self, items) -> None:
+        """The hand-started backend a rollback or --restore started again is this home's, hand-started.
+
+        It was started in a new session by a process that has exited, so on macOS its parent is launchd
+        (ppid 1) and the scan cannot name a supervisor ("unknown", which --apply refuses with exit 6).
+        Only the process whose pid *and* start time match the manifest's recorded replacement is renamed,
+        only when the manifest records this home (a ``profile create --clone-all`` copy names its source),
+        and never one the scan found serving another home."""
+        from hermes_cli.gateway_migrate_backends_apply import read_manifest
+        try:
+            m = read_manifest(self.home) or {}
+        except Exception:  # an unreadable manifest is reported by the engine itself
+            logger.debug("manifest unreadable while marking a respawned backend", exc_info=True)
+            return
+        again = m.get("old_backend_respawned") or {}
+        if not again.get("pid") or again.get("start_time") is None or not m.get("home"):
+            return
+        if not self.same_home(m["home"]):
+            return
+        for item in items:
+            if (item.supervisor == "unknown" and item.this_home is not False and item.pid == again["pid"]
+                    and self.start_time(item.pid) == again["start_time"]):
+                item.supervisor = "manual"
+                item.this_home = True
 
     def os_family(self) -> str:
         from hermes_platform.host.facts import os_family

@@ -273,3 +273,54 @@ def test_the_working_directory_is_read_without_proc(tmp_path, monkeypatch):
     monkeypatch.setattr(psutil.Process, "cwd", lambda self: "/Users/u/.hermes/hermes-agent")
 
     assert SystemHost(tmp_path).process_cwd(os.getpid()) == "/Users/u/.hermes/hermes-agent"
+
+
+
+def test_the_backend_a_rollback_started_again_is_hand_started_for_this_home(tmp_path, monkeypatch):
+    """macOS: the respawned backend's parent is launchd (ppid 1), which the scan reports as "unknown"."""
+    import json
+
+    from hermes_cli import gateway_migrate_backends as scan
+    from hermes_cli.gateway_migrate_backends import BackendItem
+
+    items = [BackendItem(supervisor="unknown", running=True, pid=5001, argv=["hermes", "dashboard"]),
+             BackendItem(supervisor="unknown", running=True, pid=5002, argv=["hermes", "dashboard"])]
+    monkeypatch.setattr(scan, "collect_backends", lambda: items)
+    (tmp_path / "backend_migration.json").write_text(json.dumps({
+        "version": 1, "state": "rolled_back", "steps": [], "old_backend": {}, "gateway": {}, "backups": {},
+        "dial": {}, "home": str(tmp_path), "old_backend_respawned": {"pid": 5001, "start_time": 6001}}),
+        encoding="utf-8")
+    host = SystemHost(tmp_path)
+    monkeypatch.setattr(host, "start_time", lambda pid: 1000 + pid)
+
+    found = host.backends()
+
+    assert [(i.pid, i.supervisor, i.this_home) for i in found] == [(5001, "manual", True), (5002, "unknown", None)]
+
+
+@pytest.mark.parametrize("case", ["cloned-manifest", "scan-says-another-home"])
+def test_a_respawned_backend_is_never_claimed_for_another_home(tmp_path, monkeypatch, case):
+    """`hermes profile create --clone-all` copies backend_migration.json: the clone must not claim (and so
+    later stop) the source profile's backend; and a backend the scan placed in another home stays there."""
+    import json
+
+    from hermes_cli import gateway_migrate_backends as scan
+    from hermes_cli.gateway_migrate_backends import BackendItem
+
+    source, clone = tmp_path / "source", tmp_path / "profiles" / "clone"
+    source.mkdir()
+    clone.mkdir(parents=True)
+    home = clone if case == "cloned-manifest" else source
+    item = BackendItem(supervisor="unknown", running=True, pid=5001, argv=["hermes", "dashboard"],
+                       this_home=None if case == "cloned-manifest" else False)
+    monkeypatch.setattr(scan, "collect_backends", lambda: [item])
+    (home / "backend_migration.json").write_text(json.dumps({
+        "version": 1, "state": "restored", "steps": [], "old_backend": {}, "gateway": {}, "backups": {},
+        "dial": {}, "home": str(source), "old_backend_respawned": {"pid": 5001, "start_time": 6001}}),
+        encoding="utf-8")
+    host = SystemHost(home)
+    monkeypatch.setattr(host, "start_time", lambda pid: 1000 + pid)
+
+    (found,) = host.backends()
+
+    assert found.supervisor == "unknown" and found.this_home is not True

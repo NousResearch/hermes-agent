@@ -201,6 +201,12 @@ class HostedRoomLogMixin:
         claims = [row for row in room_events(tables, room_id) if row["kind"] == "authority.claimed" and row["authority_epoch"] == epoch]
         return {**room_from_row(room), **({"authority_claim": event_from_row(claims[-1])} if claims else {})}
 
+    def has_user_message_after(self, *, placement: HostedPlacement, room_id: str, seq: int) -> bool:
+        room = room_row(read_tables(self._store, placement), room_id, include_disbanded=False)
+        if seq >= room["next_seq"]:
+            raise HostedRoomError("since_seq is ahead of the hosted room log")
+        return room.get("last_user_seq", 0) > seq
+
     def read_events(self, *, placement: HostedPlacement, room_id: str, since_seq: int = 0, limit: int = 100, include_disbanded: bool = False) -> Mapping[str, JsonValue]:
         tables = read_tables(self._store, placement)
         room = room_row(tables, room_id, include_disbanded=include_disbanded)

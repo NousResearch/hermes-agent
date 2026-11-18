@@ -116,10 +116,7 @@ def test_stop_clears_stalled_preparation_and_later_send_still_works(
         name="Renamed",
     )
     send("second")
-    # The newer message is on the second page after the old fence.
-    with monkeypatch.context() as patch:
-        patch.setattr(hosted_rooms, "MAX_LOG_LIMIT", 1)
-        assert call("groups.stop", cancel_id="stop-first") == {"cancelled": 0}
+    assert call("groups.stop", cancel_id="stop-first") == {"cancelled": 0}
     assert call("groups.state")["driver_status"]["pending_actions"]
     assert call("groups.stop", cancel_id="stop-second") == {"cancelled": 0}
     service.local_profiles = lambda: ("default", "ops")
@@ -180,3 +177,30 @@ def test_retry_identifies_failed_preparation_on_both_routes(
     else:
         error = call("groups.retry", expect_error=True, **params)
     assert error.get("data", {}).get("reason") == "prepare_failed", error
+
+
+def test_replay_checks_for_new_work_without_reading_event_pages(tmp_path, monkeypatch):
+    service, call, send = stalled_service(tmp_path, monkeypatch)
+    call("groups.stop", cancel_id="original")
+    for i in range(3):
+        hosted_rooms.rename_room(
+            service.store,
+            placement="profile",
+            room_id="stalled",
+            event_id=f"rename-{i}",
+            name=f"Name {i}",
+        )
+    send("second")
+    pages = []
+    read = hosted_rooms.read_events
+
+    def count_pages(*args, **kwargs):
+        page = read(*args, **kwargs)
+        pages.append(page["cursor"])
+        return page
+
+    monkeypatch.setattr(hosted_rooms, "MAX_LOG_LIMIT", 1)
+    monkeypatch.setattr(hosted_rooms, "read_events", count_pages)
+    assert call("groups.stop", cancel_id="original") == {"cancelled": 0}
+    assert pages == []
+    assert call("groups.state")["driver_status"]["pending_actions"]

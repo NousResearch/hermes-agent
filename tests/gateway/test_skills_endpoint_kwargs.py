@@ -12,7 +12,7 @@ def test_find_all_skills_signature_has_no_editorial_kwarg():
 
 
 def test_skills_handler_calls_with_supported_kwargs_only():
-    import gateway.platforms.api_server as api_server
+    from gateway.platforms import api_server
     source = inspect.getsource(api_server.APIServerAdapter._handle_skills)
     assert "include_editorial" not in source
     assert "find_all_skills(skip_disabled=False)" in source

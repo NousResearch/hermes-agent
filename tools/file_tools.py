@@ -1155,8 +1155,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         # The path-grouped text block saves the model tokens; a cell wants the match dicts, always
         # present for a content search (an empty list when nothing matched) so code can iterate them.
         result_dict = result.to_dict(densify=not is_programmatic_read())
-        if is_programmatic_read() and target == "content" and output_mode == "content" and not result_dict.get("error"):
-            result_dict.setdefault("matches", [])
+        if is_programmatic_read() and not result_dict.get("error"):
+            if target == "files":
+                result_dict.setdefault("files", [])
+            elif target == "content" and output_mode == "content":
+                result_dict.setdefault("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (

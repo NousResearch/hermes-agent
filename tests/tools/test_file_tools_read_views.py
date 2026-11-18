@@ -50,6 +50,22 @@ def test_a_tail_follows_a_log_that_rotates_between_the_count_and_the_read(tmp_pa
     monkeypatch.setattr(ShellFileOperations, "read_file", rotating_read)
     assert _model("rotate", "read_file", path=str(log), offset=-1)["content"] == "1|new"
 
+    # A log that changes again during the one retry is reported, never served as a stale tail.
+    reset_file_dedup("grow")
+    log.write_text("a\nb\nc\n", encoding="utf-8")
+    calls.clear()
+
+    def growing_read(self, path, offset=1, limit=2000):
+        calls.append(offset)
+        if len(calls) in (2, 3):  # one line appended after the count probe and again after the read
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"grow{len(calls)}\n")
+        return real_read(self, path, offset, limit)
+
+    monkeypatch.setattr(ShellFileOperations, "read_file", growing_read)
+    grown = _model("grow", "read_file", path=str(log), offset=-1)
+    assert "File changed during tail read" in grown["error"] and len(calls) == 3
+
 
 def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path):
     reset_file_dedup("ls")
@@ -96,3 +112,4 @@ def test_cell_reads_and_searches_come_back_ready_to_use(tmp_path, monkeypatch):
     assert {"path": str(src), "line": 8, "content": "value_7 = 7"} in many["matches"]
     assert len(many["matches"]) == 11 and "matches_text" not in many
     assert _cell("cell-shape", "search_files", pattern="no_such_symbol", path=str(tmp_path))["matches"] == []
+    assert _cell("cell-shape", "search_files", pattern="*.absent", target="files", path=str(tmp_path))["files"] == []

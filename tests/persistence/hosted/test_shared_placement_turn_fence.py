@@ -13,7 +13,7 @@ import persistence_assembly as pa
 from agent.runtime_scope import bind_turn, claim_fence
 from persistence import SessionId, TurnFenceSuperseded
 from persistence.conversation.sessions import NewSession
-from tests.hosted_persistence.test_local_store_execution_paths import _create, _shared_ids
+from tests.persistence.hosted.test_local_store_execution_paths import _create, _shared_ids
 
 
 def _claimed(handle, session):

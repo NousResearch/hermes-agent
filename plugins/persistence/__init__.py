@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Optional
 
 from plugins import plugin_loader as _loader
 
@@ -30,12 +30,6 @@ ENTRY_POINTS_GROUP = "hermes_agent.persistence"
 _PERSISTENCE_PLUGINS_DIR = Path(__file__).parent
 
 BackendFactory = Callable[..., Any]
-
-
-def _sqlite_factory(stores: Mapping[str, Path], *, read_only: bool, read_patience_s: Optional[float]) -> Any:
-    from persistence.sqlite import SQLiteBackend
-
-    return SQLiteBackend(stores, read_only=read_only, read_patience_s=read_patience_s)
 
 
 def _bundled_dir(name: str) -> Optional[Path]:
@@ -94,11 +88,12 @@ def _load_bundled(name: str, plugin_dir: Path) -> Any:
 
 
 def backend_factory(name: str) -> BackendFactory:
-    """The backend factory of the provider ``name``; ``ValueError`` naming it when it is unknown, provided twice, or
-    fails to load."""
+    """The backend factory of the plugin provider ``name``; ``ValueError`` naming it when it is the built-in (which
+    ``persistence_assembly`` constructs itself, as the storage layer's owner), unknown, provided twice, or fails to
+    load."""
     resolve(name)
     if name == BUILTIN_PROVIDER:
-        return _sqlite_factory
+        raise ValueError(f"persistence provider {name!r} is built in: persistence_assembly constructs it, not a plugin")
     plugin_dir = _bundled_dir(name)
     try:
         plugin = _load_bundled(name, plugin_dir) if plugin_dir else _entry_points(name)[0].load()

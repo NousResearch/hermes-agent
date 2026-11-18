@@ -142,8 +142,8 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _queue_usage
-        _queue_usage(agent, **counts())
+        from agent.turn_usage import queue_usage
+        queue_usage(agent, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
@@ -216,8 +216,8 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # The app-server builds its own requests (cache options included), so Hermes cannot know the
     # window: an explicit unknown keeps an older window from outliving this cache activity.
     from agent.prompt_cache_clock import record_unobserved_cache_response
-    from agent.turn_usage import _cache_clock_column
-    clock = _cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
+    from agent.turn_usage import cache_clock_column
+    clock = cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields, **clock,

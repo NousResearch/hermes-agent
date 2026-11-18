@@ -46,7 +46,7 @@ from ._store.messages import (
 from ._store.messages_sql import _parse_tool_calls
 from ._store.prune_rewrite import rewrite_pruned_rows, rewritten_held_row_ids
 from ._store.rewind import plan_user_turn_rewind, retain_refused_turn_for_display, rewind_user_turn
-from ._store.rules import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
+from ._store.rules import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE, SPILLOVER_SQL_FILTER
 from ._store.search import get_anchored_view
 from ._store.todo import get_latest_todo_result
 from ._store.transcript_repair import _active_logical_message_row, transcript_row_snapshot
@@ -741,8 +741,7 @@ class SQLiteMessageRepository:
         with _refusals(holder):
             with holder._read_ctx() as conn:
                 rows = conn.execute(
-                    "SELECT content, api_content FROM messages WHERE "
-                    "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0) LIMIT 20001"
+                    f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
                 ).fetchall()
         return tuple((content, api_content) for content, api_content in rows)
 

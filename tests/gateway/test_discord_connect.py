@@ -236,6 +236,8 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
     first_bot = created[0]
     assert first_bot._closed is False, "first bot should still be open after connect()"
 
+    adapter._app_info = object()  # an application_info() result for first_bot
+
     # Second connect WITHOUT disconnect — simulates an in-process reconnect.
     # Without the fix, first_bot would remain open (zombie), and both would
     # receive every Discord event, causing double responses.
@@ -250,8 +252,11 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
     )
     assert second_bot._closed is False, "second bot should still be open"
     assert adapter._client is second_bot
+    assert adapter._app_info is None, "the old client's app info must not outlive it"
 
+    adapter._app_info = object()
     await adapter.disconnect()
+    assert adapter._app_info is None
 
 
 @pytest.mark.asyncio

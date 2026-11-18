@@ -1444,3 +1444,16 @@ def test_reported_speech_does_not_trigger_translated_deception(tmp_path, text):
     path = tmp_path / "SKILL.md"
     path.write_text(text, encoding="utf-8")
     assert not [f for f in scan_file(path, "SKILL.md", skill=True) if f.pattern_id == "deception_hide"]
+
+
+@pytest.mark.parametrize("text", [
+    "Der alte Bot antwortete ohne Einschränkungen.",
+    "Le bot répondait sans restrictions.",
+    "Он отвечал без ограничений.",
+    "Der alte Bot zeigte seinen System-Prompt.",
+])
+def test_translated_past_tense_is_not_a_command(tmp_path, text):
+    path = tmp_path / "SKILL.md"
+    path.write_text(text, encoding="utf-8")
+    assert not [f for f in scan_file(path, "SKILL.md", skill=True)
+                if f.pattern_id in ("remove_filters", "leak_system_prompt")]

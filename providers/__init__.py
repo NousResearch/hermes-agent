@@ -49,6 +49,8 @@ from typing import Any
 
 from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
+from registry_freeze import check_at_freeze, refuse_if_frozen, seal_at_freeze
+from registry_sealed import seal, seal_instance
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +155,10 @@ def register_provider(profile: ProviderProfile) -> None:
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
     collect = _COLLECT.get()
-    if collect is not None:
+    if collect is not None:  # a private catalog read (``bundled_profiles``), not a registration
         collect.append(profile)
         return
+    refuse_if_frozen("provider registry")
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return
@@ -173,6 +176,24 @@ def register_provider(profile: ProviderProfile) -> None:
         _PROVIDER_LIST_CACHE = None
     if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
         _sync_auth_registry()
+
+
+def _seal_registered() -> None:
+    """At the hosted freeze: every registered profile (process-wide and each home's layer) is sealed
+    in place, its nested containers detached from the ones the plugin passed, and the process-wide
+    maps become read-only, so a profile a lookup returned cannot change what other tenants see."""
+    global _REGISTRY, _ALIASES, _SOURCES
+    with _HOME_LAYERS_LOCK:
+        layers = list(_HOME_LAYERS.values())
+    for profile in [*_REGISTRY.values(), *(p for layer in layers for p in layer.registry.values())]:
+        seal_instance(profile)
+    _REGISTRY, _ALIASES, _SOURCES = seal(_REGISTRY), seal(_ALIASES), seal(_SOURCES)
+
+
+seal_at_freeze(_seal_registered)
+# Discovery is lazy (first lookup): run after the freeze, every bundled registration is refused
+# and the catalog stays empty for the process, so the freeze refuses until it has run.
+check_at_freeze(lambda: [] if _discovered and not _discovering else ["provider discovery"])
 
 
 def provider_source(name: str) -> str | None:

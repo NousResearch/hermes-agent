@@ -4229,7 +4229,7 @@ export interface ReloadMcpResult {
   unavailable?: string[] | null
   session_servers?: string[] | null
 }
-export type ReloadMcpStatus = 'confirm_required' | 'reloaded'
+export type ReloadMcpStatus = 'confirm_required' | 'reloaded' | 'restart_required'
 export type ReloadMcpSession = 'applied' | 'unchanged' | 'busy'
 /** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 export interface SkillsManageParams {
@@ -4580,6 +4580,10 @@ export interface PluginsManageResult {
   scan_findings?: PluginScanFinding[] | null
   error?: string | null
   written?: string[] | null
+  saved?: boolean | null
+  activated?: boolean | null
+  restart_required_servers?: string[] | null
+  message?: string | null
   onboarding?: OnboardingCatalogPlugin[] | null
   presence?: CatalogPluginPresence[] | null
   agent?: boolean | null

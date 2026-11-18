@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
+from registry_freeze import registries_frozen
 from plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
@@ -619,7 +620,10 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:
-    """Remove tracked skills that no longer belong to the active provider."""
+    """Remove tracked skills that no longer belong to the active provider. Not after the hosted boot froze
+    the registries: the plugin registry is fixed then, and pruning would be a registry change."""
+    if registries_frozen():
+        return
     if active_provider is None:
         active_provider = _get_active_memory_provider()
 

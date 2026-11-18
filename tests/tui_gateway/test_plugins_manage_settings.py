@@ -99,3 +99,35 @@ def test_portable_plugin_json_schema_lists_and_saves_like_a_native_one(plugins_h
     assert load_config_readonly()["plugins"]["entries"]["portable-demo"]["settings"] == {"show_chip": False}
     assert sent == [("plugin.portable-demo.settings.changed", {"written": ["show_chip"]})]
     assert _manage(action="settings", key="portable-demo", values={"api_key": "leak"})["error"]["code"] == 4021
+
+
+def test_frozen_save_is_saved_not_activated_and_starts_no_restart(plugins_home, monkeypatch):
+    """After the hosted boot froze the registries a save whose MCP launch inputs changed is written
+    but cannot reconnect the server: the reply says so, and no restart thread is launched to fail."""
+    import registry_freeze
+    monkeypatch.setattr(registry_freeze, "_frozen", False)
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda name, payload: None)
+    (plugins_home / "plugins" / "portable-demo").mkdir()
+    (plugins_home / "plugins" / "portable-demo" / "plugin.json").write_text(PORTABLE_MANIFEST, encoding="utf-8")
+    monkeypatch.setattr(server, "_portable_server_names", lambda plugin_dir, key: {"demo"})
+    from tools import mcp_tool_discovery as discovery
+    monkeypatch.setattr(discovery, "mcp_servers_with_new_inputs", lambda names: sorted(names))
+    launched = []
+    monkeypatch.setattr(discovery, "restart_mcp_servers_with_new_inputs", lambda names: launched.append(names))
+    _manage(action="list")  # the hosted boot discovers plugins before it freezes
+    monkeypatch.setattr(registry_freeze, "_frozen", True)  # its bundled platforms stay deferred here
+
+    resp = _manage(action="settings", key="portable-demo", values={"show_chip": False})
+    assert "result" in resp, resp
+    result = resp["result"]
+    assert result["ok"] is True and result["saved"] is True and result["activated"] is False, result
+    assert result["restart_required"] is True and result["restart_required_servers"] == ["demo"], result
+    assert "restart required: registries are frozen" in result["message"], result
+    assert launched == []
+    from hermes_cli.config import load_config_readonly
+    assert load_config_readonly()["plugins"]["entries"]["portable-demo"]["settings"] == {"show_chip": False}
+
+
+def test_unfrozen_save_is_activated(plugins_home):
+    result = _manage(action="settings", key="demo-plugin", values={"retries": 5})["result"]
+    assert result["saved"] is True and result["activated"] is True and result["restart_required"] is False

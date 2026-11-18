@@ -14,7 +14,7 @@ import logging
 from agent.redact import redact_for_egress, redact_sensitive_text
 
 logger = logging.getLogger(__name__)
-_WARNED: set[str] = set()
+_WARNED: set[str] = set()  # health: allow HX018 -- warn-once dedupe of an invalid policy value: log volume only, never read back into a turn
 
 
 def chat_keeps_phone_numbers() -> bool:

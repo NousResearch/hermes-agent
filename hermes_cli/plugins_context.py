@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_ctx_guards import refuse_registrars_after_freeze
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginRegistration
@@ -22,6 +23,7 @@ from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
 from hermes_cli.plugins_state import PluginState
+from registry_freeze import refuse_if_frozen
 
 if TYPE_CHECKING:
     from hermes_cli.plugins import PluginManager
@@ -772,6 +774,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         valid: set[str],
     ) -> PluginRegistration:
         """Append ``callback`` under ``key`` (warning on unknown ``key``) and lease its removal."""
+        refuse_if_frozen("plugin registry")  # the mapping is written before the ledger would refuse
         if key not in valid:
             _facade().logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
                                      key, ", ".join(sorted(valid)))
@@ -887,6 +890,8 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         return register_scoped_provider(self, "register_delegation_provider", provider)
 
 
-# Every mutating entry point plugins reach through ``ctx`` during register(), mixins included.
+# Every mutating entry point plugins reach through ``ctx``, mixins included: a load that timed out is
+# ignored, and a frozen registry refuses (outermost, so it refuses before anything else runs).
 ignore_registrars_after_abandoned_load(PluginContext)
+refuse_registrars_after_freeze(PluginContext)
 

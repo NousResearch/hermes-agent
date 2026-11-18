@@ -387,7 +387,8 @@ async def host_header_middleware(request: Request, call_next):
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
+        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset()),
+        bool(getattr(app.state, "loopback_companion", None)),
     ):
         return JSONResponse(
             status_code=400,

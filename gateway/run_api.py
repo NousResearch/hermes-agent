@@ -44,6 +44,16 @@ class GatewayAPIHandle:
     task: asyncio.Task
     app: Any
     socket: socket.socket
+    #: A specific-address Webapp bind's loopback socket on the same port (``loopback_companion``).
+    companion: socket.socket | None = None
+
+
+class ListenerAddressError(OSError):
+    """A listener address could not be bound; ``address`` is the ``host:port`` it tried."""
+
+    def __init__(self, address: str, cause: OSError):
+        super().__init__(cause.errno, cause.strerror or str(cause))
+        self.address = address
 
 
 class GatewayDashboardMount:
@@ -99,6 +109,7 @@ class GatewayDashboardMount:
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host
         web.app.state.bound_port = self._state.bound_port
+        web.app.state.loopback_companion = getattr(self._state, "loopback_companion", None)
         if webapp is not None:
             # The browser-hosted Desktop: its bundle at /, its routes (launch handoff, socket tickets,
             # host terminal) on, and the browser credential kept in the home so tabs survive a restart.
@@ -207,6 +218,20 @@ def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False
     return listener
 
 
+def _companion_socket(host: str, port: int, backlog: int) -> socket.socket:
+    """The listening loopback socket on *port* beside a specific-address bind; a failure names it."""
+    family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    companion = _listener_socket(family, kind, proto, port)
+    try:
+        companion.bind(address)
+        companion.listen(backlog)
+        companion.setblocking(False)
+    except OSError as exc:
+        companion.close()
+        raise ListenerAddressError(f"{host}:{port}", exc) from exc
+    return companion
+
+
 def _listener_public_url(webapp) -> str | None:
     """The public URL the listener answers to: the Webapp's own ``webapp.public_url`` ("" for none),
     never ``dashboard.public_url``, which describes ``hermes dashboard``. None leaves main's listener
@@ -216,7 +241,7 @@ def _listener_public_url(webapp) -> str | None:
 
 async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
-    from gateway.webapp_listener import dial_origin
+    from gateway.webapp_listener import dial_origin, loopback_companion
     from hermes_cli.web_server_boundary import (
         _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
         should_require_auth,
@@ -241,6 +266,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         auth_required = should_require_auth(host) or public_hosts_engage_gate(trusted)
     state = types.SimpleNamespace(
         bound_host=host, bound_port=None, auth_required=auth_required,
+        loopback_companion=loopback_companion(host) if webapp is not None else None,
         trusted_public_hosts=trusted, gateway_runner=runner,
         session_authority=getattr(runner, "session_authority", None), webapp=webapp)
     mount = GatewayDashboardMount(runner, state)
@@ -253,6 +279,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     listener = _listener_socket(family, kind, proto, port,
                                 dual_stack=family == socket.AF_INET6 and address[0] == "::")
     _ACTIVE_RUNNER = runner
+    companion = None
     try:
         listener.bind(address)
         if port:
@@ -262,6 +289,8 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
             listener.listen(config.backlog)
         listener.setblocking(False)
         state.bound_port = listener.getsockname()[1]
+        if state.loopback_companion:
+            companion = _companion_socket(state.loopback_companion, state.bound_port, config.backlog)
         # Loading the ASGI graph may fail too; it owns the same bound socket.
         if not config.loaded:
             config.load()
@@ -273,11 +302,14 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
         install_proactor_accept_guard(asyncio.get_running_loop())
-        await server.startup(sockets=[listener])
+        sockets = [listener] if companion is None else [listener, companion]
+        await server.startup(sockets=sockets)
         if not server.started or server.should_exit:
             raise RuntimeError("gateway API lifespan startup failed")
     except BaseException:
         listener.close()
+        if companion is not None:
+            companion.close()
         _ACTIVE_RUNNER = None
         await mount.close()
         raise
@@ -288,9 +320,11 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
             await server.main_loop()
         finally:
             try:
-                await server.shutdown(sockets=[listener])
+                await server.shutdown(sockets=sockets)
             finally:
                 listener.close()
+                if companion is not None:
+                    companion.close()
                 try:
                     await mount.close()
                 finally:
@@ -301,7 +335,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         # The address the socket bound, never a name: native clients accept only a numeric loopback
         # origin, and ``localhost`` may resolve to either family.
         api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
-        server=server, task=task, app=mount, socket=listener,
+        server=server, task=task, app=mount, socket=listener, companion=companion,
     )
 
 

@@ -661,6 +661,34 @@ as `--expect` and checks it again before it changes anything. A `running` status
 the standard root keeps its `HERMES_HOME=…` pin; plan and status carry the status and restore commands
 as `commands`), and no answer carries a URL's user name or password.
 
+Where the command exits 6, the move is done by hand: [Docker and Compose](../docker.md#moving-a-dashboard-backend-to-the-gateway),
+[Nix](../../getting-started/nix-setup.md#moving-the-backend-to-the-gateway),
+[Windows](../windows-native.md#moving-a-dashboard-backend-to-the-gateway). There `--apply --detach` starts nothing
+either: it prints the same steps and exits 6. When the command exits 3 instead, something blocks the move and it
+prints no steps: fix what it names and run it again. After an update, `hermes update` names an old backend that
+still serves this profile and points at the dry run; it changes nothing itself. A backend still running a Hermes
+older than v2026.7.30 has no `/api/health`, so the dry run stops and says to restart that backend with the updated
+hermes first, then run the dry run again.
+
+#### What clients notice after the move {#after-the-move}
+
+The address stays the same, and so do the sign-in providers, but clients notice these changes, whether the move ran automatically or by hand:
+
+- **An address that asks for sign-in: one more sign-in per browser and app.** On a wildcard address, one IP address
+  or a public URL, the gateway's sign-in cookies are not the old backend's, so each browser and each app connected
+  there signs in once more, with the same username and password or provider.
+- **A loopback address: open the Webapp with `hermes webapp`.** On loopback the old dashboard put a session token in
+  every page it served, with no sign-in. The private loopback Webapp does not: `hermes webapp` hands the browser a
+  one-use link that carries its credential, and reloading or typing the address does not create one. A script or
+  tool that read the token from the page has no credential any more.
+- **A Webapp on one IP address also listens on loopback.** When the old backend listened on one specific IP address,
+  the gateway serves that address and also loopback (`127.0.0.1`, or `::1` for an IPv6 address) on the same port,
+  because the CLI, the TUI and Desktop on this machine attach only over loopback. That port must therefore be free on
+  loopback too. Loopback is reachable only from this machine, so nothing is exposed further.
+- **A dashboard tab left open through the move: reload it.** The tab still runs the old dashboard's page, and its
+  next new chat shows an error. Reload the page: it opens the gateway's Webapp (then sign in, or on loopback open it
+  with `hermes webapp` as above).
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:

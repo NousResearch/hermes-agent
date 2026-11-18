@@ -109,12 +109,11 @@ def test_ranked_search_on_a_read_only_handle_answers_from_canonical_rows(tmp_pat
         assert storage_state(path) == STORAGE_OK
     finally:
         reader.close()
-
-    writer = _open(path)
+    raw = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        assert writer.get_meta("fts_stale") is None  # nothing was persisted by the reader
+        assert raw.execute("SELECT 1 FROM state_meta WHERE key = 'fts_stale'").fetchone() is None
     finally:
-        writer.close()
+        raw.close()
 
 
 def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
@@ -209,15 +208,15 @@ def test_or_relaxed_retry_over_orphaned_posting_answers_from_canonical_rows(tmp_
         append_message(holder, "s", role="user", content="orphanword survives in this row")
         _orphan_posting(holder, "s")
 
-        rows = search_messages(holder, "missingterm orphanword")
-
-        assert any("survives" in (row.get("snippet") or "") for row in rows)
+        for _ in range(2):  # the triggering request and the next, already-detached one agree
+            rows = search_messages(holder, "missingterm orphanword")
+            assert any("survives" in (row.get("snippet") or "") for row in rows)
         assert storage_state(path) == STORAGE_OK
     finally:
         holder.close()
 
 
-def test_genuine_corruption_on_the_ranked_path_still_latches(tmp_path, monkeypatch):
+def test_structural_error_the_index_does_not_reproduce_still_latches(tmp_path, monkeypatch):
     """A bare SQLITE_CORRUPT the index alone does not reproduce stays structural and latches."""
     path = tmp_path / "state.db"
     holder = _open(path)

@@ -53,6 +53,10 @@ def window(monkeypatch):
             result = state["origin"] + "/signin"
         elif "data-hermes-vault-slot\", nonce" in expr:
             result = json.dumps(CONTROLS)
+        elif "reverted" in expr:  # read-back pass: the page kept both values
+            result = json.dumps({"landed": expr.count('"index"'), "reverted": 0, "missing": []})
+        elif "unstamped" in expr:
+            result = json.dumps({"unstamped": True})
         else:
             state["fill"] = expr
             result = json.dumps({"filled": sum(json.dumps(v) in expr for v in (PASSWORD, "me@example.test"))})

@@ -11,7 +11,7 @@ Import time is every statement a module body runs: through ``if``/``else``, ``tr
 tree (CLI setup wizards, installers) through code a hosted process never calls. A module the
 hosted process loads lazily is listed as a root instead.
 
-Three dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
+Four dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
 while it imports, which imports every built-in tool module that registers a tool at module
 level: when ``model_tools`` is in the graph, so is each module discovery would select in the
 measured tree (``hosted_graph_tools``), with the package ``__init__`` files importing it runs. And a forwarder declared at import time with
@@ -20,6 +20,10 @@ measured tree (``hosted_graph_tools``), with the package ``__init__`` files impo
 ``persistence.sqlite``'s facade imports every public module under its package on first use (its
 ``__getattr__``) and those import the private ones inside functions, so when the facade is in the
 graph, so is every module of the package.
+A fourth, by-name loaders: a module on the graph that calls ``importlib.import_module`` or ``__import__``
+with a name it computes (``f"agent.transports.{name}"`` over ``_TRANSPORT_MODULES``, a table of module
+names, ``f"{__name__}.{module}"``) loads each module named by a string the module spells, so each is
+in the graph (``_loaded_by_name``).
 Plugins loaded by path (``plugins/*``, ``$HERMES_HOME/plugins``) are not Python imports and are
 not in the graph.
 """
@@ -97,6 +101,8 @@ class _Graph:
             texts = _read_all(self.repo, self.tree, batch)
             for path, text in texts.items():
                 frontier += [f for f in self._found(_imported(path, text)) if f not in seen]
+                frontier += [f for f in self._found(n for c in _loaded_by_name(path, text)
+                                                    if self.module_file(c) for n in _prefixes(c)) if f not in seen]
             if not discovered and DISCOVERING_MODULE in seen:
                 discovered = True
                 frontier += [f for f in self._discovered() if f not in seen]
@@ -208,6 +214,89 @@ def _imported(path: str, text: str) -> Iterator[str]:
             yield from _prefixes(module)
             for alias in node.names:
                 yield f"{module}.{alias.name}"
+
+
+_IMPORTERS = {"import_module", "__import__"}
+
+
+def _module_name(path: str) -> str:
+    stem = path[:-3]
+    return stem.removesuffix("/__init__").replace("/", ".")
+
+
+def _name_prefix(arg: ast.expr, path: str, constants: dict[str, str]) -> str | None:
+    """The fixed part of a module name built at run time: ``f"agent.transports.{name}"`` gives
+    ``agent.transports.``, ``f"{__name__}.{module}"`` this module's name plus a dot (a module-level
+    string constant in place of ``__name__`` likewise), a bare variable the empty prefix; ``None``
+    when the name is a literal or not of that shape."""
+    if isinstance(arg, ast.Name):
+        return ""
+    if not isinstance(arg, ast.JoinedStr) or not arg.values:
+        return None
+    *head, last = arg.values
+    if not isinstance(last, ast.FormattedValue):
+        return None
+    prefix = ""
+    for part in head:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            prefix += part.value
+        elif (isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)
+              and part.value.id in ("__name__", "__package__")):
+            name = _module_name(path)
+            prefix += name if part.value.id == "__name__" or path.endswith("/__init__.py") else name.rpartition(".")[0]
+        elif isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name) and part.value.id in constants:
+            prefix += constants[part.value.id]
+        else:
+            return None
+    return prefix
+
+
+def _loaded_by_name(path: str, text: str) -> Iterator[str]:
+    """Modules a by-name loader in *path* can import: ``importlib.import_module(...)`` or
+    ``__import__(...)`` with a computed name, anywhere in the module (a registry's discovery runs
+    inside a function on first use), naming a module after a string the module itself spells. The
+    transport registry (``for name in _TRANSPORT_MODULES: import_module(f"agent.transports.{name}")``),
+    a table of module names a loader walks (``pm.registry``, ``agent.secret_sources.registry``), an
+    adapter table a helper resolves (``gateway.run``'s ``_BUILTIN_ADAPTERS``) and a lazy facade's
+    export map (``import_module(f"{__name__}.{module}")``) all have that shape. Every candidate is
+    taken (the caller keeps the ones that are modules of the tree), so a name added to such a
+    table is on the graph without a census; a name read from the filesystem or config is not
+    modelled (no string in the module names it)."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(text)
+    except SyntaxError:
+        return
+    constants = {node.targets[0].id: node.value.value for node in tree.body
+                 if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                 and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+    prefixes: set[str] = set()
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or not call.args:
+            continue
+        func = call.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+        if name in _IMPORTERS and (prefix := _name_prefix(call.args[0], path, constants)) is not None:
+            if prefix.startswith("."):  # import_module(f".{name}", __package__): relative to this package
+                package = _module_name(path) if path.endswith("/__init__.py") else _module_name(path).rpartition(".")[0]
+                prefix = package + prefix
+            prefixes.add(prefix)
+    if not prefixes:
+        return
+    strings = {_ref_module(node.value) for node in ast.walk(tree)
+               if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    for prefix in prefixes:
+        # a bare variable names a whole module (``"pm.store"``), never a top-level one: a module
+        # mentioning ``"cli"`` as a platform name does not load ``cli.py``; a prefix takes one segment
+        yield from (prefix + s for s in strings if s and ("." in s if not prefix else "." not in s))
+
+
+def _ref_module(value: str) -> str:
+    """The module a string names, if it is spelled like a dotted module name (``"pkg.mod"``,
+    ``"pkg.mod:attr"`` for a ``module:attr`` reference, ``"mod"``); else ``""``."""
+    head = value.split(":", 1)[0] if value.count(":") == 1 else value
+    return head if all(part.isidentifier() for part in head.split(".")) else ""
 
 
 def reachable(repo: Path, tree: str | None, roots: tuple[str, ...] | None = None) -> frozenset[str]:

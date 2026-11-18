@@ -290,6 +290,12 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
+    from hermes_cli.source_releases import OFFICIAL_REPOSITORY, github_repository
+
+    # A token-bearing https origin (`https://user:token@github.com/NousResearch/hermes-agent`) is official.
+    repository = github_repository(origin_url)
+    if repository:
+        return repository.lower() != OFFICIAL_REPOSITORY.lower()
 
     def _norm(url: str) -> str:
         url = url.rstrip("/")

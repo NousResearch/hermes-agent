@@ -99,10 +99,9 @@ def sign_in_client(home) -> Optional[tuple[str, str]]:
     return (client_id, portal) if isinstance(client_id, str) and client_id.startswith("agent:") else None
 
 
-def registered_lan_origin(home: Path, port: int) -> Optional[str]:
-    """``http://<LAN address>:<port>`` when Web Access last registered Nous sign-in for *home*'s
-    Webapp on the LAN at that address and *port*, and the address is still this machine's; else None.
-    Sign-in returns only to the callback the Portal has, so ``hermes webapp`` opens this address."""
+def _registered_callback(home: Path) -> Optional[tuple[Optional[str], Optional[int]]]:
+    """``(hostname, port)`` of the ``http://…/auth/callback`` Web Access last registered Nous sign-in
+    at for *home*'s Webapp on the LAN, or None."""
     try:
         parts = urlsplit(_registration(home)["callback"])
         recorded_port = parts.port
@@ -110,9 +109,41 @@ def registered_lan_origin(home: Path, port: int) -> Optional[str]:
         return None
     if (parts.scheme, parts.path, parts.query, parts.fragment) != ("http", "/auth/callback", "", ""):
         return None
-    if parts.username is not None or recorded_port != port or parts.hostname != lan_address():
+    return None if parts.username is not None else (parts.hostname, recorded_port)
+
+
+def registered_lan_origin(home: Path, port: int) -> Optional[str]:
+    """``http://<LAN address>:<port>`` when Web Access last registered Nous sign-in for *home*'s
+    Webapp on the LAN at that address and *port*, and the address is still this machine's; else None.
+    Sign-in returns only to the callback the Portal has, so ``hermes webapp`` opens this address."""
+    callback = _registered_callback(home)
+    if callback is None or callback[1] != port or callback[0] != lan_address():
         return None
-    return f"http://{parts.hostname}:{port}"
+    return f"http://{callback[0]}:{port}"
+
+
+def sign_in_address(home: Path, bound_host: str, port: int, public_url: str) -> tuple[Optional[str], Optional[str]]:
+    """``(address, note)``: where a browser signs in to the gated Webapp bound to *bound_host*:*port*
+    (None for its loopback address), and what to tell the user when Nous sign-in cannot finish there.
+
+    *public_url* wins. A Webapp bound to one specific address opens that address, the only one it
+    listens on besides loopback; a Web Access registration for another address cannot bring sign-in
+    back there, so the note says so instead of opening that address. Every other bind keeps the
+    registered LAN address, as before."""
+    from gateway.webapp_listener import bind_origin
+
+    own = bind_origin(bound_host, port)
+    if public_url or own is None:
+        return public_url or registered_lan_origin(home, port), None
+    callback = _registered_callback(home)
+    if callback is None or callback == (bound_host, port):
+        return own, None
+    registered = bind_origin(callback[0] or "", callback[1] or 80) or f"http://{callback[0]}:{callback[1]}"
+    changed = " and ".join(key for key, same in (("webapp.host", callback[0] == bound_host),
+                                                  ("webapp.port", (callback[1] or 80) == port)) if not same)
+    return own, (f"Nous sign-in that Settings → Web Access registered returns to {registered}, but the Webapp "
+                 f"now listens on {own}, so Nous sign-in cannot finish there. Sign in with a password provider, "
+                 f"or set {changed} back to that address and restart the gateway.")
 
 
 def _register_nous_sign_in(callback_url: str) -> None:
@@ -359,15 +390,15 @@ def _gateway_state(home: Path) -> dict:
 
 def _mode(settings) -> Optional[str]:
     """Who the configured Webapp serves: ``public`` (its own URL pins the callback and Host),
-    ``lan`` (a wildcard bind), ``local`` (a loopback bind, as ``hermes webapp`` sets it up), or None
-    when it is off."""
-    from gateway.webapp_listener import _is_wildcard
+    ``lan`` (a wildcard bind, or one specific address of this machine), ``local`` (a loopback bind, as
+    ``hermes webapp`` sets it up), or None when it is off."""
+    from gateway.webapp_listener import _is_wildcard, _specific_address
 
     if not settings.enabled:
         return None
     if settings.public_url:
         return "public"
-    return "lan" if _is_wildcard(settings.host) else "local"
+    return "lan" if _is_wildcard(settings.host) or _specific_address(settings.host) else "local"
 
 
 def access_status() -> dict:

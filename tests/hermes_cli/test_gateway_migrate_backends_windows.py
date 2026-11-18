@@ -107,8 +107,10 @@ def test_two_matching_startup_entries_name_none_and_the_steps_ask_the_operator(t
 
 
 _H = "hermes -p default"  # a bare `hermes` would follow a sticky `hermes profile use` choice
-_TAIL = [f"{_H} gateway status", f"# then by its answer: not installed -> {_H} gateway install; stopped -> "
-         f"{_H} gateway start; running -> {_H} gateway restart", f"{_H} webapp --status"]
+_TAIL = [f"{_H} gateway status", f"# then by what it prints: 'Gateway service not installed' -> {_H} gateway "
+         f"install; 'No gateway process detected' -> {_H} gateway start; 'Gateway process running' -> {_H} gateway "
+         "restart", "# the gateway takes a few seconds to serve the address: if the next line prints 'The gateway is "
+         "not running', wait 5 seconds and run it again", f"{_H} webapp --status"]
 
 
 def test_windows_steps_name_the_profile_and_copy_an_accepted_public_url(tmp_path):
@@ -153,7 +155,7 @@ def test_steps_never_use_posix_only_syntax_and_name_env_keys_without_values(tmp_
         joined = "\n".join(steps)
         assert "&&" not in joined and "chmod" not in joined and "sudo" not in joined
         assert steps[0].startswith("# in this window first: $env:HERMES_HOME")  # a home that is no profile
-        assert steps[-3:] == [s.replace(_H, "hermes") for s in _TAIL]
+        assert steps[-len(_TAIL):] == [s.replace(_H, "hermes") for s in _TAIL]
         assert f"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD from the old backend's environment into {tmp_path / '.env'}" \
             in joined
     steps = gw.manual_steps("127.0.0.1", 9120, _item(supervisor="startup-folder", unit_path=str(entry), pid=42))

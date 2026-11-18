@@ -18,6 +18,7 @@ import pytest
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli.gateway_migrate_backends import BackendItem
 from hermes_cli.gateway_migrate_backends_host import SystemHost
+from hermes_cli.gateway_migrate_backends_plan import WEBAPP_STATUS_WAIT
 
 _PASSWORD = "pw-never-printed-7d1c"
 _SECRET = "secret-never-printed-91aa"
@@ -230,8 +231,10 @@ def test_a_system_unit_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys)
     assert after[0].startswith("systemctl is-active hermes-dashboard.service")
     h = "hermes -p default"  # never a bare `hermes`: it would follow a sticky `hermes profile use` choice
     assert after[1:] == [f"{h} gateway status",
-                         f"# then by its answer: not installed -> {h} gateway install; stopped -> {h} gateway "
-                         f"start; running -> {h} gateway restart", f"{h} webapp --status"]
+                         f"# then by what it prints: 'Gateway is not running' (no service installed) -> {h} gateway "
+                         f"install; 'service is stopped' or 'service is not loaded' -> {h} gateway start; "
+                         f"'service is running' or 'supervised by launchd' -> {h} gateway restart",
+                         WEBAPP_STATUS_WAIT, f"{h} webapp --status"]
     before_stop = steps[:steps.index(sudo[0])]
     assert not any(" gateway " in s for s in before_stop)
     assert all(s.startswith(("hermes -p default ", "sudo ", "systemctl ", "#")) for s in steps)
@@ -314,7 +317,8 @@ def test_without_a_service_manager_the_steps_run_the_gateway_under_the_operators
     code, out = _plan(host, capsys)
 
     (entry,) = out["plan"]["unsupported"]
-    assert code == engine.EXIT_UNSUPPORTED and entry["steps"][-2:] == ["hermes -p default gateway run",
+    assert code == engine.EXIT_UNSUPPORTED and entry["steps"][-3:] == ["hermes -p default gateway run",
+                                                                       WEBAPP_STATUS_WAIT,
                                                                        "hermes -p default webapp --status"]
     assert not any("gateway install" in s or "gateway start" in s for s in entry["steps"])
 

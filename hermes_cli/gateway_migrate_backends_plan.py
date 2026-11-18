@@ -275,13 +275,27 @@ def _supervisor_kind(item: BackendItem, host) -> str:
     return item.supervisor if item.supervisor in ("launchd", *_UNSUPPORTED) else "unknown"
 
 
-def gateway_tail(hermes: str, *, install: str = "install") -> list[str]:
+# What `hermes gateway status` prints for each case, quoted from its output (systemd and launchd here,
+# the Scheduled Task on Windows): the step tells the user which line to look for, first match first.
+_STATUS_LINES = {
+    "posix": ("'Gateway is not running' (no service installed)",
+              "'service is stopped' or 'service is not loaded'",
+              "'service is running' or 'supervised by launchd'"),
+    "windows": ("'Gateway service not installed'", "'No gateway process detected'", "'Gateway process running'"),
+}
+# A gateway just installed, started or restarted takes a few seconds to bind before `webapp --status` sees it.
+WEBAPP_STATUS_WAIT = ("# the gateway takes a few seconds to serve the address: if the next line prints "
+                      "'The gateway is not running', wait 5 seconds and run it again")
+
+
+def gateway_tail(hermes: str, *, install: str = "install", windows: bool = False) -> list[str]:
     """The last steps of every by-hand move: run the gateway with the new webapp.* settings (a running
     gateway reads them only on restart), then check what serves the address."""
+    missing, stopped, running = _STATUS_LINES["windows" if windows else "posix"]
     return [f"{hermes} gateway status",
-            f"# then by its answer: not installed -> {hermes} gateway {install}; stopped -> {hermes} gateway start; "
-            f"running -> {hermes} gateway restart",
-            f"{hermes} webapp --status"]
+            f"# then by what it prints: {missing} -> {hermes} gateway {install}; {stopped} -> {hermes} gateway "
+            f"start; {running} -> {hermes} gateway restart",
+            WEBAPP_STATUS_WAIT, f"{hermes} webapp --status"]
 
 
 def public_url_steps(hermes: str, public_url) -> list[str]:
@@ -356,7 +370,7 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optiona
                  or "# stop the old backend through its supervisor and keep it from starting at boot")
     if no_service:
         return steps + ["# run the next line from your own supervisor (restart on exit and at boot):",
-                        f"{hermes} gateway run", f"{hermes} webapp --status"]
+                        f"{hermes} gateway run", WEBAPP_STATUS_WAIT, f"{hermes} webapp --status"]
     return steps + gateway_tail(hermes)
 
 

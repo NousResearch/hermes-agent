@@ -142,4 +142,22 @@ describe('squashTextNodesToSegments', () => {
       { hyperlink: undefined, styles: { bold: true }, text: '\\b' }
     ])
   })
+
+  it('stays linear in a run of many text nodes that each hold an opener', () => {
+    // Every opener looks up the node it ends in; a lookup that rescans from the first node
+    // costs nodes × openers here, far past the bound, while a forward-only cursor is linear.
+    const count = 200000
+
+    const run = element(
+      'ink-text',
+      Array.from({ length: count }, () => text(`${OPEN};u${BEL}y`))
+    )
+
+    const started = performance.now()
+    const segments = squashTextNodesToSegments(run)
+
+    expect(performance.now() - started).toBeLessThan(2000)
+    expect(segments).toHaveLength(count)
+    expect(segments.every(s => s.text === 'y')).toBe(true)
+  })
 })

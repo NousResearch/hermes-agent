@@ -1,0 +1,94 @@
+"""``hermes dashboard`` / ``hermes serve`` on the port this home's gateway serves the Webapp on.
+
+A host moved to the gateway keeps the Webapp on the old backend's address; a launcher left behind used to
+print the generic port-in-use hint and exit 75 (EX_TEMPFAIL: try again), although no retry can succeed.
+When the gateway's own control socket proves its listener holds the port, the command says so and exits
+78 (EX_CONFIG), keeping the machine-readable ``BACKEND_PORT_IN_USE`` line first. A port held by anything
+else keeps exactly the old answer (``test_dashboard_port_free_parity.py``).
+"""
+import secrets
+import socket
+
+import pytest
+
+from tests.hermes_cli.live_gateway import live_gateway
+
+pytestmark = pytest.mark.platforms("linux")
+
+
+@pytest.fixture(scope="module")
+def gateway(tmp_path_factory):
+    with live_gateway(tmp_path_factory.mktemp("gateway-holds-port")) as live:
+        dist = live.user / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<!doctype html><title>old dashboard</title>", encoding="utf-8")
+        live.env["HERMES_WEB_DIST"] = str(dist)  # the old dashboard's bundle, so it gets to its bind
+        yield live
+
+
+def _first_line(out: str) -> str:
+    return next(line for line in out.splitlines() if line.strip())
+
+
+@pytest.mark.parametrize("command, name", [(["dashboard", "--no-open"], "hermes dashboard"),
+                                           (["serve"], "hermes serve")])
+def test_the_old_command_on_the_gateways_port_names_the_gateway_and_stops_retrying(gateway, command, name):
+    result = gateway.cli(*command, "--port", str(gateway.port))
+    out = result.stdout
+    assert result.returncode == 78, out
+    assert f"BACKEND_PORT_IN_USE port={gateway.port}" in out
+    assert out.count("BACKEND_PORT_IN_USE") == 1
+    assert "held by this profile's Hermes gateway" in out
+    assert "serves the Webapp" in out
+    assert f"`{name}` is no longer needed here" in out
+    assert "hermes webapp" in out
+    assert "HERMES_BACKEND_READY" not in out
+
+
+def test_the_sentinel_is_the_first_line_on_stdout(gateway):
+    result = gateway.cli("serve", "--port", str(gateway.port))
+    assert _first_line(result.stdout).startswith(f"BACKEND_PORT_IN_USE port={gateway.port}"), result.stdout
+
+
+def _ipv6_loopback_listener(port: int) -> socket.socket | None:
+    try:
+        holder = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    try:
+        holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        holder.bind(("::1", port))
+        holder.listen(1)
+    except OSError:
+        holder.close()
+        return None
+    return holder
+
+
+@pytest.mark.parametrize("host", ["::1", "::"])
+def test_another_address_on_the_gateways_port_held_by_something_else_keeps_the_old_answer(gateway, host):
+    """The gateway listens on 127.0.0.1:P; another process holds [::1]:P (IPv6 only). ``--host ::1``
+    collides with that process, not the gateway. ``--host ::`` collides with both, but nothing proves the
+    gateway's IPv4 listener is what the IPv6 bind hit. Either way it gets main's hint and exit 75 (78
+    would park a supervisor for good)."""
+    holder = _ipv6_loopback_listener(gateway.port)
+    if holder is None:
+        pytest.skip("no IPv6 loopback on this host")
+    with holder:
+        # A wildcard bind needs a sign-in before it gets to the port: a throwaway deployment token.
+        result = gateway.cli("serve", "--host", host, "--port", str(gateway.port),
+                             extra_env={"HERMES_DASHBOARD_SESSION_TOKEN": secrets.token_urlsafe(24)})
+    out = result.stdout
+    assert result.returncode == 75, out
+    assert out.splitlines() == [
+        f"BACKEND_PORT_IN_USE port={gateway.port}",
+        f"  Port {gateway.port} on {host} is already in use — likely another 'hermes serve' / 'hermes dashboard' "
+        "backend or the Hermes gateway. Stop the other process, or pass --port <other> "
+        "(--port 0 picks a free ephemeral port).",
+    ], out
+
+
+def test_the_old_command_points_a_windows_user_at_task_scheduler_and_the_startup_folder():
+    from hermes_cli.web_server_port_holder import launcher_examples
+    assert launcher_examples("win32") == "Task Scheduler task or Startup-folder entry"
+    assert launcher_examples("linux") == launcher_examples("darwin") == "systemd unit or launchd job"

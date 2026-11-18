@@ -454,9 +454,21 @@ def _write_machine_sentinel_line(line: str) -> None:
             pass
 
 
-def _report_port_in_use(host: str, port: int) -> None:
-    """Print the machine sentinel + a human hint naming likely holders."""
+def _report_port_in_use(host: str, port: int, *, headless: Optional[bool] = None) -> int:
+    """Print the machine sentinel + a human hint naming the holder; return the exit code.
+
+    The sentinel line is always first. When this home's gateway holds the address (proved by the
+    gateway itself and its live listener, ``web_server_port_holder``) the hint says so and the code is EX_CONFIG: a
+    retry never frees the port, so a supervisor should stop. Anything else keeps the generic
+    hint and :data:`PORT_IN_USE_EXIT_CODE`."""
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.web_server_port_holder import describe_gateway_holder, gateway_holding_port
+
     _write_machine_sentinel_line(_PORT_IN_USE_SENTINEL.format(port=port))
+    holder = gateway_holding_port(port, host=host)
+    if holder is not None:
+        print("\n".join(describe_gateway_holder(holder, host, port, headless=headless)), flush=True)
+        return GATEWAY_FATAL_CONFIG_EXIT_CODE
     print(
         f"  Port {port} on {host} is already in use — likely another "
         "'hermes serve' / 'hermes dashboard' backend or the Hermes gateway. "
@@ -464,6 +476,7 @@ def _report_port_in_use(host: str, port: int) -> None:
         "(--port 0 picks a free ephemeral port).",
         flush=True,
     )
+    return PORT_IN_USE_EXIT_CODE
 
 
 _DEFAULT_DASHBOARD_FORWARDED_ALLOW_IPS = ("127.0.0.1", "::1")

@@ -63,6 +63,7 @@ function view(): SessionView {
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(SESSION_ID),
     $storedId: atom(SESSION_ID),
+    $transcriptStoredId: atom(SESSION_ID),
     $turnStartedAt: atom(null),
     kind: 'primary'
   }

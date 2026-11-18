@@ -267,8 +267,18 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
-    def insert_text(self, text: str, *, timeout: float = 5.0) -> dict[str, Any]:
-        """Type ``text`` into the element that currently holds focus, as TRUSTED browser input.
+    def current_page_session(self) -> Optional[str]:
+        """The CDP session id of the page the supervisor is attached to now (None: none attached).
+
+        A caller that validates a page (``insert_text``'s focus check) pins this id and passes it
+        back, so a later ``focus_page`` or reconnect cannot silently move the keystrokes elsewhere.
+        """
+        with self._state_lock:
+            return self._page_session_id if self._active else None
+
+    def insert_text(self, text: str, *, session_id: str, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` into the element that holds focus in page session ``session_id``, as TRUSTED
+        browser input.
 
         ``Input.insertText`` is the CDP-level equivalent of a user keystroke: the page sees the
         same ``input`` events a human would trigger, so framework-controlled inputs (React/Vue/MUI)
@@ -280,17 +290,21 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         ``agent.vault_login_classifier.build_focus_js``) and abort if the focus is not the
         intended field. Typing a secret into the wrong focused element leaks it.
 
+        ``session_id`` is the page session the caller validated (``current_page_session``). The
+        frame is sent on that session only, and refused when the supervisor has since moved to
+        another page session: the focus check no longer describes the page that would get the text.
+
         Returns ``{"ok": True}`` or ``{"ok": False, "error": <str>}``. Never raises.
         """
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
         with self._state_lock:
-            active, session_id = self._active, self._page_session_id
+            active, current = self._active, self._page_session_id
         if not active:
             return _fail("supervisor is not active")
-        if not session_id:
-            return _fail("supervisor has no attached page session")
+        if not session_id or session_id != current:
+            return _fail("the page session changed since it was validated")
 
         try:
             coro = self._cdp("Input.insertText", {"text": text},

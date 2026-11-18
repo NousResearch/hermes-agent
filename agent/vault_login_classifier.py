@@ -389,7 +389,7 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstam
             .replace("__UNSTAMP__", "true" if unstamp else "false"))
 
 
-def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, refocus: bool = True) -> str:
     """Build a JS expression that focuses ONE stamped field and asserts it really holds focus.
 
     ``Input.insertText`` types into whatever element currently has focus, so the caller MUST
@@ -400,6 +400,8 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
 
     Focus is read through open shadow roots (a focused input inside a component reports its HOST as
     ``document.activeElement``), the same roots the inspection and fill scripts reach.
+    ``refocus=False`` only asserts: between the keys of one field the page must not have moved focus,
+    and pulling it back would hide that it did.
 
     Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
     Returns JSON: ``{"focused": <index>}`` or
@@ -409,7 +411,8 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
     )
-    return _FOCUS_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+    return (_FOCUS_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+            .replace("__REFOCUS__", "true" if refocus else "false"))
 
 
 _FOCUS_JS_TEMPLATE = """(() => {
@@ -429,7 +432,7 @@ _FOCUS_JS_TEMPLATE = """(() => {
   if (f.token === "current-password" && el.type !== "password") {
     return JSON.stringify({ refused: "not_password" });
   }
-  try { el.focus(); } catch (e) { /* focus can throw on a detached node */ }
+  if (__REFOCUS__) { try { el.focus(); } catch (e) { /* focus can throw on a detached node */ } }
   let active = document.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
   if (active === el) return JSON.stringify({ focused: f.index });

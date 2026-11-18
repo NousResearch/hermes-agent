@@ -444,9 +444,9 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" not in raw
         # The secret expression only ever goes through the secret eval path,
         # and it targets only the password field (index 1).
-        # fill + read-back: the second pass is what proves the page kept the value
-        assert len(secret_exprs) == 2
+        # the fill, then the read-back that proves the page kept the value
         assert "s3cret-pw" in secret_exprs[0]
+        assert secret_exprs[1:] and all("reverted" in e for e in secret_exprs[1:])
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
 
@@ -472,6 +472,9 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         class _Sup:
+            def current_page_session(self):
+                return "S1"
+
             def insert_text(self, text, **kwargs):
                 typed.append(text)
                 return {"ok": True}
@@ -547,6 +550,99 @@ class TestBrowserVaultTools:
         assert typed[0] == "s3cret-pw"
         assert typed[1:] == list("s3cret-pw")
 
+    def _per_key_harness(self, store, sup, *, focus_answers, verify_answers):
+        """A one-password page whose bulk insert reads back wrong, so the fill retypes key by key.
+        ``focus_answers`` / ``verify_answers`` are consumed one per check (the last repeats)."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def take(answers):
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+
+        def fake_eval_secret(task_id, expression):
+            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+                return {"success": True, "result": json.dumps({"ok": True})}
+            if 'refused: "focus_lost"' in expression:
+                answer = take(focus_answers)
+                return {"success": True, "result": json.dumps(answer(sup) if callable(answer) else answer)}
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(take(verify_answers))}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"unstamped": True})}
+
+        patches = (patch("agent.vault_store.get_vault_store", return_value=store),
+                   patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+                   patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+                   patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup),
+                   patch.object(browser_vault_tool, "_page_backend", return_value=None),
+                   patch.object(browser_vault_tool, "_TYPE_PER_KEY_DELAY_S", 0))
+        return meta, patches
+
+    class _SessionSup:
+        """A supervisor whose page session another tool can move. ``insert_text`` behaves like the
+        real one: a ``session_id`` that is no longer current is refused."""
+
+        def __init__(self):
+            self.sid = "S1"
+            self.typed: list[tuple[str, str]] = []
+
+        def current_page_session(self):
+            return self.sid
+
+        def insert_text(self, text, *, session_id, **kwargs):
+            if session_id != self.sid:
+                return {"ok": False, "error": "page session changed"}
+            self.typed.append((text, self.sid))
+            return {"ok": True}
+
+        def focus_page(self, origin, accept=None):
+            return {"ok": True, "url": "https://example.com/login"}
+
+    def test_focus_is_reasserted_before_every_retyped_key(self, store):
+        """On the key-by-key retype the page can move focus after the first character; the next
+        character must not follow it into another input."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        lost = {"refused": "focus_lost", "tag": "INPUT", "found": "INPUT"}
+        meta, patches = self._per_key_harness(
+            store, sup,
+            focus_answers=[{"focused": 1}, {"focused": 1}, lost],
+            verify_answers=[{"landed": 0, "reverted": 1, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        # the bulk insert, then the first retyped key; focus was gone before the second
+        assert [t for t, _ in sup.typed] == ["s3cret-pw", "s"]
+
+    def test_keystrokes_never_follow_the_supervisor_to_another_session(self, store):
+        """The focus check validated the page on session S1; when another tool retargets the
+        supervisor before the keystroke, the secret is not typed into the new session."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+
+        def focused_then_retargeted(s):
+            s.sid = "S2"  # e.g. focus_page from a concurrent browser call
+            return {"focused": 1}
+
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[focused_then_retargeted, {"focused": 1}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False
+        assert [sid for _, sid in sup.typed if sid == "S2"] == []
+
     def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
         """A framework login form can expose a phone box with no autocomplete, name, id, label or
         placeholder — nothing to classify. When the password's form holds exactly one other text
@@ -617,6 +713,9 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
 
         class _Sup:
+            def current_page_session(self):
+                return "S1"
+
             def insert_text(self, text, **kwargs):
                 typed.append(text)
                 return {"ok": True}
@@ -670,6 +769,9 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         class _Sup:
+            def current_page_session(self):
+                return "S1"
+
             def insert_text(self, text, **kwargs):
                 typed.append(text)
                 return {"ok": True}
@@ -851,8 +953,9 @@ class TestBrowserVaultTools:
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
             assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
-            # two secret-bearing evals by design: the fill, then the read-back that proves the page kept it
-            assert len(secret_exprs) == 2 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            # the fill, then the read-back that proves the page kept it
+            assert _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            assert secret_exprs[1:] and all("reverted" in e for e in secret_exprs[1:])
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
         finally:

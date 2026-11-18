@@ -119,6 +119,20 @@ class TestFocusAssertion:
         assert _run(setup, js)["refused"] == "focus_lost"
 
 
+    def test_a_between_keys_check_does_not_pull_focus_back(self):
+        """Between the keys of one field the check only asserts: re-focusing would hide that the
+        page moved focus after the previous key, and the next key would be typed on a page that
+        is actively redirecting input."""
+        setup = """
+          const pw = stamp(add(document, "input", { type: "password" }), 1);
+          const other = add(document, "input", { type: "text" });
+          other.focus();
+        """
+        fills = [{"index": 1, "token": "current-password"}]
+        assert _run(setup, build_focus_js(fills, nonce=NONCE, refocus=False))["refused"] == "focus_lost"
+        assert _run(setup, build_focus_js(fills, nonce=NONCE)) == {"focused": 1}
+
+
 class TestReadBack:
     def test_a_select_holding_another_option_is_not_landed(self):
         """The read-back is the claim that the page kept the value: a select on the wrong option

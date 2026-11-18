@@ -581,7 +581,9 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     A framework-controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
     JS value write: the page sees the same ``input`` event a human keystroke produces.
     ``Input.insertText`` types into whatever element holds focus, so the focus is asserted
-    immediately before every single field (``build_focus_js``); the value is read back after it
+    immediately before every insert (``build_focus_js``) — once per field, and before every key of
+    a key-by-key retype — and every insert is pinned to the page session the fill started on; the
+    value is read back after it
     (``build_fill_verify_js``). A focus that drifted, or a value the page reverted, aborts the
     whole fill: nothing further is typed and every inspection stamp is removed.
 
@@ -620,6 +622,21 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
             parsed = _parse_json_result(parsed)
         return parsed
 
+    # Every keystroke goes to the page session this fill validates. If another tool moves the
+    # supervisor to a different page session (focus_page, a reconnect), the next keystroke is
+    # refused rather than typed into a page the focus check never looked at.
+    pinned = supervisor.current_page_session()
+    if not pinned:
+        return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
+
+    def _insert(text: str) -> Optional[dict[str, Any]]:
+        typed = supervisor.insert_text(text, session_id=pinned)
+        if typed.get("ok"):
+            return None
+        return _abort("fill_unverified",
+                      "The browser refused the trusted input for one field: "
+                      f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
+
     # The page that holds the stamps must still be the bound origin: the supervisor's tab can
     # have navigated between the inspection and the first keystroke.
     origin = _script(build_origin_check_js(page_origin))
@@ -655,8 +672,8 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                     and int(checked.get("landed", 0) or 0) == 1
                     and not int(checked.get("reverted", 0) or 0))
 
-        def _assert_focus() -> Optional[dict[str, Any]]:
-            focus = _script(build_focus_js([f], nonce))
+        def _assert_focus(*, refocus: bool = True) -> Optional[dict[str, Any]]:
+            focus = _script(build_focus_js([f], nonce, refocus=refocus))
             if isinstance(focus, dict) and focus.get("focused") == f["index"]:
                 return None
             tag = focus.get("tag") if isinstance(focus, dict) else None
@@ -666,14 +683,9 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                           f"focus now on {found or 'nothing'}) before the value could be typed. "
                           "Nothing further was typed.")
 
-        aborted = _assert_focus()
+        aborted = _assert_focus() or _insert(f["value"])
         if aborted:
             return aborted
-        typed = supervisor.insert_text(f["value"])
-        if not typed.get("ok"):
-            return _abort("fill_unverified",
-                          "The browser refused the trusted input for one field: "
-                          f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
         verified = _verify()
         if not isinstance(verified, dict):
             return _abort("fill_unverified",
@@ -685,16 +697,13 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # A bulk insert lands wrong in a masked field (phone, date, card): the mask drops or
         # reformats characters as they stream in. Clear it and type the value one key at a time,
         # the way a person does, then read it back again.
+        # Focus is asserted before EVERY key: a page can move it after the first one, and the rest
+        # of the value would land in whatever took it. Only the first key may (re)focus the field.
         _script(build_clear_js([f], nonce))
-        aborted = _assert_focus()
-        if aborted:
-            return aborted
-        for char in str(f["value"]):
-            typed = supervisor.insert_text(char)
-            if not typed.get("ok"):
-                return _abort("fill_unverified",
-                              "The browser refused the trusted input for one field: "
-                              f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
+        for position, char in enumerate(str(f["value"])):
+            aborted = _assert_focus(refocus=position == 0) or _insert(char)
+            if aborted:
+                return aborted
             time.sleep(_TYPE_PER_KEY_DELAY_S)
         verified = _verify()
         if _holds(verified):

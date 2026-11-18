@@ -57,8 +57,82 @@ _CELL_SPILL_READ_CAP = 4 * _RUNNER_SPILL_CHARS + 4096
 
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
+FENCE_STRIPPED_WARNING = "fence line stripped before compile"
+
+_HTML_FENCE_LINES = (
+    "<code>", "</code>", "<pre>", "</pre>",
+    "<pre><code>", "</code></pre>", "<code><pre>", "</pre></code>",
+)
+
+
+def _is_fence_line(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    if s.lower() in _HTML_FENCE_LINES:
+        return True
+    rest = s.lstrip("`")
+    return len(s) - len(rest) >= 3 and all(c.isalnum() or c in "_+.-" for c in rest)
+
+
+def strip_code_fences(code: str) -> tuple[str, bool]:
+    """Strip at most one leading and one trailing Markdown/HTML fence line."""
+    if not isinstance(code, str) or not code:
+        return code, False
+    lines = code.splitlines(keepends=True)
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    if start >= end:
+        return code, False
+    stripped_start = _is_fence_line(lines[start])
+    stripped_end = end - 1 > start and _is_fence_line(lines[end - 1])
+    if not stripped_start and not stripped_end:
+        return code, False
+    new_start = start + 1 if stripped_start else 0
+    new_end = end - 1 if stripped_end else len(lines)
+    return "".join(lines[new_start:new_end]), True
+
+
 RUNNER_CELL_SOURCE = '''\
 GLOBALS = {"__name__": "__main__", "__builtins__": __builtins__}
+
+_HTML_FENCE_LINES = (
+    "<code>", "</code>", "<pre>", "</pre>",
+    "<pre><code>", "</code></pre>", "<code><pre>", "</pre></code>",
+)
+
+
+def _is_fence_line(line):
+    s = line.strip()
+    if not s:
+        return False
+    if s.lower() in _HTML_FENCE_LINES:
+        return True
+    rest = s.lstrip("`")
+    return len(s) - len(rest) >= 3 and all(c.isalnum() or c in "_+.-" for c in rest)
+
+
+def _strip_code_fences(code):
+    if not isinstance(code, str) or not code:
+        return code, False
+    lines = code.splitlines(keepends=True)
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    if start >= end:
+        return code, False
+    stripped_start = _is_fence_line(lines[start])
+    stripped_end = end - 1 > start and _is_fence_line(lines[end - 1])
+    if not stripped_start and not stripped_end:
+        return code, False
+    new_start = start + 1 if stripped_start else 0
+    new_end = end - 1 if stripped_end else len(lines)
+    return "".join(lines[new_start:new_end]), True
 
 
 def _clip(text):
@@ -106,12 +180,17 @@ def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    code = request["code"]
+    if "fence_stripped" in request:
+        fence_stripped = bool(request["fence_stripped"])
+    else:
+        code, fence_stripped = _strip_code_fences(code)
     # An imported module keeps the code it was loaded with: name the ones edited on disk since
     # the last cell, so a fix that "still fails" is not mistaken for a wrong fix.
     stale_modules = _scan_edited_modules(True)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
+            exec(compile(code, "<cell>", "exec"), GLOBALS)
     except SystemExit as exc:
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
@@ -120,7 +199,7 @@ def run_cell(request, execution_count):
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
-        "stale_modules": stale_modules,
+        "stale_modules": stale_modules, "fence_stripped": fence_stripped,
         "id": request.get("id", ""), "status": status,
         "stdout": stdout_text, "stderr": stderr_text,
         "stdout_clipped": stdout_clipped, "stderr_clipped": stderr_clipped,
@@ -860,6 +939,13 @@ def stale_modules_warning(payload: dict[str, Any]) -> str:
             "taken from it), or call again with reset=true to start from fresh imports.")
 
 
+def _payload_warnings(payload: dict[str, Any]) -> str:
+    return " ".join(filter(None, [
+        FENCE_STRIPPED_WARNING if payload.get("fence_stripped") else "",
+        stale_modules_warning(payload),
+    ]))
+
+
 def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
@@ -982,9 +1068,9 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                 "Cell stdout exceeded the inline cap; head shown. "
                 "Re-run with a narrower output slice for the omitted middle."
             )
-    stale_warning = stale_modules_warning(payload)
-    if stale_warning:
-        result["warning"] = " ".join(filter(None, [result.get("warning"), stale_warning]))
+    cell_warning = _payload_warnings(payload)
+    if cell_warning:
+        result["warning"] = " ".join(filter(None, [result.get("warning"), cell_warning]))
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")

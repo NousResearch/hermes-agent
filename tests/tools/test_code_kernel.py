@@ -870,3 +870,59 @@ class TestCellStdoutSpill(unittest.TestCase):
         self.assertIn("stdout_spill_path", result)  # host spill of the clipped head
         self.assertIn("Only the first part", result["warning"])
         self.assertIn(result["stdout_spill_path"], result["warning"])
+
+
+class TestFenceStripping(unittest.TestCase):
+    """Regression for #157155: strip at most one leading and one trailing
+    Markdown/HTML fence line before compile, and report it in warning."""
+
+    def test_trailing_and_paired_fences_strip_and_warn(self):
+        cases = [
+            'print("alive")\n</code>',
+            'print("alive")\n<code>',
+            'print("alive")\n</pre>\n',
+            'print("alive")\n```',
+            '```python\nif True:\n    print("alive")\n```',
+            '````python\nprint("alive")\n````',
+            '<code>\nprint("alive")\n</code>',
+            '<pre><code>\nprint("alive")\n</code></pre>',
+            '```py\nprint("alive")',
+        ]
+        with _kernel_config():
+            for snippet in cases:
+                with self.subTest(snippet=snippet):
+                    result = _run(snippet)
+                    self.assertEqual(result["status"], "success", result)
+                    self.assertIn("alive", result["output"])
+                    self.assertIn(
+                        "fence line stripped before compile",
+                        result.get("warning", ""),
+                        result,
+                    )
+
+    def test_multiline_strings_and_plain_code_are_untouched(self):
+        code = (
+            'msg = """\n'
+            '```python\n'
+            'print("inside")\n'
+            '```\n'
+            '</code>\n'
+            '"""\n'
+            'print(msg.strip())\n'
+        )
+        with _kernel_config():
+            result = _run(code)
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("```python", result["output"])
+        self.assertIn("</code>", result["output"])
+        self.assertNotIn("warning", result, result)
+
+    def test_fence_only_input_is_rejected_and_guards_see_stripped_code(self):
+        with _kernel_config():
+            empty = _run("```python\n```\n")
+            self.assertIn("No code provided", empty.get("error", ""), empty)
+            with patch("tools.process_registry._is_supervised_gateway_process", return_value=True):
+                inert = _run('```python\nprint("launchctl bootout ai.hermes.gateway")\n```')
+        self.assertEqual(inert["status"], "success", inert)
+        self.assertIn("launchctl bootout", inert["output"])
+        self.assertIn("fence line stripped before compile", inert.get("warning", ""))

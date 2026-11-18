@@ -446,13 +446,15 @@ class TestScopeResolution(ChatGateTestCase):
         # No snapshot, no DB row - but this IS the Desktop backend.
         chat, agent = self.fake_chat(session_id="unknown-1")
         agent._session_db = _ClientProxy({})
-        self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": "1"}):
+            self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
         EngineStubHandler.screen_calls = 0
         chat, agent = self.fake_chat(session_id="unknown-2")
         agent._session_db = _ClientProxy({})
         EngineStubHandler.block_pattern = "ATTACK"
-        notice = desktop_screen.chat_gate(chat, agent, "ATTACK now")
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": "1"}):
+            notice = desktop_screen.chat_gate(chat, agent, "ATTACK now")
         self.assertIsInstance(notice, str)
 
     def test_non_desktop_process_fallback_skips(self):
@@ -507,9 +509,11 @@ class TestScopeResolution(ChatGateTestCase):
 
     def test_snapshot_rebound_local_desktop_rescues(self):
         # Review 1c-r6: the snapshot pair goes through _resolve_label.
+        # Env pinned so the result cannot lean on the process fallback.
         store = _ClientProxy({"s-norow": {"source": "local",
                                           "created_source": "desktop"}})
-        self.assertIsNone(self.gate_with(store, session_id="s-norow"))
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(self.gate_with(store, session_id="s-norow"))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
     def test_snapshot_machine_transport_never_screens(self):

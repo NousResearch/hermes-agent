@@ -451,6 +451,15 @@ def _fts_match_sql(table: str, match_query: str, order_by_sql: str, *, limit: in
     return sql, params
 
 
+class _RankProbeIoerr(sqlite3.OperationalError):
+    """A transient IOERR from the rank probe, carrying the corruption error it was diagnosing so the
+    caller can fail closed with it once ``_read_retrying_ioerr``'s budget is spent."""
+
+    def __init__(self, ioerr: sqlite3.OperationalError, unattributed: sqlite3.DatabaseError):
+        super().__init__(str(ioerr))
+        self.unattributed = unattributed
+
+
 def _attribute_ranked_corruption(
     conn: sqlite3.Connection, table: str, match_query: str, order_by_sql: str, exc: sqlite3.DatabaseError,
 ) -> sqlite3.DatabaseError:
@@ -467,7 +476,7 @@ def _attribute_ranked_corruption(
             pass
     except sqlite3.OperationalError as probe_exc:
         if _DISK_IO_ERROR_MARKER in str(probe_exc).lower():
-            raise  # transient: _read_retrying_ioerr replays the whole read (see _fts_match_read)
+            raise _RankProbeIoerr(probe_exc, exc) from probe_exc  # _read_retrying_ioerr replays the read
         logger.debug("%s rank-corruption probe could not run; keeping the original error", table, exc_info=True)
     except sqlite3.DatabaseError as probe_exc:
         if is_fts_scoped_corruption_error(probe_exc):
@@ -499,15 +508,11 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
     try:
         # One snapshot for the failed read and its probe: a peer rebuild in between must not hide the damage.
         return [dict(row) for row in _in_one_read(holder, read)]
-    except sqlite3.OperationalError as exc:
-        unattributed = exc.__context__
-        if _DISK_IO_ERROR_MARKER not in str(exc).lower() or not isinstance(unattributed, sqlite3.DatabaseError) \
-                or isinstance(unattributed, sqlite3.OperationalError):
-            raise
+    except _RankProbeIoerr as exc:
         # The probe's IOERR outlasted the retry budget: the corruption it was diagnosing stays unattributed,
         # so it fails closed as the read reported it.
-        note_storage_error(holder.db_path, unattributed)
-        raise unattributed from exc
+        note_storage_error(holder.db_path, exc.unattributed)
+        raise exc.unattributed from exc
 
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:

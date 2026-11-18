@@ -300,6 +300,39 @@ def test_a_transient_ioerr_in_the_rank_probe_replays_the_read(tmp_path, monkeypa
         holder.close()
 
 
+def test_a_plain_ioerr_inside_a_caller_handling_corruption_stays_an_ioerr(tmp_path, monkeypatch):
+    """Only the probe's own IOERR carries a corruption to restore; an unrelated exception the caller is
+    handling never becomes the search's error."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        append_message(holder, "s", role="user", content="healthyword")
+        original = holder._read_retrying_ioerr
+
+        class IoerrRankedRead:
+            def __init__(self, conn):
+                self._conn = conn
+
+            @property
+            def in_transaction(self):
+                return self._conn.in_transaction
+
+            def execute(self, sql, *args):
+                if "ORDER BY rank" in sql:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return self._conn.execute(sql, *args)
+
+        monkeypatch.setattr(holder, "_read_retrying_ioerr", lambda fn: original(lambda conn: fn(IoerrRankedRead(conn))))
+        try:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        except sqlite3.DatabaseError:
+            assert search_messages(holder, "healthyword") == []
+        assert storage_state(path) == STORAGE_OK
+    finally:
+        holder.close()
+
+
 def test_structural_error_the_index_does_not_reproduce_still_latches(tmp_path, monkeypatch):
     """A bare SQLITE_CORRUPT the index alone does not reproduce stays structural and latches."""
     path = tmp_path / "state.db"

@@ -1,7 +1,9 @@
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { customEndpointCredentials } from './custom_endpoint_credentials'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
@@ -24,6 +26,7 @@ import { jaPluginUpdateAll } from './ja_plugin_update_all'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
+import { jaSettingsSubpages } from './ja_settings_subpages'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
@@ -315,57 +318,9 @@ export const jaOverrides = {
         }
       }
     },
-    subpages: {
-      appearanceTheme: 'テーマ',
-      appearanceTypography: 'フォントと表示倍率',
-      appearanceWindowLayout: 'ウィンドウとレイアウト',
-      appearanceChatDisplay: 'チャット表示',
-      appearancePet: 'ペット',
-      appearanceGeneral: '一般',
-      modelMain: 'メインモデル',
-      modelAuxiliary: '補助モデル',
-      modelMoa: 'エージェントの協調',
-      modelFallbacks: '代替モデル',
-      chatBehavior: '動作',
-      chatAttachments: '添付ファイル',
-      workspaceProjects: 'プロジェクトと検出',
-      workspaceShell: 'シェル環境',
-      workspaceFiles: 'ファイルと実行',
-      safetyApprovals: '承認',
-      safetyPrivacy: 'プライバシーとネットワーク',
-      safetyCheckpoints: 'チェックポイント',
-      browserProfile: 'ブラウザープロファイル',
-      browserNetwork: 'ローカル・プライベート URL',
-      memoryPersistent: '永続メモリ',
-      memoryContext: 'コンテキストと圧縮',
-      voiceConversation: '音声会話',
-      voiceTranscription: '音声認識',
-      voiceSpeech: '音声合成',
-      advancedRuntime: 'エージェントの制限',
-      advancedTools: 'ツールへのアクセス',
-      advancedTerminal: 'ターミナルのバックエンド',
-      advancedOutput: '出力の制限',
-      advancedDelegation: 'サブエージェント',
-      advancedDesktop: 'デスクトップと起動',
-      gatewayConnection: 'プライマリゲートウェイ',
-      gatewayDevices: '保存済みの接続',
-      gatewayManagedUpdates: 'リモート更新',
-      gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
-      gatewayManagedUpdatesEmpty: '保存済みの接続に SSH 接続を追加すると、ここで更新を管理できます。',
-      keyboardShortcuts: 'キー割り当て',
-      hudGesture: 'HUDジェスチャー',
-      screenCapture: '画面キャプチャ',
-      notificationAlerts: 'デスクトップ通知',
-      notificationSounds: 'サウンド',
-      archivedSessions: 'アーカイブと保持',
-      defaultDirectory: '既定のプロジェクトフォルダー',
-      vaultCredentials: '保存済みの認証情報',
-      vaultSources: 'パスワードマネージャー',
-      appUpdates: 'バージョンと更新',
-      uninstall: 'アンインストール',
-      billingOverview: '概要',
-      billingPlans: 'プラン'
-    },
+    foundry: foundryTranslations['ja'],
+    customEndpoints: { credentials: customEndpointCredentials.ja },
+    subpages: jaSettingsSubpages,
     plugins: jaPluginSettings.plugins,
     closeSettings: '設定を閉じる',
     exportConfig: '設定を書き出す',

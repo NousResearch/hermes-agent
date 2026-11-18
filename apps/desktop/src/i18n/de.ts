@@ -6,6 +6,7 @@ import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deCronControl } from './de_cron_control'
+import { deCustomEndpoints } from './de_custom_endpoints'
 import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
@@ -26,6 +27,7 @@ import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
@@ -1464,47 +1466,8 @@ export const deOverrides = {
         }
       }
     },
-    customEndpoints: {
-      active: 'Aktiv',
-      apiKeySet: 'API-Schlüssel gesetzt',
-      use: 'Verwenden',
-      editTitle: 'Endpunkt bearbeiten',
-      addTitle: 'Endpunkt hinzufügen',
-      fields: {
-        name: 'Name',
-        providerId: 'Anbieter-ID',
-        endpointUrl: 'Endpunkt-URL',
-        defaultModel: 'Standardmodell',
-        context: 'Kontext',
-        apiKey: 'API-Schlüssel',
-        apiKeyNewPlaceholder: 'Leer lassen, um den aktuellen Schlüssel zu behalten',
-        apiKeyPlaceholder: 'Optional',
-        useNewChats: 'Für neue Chats verwenden',
-        discoverModels: 'Modelle ermitteln'
-      },
-      test: 'Testen',
-      save: 'Speichern',
-      newEndpoint: 'Neuer Endpunkt',
-      apiMode: 'API-Modus',
-      autoDetect: 'Automatisch erkennen',
-      couldNotLoad: 'Benutzerdefinierte Endpunkte konnten nicht geladen werden',
-      endpointSaved: 'Benutzerdefinierter Endpunkt gespeichert.',
-      saveFailed: 'Speichern fehlgeschlagen',
-      endpointReachable: 'Der Endpunkt ist erreichbar.',
-      endpointReachableTransport: transport => `Der Endpunkt ist erreichbar (${transport}-Route bedient).`,
-      endpointReachableModels: (reachable, count) => `${reachable} ${count} Modell${count === 1 ? '' : 'e'} gefunden.`,
-      endpointValidationFailed: 'Die Validierung des Endpunkts ist fehlgeschlagen.',
-      validationFailed: 'Validierung fehlgeschlagen',
-      activationFailed: 'Aktivierung fehlgeschlagen',
-      deleteConfirm: name => `${name} löschen?`,
-      deleteFailed: 'Löschen fehlgeschlagen',
-      title: 'Eigene Endpunkte',
-      deleteEndpoint: 'Endpunkt löschen',
-      emptyDescription: 'Fügen Sie unten einen OpenAI-kompatiblen Endpunkt hinzu.',
-      emptyTitle: 'Keine eigenen Endpunkte',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Automatisch'
-    },
+    foundry: foundryTranslations['de'],
+    customEndpoints: deCustomEndpoints,
     computerUse: {
       accessibility: 'Bedienungshilfen',
       screenRecording: 'Bildschirmaufnahme',

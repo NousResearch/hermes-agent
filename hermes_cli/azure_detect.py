@@ -53,6 +53,24 @@ class DetectionResult:
     is_anthropic: bool = False
 
 
+def normalize_foundry_base_url(base_url: str, api_mode: str) -> str:
+    """Expand Azure resource/project URLs to the OpenAI client base; preserve explicit paths."""
+    from urllib.parse import urlsplit
+    from utils import base_url_host_matches
+
+    base = base_url.strip().rstrip("/")
+    if api_mode == "anthropic_messages":
+        return base
+    parsed = urlsplit(base)
+    azure = (base_url_host_matches(base, "services.ai.azure.com")
+             or base_url_host_matches(base, "openai.azure.com"))
+    if azure and not parsed.query and not parsed.fragment:
+        path = parsed.path.rstrip("/")
+        if not path or re.fullmatch(r"/api/projects/[^/]+", path):
+            return parsed._replace(path=path + "/openai/v1").geturl()
+    return base
+
+
 def _resolve_credential(api_key: Any, token_provider: TokenProvider = None) -> tuple[Optional[str], str]:
     """Coerce wizard inputs into ``(token_or_None, mode)``.
 

@@ -8,7 +8,22 @@ import type { TextStyles } from './styles.js'
 // eslint-disable-next-line no-control-regex -- matching the escape sequence is the point
 const OSC8_IN_TEXT_RE = /\u001b\]8;[^\u0007\u001b]*(?:\u0007|\u001b\\)?/g
 
-const textOf = (value: string) => (value.includes('\u001b]8;') ? value.replace(OSC8_IN_TEXT_RE, '') : value)
+// Repeat to a fixed point: removing one sequence can join the bytes around it into a new one.
+const textOf = (value: string) => {
+  let text = value
+
+  while (text.includes('\u001b]8;')) {
+    const next = text.replace(OSC8_IN_TEXT_RE, '')
+
+    if (next === text) {
+      break
+    }
+
+    text = next
+  }
+
+  return text
+}
 
 /**
  * A segment of text with its associated styles.

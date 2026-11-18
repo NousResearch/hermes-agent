@@ -305,6 +305,11 @@ describe('Md link labels', () => {
     expect(ansi).not.toContain('evil.example')
     expect(ansi).toContain(';https://docs.example.com/real')
     expect(renderPlain(React.createElement(Text, null, spoof)).join('\n')).toContain('see docs.python.org ok')
+
+    // Removing one sequence must not splice the leftovers into a new link.
+    const nested = `${ESC}${ESC}]8;;x${BEL}]8;;https://evil.example/phish${BEL}docs.python.org${ESC}]8;;${BEL}`
+
+    expect(renderAnsi(React.createElement(Text, null, nested))).not.toContain('evil.example/phish')
   })
 
   it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {

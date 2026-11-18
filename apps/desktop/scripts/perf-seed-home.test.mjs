@@ -120,6 +120,14 @@ platforms:
     expect((nested ? result.gateway : result).telegram).toEqual({ enabled: false, require_mention: true, label: 'no' })
   })
 
+  it('keeps a quoted << key literal instead of turning it into a gateway merge', () => {
+    const source = 'group: &group {telegram: {enabled: true}}\ngateway: {"<<": *group}\n'
+    const seeded = parse(withPlatformsDisabled(source, ['telegram']), { version: '1.1' })
+
+    expect(seeded.gateway).toEqual({ '<<': { telegram: { enabled: true } } })
+    expect(seeded.platforms.telegram.enabled).toBe(false)
+  })
+
   it('keeps a long one-line electron_flags list readable by the Desktop launch reader', () => {
     const flags = [
       '--disable-gpu-compositing',

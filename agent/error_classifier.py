@@ -356,6 +356,15 @@ _MODEL_NOT_FOUND_PATTERNS = (
     # billing wording, the account's balance/tier is not what rejected the call.
     "is no longer free",
 )
+# llama.cpp's router (and several OpenAI-compatible servers) put the requested id between "model"
+# and "not found" — ``model 'Foo-Q4_K_M' not found`` — which no plain substring above matches, so
+# the 400 fell through to format_error ("rejected as malformed") for a model that simply isn't
+# served. Anchored on a quoted id after the word "model" so ``tool 'x' not found`` stays a
+# request-shape error. A regex entry in a rule's pattern list is honoured by ``_first_match``;
+# ``_MODEL_NOT_FOUND_PATTERNS`` itself stays plain strings (``tools.process_registry_notifications``
+# reads it as such).
+_QUOTED_MODEL_NOT_FOUND = re.compile(r"\bmodel\s+['\"`][^'\"`]+['\"`]\s+(?:was\s+)?not\s+found")
+_MODEL_NOT_FOUND_MATCHERS = _MODEL_NOT_FOUND_PATTERNS + (_QUOTED_MODEL_NOT_FOUND,)
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body
 # table (→ format_error) and the llama.cpp grammar guard so they cannot drift.
@@ -705,10 +714,10 @@ def _billing_hints(error_msg: str) -> Verdict:
     return {**_V_BILLING, "error_context": ctx}
 
 
-def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> Optional[Verdict]:
-    """Verdict of the first rule whose pattern list hits ``error_msg``."""
+def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[Any], Any]]) -> Optional[Verdict]:
+    """Verdict of the first rule whose pattern list hits ``error_msg`` (a substring, or a compiled regex)."""
     for patterns, verdict in rules:
-        if any(p in error_msg for p in patterns):
+        if any((p.search(error_msg) if isinstance(p, re.Pattern) else p in error_msg) for p in patterns):
             return verdict(error_msg) if callable(verdict) else verdict
     return None
 
@@ -731,13 +740,13 @@ _OVERFLOW_AS_5XX_RULES = (
 # Free Tier (billing, not missing model); policy block before model_not_found.
 _404_RULES = (
     (_403_404_WALL_PATTERNS, _V_BILLING), (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
-    (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_MODEL_NOT_FOUND_MATCHERS, _V_MODEL_NOT_FOUND),
 )
 
 # 400 tail after the deterministic request-shape checks. Some providers return
 # model-not-found / rate-limit / billing as 400 instead of 404/429/402.
 _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
-    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_MATCHERS, _V_MODEL_NOT_FOUND),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
 )
 
@@ -758,7 +767,7 @@ _MESSAGE_TAIL_RULES = (
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_ACCOUNT_WALL_PATTERNS, _billing_hints),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
-    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_MATCHERS, _V_MODEL_NOT_FOUND),
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),
 )
 

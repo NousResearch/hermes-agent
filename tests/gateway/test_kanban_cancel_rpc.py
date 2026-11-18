@@ -64,7 +64,7 @@ async def _dispatch(connection, method, params, rid=1):
 
 @pytest.mark.asyncio
 async def test_kanban_cancel_marks_card_and_descendants(owner):
-    connection, home = owner
+    connection, _home = owner
     parent, child, other = _seed()
     response = await _dispatch(connection, "kanban.cancel", {
         "task_id": parent, "reason": "stop", "cancelled_by": "tester",
@@ -84,7 +84,7 @@ async def test_kanban_cancel_marks_card_and_descendants(owner):
 
 @pytest.mark.asyncio
 async def test_kanban_cancel_terminal_is_idempotent(owner):
-    connection, home = owner
+    connection, _home = owner
     parent, _child, _other = _seed()
     first = await _dispatch(connection, "kanban.cancel", {"task_id": parent})
     second = await _dispatch(connection, "kanban.cancel", {"task_id": parent}, rid=2)
@@ -97,7 +97,7 @@ async def test_kanban_cancel_terminal_is_idempotent(owner):
 
 @pytest.mark.asyncio
 async def test_kanban_cancel_all_stops_one_session(owner):
-    connection, home = owner
+    connection, _home = owner
     parent, child, other = _seed()
     response = await _dispatch(connection, "kanban.cancel_all", {
         "origin_session_id": "sess-1", "cancelled_by": "tester",
@@ -139,7 +139,7 @@ async def test_kanban_cancel_requires_control_capability(owner):
 @pytest.mark.asyncio
 async def test_kanban_cancel_foreign_profile_is_mismatch(owner):
     """Another profile's actor cannot cancel this profile's cards."""
-    connection, home = owner
+    connection, _home = owner
     parent, _child, _other = _seed()
     foreign = AuthorityConnection(
         connection.authority, object(),
@@ -157,7 +157,7 @@ async def test_kanban_cancel_foreign_profile_is_mismatch(owner):
 @pytest.mark.asyncio
 async def test_kanban_cancel_rejects_unknown_params(owner):
     """The closed param set is enforced before the handler runs."""
-    connection, home = owner
+    connection, _home = owner
     parent, _child, _other = _seed()
     response = await _dispatch(
         connection, "kanban.cancel", {"task_id": parent, "surprise": True},

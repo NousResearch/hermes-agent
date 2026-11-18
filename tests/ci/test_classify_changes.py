@@ -850,3 +850,160 @@ def test_a_list_at_the_compare_cap_runs_every_lane(monkeypatch, capsys):
     assert main() == 0
     out = capsys.readouterr().out
     assert "python=true" in out and all(f"{lane}=true" in out for lane in SLOW_LANES)
+
+
+# ── push-diff classification (opt-in via HERMES_CI_PUSH_DIFF) ──────────────
+#
+# A push to main has a real before..after diff. Classifying it keeps the
+# expensive lanes proportional to the change while the cheap guard lanes stay
+# on. Every path that cannot trust the diff must fall back to the old
+# empty-diff fail-open: running a lane we did not need is the acceptable
+# error, skipping one the change could have broken is not.
+
+_PUSH_BEFORE = "a" * 40
+_PUSH_AFTER = "b" * 40
+
+
+def _write_push_event(tmp_path, before=_PUSH_BEFORE, after=_PUSH_AFTER) -> Path:
+    path = tmp_path / "push.json"
+    path.write_text(json.dumps({"before": before, "after": after}), encoding="utf-8")
+    return path
+
+
+def _push_env(monkeypatch, tmp_path, *, enabled="1", before=_PUSH_BEFORE, after=_PUSH_AFTER):
+    monkeypatch.setenv("EVENT_NAME", "push")
+    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_push_event(tmp_path, before, after)))
+    if enabled is None:
+        monkeypatch.delenv(_mod.PUSH_DIFF_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(_mod.PUSH_DIFF_VARIABLE, enabled)
+
+
+def test_push_changed_files_returns_none_without_the_opt_in(monkeypatch, tmp_path):
+    """Default off: the empty-diff fail-open is unchanged until a maintainer opts in."""
+    _push_env(monkeypatch, tmp_path, enabled=None)
+    called = []
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: called.append(a))
+    assert _mod.push_changed_files() is None
+    assert called == [], "must not call the compare API when the lane is disabled"
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+def test_push_changed_files_rejects_non_affirmative_values(monkeypatch, tmp_path, value):
+    _push_env(monkeypatch, tmp_path, enabled=value)
+    assert _mod.push_changed_files() is None
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes "])
+def test_push_changed_files_accepts_affirmative_values(monkeypatch, tmp_path, value):
+    _push_env(monkeypatch, tmp_path, enabled=value)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["gateway/run.py"])
+    assert _mod.push_changed_files() == ["gateway/run.py"]
+
+
+def test_push_changed_files_ignores_pull_request_events(monkeypatch, tmp_path):
+    _push_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("EVENT_NAME", "pull_request")
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["gateway/run.py"])
+    assert _mod.push_changed_files() is None
+
+
+def test_push_changed_files_fails_open_on_a_zero_before_sha(monkeypatch, tmp_path):
+    """A branch's first push has no base revision to compare against."""
+    _push_env(monkeypatch, tmp_path, before="0" * 40)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["gateway/run.py"])
+    assert _mod.push_changed_files() is None
+
+
+def test_push_changed_files_fails_open_when_the_compare_api_fails(monkeypatch, tmp_path):
+    """A force-push whose old head is gone, or a rate limit, must not narrow the plan."""
+    _push_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: None)
+    assert _mod.push_changed_files() is None
+
+
+def test_push_changed_files_fails_open_at_the_compare_cap(monkeypatch, tmp_path):
+    _push_env(monkeypatch, tmp_path)
+    at_cap = [f"src/f{i}.py" for i in range(_mod.COMPARE_FILE_CAP)]
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: at_cap)
+    assert _mod.push_changed_files() is None
+
+
+def test_push_changed_files_queries_the_event_before_after_pair(monkeypatch, tmp_path):
+    _push_env(monkeypatch, tmp_path)
+    seen = []
+
+    def fake(*args, **kwargs):
+        seen.append(args)
+        return ["gateway/run.py"]
+
+    monkeypatch.setattr(_mod, "_gh_lines", fake)
+    _mod.push_changed_files()
+    assert seen, "the compare API must be consulted"
+    assert f"repos/NousResearch/hermes-agent/compare/{_PUSH_BEFORE}...{_PUSH_AFTER}" in seen[0]
+
+
+def test_main_narrows_a_narrow_push_and_keeps_the_guard_lanes(monkeypatch, tmp_path, capsys):
+    """The whole point: a catalog-only push does not start the Python suite."""
+    _push_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["plugin-catalog/nvidia-switchyard.yaml"])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "python=false" in out
+    assert "frontend=false" in out
+    for lane in _mod.PUSH_ALWAYS_ON:
+        assert f"{lane}=true" in out, lane
+
+
+def test_main_keeps_the_expensive_lane_a_push_touched(monkeypatch, tmp_path, capsys):
+    _push_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["agent/deadline.py"])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "python=true" in out
+    assert "python_prod=true" in out
+
+
+def test_main_fails_open_on_a_push_when_the_diff_is_unavailable(monkeypatch, tmp_path, capsys):
+    """Every untrustworthy path degrades to the old behaviour, not to a silent skip."""
+    _push_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: None)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    for lane in DEFAULT:
+        assert f"{lane}=true" in out, lane
+
+
+def test_main_ignores_push_selection_when_disabled(monkeypatch, tmp_path, capsys):
+    """With the variable unset, a push still runs every lane even though a diff exists."""
+    _push_env(monkeypatch, tmp_path, enabled=None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(_mod, "pull_request_labels", list)
+    monkeypatch.setattr(_mod, "_gh_lines", lambda *a, **k: ["plugin-catalog/x.yaml"])
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "python=true" in out
+    assert "frontend=true" in out
+
+
+def test_push_always_on_lanes_are_real_classifier_lanes():
+    """A typo in PUSH_ALWAYS_ON would silently stop forcing a guard on every push."""
+    lanes = set(classify(["agent/deadline.py"]))
+    assert _mod.PUSH_ALWAYS_ON <= lanes, _mod.PUSH_ALWAYS_ON - lanes
+    # And the set must stay cheap: it may not contain the lanes that carry the compute.
+    assert not (_mod.PUSH_ALWAYS_ON & {"python", "python_prod", "frontend", "rust", "docker", "nix"})

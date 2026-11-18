@@ -90,6 +90,10 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Opt-in: classify a push to main by its before..after diff instead of
+        # turning every lane on. Unset (the default) keeps the empty-diff
+        # fail-open. Set the repository variable to 1 to enable.
+        HERMES_CI_PUSH_DIFF: ${{ vars.HERMES_CI_PUSH_DIFF }}
       run: |
         set -euo pipefail
 

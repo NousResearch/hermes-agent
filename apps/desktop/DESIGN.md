@@ -1839,3 +1839,6 @@ The detailed state contract lives in the scoped
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.
+- [ ] A new file in `src/components/ui/`? It has an entry in the design system
+      page's registry (`src/app/redesign/design-system/registry/`), or a line in
+      its `NOT_SHOWN` table saying why not.

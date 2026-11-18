@@ -583,7 +583,7 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {"approved": True, "result": result})
 
 
-@_room_method("groups.retry", code=5118, service_code=4115)
+@_room_method("groups.retry", code=5118, room_code=5118, service_code=4115)
 def _(rid, params: dict, service) -> dict:
     """Retry one indeterminate room task after explicit user confirmation."""
     task = service.retry_room_task(

@@ -606,10 +606,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
             ? labels.discardPeerUpdateRequired : labels.discardPeerUnreachable]
         ])
 
-        const message = action.kind === 'discard' ? reasons.get(error?.data?.reason)
-          : action.kind === 'retry' && error?.data?.reason === 'session_busy' ? labels.retryBusy
-            // A preparation that fails again answers with a bare code, which says nothing to a person.
-            : action.kind === 'retry' && action.task_id.startsWith('prepare:') && error?.data?.reason ? labels.retryStalled : undefined
+        const retryReasons = new Map([
+          ['session_busy', labels.retryBusy],
+          ['runtime_coordination_required', labels.driverUnavailable],
+          ['prepare_failed', labels.retryStalled]
+        ])
+        const reason = error?.data?.reason ?? (error?.code === 4115 ? 'runtime_coordination_required' : undefined)
+        const legacyPreparation = action.task_id.startsWith('prepare:') && (reason === 'invalid_params' || error?.code === 5118)
+        const message = action.kind === 'discard' ? reasons.get(reason)
+          : action.kind === 'retry' ? retryReasons.get(reason) ?? (legacyPreparation ? labels.pendingActionUnconfirmed : undefined) : undefined
 
         const member = memberById.get(action.member_id)
 

@@ -5,6 +5,7 @@ import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
+let language: 'en' | 'fr' = 'en'
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const gateway = createGroupGateway()
@@ -16,7 +17,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
     useQuery: (await import('@tanstack/react-query')).useQuery,
     useI18n: () => ({ t: en }),
-    usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+    usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES[language][key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
     Input: (p: ComponentProps<'input'>) => <input {...p} />,
     RowButton: (p: ComponentProps<'button'>) => <button type="button" {...p} />,
@@ -31,7 +32,7 @@ import wire from './fixtures/stalled-stop-responses.json'
 const labels = CANONICAL_GROUP_LOCALES.en
 const originalDesktop = window.hermesDesktop
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+afterEach(() => { language = 'en'; cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
 
 const snapshots = { stalled: wire.stalled, deferred: wire.deferred, indeterminate: wire.indeterminate,
   settled: wire.settled, empty: wire.empty }
@@ -53,7 +54,7 @@ async function open(kind: keyof typeof snapshots, stop: () => Promise<unknown> =
 
     if (method === 'groups.stop') {return stop()}
 
-    if (method === 'groups.retry') {throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })}
+    if (method === 'groups.retry') {throw Object.assign(new Error('prepare_failed'), { code: 4001, data: { reason: 'prepare_failed' } })}
 
     if (method === 'groups.send') {current = wire.working;
 
@@ -62,7 +63,7 @@ async function open(kind: keyof typeof snapshots, stop: () => Promise<unknown> =
     throw new Error(`Unexpected RPC: ${method}`)
   })
   const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'default', roomId: current.state.room.room_id }} />)
-  await screen.findByRole('button', { name: 'Group details' })
+  await screen.findByRole('button', { name: CANONICAL_GROUP_LOCALES[language].groupDetails })
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
 
   return { view, update: (next: Snapshot) => { current = next } }
@@ -137,11 +138,11 @@ it('replays only the original Stop when another window posts during the replay',
   expect(ids).toEqual([ids[0], ids[0]])
 })
 
-it('says in plain words when Retry cannot repair the stall', async () => {
+it('explains a failed preparation in the selected language', async () => {
+  language = 'fr'
   await open('stalled')
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-  expect((await screen.findByText(/Retry didn’t work|invalid_params/)).textContent).toBe(labels.retryStalled)
-  expect(screen.queryByText('invalid_params')).toBeNull()
+  await screen.findByText(CANONICAL_GROUP_LOCALES.fr.retryStalled)
 })
 
 it.each([
@@ -162,4 +163,14 @@ it('closes an acknowledged Stop and retries only the room read after a timeout',
   fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull())
   expect(stops()).toHaveLength(1)
+})
+
+it('explains when the worker cannot run Retry', async () => {
+  await open('stalled')
+  request.mockRejectedValueOnce(Object.assign(new Error('runtime_coordination_required'), {
+    data: { reason: 'runtime_coordination_required' }
+  }))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await screen.findByText(labels.driverUnavailable)
+  expect(screen.queryByText(labels.retryStalled)).toBeNull()
 })

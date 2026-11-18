@@ -61,6 +61,12 @@ _OWED_REVOKE_MAX_RETRY_SECONDS = 3600.0
 logger = logging.getLogger(__name__)
 
 
+class PreparationFailedError(hosted_rooms.HostedRoomError):
+    """An admitted preparation Retry ran and failed."""
+
+    reason = "prepare_failed"
+
+
 class RoomDisbandRefusedError(hosted_rooms.HostedRoomError, RuntimeError):
     """An expected Disband refusal shared by both RPC surfaces."""
 
@@ -923,7 +929,8 @@ class HostedRoomService:
             except Exception as exc:
                 if retry_stalled:
                     stalls.stall(binding.room_id, exc)
-                elif stalls.failed(binding.room_id, exc):
+                    raise PreparationFailedError(str(exc)) from exc
+                if stalls.failed(binding.room_id, exc):
                     prepare_stall.report_stall(self.store, binding.room_id, exc, placement=self.placement)
                 raise
             stalls.clear(binding.room_id)

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import tui_gateway.server as srv
+
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.session_controls import AuthorityConnection
@@ -30,7 +32,7 @@ def group_calls(service, tmp_path, monkeypatch, room_id="stalled"):
     )
     connection = AuthorityConnection(authority, object(), {"user_id": "reader"})
 
-    def call(method, **params):
+    def call(method, *, expect_error=False, **params):
         answer = asyncio.run(
             connection.dispatch(
                 {
@@ -40,6 +42,8 @@ def group_calls(service, tmp_path, monkeypatch, room_id="stalled"):
                 }
             )
         )
+        if expect_error:
+            return answer["error"]
         assert "result" in answer, answer
         return answer["result"]
 
@@ -154,3 +158,25 @@ def test_stop_clears_the_stall_when_a_rename_lands_right_after_its_fence(
     assert call("groups.stop", cancel_id="stop-first") == {"cancelled": 0}
     assert call("groups.log")["events"][-1]["kind"] == "room.renamed"
     assert call("groups.state")["driver_status"]["pending_actions"] == []
+
+
+@pytest.mark.parametrize("route", ["standalone", "authority"])
+def test_retry_identifies_failed_preparation_on_both_routes(
+    tmp_path, monkeypatch, route
+):
+    service, call, _ = stalled_service(tmp_path, monkeypatch)
+    (action,) = call("groups.state")["driver_status"]["pending_actions"]
+    params = {key: value for key, value in action.items() if key != "kind"}
+    if route == "standalone":
+        monkeypatch.setattr(srv, "get_hosted_room_service", lambda: service)
+        reply = srv.handle_request(
+            {
+                "id": 1,
+                "method": "groups.retry",
+                "params": {"room_id": "stalled", **params},
+            }
+        )
+        error = reply["error"]
+    else:
+        error = call("groups.retry", expect_error=True, **params)
+    assert error.get("data", {}).get("reason") == "prepare_failed", error

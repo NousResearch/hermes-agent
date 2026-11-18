@@ -151,3 +151,13 @@ def test_catalog_checks_the_authority_epoch_in_its_read_snapshot(gateway, monkey
 
     monkeypatch.setattr(HostedRoomAttachmentStore, "list_published", after_restart)
     assert "error" in call(gateway.owner, "groups.attachment.list", room_id="room")
+
+
+def test_owner_can_browse_while_another_connection_reserves_the_writer(gateway):
+    import sqlite3
+
+    event, _ = share(gateway, 1, b"shared")
+    with sqlite3.connect(gateway.service.db_path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        page = call(gateway.owner, "groups.attachment.list", room_id="room")
+    assert [item["event_id"] for item in page["result"]["items"]] == [event]

@@ -864,7 +864,7 @@ class HostedRoomPolicyRepository(Protocol):
 class HostedRoomAttachmentRepository(Protocol):
     """Room attachment rows and their blobs, kept in ``hosted-room-attachments/`` beside the placement's file. The caller validates identifiers, manifests, content and ranges before the call (``AttachmentError``)."""
 
-    def list_published(self, *, placement: HostedPlacement, room_id: str, authority_gateway_id: str, authority_epoch: int,
+    def list_published(self, *, placement: HostedPlacement, room_id: str, authority_gateway_id: str, authority_epoch: int | None,
                        owner: HostedOwnerClaim | None = None, cursor: str | None = None, limit: int | None = None, query: str | None = None,
                        producer_member_id: str | None = None, you_label: str | None = None) -> Mapping[str, JsonValue]:
         """One bounded page of exact versions from public messages at a fixed log position; fence on the viewer's authority."""

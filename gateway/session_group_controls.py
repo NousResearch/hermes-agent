@@ -150,7 +150,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
             # The owner claim runs inside the room insert's write: a create rejected by
             # validation or storage must not leave an owner-only reservation behind.
             owner = actor.subject
-        else:
+        elif method != 'groups.attachment.list' or service is None:
             room_authorizer(actor.subject, params['room_id'])
     if method.startswith('groups.attachment.'):
         if service is None:

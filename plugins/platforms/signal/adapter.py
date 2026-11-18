@@ -9,13 +9,12 @@ import json
 import logging
 import os
 import random
-import shutil
 import subprocess
 import tempfile
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import suppress
+from contextlib import ExitStack, asynccontextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,7 +33,7 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
-from plugins.platforms.signal.voice_notes import SIGNAL_MAX_ATTACHMENT_SIZE, prepare_voice_batch
+from plugins.platforms.signal.voice_notes import SIGNAL_MAX_ATTACHMENT_SIZE, convert_to_voice_note, find_ffmpeg
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
@@ -96,13 +95,51 @@ def _ext_to_mime(ext: str) -> str:
     return mime_for_ext(ext, fallback="application/octet-stream")
 
 
+def _read_container(path):
+    with path.open("rb") as audio:
+        return sniff_container(audio.read(16))
+
+
+async def _prepare_voice_file(source, cleanup):
+    path = Path(source)
+    container = await asyncio.to_thread(_read_container, path)
+    if container == "m4a" and path.suffix.lower() == ".m4a":
+        return source
+    if container is None:
+        return None
+    return await convert_to_voice_note(path, container, cleanup)
+
+
+@asynccontextmanager
+async def prepare_voice_batch(media):
+    """Keep converted files until the RPC (including retries) finishes.
+
+    signal-cli applies voiceNote to the entire message. On a mixed batch or a
+    failed conversion, deliver every original in order as an ordinary attachment.
+    """
+    originals = [path for path, _ in media]
+    if not media or not all(voice for _, voice in media):
+        yield originals, False
+        return
+    with ExitStack() as cleanup:
+        prepared = []
+        for path in originals:
+            try:
+                output = await _prepare_voice_file(path, cleanup)
+            except (OSError, TimeoutError) as exc:
+                logger.debug("Signal voice-note preparation failed: %s", exc)
+                output = None
+            if output is None:
+                yield originals, False
+                return
+            prepared.append(output)
+        yield prepared, True
+
+
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[tuple[bytes, str]]:
     """Losslessly remux raw ADTS AAC (Android voice notes, rejected by most STT APIs) to .m4a.
     Returns ``(m4a_bytes, ".m4a")``, or ``None`` when ffmpeg is missing/fails (caller keeps the input)."""
-    # Fall back to common Homebrew/local prefixes on macOS dev hosts.
-    ffmpeg = shutil.which("ffmpeg") or next(
-        (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
-         if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
         logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
         return None

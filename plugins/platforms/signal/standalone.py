@@ -8,7 +8,7 @@ import os
 import time
 
 from plugins.platforms.signal import signal_rate_limit as rl
-from plugins.platforms.signal.voice_notes import prepare_voice_batch
+from plugins.platforms.signal.adapter import prepare_voice_batch
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from gateway.outbound.senders import _error, _success

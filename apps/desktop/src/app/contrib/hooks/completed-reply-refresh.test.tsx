@@ -616,3 +616,63 @@ it('does not let an older finalizer retire the newest refresh observation', asyn
   expect(getLatestSessionMessages).toHaveBeenCalledTimes(3)
   expect(screen.getByTestId('runtime').textContent).toContain(FINAL)
 })
+
+it.each([
+  { streamed: false, prompt: 'missing', historyReads: 1 },
+  { streamed: true, prompt: 'missing', historyReads: 1 },
+  { streamed: true, prompt: 'shown', historyReads: 0 },
+  { streamed: true, prompt: 'hidden', historyReads: 0 }
+])(
+  'keeps the routed prompt before its reply (streamed: $streamed, prompt: $prompt)',
+  async ({ streamed, prompt, historyReads }) => {
+    const mountedHistory = prompt === 'shown' ? history : history.slice(0, 2)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: STORED, messages: mountedHistory })
+    render(<Harness backgroundSync fallback />)
+    await act(async () => {
+      cache.updateSessionState(RUNTIME, state => ({ ...state, messages: toChatMessages(mountedHistory) }), STORED)
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    vi.mocked(getLatestSessionMessages).mockClear()
+
+    const persistedHistory =
+      prompt === 'hidden' ? [...history.slice(0, 2), { ...history[2], display_kind: 'hidden' as const }] : history
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: STORED,
+      messages: [...persistedHistory, { id: 6, role: 'assistant', content: FINAL, timestamp: 6 }]
+    })
+
+    send('message.start')
+
+    if (streamed) {
+      send('message.delta', { text: FINAL })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+    }
+
+    send('message.complete', {
+      text: FINAL,
+      persisted_turn: {
+        row_ids: [3, 6],
+        user_row_id: 3,
+        ...(prompt === 'hidden' ? {} : { user_row_ids: [3] }),
+        final_assistant_row_id: 6,
+        complete: true
+      }
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    const expected = ['Earlier question', 'Earlier answer']
+
+    if (prompt !== 'hidden') {
+      expected.push('Latest question')
+    }
+
+    expected.push(FINAL)
+    expect(screen.getByTestId('runtime').textContent).toBe(expected.join('\n'))
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(historyReads)
+  }
+)

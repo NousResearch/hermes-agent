@@ -53,7 +53,7 @@ import {
 import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { bindReceiptUserRows } from './receipt-user-rows'
+import { bindReceiptUserRows, needsCompletionTranscript } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
@@ -1118,16 +1118,10 @@ export function useMessageStream({
           : nextMessages.findLast((m, index) => index > lastUserIndex && m.role === 'assistant' && !m.hidden)
 
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
-        // Having streamed the reply normally means this window owns the whole
-        // turn and re-reading stored history would be wasted work. That only
-        // holds for a turn it STARTED: an adopted one (resumed onto a session
-        // already running elsewhere) arrives reply-first, with no prompt row,
-        // so it has to hydrate or the user's own message never shows up.
-        // Adopted turns still hydrate so a resume-onto-running session can
-        // pick up the user's prompt row — unless this window already has
-        // visible assistant text and the terminal frame is empty. In that
-        // case hydrate would replace the live bubble with a stored empty
-        // row (#95514; adoptedRunningTurn must not short-circuit).
+        // A window that streamed the reply usually has the prompt, too. An
+        // adopted or routed turn can stream into a window without its prompt,
+        // so use the stored transcript when the receipt identifies that gap.
+        // Keep live text if the terminal frame is empty (#95514).
         shouldHydrate =
           !completionError &&
           !hasInlineError &&
@@ -1139,7 +1133,7 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload)
+          needsCompletionTranscript(nextMessages, persistedTurn, state)
 
         return {
           ...state,

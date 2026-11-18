@@ -28,7 +28,7 @@ from hermes_blob_port import (
     LEVELS, BlobFenceRequired, BlobFenceSuperseded, BlobKeyRefused, BlobLevelRefused,
     BlobNotFound, BlobPinRefused, BlobStore, parse_key,
 )
-from hermes_scope import Fence, Principal, current_scope, current_turn
+from hermes_scope import Fence, Principal, TurnScope, current_scope
 
 
 class SessionLeases:
@@ -103,16 +103,20 @@ class ReferenceBlobStore(BlobStore):
         """The turn fence on a conversation-file write (``participant`` level): it is
         session-owned data, so it runs under the bound turn, whose fence this store checks
         against the session's lease on ``self.leases`` inside the write, before anything of it
-        lands — the owner-epoch half alone for work designed to outlive the turn. Agent-level
-        writes are never turn-fenced."""
+        lands. The bound turn is the bound scope when it is a ``TurnScope`` (what
+        ``agent.runtime_scope.bind_turn`` binds). Work designed to outlive the turn (checked on
+        the owner-epoch half alone) needs ``outlive_turn`` from feat/hosted-persistence, which
+        main lacks, so every turn here is checked on its whole fence. Agent-level writes are
+        never turn-fenced."""
         if level != "participant":
             return
-        mark = current_turn()
+        scope = current_scope()
+        mark = scope if isinstance(scope, TurnScope) else None
         if mark is None:
             raise BlobFenceRequired(
                 "a conversation-file write is session-owned data and must run under its turn's "
                 "fence; no turn is bound")
-        if not self.leases.holds(mark.session, mark.fence, owner_only=mark.outlives):
+        if not self.leases.holds(mark.session, mark.fence):
             raise BlobFenceSuperseded(
                 f"turn {mark.turn!r} of session {mark.session!r} no longer holds its session's "
                 f"lease (fence epoch={mark.fence.epoch}, generation={mark.fence.generation}); "

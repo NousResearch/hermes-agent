@@ -1,8 +1,7 @@
 """The blob storage port: resolution rules and the local backend's contract.
 
-Mirrors the session storage port's tests (``test_storage_port.py``): a named provider is
-resolved by explicit name and never falls back to the local store; the local backend is
-today's files at today's paths, serves its own profile only, and refuses a write at a level
+A named provider is resolved by explicit name and never falls back to the local store; the
+local backend is today's files at today's paths, serves its own profile only, and refuses a write at a level
 it does not store.
 """
 

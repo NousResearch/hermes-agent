@@ -425,6 +425,7 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"first"
 
+    @pytest.mark.skip(reason="needs feat/hosted-persistence: outlive_turn")
     def test_work_that_outlives_the_turn_writes_after_the_sessions_next_claim(self, backend):
         self._hooks(backend)
         store = make_world(backend)
@@ -435,6 +436,7 @@ class ParticipantWriteFenceConformance:
         with backend.bind_member("a", "m1"):
             assert store.get("media/image/inbound.png") == b"outlives"
 
+    @pytest.mark.skip(reason="needs feat/hosted-persistence: outlive_turn")
     def test_work_that_outlives_the_turn_is_refused_after_a_takeover(self, backend):
         self._hooks(backend)
         store = make_world(backend)

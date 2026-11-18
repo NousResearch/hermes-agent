@@ -20,6 +20,16 @@ from gateway.run import GatewayRunner
 from gateway.session_results import execution_result
 from tests.waiting import async_wait_until
 
+
+@pytest.fixture(autouse=True)
+def _interaction_senders_admitted(monkeypatch):
+    """These tests cover how a Discord interaction is decoded and routed, so its sender counts as
+    admitted; admission itself: test_relay_discord_command_answer_authority.py."""
+    from gateway.relay import admitted_authors
+
+    monkeypatch.setattr(admitted_authors, "interaction_admitted", lambda *_args, **_kwargs: True)
+
+
 websockets = pytest.importorskip('websockets')
 
 SOURCE = {'platform': 'telegram', 'chat_type': 'dm'}

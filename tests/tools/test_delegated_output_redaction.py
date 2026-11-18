@@ -48,7 +48,7 @@ def test_child_result_events_memory_hooks_and_spill_use_redacted_output(
 
     hooks = Mock()
     monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", hooks)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     events = []
     summary = text + "\n" + "ordinary explanation\n" * 180
     child = _StubChild([summary])
@@ -193,7 +193,7 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
     hooks = Mock()
     monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", hooks)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     summary = SECRET + "\n" + "ordinary explanation\n" * 180
     parent = _Parent()
 
@@ -221,7 +221,7 @@ def test_forced_copies_are_projected_from_complete_output_before_the_parent_budg
     """Opt-out + budget: the trimmed parent tail can start after a PEM BEGIN marker; the
     memory/durable copies must still hide the key body, and the spill must stay valid JSON."""
     monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
-    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"max_summary_chars": 2000})
     body = "\n".join("MC4CAQAwBQYDK2VwBCIEI" + chr(65 + i) * 43 for i in range(4))
     pem = "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n"
     tail = pem[pem.index("KEY-----\n") :] + "ordinary ending\n" * 10

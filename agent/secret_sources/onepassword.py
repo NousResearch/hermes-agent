@@ -22,8 +22,9 @@ from typing import Dict, List, Optional, Tuple
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
-    get_source_environment, is_valid_env_name, run_cli,
+    build_minimal_provider_env, get_source_environment, is_valid_env_name, run_cli,
 )
+from hermes_constants import is_launch_only_env_key
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +129,12 @@ def _scrub(text: str) -> str:
 
 
 def _op_child_env(token_value: str) -> dict[str, str]:
+    # Shared base keeps proxy / CA-bundle vars so op works behind a corporate proxy.
     source_env = get_source_environment()
-    env = {k: source_env[k] for k in _OP_ENV_ALLOWLIST if k in source_env}
-    env.update((k, v) for k, v in source_env.items() if k.startswith("OP_SESSION_"))
+    extra = {k: v for k, v in source_env.items() if k.startswith("OP_SESSION_")}
     if token_value:
-        env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
-    env["NO_COLOR"] = "1"
-    return env
+        extra["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
+    return build_minimal_provider_env(source_env, allow_env=_OP_ENV_ALLOWLIST, extra_env=extra)
 
 
 def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
@@ -231,8 +231,9 @@ def apply_onepassword_secrets(
     result.warnings.extend(warnings)
 
     def _guarded(name: str) -> bool:
-        """True when ``name`` must not be applied (token var or env already set)."""
-        return name == service_account_token_env or (not override_existing and bool(os.environ.get(name)))
+        """True when ``name`` must not be applied (token var, launch-only key, or env already set)."""
+        return (name == service_account_token_env or is_launch_only_env_key(name)
+                or (not override_existing and bool(os.environ.get(name))))
 
     result.skipped.extend(n for n in valid if _guarded(n))
     refs_to_fetch = {n: ref for n, ref in valid.items() if not _guarded(n)}

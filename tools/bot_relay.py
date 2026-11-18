@@ -491,7 +491,8 @@ def _hermes_cli() -> str:
     # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
     # (for example an ampersand in a query-file path), even with shell=False.
     name = "hermes.exe" if sys.platform == "win32" else "hermes"
-    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    from hermes_cli._startup_fast import project_root_str
+    published = Path(project_root_str()) / ".hermes" / "bin" / name
     if published.is_file():
         return str(published)
     sibling = Path(sys.executable or "").parent / name

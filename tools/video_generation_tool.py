@@ -373,4 +373,8 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🎬",
-    dynamic_schema_overrides=_build_dynamic_video_schema)
+    dynamic_schema_overrides=_build_dynamic_video_schema,
+    # ``operation``/``video_url`` are refused by the handler (edit/extend unsupported); the
+    # rest are advertised only for backends that support them.
+    compat_args=("operation", "video_url", "image_url", "reference_image_urls", "negative_prompt",
+                 "audio", "seed", "upscale"))

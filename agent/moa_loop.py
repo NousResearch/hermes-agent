@@ -365,7 +365,7 @@ def _maybe_apply_moa_cache_control(
         # None → "5m"; cache-disabled routes already returned above. Envelope routes
         # reject part-level markers in tool_result.content[].
         return apply_anthropic_cache_control(
-            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
+            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
             native_anthropic=native_layout,
             tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )
@@ -1077,6 +1077,9 @@ class MoAChatCompletions:
         self._accounting_lock = threading.Lock()
         # Real aggregator slot so cost accounting prices the acting turn at its model.
         self.last_aggregator_slot: Any = None
+        # Resolved aggregator destination + the cache facts of the payload sent (prompt-cache clock).
+        self.last_aggregator_route: Any = None
+        self.last_aggregator_attempt: Any = None
         # Full-turn trace parts from a cache-MISS create(), flushed by consume_and_save_trace.
         self._pending_trace: Any = None
         # Per-advisor metrics for observability hooks; NOT consumed (post_api_request
@@ -1213,6 +1216,10 @@ class MoAChatCompletions:
         agg_messages, tools = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        # The prompt-cache clock reads the resolved destination and the payload actually sent, not the
+        # configured slot (which has no base_url/api_mode) or the virtual preset's request.
+        from agent.prompt_cache_clock import attempt_facts
+        self.last_aggregator_route = {k: agg_runtime.get(k) for k in ("provider", "model", "base_url", "api_mode")}
         trace = self._pending_trace
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)
@@ -1241,6 +1248,7 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools, "extra_body": agg_extra_body})
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1255,6 +1263,8 @@ class MoAChatCompletions:
                 "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
             )
             agg_messages = retry_messages
+            self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools,
+                                                          "extra_body": agg_extra_body})
             agg_response = send(messages=agg_messages)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
@@ -1497,6 +1507,14 @@ class MoAClient:
     @property
     def last_aggregator_slot(self) -> Any:
         return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    @property
+    def last_aggregator_route(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_route", None)
+
+    @property
+    def last_aggregator_attempt(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_attempt", None)
 
     def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
         return self.chat.completions.consume_and_save_trace(session_id, aggregator_output_fallback=aggregator_output_fallback)

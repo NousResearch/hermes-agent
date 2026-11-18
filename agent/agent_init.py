@@ -30,9 +30,8 @@ from agent.iteration_budget import IterationBudget, normalize_budget_warning_rat
 from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata
+from agent.process_transport import is_local_server
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.agent_init_compression_notice import _emit_compression_summary
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
@@ -641,7 +640,7 @@ def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     """anthropic_messages: native Anthropic SDK (or AnthropicBedrock for Bedrock+Claude)."""
     from agent.anthropic_adapter import build_anthropic_client
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.anthropic_credentials import native_anthropic_fallback_token
     agent.client = None
     agent._client_kwargs = {}
     agent._anthropic_base_url = base_url
@@ -656,7 +655,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    effective_key = api_key or (native_anthropic_fallback_token(base_url, model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -1161,8 +1160,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
+    from tools.hosted_tool_policy import host_feature_enabled
+    if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):  # hosted: not the agent's memory
         agent._memory_manager = None
         return
     # skip_memory skips the external *provider*; enabled_toolsets=["memory"] still gets the
@@ -1909,7 +1908,7 @@ def _enforce_minimum_context(agent):
     # A local Ollama server serves num_ctx, not the GGUF's advertised window: a Modelfile or
     # model.ollama_num_ctx at 64K+ is a usable window even when the metadata says 40K (#100437).
     # Only a local endpoint can honour num_ctx, so a stale override never admits a hosted model.
-    if agent._ollama_num_ctx and agent.base_url and is_local_endpoint(agent.base_url):
+    if agent._ollama_num_ctx and is_local_server(agent.base_url, agent.provider):
         _ctx = max(_ctx or 0, agent._ollama_num_ctx)
     _allow_lmstudio_explicit_below_floor = (
         str(agent.provider or "").strip().lower() == "lmstudio"
@@ -1919,7 +1918,7 @@ def _enforce_minimum_context(agent):
     )
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
         floor_k = MINIMUM_CONTEXT_LENGTH // 1000
-        if agent.base_url and is_local_endpoint(agent.base_url):
+        if is_local_server(agent.base_url, agent.provider):
             # Any OpenAI-compatible local server (llama.cpp, vLLM, Ollama, ...) — the window is the
             # server's runtime setting, not the model's; never assume Ollama here (#87075).
             remedy = (

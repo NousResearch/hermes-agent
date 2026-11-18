@@ -63,6 +63,9 @@ class GatewaySessionStore:
     a gateway hang-up stays truthy, and the next call redials."""
 
     current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+    # ``(prepared, abandon)`` while an owner-restart wait retries one open (``through_owner_restart``):
+    # one dict freezing the first attempt's request across retries, and the Ctrl+C poll.
+    retry: tuple | None = None
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
@@ -120,6 +123,16 @@ class GatewaySessionStore:
     def call(self, method, **params):
         return self.connection.call(method, **params)
 
+    def _retry_state(self):
+        """``(prepared, abandon)`` of the owner-restart wait this call runs in (``gateway_owner_restart.
+        through_owner_restart`` sets :attr:`retry`), else ``(None, None)``."""
+        retry = self.retry
+        return (None, None) if retry is None else retry
+
+    def _call(self, method, abandon, **params):
+        """:meth:`call`, polling ``abandon`` while it waits when one is given."""
+        return self.call(method, **params) if abandon is None else self.connection.call(method, abandon=abandon, **params)
+
     def _adopt(self, snapshot):
         sid = snapshot["stored_session_id"]
         self.snapshots[sid] = snapshot
@@ -161,7 +174,23 @@ class GatewaySessionStore:
     def create(self, launch=None, title=None, *, record_cwd=True):
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
-        ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
+        ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did.
+        Inside :attr:`retry` (an owner-restart wait) the first attempt's request, ``request_id``
+        included, is frozen and re-sent: the owner answers an exact retry with the session that
+        attempt committed, never a second one."""
+        prepared, abandon = self._retry_state()
+        params = prepared.get("params") if prepared is not None else None
+        if params is None:
+            params = self._create_params(launch, title, record_cwd)
+            if prepared is not None:
+                prepared["params"] = params
+        snapshot = self._call("session.create", abandon, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
+        return self._adopt(snapshot)
+
+    def _create_params(self, launch, title, record_cwd):
         from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = _launch_cwd()
@@ -174,11 +203,8 @@ class GatewaySessionStore:
         if title:
             params["title"] = title
         params.update(self.client_env())
-        snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
-        warning = (snapshot.get("info") or {}).get("config_warning")
-        if warning:
-            print(f"Warning: {warning}", file=sys.stderr)
-        return self._adopt(snapshot)
+        params["request_id"] = uuid.uuid4().hex
+        return params
 
     def client_env(self):
         """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
@@ -191,16 +217,26 @@ class GatewaySessionStore:
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
-        attaches this viewer to; returns the child id (main's /branch then switches to it)."""
-        snapshot = self.call("session.resume", session_id=session_id)
-        payload = {"title": title} if title else {}
-        receipt = self.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
-                            expected_revision=snapshot["revision"],
-                            expected_generation=snapshot["execution_generation"],
-                            operation="branch", payload=payload) or {}
-        child = receipt.get("branched_session_id")
-        if not child:
-            raise GatewayClientError("branch_failed")
+        attaches this viewer to; returns the child id (main's /branch then switches to it).
+        Inside :attr:`retry` the first attempt's request id and fenced revision (and the child once
+        named) are frozen: the owner replays an exact retry's receipt instead of forking a second child."""
+        prepared, abandon = self._retry_state()
+        prepared = {} if prepared is None else prepared
+        child = prepared.get("child")
+        if child is None:
+            mutate = prepared.get("mutate")
+            if mutate is None:
+                snapshot = self._call("session.resume", abandon, session_id=session_id)
+                mutate = prepared["mutate"] = {
+                    "session_id": session_id, "request_id": uuid.uuid4().hex,
+                    "expected_revision": snapshot["revision"],
+                    "expected_generation": snapshot["execution_generation"],
+                    "operation": "branch", "payload": {"title": title} if title else {}}
+            receipt = self._call("session.mutate", abandon, **mutate) or {}
+            child = receipt.get("branched_session_id")
+            if not child:
+                raise GatewayClientError("branch_failed")
+            prepared["child"] = child
         self._adopt(self.attach(child))
         return child
 

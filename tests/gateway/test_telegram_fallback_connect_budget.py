@@ -85,3 +85,23 @@ async def test_tighter_configured_connect_is_never_widened(monkeypatch):
         await transport.handle_async_request(request)
 
     assert [connect for _, connect in calls] == [1.0, 1.0, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_capped_walk_keeps_both_seed_ips_at_the_tail_after_many_doh_answers(monkeypatch):
+    """Discovery appends the seed IPs after the DoH answers. With more DoH answers than the FD cap,
+    the walk still ends with both seeds and then the hostname: the cap trims DoH answers only."""
+    clock = _Clock()
+    monkeypatch.setattr(tnet.time, "monotonic", clock.monotonic)
+    calls = []
+    monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", lambda **kw: _HangingConnect(calls, clock))
+    doh = [f"149.154.161.{n}" for n in range(10, 10 + tnet.MAX_FALLBACK_IPS + 1)]
+    request = tnet.build_ptb_requests(
+        _CaptureRequest, fallback_ips=[*doh, *tnet.SEED_FALLBACK_IPS], proxy_url=None, verify=False)[0]
+    transport = request.kwargs["httpx_kwargs"]["transport"]
+
+    with pytest.raises(httpx.ConnectTimeout):
+        await transport.handle_async_request(_stock_send_request())
+
+    attempted = [host for host, _ in calls]
+    assert attempted == [*doh[:tnet.MAX_FALLBACK_IPS], *tnet.SEED_FALLBACK_IPS, "api.telegram.org"]

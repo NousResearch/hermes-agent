@@ -42,7 +42,7 @@ def _run_owned_job(job, tmp_path):
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
     )
     row = {"admission_id": admission_id, "request_id": "cron-owner-request",
-           "principal_id": "cron-owner", "payload": {"text": ""}}
+           "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""}}
     policy = SimpleNamespace(request_json=json.dumps(
         {"cron_job": job, "extra_prompt": None, "request_id": "cron-owner-request"}))
 

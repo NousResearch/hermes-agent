@@ -146,6 +146,21 @@ def _still_names(path: Path, fd: int) -> bool:
         return False
 
 
+# Homes whose gateway.lock a ProfileOwnership in THIS process holds right now, with the pid that
+# took it. A forked child answers False here, but it shares the flock's open file description and
+# the inherited process_ownership, so runtime_lock_held_elsewhere() still answers False for it too.
+_held_here: dict[Path, int] = {}
+_held_here_mutex = threading.Lock()
+
+
+def held_by_this_process(home: Path) -> bool:
+    """Whether a reservation in this process (any :class:`ProfileOwnership`: the gateway, a served
+    secondary, a maintenance reservation) holds *home*'s ``gateway.lock`` now. Unlike the lock
+    record, which outlives :meth:`ProfileOwnership.release`, this is cleared on release."""
+    with _held_here_mutex:
+        return _held_here.get(canonical_home(home)) == os.getpid()
+
+
 class ProfileOwnership:
     def __init__(self):
         self._handles: dict[Path, object] = {}
@@ -186,6 +201,8 @@ class ProfileOwnership:
                         handle.close()
                         raise
                     self._handles[home] = handle
+                    with _held_here_mutex:
+                        _held_here[home] = os.getpid()
                     added.append(home)
             except BaseException:
                 for home in reversed(added):
@@ -201,6 +218,8 @@ class ProfileOwnership:
         with self._mutex:
             handle = self._handles.pop(canonical_home(home), None)
             if handle is not None:
+                with _held_here_mutex:
+                    _held_here.pop(canonical_home(home), None)
                 _release_file_lock(handle)
                 handle.close()
 
@@ -234,6 +253,24 @@ def maintenance_holder(home: Path, purpose: str) -> dict | None:
     if not record or record.get('purpose') != purpose or _live_pid_from_record(record) is None:
         return None
     return record
+
+
+def runtime_lock_held_elsewhere(home: Path) -> bool:
+    """Whether another process holds *home*'s ``gateway.lock`` flock. A flock lives on an open file
+    description, so it answers across PID namespaces where a recorded PID cannot (#123081). This
+    process's own reservation answers False: whoever wrote the record cannot hold it too. A lock
+    file that is absent or cannot be opened answers True: unknown is never "free"."""
+    home = canonical_home(home)
+    if process_ownership.owns(home):
+        return False
+    lock_path = home / 'gateway.lock'
+    if not lock_path.exists():
+        return True
+    from gateway.status import is_gateway_runtime_lock_active
+    try:
+        return is_gateway_runtime_lock_active(lock_path)
+    except OSError:
+        return True
 
 
 def lock_record_unpublished(home: Path) -> bool:

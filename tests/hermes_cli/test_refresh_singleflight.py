@@ -217,3 +217,65 @@ def test_cookie_gate_burst_with_stale_rt_rotates_once(gated_web_app):
         statuses = sorted(f.result(timeout=10).status_code for f in futures)
     assert statuses == [200, 200, 200, 200]
     assert provider.calls == 1
+
+
+def _refresh(token="copied-rt"):
+    return replay.refresh_session_coalesced(token, "owner", phase="refresh", log=logging.getLogger(__name__))
+
+
+@pytest.mark.parametrize("logout_rt", ["replayed", "rotated"])
+def test_forget_drops_a_cached_rotation_by_either_of_its_rts(logout_rt):
+    owner = Provider("owner")
+    register_provider(owner)
+    session, _ = _refresh()
+    replay.forget("copied-rt" if logout_rt == "replayed" else session.refresh_token)
+    _refresh()
+    assert owner.calls == 2
+
+
+def test_forget_during_a_refresh_keeps_its_result_out_of_the_replay_cache():
+    owner = Provider("owner")
+    register_provider(owner)
+    owner.release.clear()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(_refresh)
+        assert owner.entered.wait(5)
+        replay.forget("copied-rt")  # logout lands while the provider is rotating
+        owner.release.set()
+        assert pending.result(5) is not None
+    _refresh()
+    assert owner.calls == 2
+
+
+def test_a_provider_without_reuse_detection_gets_no_cached_success():
+    """Its used refresh tokens stay valid, so every replay must reach the provider (and its
+    revocation check); failures are still absorbed."""
+    owner = Provider("owner")
+    owner.refresh_reuse_detection = False
+    register_provider(owner)
+    _refresh()
+    _refresh()
+    assert owner.calls == 2
+    owner.outcome = "expired"
+    assert _refresh("dead-rt") is None and _refresh("dead-rt") is None
+    assert owner.calls == 3
+
+
+def test_an_unrelated_logout_keeps_a_rotating_burst_on_one_rotation():
+    """Another login's logout during this burst's rotation must not make the burst's waiting
+    requests replay the consumed RT (reuse detection would end this login)."""
+    from tests.waiting import wait_until
+
+    owner = Provider("owner")
+    register_provider(owner)
+    owner.release.clear()
+    key = (id(owner), replay._digest("copied-rt"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(_refresh)
+        assert owner.entered.wait(5)
+        follower = pool.submit(_refresh)
+        wait_until(lambda: replay._flights[key].users == 2, what="follower joined the flight")
+        replay.forget("another-logins-rt")
+        owner.release.set()
+        assert leader.result(5) is not None and follower.result(5) is not None
+    assert owner.calls == 1

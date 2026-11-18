@@ -1287,3 +1287,27 @@ def test_renewal_never_shortens_an_active_lease(db):
     renewed = driver.renew_lease(db, lease, ttl_seconds=2, clock=clock)
 
     assert renewed.expires_at == lease.expires_at
+
+
+def test_room_task_summary_counts_and_rows_come_from_one_snapshot(db, monkeypatch):
+    """``groups.state`` counts the room's tasks and decodes only the shown ones in two reads; a task moving
+    between them (another process starting or recovering it) must be neither doubled nor lost."""
+    clock = FakeClock()
+    _admit(db, _identity(), clock)
+    real_execute = sqlite3.Connection.execute
+
+    class MovesBetweenReads(sqlite3.Connection):
+        def execute(self, sql, *args):
+            result = real_execute(self, sql, *args)
+            if "GROUP BY status" in sql:
+                with sqlite3.connect(db) as other:
+                    other.execute("UPDATE hosted_room_driver_tasks SET status='indeterminate'")
+            return result
+
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: real_connect(*a, **{**k, "factory": MovesBetweenReads}))
+    counts, tasks = driver.room_task_summary(db, room_id="room-1", statuses=("queued", "indeterminate"))
+    monkeypatch.undo()
+    assert counts == {"queued": 1}
+    assert [(task["identity"].task_id, task["status"]) for task in tasks] == [("task-1", "queued")]
+    assert driver.room_task_summary(db, room_id="room-1", statuses=("queued",)) == ({"indeterminate": 1}, [])

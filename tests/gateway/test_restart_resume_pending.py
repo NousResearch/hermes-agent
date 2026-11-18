@@ -1110,7 +1110,7 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
     # The sentinel must be set immediately — before the task starts executing.
     assert pending_entry.session_key in runner._running_agents
     assert runner._running_agents[pending_entry.session_key] is _AGENT_PENDING_SENTINEL
-    assert pending_entry.session_key in runner._running_agents_ts
+    assert runner._session_state(pending_entry.session_key).turn.started_ts
 
     # Release the task and let it complete.
     gate.set()
@@ -1178,7 +1178,6 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     runner._is_session_run_current = lambda session_key, generation: True
     runner._invalidate_session_run_generation = lambda *a, **k: 0
     runner._claim_active_session_slot = lambda session_key, source: (object(), None)
-    runner._busy_ack_ts = {}
     runner._post_turn_goal_continuation = AsyncMock()
     runner.session_store.get_or_create_session.return_value = None
 

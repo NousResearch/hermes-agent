@@ -11,16 +11,14 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from hermes_constants import get_hermes_home
 
 
 def _base_with_archives(tmp_path: Path, monkeypatch, names) -> Path:
-    import tools.checkpoint_manager as ckpt_mgr
-
-    base = tmp_path / "checkpoints"
+    base = get_hermes_home() / "checkpoints"
     for name in names:
         (base / name).mkdir(parents=True)
         (base / name / "blob").write_bytes(b"x" * 1024)
-    monkeypatch.setattr(ckpt_mgr, "CHECKPOINT_BASE", base)
     return base
 
 

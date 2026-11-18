@@ -98,7 +98,12 @@ class FreshChild:
             check_import(importlib.util.resolve_name(name, package) if name.startswith(".") else name)
             return real_import_module(name, package)
 
+        from hermes_cli import _old_updater
+
         with self.monkeypatch.context() as guard:
+            # The probe body stands in for a historical updater's call site; whether a
+            # real frame counts as one is pinned with real frames in test_retired_shims_runtime.
+            guard.setattr(_old_updater, "in_historical_update", lambda: True)
             guard.setattr(builtins, "__import__", guarded_import)
             guard.setattr(importlib, "import_module", guarded_import_module)
             with pytest.raises(SystemExit) as stopped:

@@ -31,6 +31,36 @@ _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
 
+def _is_platform_name(segment: str) -> bool:
+    try:
+        Platform(segment)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_legacy_voice_key(key: str) -> bool:
+    """True for a pre-#12542 bare ``chat_id`` key. Chat ids may contain ``:`` themselves (Matrix
+    ``!room:server``, Signal and SimpleX ``group:<id>``), so a key is prefixed only when it starts
+    with ``<platform>:`` or ``<profile>:<platform>:``, never merely because it has a colon."""
+    parts = key.split(":", 2)
+    return not (_is_platform_name(parts[0]) or (len(parts) == 3 and _is_platform_name(parts[1])))
+
+
+def _owner_voice_config(owner_profile: Optional[str]) -> dict:
+    """The ``voice`` block of the adapter OWNER's config. Secondary startup and reconnect sync after
+    leaving ``_profile_runtime_scope``, so an ambient read would copy the launch profile's settings."""
+    from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
+
+    if not isinstance(owner_profile, str):  # primary adapter (None): the launch profile IS the owner
+        return load_config().get("voice") or {}
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.profiles import get_profile_dir
+
+    with _profile_runtime_scope(get_profile_dir(owner_profile), hydrate_secrets=False):
+        return load_config().get("voice") or {}
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -64,11 +94,23 @@ class GatewayVoiceMixin:
         if not isinstance(data, dict):
             return {}
         items = {str(k): m for k, m in data.items() if m in _VOICE_MODES}
-        for key in (k for k in items if ":" not in k):  # legacy unprefixed key: warn and skip
+        # Only a colon-free key is certainly legacy here: a plugin platform that only a named profile
+        # installs is not registered yet at load time, so its ``<profile>:<platform>:`` key must stay.
+        # A colon-bearing legacy key (Matrix ``!room:server``) is kept as is and read in the sync.
+        for key, mode in [(k, m) for k, m in items.items() if ":" not in k]:
+            # Legacy pre-#12542 key (no platform). Keep ``off``, so a saved ``/voice off`` still
+            # suppresses auto-TTS after the upgrade (#14025); drop voice_only/all, which would
+            # speak on a platform the user never turned voice on for.
+            if mode == "off":
+                logger.info(
+                    "Keeping legacy unprefixed voice mode key %r (off) as an auto-TTS suppression "
+                    "fallback; any /voice command on that chat writes a prefixed entry that wins.", key)
+                continue
+            del items[key]
             logger.warning(
-                "Skipping legacy unprefixed voice mode key %r during migration. "
-                "Re-enable voice mode on that chat to rebuild the prefixed key.", key)
-        return {k: m for k, m in items.items() if ":" in k}
+                "Skipping legacy unprefixed voice mode key %r (mode=%s) during migration. "
+                "Re-enable voice mode on that chat to rebuild the prefixed key.", key, mode)
+        return items
 
     def _save_voice_modes(self) -> None:
         try:
@@ -106,7 +148,8 @@ class GatewayVoiceMixin:
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live adapter: ``_auto_tts_default`` from
-        ``voice.auto_tts``; enabled (voice_only/all) / disabled (off) sets from ``_voice_mode``."""
+        ``voice.auto_tts`` and scope from ``voice.auto_tts_mode``; enabled (voice_only/all) /
+        disabled (off) sets from ``_voice_mode``."""
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
             return
@@ -118,10 +161,16 @@ class GatewayVoiceMixin:
         if not chat_sets:
             return
         try:
-            from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            voice_cfg = _owner_voice_config(getattr(adapter, "_owner_profile", None))
+            auto_tts_default = bool(voice_cfg.get("auto_tts", False))
+            auto_tts_mode = str(voice_cfg.get("auto_tts_mode", "all")).strip().lower()
+            if auto_tts_mode not in {"all", "voice_only"}:
+                logger.warning("Invalid voice.auto_tts_mode=%r; falling back to 'all'", auto_tts_mode)
+                auto_tts_mode = "all"
         except Exception:
+            logger.warning("Failed to load global voice settings", exc_info=True)
             auto_tts_default = False
+            auto_tts_mode = "all"
         if hasattr(adapter, "_auto_tts_default"):
             # A2A never inherits the global speak default. The flag is written by
             # Desktop "Read replies aloud" / voice.auto_tts and is meant for human
@@ -132,11 +181,21 @@ class GatewayVoiceMixin:
                 adapter._auto_tts_default = False
             else:
                 adapter._auto_tts_default = auto_tts_default
+        if hasattr(adapter, "_auto_tts_mode"):
+            adapter._auto_tts_mode = auto_tts_mode
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
+        explicit = {key[len(prefix):] for key in self._voice_mode if key.startswith(prefix)}
+        # A legacy unprefixed ``off`` row predates platform and profile keys, so it can only have
+        # come from the default profile's bots; it suppresses where no explicit entry exists.
+        legacy_off = set() if prefix != f"{platform.value}:" else {
+            key for key, mode in self._voice_mode.items()
+            if mode == "off" and _is_legacy_voice_key(key) and key not in explicit}
         for chats, modes in chat_sets:
             chats.clear()
             chats.update(key[len(prefix):] for key, mode in self._voice_mode.items()
                          if mode in modes and key.startswith(prefix))
+            if "off" in modes:
+                chats.update(legacy_off)
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
@@ -338,8 +397,8 @@ class GatewayVoiceMixin:
             return
         binding = (getattr(adapter, "_owner_profile", None), guild_id, text_ch_id)
         if self._is_duplicate_voice_transcript(binding, user_id, transcript):
-            logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
-                        guild_id, user_id, transcript[:100])
+            logger.info("Suppressing duplicate voice transcript for guild=%s user=%s (%d chars)",
+                        guild_id, user_id, len(transcript))
             return
         # Echo the transcript into the text channel (after auth, with mention sanitization).
         with suppress(Exception):
@@ -392,12 +451,15 @@ class GatewayVoiceMixin:
         is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
+        adapter_auto_tts_mode = "all"
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+            adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
-                or (voice_mode is None and adapter_auto_tts)):
+                or (voice_mode is None and adapter_auto_tts
+                    and (adapter_auto_tts_mode == "all" or is_voice_input))):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
@@ -405,9 +467,9 @@ class GatewayVoiceMixin:
         # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)
-        if any((tc.get("function") or {}).get("name") == "text_to_speech"
-               for msg in agent_messages[start:] if msg.get("role") == "assistant"
-               for tc in (msg.get("tool_calls") or [])):
+        # Resolved through the tool_call bridge: a deferred text_to_speech is recorded under it.
+        from gateway.media_repair import tool_name_by_call_id
+        if "text_to_speech" in tool_name_by_call_id(agent_messages[start:]).values():
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.

@@ -116,3 +116,42 @@ def test_other_sections_still_apply_while_model_awaits_confirmation(home, contri
     assert result.get("confirm_required") is True
     assert result["applied"].get("soul") is True
     assert _profile_model(home) != GUARDED_MODEL
+
+
+@pytest.mark.parametrize("group_tokens, expect_warning", [(99_000, False), (120_000, True)])
+def test_profile_switch_uses_the_largest_affected_group_context(home, group_tokens, expect_warning):
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from hermes_state import SessionDB
+
+    old_model = "old-local-model"
+    new_model = "new-local-model"
+    (home / "config.yaml").write_text(
+        f"model:\n  default: {old_model}\n  provider: custom\n  switch_context_confirm_tokens: 100000\n",
+        encoding="utf-8",
+    )
+    with SessionDB(home / "state.db") as db:
+        for sid, source, model, tokens in (
+            ("short-room", "bot_room", old_model, 95_000),
+            ("long-room", "bot_room", old_model, group_tokens),
+            ("already-on-target", "bot_room", new_model, 180_000),
+            ("unrelated-chat", "local", old_model, 190_000),
+            ("stale-room", "bot_room", old_model, 200_000),
+        ):
+            db.create_session(sid, source, model=model)
+            db.append_message(sid, "user", "Existing history")
+            messages = db.get_messages_as_conversation(sid)
+            if sid == "stale-room":
+                messages[0] = {"role": "user", "content": "History from before a rewind"}
+            db.patch_session_model_config(
+                sid, {USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(tokens, 0, messages)},
+            )
+
+    target = {"model": new_model, "provider": "custom"}
+    result = _configure(target)
+    assert bool(result.get("confirm_required")) is expect_warning
+    if expect_warning:
+        assert "LARGE CONTEXT MODEL SWITCH" in result["confirm_message"]
+        assert f"{group_tokens:,} tokens" in result["confirm_message"]
+        assert _profile_model(home) == old_model
+        assert _configure({**target, "confirm_expensive_model": True})["applied"]["model"] is True
+    assert _profile_model(home) == new_model

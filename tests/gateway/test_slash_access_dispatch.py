@@ -97,9 +97,7 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner._running_agents = {}
     runner._primary_profile_name = "primary"
     runner._profile_configs = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
@@ -344,7 +342,7 @@ async def test_running_agent_fastpath_allows_admin_command():
     src = _make_source(user_id="111")  # admin
     sk = build_session_key(src)
     runner._running_agents[sk] = MagicMock()
-    runner._running_agents_ts[sk] = 0
+    runner._session_state(sk).turn.started_ts = 0
     # Mock the restart handler so it doesn't actually try to restart anything.
     runner._handle_restart_command = AsyncMock(return_value="restart-handled")
 
@@ -427,9 +425,7 @@ async def test_gating_isolated_per_platform():
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_sources = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None

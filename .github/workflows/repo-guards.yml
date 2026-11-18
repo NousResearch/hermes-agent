@@ -100,6 +100,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-case-collisions.py
 
+      # A text blob stored with CRLF (web upload, API commit) reads as modified in every fresh
+      # checkout and fails clean-tree steps on every later PR. Local: `python scripts/check --only line-endings`.
+      - name: Reject text files stored with CRLF line endings
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_line_endings.py
+
+      # `curl URL | tar` makes whatever the server returns part of the image, unverified (#126942).
+      # Fetch to a file and sha256sum -c it first. Local: `python scripts/check --only dockerfile-downloads`.
+      - name: Reject Dockerfile downloads piped into an extractor or interpreter
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_dockerfile_downloads.py
+
       # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
       # merge adds stays in every clone forever. Exact-path exceptions live in
       # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.
@@ -115,13 +127,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_lazy_deps_imports.py
 
+      # Every retired updater shim must be listed in tests/fixtures/retired_updater_shims.json,
+      # the data tests/hermes_cli/test_retired_shims_runtime.py calls for real (tests never read
+      # source). AST-based; an empty scan fails.
+      - name: Check the retired updater shim manifest
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_retired_shims_manifest.py
+
       # ── Pull requests: unrelated histories ────────────────────────────────────────────────
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI
       # accepted it and ~1500 files' `git blame` collapsed onto its parent-less root commit.
+      # Judges the PR head, not HEAD: HEAD is the synthetic merge commit, whose first parent is
+      # main's tip, so it always shares an ancestor with main (#128930).
       - id: merge-base-check
         name: Reject PRs with no common ancestor on main
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' }}
+        env:
+          _HERMES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/check_common_ancestor.py
 
       - name: Upload review status artifact (history check)

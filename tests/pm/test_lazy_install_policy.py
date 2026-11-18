@@ -1,5 +1,7 @@
 """PM reads boolean install policy from real config, without CLI output."""
 
+import sys
+
 import pytest
 
 import pm
@@ -28,3 +30,23 @@ def test_internal_disable_overrides_enabled_config(monkeypatch):
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
     assert not pm.lazy_installs_allowed()
+
+
+class _Missing:
+    """Make importing ``target`` fail as if module ``name`` were not installed."""
+
+    def __init__(self, target: str, name: str):
+        self.target, self.name = target, name
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == self.target:
+            raise ModuleNotFoundError(f"No module named {self.name!r}", name=self.name)
+
+
+@pytest.mark.parametrize("missing,allowed", [("hermes_cli", True), ("hermes_cli.config", True), ("yaml", False)])
+def test_policy_without_the_config_package_allows_only_when_it_is_absent(missing, allowed, monkeypatch):
+    """A bootstrap without hermes_cli may install; a hermes_cli.config that fails on a dependency may not."""
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_cli.config", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_Missing("hermes_cli.config", missing), *sys.meta_path])
+    assert pm.install.lazy_installs_allowed() is allowed

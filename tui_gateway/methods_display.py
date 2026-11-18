@@ -154,14 +154,19 @@ def _(rid, params: dict) -> dict:
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_cli.web_session_sockets import admission_of
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         # The bridge dials either the host RFB socket or the sandbox relay; neither exists before start.
         if _bd_runtime.rfb_socket_path() is None and not _bd_runtime.sandbox_screen_running():
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
-        ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
-                             extra={"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id})
+        extra = {"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id}
+        # A viewer a browser tab opens watches and can drive this screen: it signs out with that tab,
+        # so the ticket carries the credential digest the tab's socket was admitted with.
+        if (admitted := admission_of(getattr(current_transport(), "ws", None))) is not None:
+            extra["admitted_with"] = admitted
+        ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop", extra=extra)
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,
                          **_display_snapshot()})
     except Exception as e:
@@ -234,12 +239,16 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
     if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
         return refused
+    # A takeover is use, stamped before the lease is written: an idle check (here or in the screen's launcher)
+    # that reads the new lease against the old stamp takes it for an abandoned one and stops the screen under
+    # the human who just took it.
+    _bd_runtime.touch_activity()
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _bd_lease.public_view(lease)})
 

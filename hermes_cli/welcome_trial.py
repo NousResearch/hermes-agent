@@ -8,18 +8,14 @@ a separate first install. A claim that is lost later (the guest is reaped, ``aut
 deleted, the user signs in) is never made again: that user lands on provider setup and sign-in like
 anyone else.
 
-Guests that ran on the free model before the claim existed keep it (:func:`grandfather_existing_guest`).
 Enforcement is client-side; the account service's own entitlement check follows separately.
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from dataclasses import dataclass
-import sqlite3
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import anon_auth
@@ -129,40 +125,3 @@ def settle_interrupted_claim() -> bool:
     return True
 
 
-def grandfather_existing_guest() -> bool:
-    """A guest from before the claim existed keeps the free model when this home already chatted on
-    it. Only a guest with no ``welcome_claim`` key qualifies: every guest minted since carries the
-    key, so a connector guest (``False``) never does. Records the claim once; True when it did."""
-    if not anon_auth.on_local_desktop_backend():
-        return False
-    state = anon_auth.current_nous_state()
-    if not anon_auth.is_guest_state(state) or anon_auth.WELCOME_CLAIM_FLAG in state:
-        return False
-    from hermes_constants import get_default_hermes_root, get_hermes_home
-
-    homes = dict.fromkeys((get_hermes_home(), get_default_hermes_root()))
-    if not any(_chatted_on_welcome(home / "state.db") for home in homes):
-        return False
-    from hermes_cli.install_state import mark_machine_used
-
-    if anon_auth.stamp_legacy_guest_claim() is None:  # re-checked under the locks, against shared auth
-        return False
-    mark_machine_used()
-    logger.info("Nous free tier: existing free-model guest kept its trial")
-    return True
-
-
-def _chatted_on_welcome(db: Path) -> bool:
-    """A session on the free model with at least one message. Read-only; a missing or unreadable
-    database is no."""
-    if not db.is_file():
-        return False
-    try:
-        with contextlib.closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=1)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM sessions s WHERE s.model = ? "
-                "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id) LIMIT 1",
-                (anon_auth.GUEST_MODEL,)).fetchone()
-    except sqlite3.Error:
-        return False
-    return row is not None

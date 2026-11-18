@@ -24,7 +24,7 @@ import { groupSpeakerLabel } from './group-chat'
 import { buildGroupChatTurnPrompt } from './group-round-prompt'
 import { displayName } from './labels'
 import { mergeServerMeta } from './profile-ops'
-import { botRosterMeta } from './routing'
+import { botRosterMeta, indexAliasRoutes } from './routing'
 import type { RosterRow } from './types'
 
 const { hostMock, storageMock } = vi.hoisted(() => ({
@@ -423,6 +423,15 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     expect(configures.at(-1)?.ui_meta).toEqual({ 'hermes-bots': { color: '#0000ff', groups: ['room'] } })
   })
 
+  it("reports a save its machine never answered as unreachable, not as an older gateway's fallback", async () => {
+    hostMock.requestProfile.mockRejectedValue(new Error('connection refused'))
+
+    await expect(saveBotMeta(vps, { groups: [] })).resolves.toEqual({
+      serverOutcome: 'unreachable',
+      serverPersisted: false
+    })
+  })
+
   it('names, tags, and prompts the bot with what its backend reports', () => {
     $botMeta.set({ default: { title: 'Agent B' }, 'vps::default': { title: 'Agent B' } })
     // `/api/profiles` reports no Bot Mode title for the VPS bot.
@@ -486,6 +495,23 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     $botMeta.set({})
     mergeServerMeta([{ ...vps, title: 'Agent A' } as RosterRow])
     expect($botMeta.get()).toEqual({})
+  })
+
+  it("a server record minted for a configured alias's row keeps the alias's look", () => {
+    indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
+
+    try {
+      $botMeta.set({ 'vps::kody': { color: '#00ff00', image: 'data:image/png;base64,AA' } })
+      mergeServerMeta([{ ...vps, ui_meta: { 'hermes-bots': { sectionId: 's1', sectionName: 'S1' } } } as RosterRow])
+
+      expect(botRosterMeta(vps, $botMeta.get())).toMatchObject({
+        color: '#00ff00',
+        image: 'data:image/png;base64,AA',
+        sectionId: 's1'
+      })
+    } finally {
+      indexAliasRoutes([])
+    }
   })
 
   it('Edit Profile sends only what the user changed since it opened', () => {

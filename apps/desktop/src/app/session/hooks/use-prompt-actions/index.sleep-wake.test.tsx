@@ -8,6 +8,7 @@ import { textPart } from '@/lib/chat-messages'
 import { $busy, $messages, $turnStartedAt, setMessages, setSessions } from '@/store/session'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
+import { clearStoredJournal } from './prepared-submissions-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 
 // Suites in this file reuse the same stored-id constants. The module-level
@@ -15,7 +16,7 @@ import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
-  window.localStorage.removeItem('hermes.desktop.preparedSubmissions.v1')
+  clearStoredJournal()
   // Queue mutations build on the persisted map, not the atom — a queue an
   // earlier test left in storage would otherwise sit ahead of this test's send.
   window.localStorage.removeItem('hermes.desktop.composerQueue.v1')

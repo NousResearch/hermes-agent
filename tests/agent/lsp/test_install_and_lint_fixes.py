@@ -119,3 +119,21 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+def test_every_auto_install_spec_is_an_exact_version():
+    """Auto-install must never resolve a bare, ``@latest`` or ranged spec from the registry (#25017)."""
+    import re
+
+    from agent.lsp.install import INSTALL_RECIPES
+
+    exact = {"npm": r"\d+\.\d+\.\d+", "go": r"v\d+\.\d+\.\d+"}
+    floating = []
+    for key, recipe in INSTALL_RECIPES.items():
+        if recipe["strategy"] == "manual":
+            continue
+        for spec in [recipe["pkg"], *recipe.get("extra_pkgs", [])]:
+            name, _, version = spec[1:].rpartition("@")
+            if not name or not re.fullmatch(exact[recipe["strategy"]], version):
+                floating.append(f"{key}: {spec}")
+    assert not floating, floating

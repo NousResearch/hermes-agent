@@ -6,6 +6,7 @@ IDs before advancing each eligible head oldest-first.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -370,10 +371,32 @@ def channel_head(desktop_head: str | None, records: list[dict],
     return max(versions, key=_key, default=None)
 
 
+def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
+    from scripts.releases import store
+
+    # Channels are already durable; Store recovery must not depend on advancing them again.
+    for record in sorted(records, key=lambda row: _key(row["version"]), reverse=True):
+        if record["state"] != "published" or "windows-store" not in record["lanes"]:
+            continue
+        log(f"Reconciling the Microsoft Store submission for {record['tag']}")
+        try:
+            raw = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+            if hashlib.sha256(raw).hexdigest() != record["candidate_manifest_sha256"]:
+                raise store.StoreError("the archived candidate manifest differs from the receipt")
+            result = store.release_from_env(env, json.loads(raw))
+        except (store.StoreError, ValueError, OSError) as error:
+            print(f"::warning title=Microsoft Store::{error}. The release is published; "
+                  "check its Store submission in Partner Center.")
+            return
+        # A newer public release may have failed its advisory upload, leaving an older one held.
+        if result != "superseded":
+            return
+
+
 def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
               read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
-    from scripts.releases import channel_releases, docker, stable, store
+    from scripts.releases import channel_releases, docker, stable
 
     repository = env["GITHUB_REPOSITORY"]
     run = logged_run(run)
@@ -436,7 +459,8 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                                    for kind, version in step.items()) or "(none)"))
     by_version = {record["version"]: record for record in records}
 
-    if advance_head is None:
+    production = advance_head is None
+    if production:
         def production_advance(record: dict) -> None:
             if lane_set.advances_desktop(record["lanes"]):
                 log(f"Advancing the protected desktop channel to {record['version']} from "
@@ -456,17 +480,6 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 # build that pushed the image under the attempt ref.
                 docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
                 log("Docker aliases moved")
-            if "windows-store" in record["lanes"]:
-                log("Checking the Microsoft Store submission")
-                # The Store check joins the pass here (after the feeds and aliases
-                # move). It never releases the held submission: the API cannot,
-                # so it prints the Publish now step. The Store never blocks a
-                # release: a failed or unreadable submission becomes a warning.
-                try:
-                    store.check_from_env(env)
-                except store.StoreError as error:
-                    print(f"::warning title=Microsoft Store::{error}. The release is published; "
-                          "upload the Store package from the release run's summary in Partner Center.")
         advance_head = production_advance
 
     for number, step in enumerate(steps, start=1):
@@ -500,6 +513,8 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
         log(f"Channel head after the pass: {reached} (planned {expected})")
         if reached != expected:
             raise ValueError("Stable protected head did not reach the planned version")
+    if production:
+        _reconcile_store(env, list(final.values()), read_archive)
     log("Stable sequencer finished: " + (", ".join(
         f"{kind} {version}" for step in steps for kind, version in step.items()) or "nothing to do"))
     return steps

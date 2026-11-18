@@ -33,6 +33,8 @@ class GroupControlLanes:
         self.send_failed = send_failed
         self.client_gone = client_gone
         self.room = asyncio.Semaphore(limit)
+        # One socket can use at most half of the eight shared group workers.
+        self.running = asyncio.Semaphore(4)
         self.frames = {}
         self.tasks = set()
 
@@ -64,8 +66,11 @@ class GroupControlLanes:
         from tui_gateway.ws import _SendFailed
 
         try:
-            while frames and not self.client_gone.is_set() and not self.send_failed.done():
-                await self.dispatch(frames[0], queued_profile=key[0])
+            while frames:
+                async with self.running:
+                    if self.client_gone.is_set() or self.send_failed.done():
+                        break
+                    await self.dispatch(frames[0], queued_profile=key[0])
                 frames.popleft()
                 self.room.release()
         except _SendFailed:

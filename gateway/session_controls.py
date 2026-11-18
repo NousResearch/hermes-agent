@@ -371,7 +371,7 @@ class AuthorityConnection:
             from gateway.session_plugin_rpc import call_plugin_rpc, resolve_plugin_rpc
             async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
-                    result = await dispatch_group_control(self, method, params)
+                    result = await dispatch_group_control(self, method, params, queued=queued_profile is not None)
                 elif method not in handlers and (plugin := await resolve_plugin_rpc(self, method)) is not None:
                     return {'jsonrpc': '2.0', 'id': rid, 'result': await call_plugin_rpc(self, ref, method, plugin, params)}
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):

@@ -116,3 +116,46 @@ async def test_starting_profile_reads_leave_the_reader_live(
         assert "first" not in sock.replies
         multiplex_rig.release.set()
         assert (await sock.reply("first"))["result"]["rooms"] == []
+
+
+@pytest.mark.asyncio
+async def test_waiting_group_controls_leave_workers_for_another_socket(
+    multiplex_rig, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    from gateway import session_group_controls
+
+    origin, observer = await multiplex_rig.connect(), await multiplex_rig.connect()
+    request(origin, "ready", "gateway.ping")
+    request(observer, "ready", "gateway.ping")
+    await origin.reply("ready")
+    await observer.reply("ready")
+
+    loop = asyncio.get_running_loop()
+    pool = ThreadPoolExecutor(max_workers=2)
+    loop.set_default_executor(pool)
+    entered = {room: asyncio.Event() for room in ("first", "second")}
+    release = threading.Event()
+    group = session_group_controls._group
+
+    def wait_for_peer(authority, actor, method, params, **kwargs):
+        if method == "groups.stop":
+            loop.call_soon_threadsafe(entered[params["room_id"]].set)
+            assert release.wait(15)
+        return group(authority, actor, method, params, **kwargs)
+
+    monkeypatch.setattr(session_group_controls, "_group", wait_for_peer)
+    try:
+        for room in entered:
+            request(origin, room, "groups.stop", room_id=room, cancel_id=room)
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in entered.values())), 10
+        )
+        request(observer, "read", "groups.list")
+        assert "result" in await observer.reply("read", timeout=5)
+    finally:
+        release.set()
+        for room in entered:
+            await origin.reply(room)

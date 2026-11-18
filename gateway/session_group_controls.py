@@ -1,5 +1,7 @@
 """Profile-owned room controls over the canonical hosted service."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import logging
 import os
 from pathlib import Path
@@ -10,6 +12,11 @@ from gateway.session_persistence import authority_persistence, owner_rule
 from persistence.core.errors import AuthorityRefusal, StoreUnavailable
 
 logger = logging.getLogger(__name__)
+
+
+# A peer wait occupies a thread until the member replies. Leave the gateway's default
+# executor available for reads, interrupts and the work those member calls depend on.
+_GROUP_CONTROL_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="gateway-group-control")
 
 
 GROUP_METHODS = {
@@ -59,7 +66,7 @@ _FIELDS = {
 }
 
 
-async def dispatch_group_control(connection, method, params):
+async def dispatch_group_control(connection, method, params, *, queued=False):
     authority, actor = connection.authority, connection.actor
     capability = GROUP_METHODS.get(method, 'session:read')
     if capability not in actor.capabilities:
@@ -102,6 +109,8 @@ async def dispatch_group_control(connection, method, params):
                 raise refusal from exc
             except (ValueError, TypeError) as exc:
                 raise _refusal('invalid_params', admitted=getattr(exc, 'admitted', None)) from exc
+    if queued:
+        return await asyncio.get_running_loop().run_in_executor(_GROUP_CONTROL_POOL, copy_context().run, invoke)
     return await asyncio.to_thread(invoke)
 
 

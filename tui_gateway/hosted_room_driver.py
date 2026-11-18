@@ -127,7 +127,7 @@ class HostedRoomRuntime:
         task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
         retire_task_progress: Callable[[str, str, int], None] | None = None,
         remote_member: Callable[[str, str], bool] | None = None,
-        confirm_deferred_stop: Callable[[str, Mapping[str, Any]], bool] | None = None,
+        confirm_deferred_stop: Callable[[str, Mapping[str, Any]], bool | _TerminalReceipt] | None = None,
         maintain: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
@@ -1400,6 +1400,9 @@ class HostedRoomRuntime:
         lost_routing = (not probe_failed and inspection.receipts_error is None
                         and self._lead_takes_lost_routing(binding, task))
         lease = self._ensure_lease(binding)  # the confirmation can outlast the lease
+        if isinstance(lost_routing, _TerminalReceipt):
+            self._resolve_indeterminate(binding, task, lease, lost_routing)
+            return
         if lost_routing:
             given_up = self._fenced(
                 state.resolve_indeterminate_cancellation, None, task, lease,
@@ -1409,7 +1412,9 @@ class HostedRoomRuntime:
                 state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
         self._publish(binding, given_up)
 
-    def _lead_takes_lost_routing(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+    def _lead_takes_lost_routing(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any],
+    ) -> bool | _TerminalReceipt:
         """Whether a lead's lost routing turn is given up rather than deferred: only once nothing
         can still run it, as for Stop of a deferred turn. Its message then goes to the lead alone
         (``first_round_members``), and no Retry or late answer can route it a second time. While the

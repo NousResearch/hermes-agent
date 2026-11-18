@@ -713,6 +713,30 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
         assert out["success"] is False and out["error_type"] == "fill_reverted"
 
+    def test_a_revert_lasting_a_frame_or_two_is_seen(self):
+        """The read-back samples; a revert shorter than its sampling gap passes unseen. A framework
+        that reverts for a frame or two (20 ms) in every 200 ms must not read as a kept value. The
+        clock is simulated: each sample reads the page at the read-back's own sleep schedule."""
+        from tools import browser_vault_tool
+
+        clock = {"now": 0.0}
+        ms = lambda: round(clock["now"] * 1000)
+
+        def page(_task_id, _expression):
+            kept = not 10 <= ms() % 200 < 30  # reverted 10-30 ms into every 200 ms
+            return {"success": True, "result": json.dumps(
+                {"landed": int(kept), "reverted": int(not kept), "missing": []})}
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True}), \
+             patch.object(browser_vault_tool.time, "sleep", side_effect=sleep), \
+             patch.object(browser_vault_tool.time, "monotonic", side_effect=lambda: clock["now"]):
+            out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+
     def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
         """The other half of stability: a mask that writes twice reads wrong first, then holds."""
         from tools import browser_vault_tool

@@ -64,10 +64,16 @@ def _check_vault_available() -> bool:
 # in-page and its message (which may quote the script) never reaches the backend's error path or logs.
 _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 
-# Read-back pacing. A framework commits on its own schedule, so one read is a guess: 50 ms is a
-# frame or three, and 500 ms (~30 frames) is where a real commit has happened or is not coming.
-# Polling beats a single sleep because a mask or a late revert can write the value twice.
-_FILL_VERIFY_INTERVAL_S = 0.05
+# Read-back pacing. A framework commits on its own schedule, so one read is a guess: 500 ms (~30
+# frames) is where a real commit has happened or is not coming. Polling beats a single sleep because a
+# mask or a late revert can write the value twice.
+# The read-back is a sample, so a revert shorter than the gap between two samples is not seen. 10 ms
+# is under one frame; on a remote browser the CDP round trip is the real gap. A watcher inside the page
+# would not close it: an input listener never fires on a programmatic revert, MutationObserver does not
+# see the value property, a value-setter hook fights React's own tracker on that property, and a script
+# that waits needs a backend that awaits promises (a plugin page backend's evaluate does not promise
+# to) and a page whose timers run (a background tab's run about once a second).
+_FILL_VERIFY_INTERVAL_S = 0.01
 _FILL_VERIFY_CEILING_S = 0.5
 # A value counts as kept only once every field has read back right for this long without a miss:
 # a framework can show the value for a frame and revert it on its next commit.

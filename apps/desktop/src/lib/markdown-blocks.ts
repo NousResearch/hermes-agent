@@ -9,7 +9,7 @@ import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
  * new string, so the stock splitter pays that O(full-text) cost ~30×/s on
  * long replies. Two caches remove it:
  *
- * 1. Exact-string cache — the same text always yields the SAME ARRAY. This is
+ * 1. Exact-string cache — a cache hit returns the same block array. This is
  *    identity, not just cost: `parseMarkdownIntoBlocks` builds a fresh array
  *    every call, and Streamdown keys its per-block memos on the array, so a
  *    new array identity for unchanged text makes every Streamdown re-render

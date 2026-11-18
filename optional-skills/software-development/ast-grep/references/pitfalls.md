@@ -10,7 +10,7 @@ ast-grep does **not** interpret regex inside patterns. The following all fail:
 
 | Bad | Why | Use instead |
 |---|---|---|
-| `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `search_files` with `pattern="foo|bar"`. |
+| `foo\|bar` | `\|` is regex alternation. ast-grep does not alternate. | Two separate calls, OR `any: [pattern: foo, pattern: bar]` in a YAML rule, OR `search_files` with `pattern="foo\|bar"`. |
 | `foo.*bar` | `.*` is a regex wildcard. | `foo($$$) bar` if the gap is a list of nodes; otherwise switch to `search_files`. |
 | `\w+`, `\d+`, `\s` | Regex character classes. | `$VAR` to capture any identifier. For digits-only, use `kind: number_literal`. |
 | `[a-z]+` | Regex character class. | No AST equivalent — switch to `search_files`. |

@@ -98,8 +98,8 @@ Use this skill when:
 ```
 # Understand project structure
 search_files(pattern="*.py", target="files", path=".", limit=30)
-search_files(pattern="result|conclusion|finding", path=".", file_glob="*.md", output_mode="files_only")
-search_files(pattern="result|conclusion|finding", path=".", file_glob="*.txt", output_mode="files_only")
+search_files(pattern="[Rr]esult|RESULT|[Cc]onclusion|CONCLUSION|[Ff]inding|FINDING", path=".", file_glob="*.md", output_mode="files_only")
+search_files(pattern="[Rr]esult|RESULT|[Cc]onclusion|CONCLUSION|[Ff]inding|FINDING", path=".", file_glob="*.txt", output_mode="files_only")
 ```
 
 Look for:
@@ -239,7 +239,7 @@ Author Coordination Checklist:
 Start from papers already referenced in the codebase:
 
 ```
-search_files(pattern="arxiv|doi|cite", path=".", file_glob="*.{md,bib,py}")
+search_files(pattern="arxiv|doi|cite", path=".", file_glob="*.md")   # repeat for *.bib, *.py
 search_files(pattern="*.bib", target="files", path=".")
 ```
 

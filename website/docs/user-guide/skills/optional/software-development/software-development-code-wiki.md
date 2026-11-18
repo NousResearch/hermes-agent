@@ -106,9 +106,9 @@ mkdir -p "$OUTPUT_DIR/modules" "$OUTPUT_DIR/diagrams"
 
 ### 2. Scan repo structure
 
-Map the tree with `search_files` (`target="files"`, `pattern="*"`, `path="."`; it honours
-`.gitignore`, so `node_modules`, `venv` and build output drop out), `read_file` the manifests, and use the
-`terminal` tool for the rest:
+Map the tree with `search_files` (`target="files"`, `pattern="*.<ext>"` per main language,
+`path="."`; skip hits under `node_modules`, `venv`, `dist`, `build`, `target`), `read_file`
+the manifests, and use the `terminal` tool for the rest:
 
 ```bash
 # Language breakdown (skip if pygount unavailable)

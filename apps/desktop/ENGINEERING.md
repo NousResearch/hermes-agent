@@ -61,6 +61,7 @@ assume:
   let terminal transitions (a turn finishing, needing input, failing) reach the
   user immediately. Frame-batched console logs follow the bottom in the same
   layout commit, before another append can mistake DOM growth for a user scroll.
+  Clear publishes immediately; a queued append frame must not revive cleared rows.
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
 
@@ -236,6 +237,7 @@ reopens the gesture-less forced-navigation class the advisory closed.
   follows the audio clock. The shared read-aloud preference is not ownership.
   Completed interim replies publish without waiting for a frame so read-aloud
   can speak tool-progress narration while hidden; partial text stays coalesced.
+  Live voice owners also bypass the hidden-window delta batching floor.
   Interims and finals that arrive before ownership IPC settles share the pending
   turn claim; message claims stay distinct so only the newest eligible reply plays.
 - Functional stream deadlines are not display loops. Delta coalescing and the

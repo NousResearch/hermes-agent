@@ -32,6 +32,7 @@ export function useFrameStore<T>(
   useEffect(() => {
     const schedule = () => {
       const next = store.get()
+
       if (publishImmediately?.(next)) {
         setValue(next)
 

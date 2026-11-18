@@ -15,7 +15,7 @@ afterEach(() => {
 
 it.each([true, false])('keeps hidden stream batching responsive only with a live voice consumer: %s', async active => {
   vi.useFakeTimers()
-  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+  vi.spyOn(window.document, 'visibilityState', 'get').mockReturnValue('hidden')
   const stream = renderMessageStream(SID)
   await act(async () => {
     await Promise.resolve()
@@ -30,6 +30,7 @@ it.each([true, false])('keeps hidden stream batching responsive only with a live
 
   // GPT Live owns transcript paint without STT/TTS leases or read-aloud playback.
   const release = active ? retainVoiceStreamPaint() : undefined
+
   try {
     act(() => stream.handleEvent({ payload: { text: 'second' }, session_id: SID, type: 'message.delta' }))
     await act(async () => vi.advanceTimersByTimeAsync(60))

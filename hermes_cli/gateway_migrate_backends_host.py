@@ -80,6 +80,25 @@ def _env_tokens(environment: str) -> dict[str, str]:
     return dict(t.split("=", 1) for t in tokens if "=" in t)
 
 
+_HOME_LINE = re.compile(r"^\s*(?:export\s+)?HERMES_HOME\s*=(.*)$")
+
+
+def _unit_file_syntax(path: str) -> Optional[str]:
+    """Why *path* cannot be read the way systemd reads it, or None. systemd's EnvironmentFile= rules
+    (systemd.exec(5)) differ from a Hermes ``.env`` for continuation lines, backslashes, quotes and a
+    ``#`` after the value, so a HERMES_HOME written with any of those is not guessed."""
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
+        if any(line.rstrip().endswith("\\") for line in lines):
+            return "continues a line with a backslash"
+        for line in lines:
+            match = _HOME_LINE.match(line)
+            if match and any(c in match.group(1) for c in "#\\\"'$"):
+                return "sets HERMES_HOME with quotes, a backslash, a $ or a # that systemd reads differently"
+        return None
+    return "cannot be read by this user"
+
+
 class SystemHost:
     """The real machine, for the home this process runs in."""
 
@@ -149,6 +168,8 @@ class SystemHost:
                 return env, f"its EnvironmentFile={path} does not exist"
             except OSError:
                 return env, f"its EnvironmentFile={path} cannot be read by this user"
+            if unreadable := _unit_file_syntax(path):
+                return env, f"its EnvironmentFile={path} {unreadable}"
             env.update(_dotenv_file(path))
         return env, None
 

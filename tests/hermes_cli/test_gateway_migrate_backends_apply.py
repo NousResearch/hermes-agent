@@ -809,3 +809,31 @@ def test_the_managers_environment_sets_a_units_home_unless_the_unit_overrides_it
     assert SystemHost(tmp_path).unit_environment("x.service", "user")[0]["HERMES_HOME"] == "/srv/from-manager"
     answers["unit"] = "HERMES_HOME=/srv/from-unit"
     assert SystemHost(tmp_path).unit_environment("x.service", "user")[0]["HERMES_HOME"] == "/srv/from-unit"
+
+
+@pytest.mark.parametrize("line", ["HERMES_HOME=/srv/team #1", 'HERMES_HOME="/srv/team"', "HERMES_HOME=/srv/te\\am",
+                                  "HERMES_HOME=$HOME/hermes", "OTHER=a \\\nHERMES_HOME=/srv/team"])
+def test_an_environment_file_systemd_reads_differently_makes_the_home_unknown(tmp_path, monkeypatch, line):
+    """`HERMES_HOME=/srv/team #1` is the whole path to systemd, but a .env reader strips ` #1`."""
+    from hermes_cli import gateway_migrate_backends_host as host_mod
+    unit_env = tmp_path / "unit.env"
+    unit_env.write_text(line + "\n", encoding="utf-8")
+    shown = f"Environment=\nEnvironmentFiles={unit_env} (ignore_errors=no)\n"
+    monkeypatch.setattr(host_mod, "_systemctl", lambda scope, args: SimpleNamespace(
+        returncode=0, stdout="" if args == ["show-environment"] else shown, stderr=""))
+
+    _, problem = SystemHost(tmp_path).unit_environment("x.service", "system")
+
+    assert problem and str(unit_env) in problem
+
+
+def test_a_plain_environment_file_home_is_read(tmp_path, monkeypatch):
+    from hermes_cli import gateway_migrate_backends_host as host_mod
+    unit_env = tmp_path / "unit.env"
+    unit_env.write_text("# a comment line\nHERMES_HOME=/srv/team\nOTHER=x\n", encoding="utf-8")
+    shown = f"Environment=\nEnvironmentFiles={unit_env} (ignore_errors=no)\n"
+    monkeypatch.setattr(host_mod, "_systemctl", lambda scope, args: SimpleNamespace(
+        returncode=0, stdout="" if args == ["show-environment"] else shown, stderr=""))
+
+    assert SystemHost(tmp_path).unit_environment("x.service", "system") == (
+        {"HERMES_HOME": "/srv/team", "OTHER": "x"}, None)

@@ -525,8 +525,6 @@ def test_s6_runtime_requires_a_registered_gateway(registered, container_home, re
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
     if registered:
-        monkeypatch.setattr(service_manager, "_HERMES_UID", os.getuid())
-        monkeypatch.setattr(service_manager, "_HERMES_GID", os.getgid())
         reconcile_profile_gateways(hermes_home=home, scandir=scandir, container_argv=())
         assert (scandir / "gateway-default" / "down").is_file()
     started, commands = [], []

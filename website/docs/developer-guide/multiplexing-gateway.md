@@ -290,7 +290,11 @@ registrations (a call fails as not connected until it revives), a revival or a
 lazy server's first use routes the tools it already registered to the live
 connection without publishing new ones, and `tools/list_changed` is ignored.
 The bare `shutdown_mcp_servers()` at process exit still closes every
-connection.
+connection. Adopting another profile's live connection
+(`register_connected_into_current_scope`) refuses too; `shareable_connection`
+is the read-only lookup. A reconnect of a server that already registered still
+refreshes the call-time trust gate's `readOnlyHint` record from the new listing
+(#144380): that is trust metadata the gate reads, not the served tool set.
 
 `freeze_registries()` refuses, freezing nothing, while a registration is still
 pending (`registry_freeze.assert_registries_complete()` raises

@@ -61,6 +61,17 @@ def test_same_named_providers_in_two_profiles_each_load_their_own_code(tmp_path)
     assert (first, second, again) == ("A", "B", "A")
 
 
+def test_a_path_shaped_name_is_not_found_even_when_it_names_a_provider(tmp_path):
+    """A provider name is a plain directory segment, as for every config-selected plugin name:
+    ``../<dir>`` never reaches a provider outside the plugin roots."""
+    home = tmp_path / "home"
+    plugin = _install(home, "ESCAPED", name="escprobe")
+    plugin.rename(home / "escprobe")
+    with bind_profile_scope(home, hydrate_secrets=False):
+        with pytest.raises(LookupError, match="no such memory storage provider"):
+            resolve_memory_storage("../escprobe")
+
+
 def test_a_bundled_provider_that_imports_from_its_kinds_package_loads(tmp_path, monkeypatch):
     """A bundled provider is a child of its kind's package, so a parent-relative import
     (``from .. import``) resolves: its module keeps the ``plugins.memory_storage.`` prefix."""

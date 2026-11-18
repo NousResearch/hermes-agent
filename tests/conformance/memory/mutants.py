@@ -57,7 +57,7 @@ def _tenant_blind_pin(monkeypatch):
     """The pin's agent half alone: another tenant naming the store's home passes."""
     from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_scope import current_scope
-    from hermes_state_port import StoragePinRefused
+    from hermes_storage_levels import StoragePinRefused
     from hermes_memory_port_local import LocalMemoryStore
 
     def pin(self):
@@ -75,7 +75,7 @@ def _ambient_home_ignored(monkeypatch):
     the profile without moving the home redirects the write into the ambient profile's files."""
     from hermes_constants import get_hermes_home, hermes_home_key
     from hermes_scope import LOCAL_TENANT, current_scope
-    from hermes_state_port import StoragePinRefused
+    from hermes_storage_levels import StoragePinRefused
     from hermes_memory_port_local import LocalMemoryStore
 
     def pin(self):

@@ -276,8 +276,10 @@ class _NamedProviderCollector(NoopPluginContext):
 class NamedProviderKind:
     """Discovery for one provider plugin kind, addressed by explicit name: bundled
     ``plugins/<kind_dir>/<name>/`` then user ``$HERMES_HOME/plugins/<name>/`` (bundled wins on
-    collision). The named storage kinds share this shape (``plugins/session_storage``,
-    ``plugins/memory_storage``); the local backend of each kind is core, never discovered here.
+    collision). The named storage kinds share this shape (``plugins/memory_storage``); the local
+    backend of each kind is core, never discovered here. A name must be a plain directory segment
+    (anything else is not found), and "bundled" means a direct child of the kind's directory both as
+    written and resolved, as for every config-selected plugin name.
 
     Providers load in-process only: under ``plugins.isolation: host`` a user provider is refused
     (the *refused* exception class, with the reason) rather than returned as a host proxy, whose
@@ -291,7 +293,7 @@ class NamedProviderKind:
     def __init__(self, *, kind_dir: str, base_cls: Callable[[], type], register_method: str,
                  markers: tuple[str, ...], kind: str, noun: str, refused: Callable[[], type],
                  logger: logging.Logger):
-        self.plugins_dir = _PLUGINS_ROOT / kind_dir
+        self.plugins_dir = Path(__file__).parent / kind_dir
         self.user_namespace = f"_hermes_user_{kind_dir}"
         self._base_cls = base_cls
         self._register_method = register_method
@@ -314,11 +316,13 @@ class NamedProviderKind:
 
     def find_provider_dir(self, name: str) -> Optional[Path]:
         """Resolve a provider name to its directory (bundled first, then user-installed)."""
-        bundled = self.plugins_dir / name
+        bundled = plugin_child_dir(self.plugins_dir, name)
+        if bundled is None:
+            return None
         if bundled.is_dir() and (bundled / "__init__.py").exists():
             return bundled
         user_dir = user_plugins_dir()
-        user = user_dir / name if user_dir else None
+        user = plugin_child_dir(user_dir, name) if user_dir else None
         return user if user and user.is_dir() and self.is_provider_dir(user) else None
 
     def load(self, name: str) -> Optional[Any]:
@@ -338,7 +342,7 @@ class NamedProviderKind:
                           logger=self.logger)
 
     def _is_bundled(self, provider_dir: Path) -> bool:
-        return provider_dir.parent == self.plugins_dir
+        return is_direct_child(provider_dir, self.plugins_dir)
 
     def _load_from_dir(self, provider_dir: Path) -> Optional[Any]:
         """Import a provider module in-process and extract its provider (``register(ctx)`` or a

@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from hermes_memory_port import MemoryLevelRefused, MemoryStorage, MemoryStorageProvider, MemoryStore
 from hermes_scope import LOCAL_TENANT, current_scope
-from hermes_state_port import StoragePinRefused
+from hermes_storage_levels import StoragePinRefused
 
 
 class LocalMemoryStore(MemoryStore):

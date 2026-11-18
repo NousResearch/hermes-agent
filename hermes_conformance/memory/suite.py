@@ -47,7 +47,7 @@ from typing import Any, Callable
 import pytest
 
 from hermes_memory_port import MemoryLevelRefused, MemoryStorage
-from hermes_state_port import StoragePinRefused
+from hermes_storage_levels import StoragePinRefused
 
 
 @dataclass

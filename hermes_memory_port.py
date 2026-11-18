@@ -33,7 +33,7 @@ validated scope envelope bound around every call, which is a follow-up.
 Every operation reads its pin (tenant, agent, owner, actor) from ``hermes_scope.current_scope()``
 when it runs, never from a path, ``HERMES_HOME`` or an argument; a port exposes no way to pin
 anything else. A backend refuses a pin it cannot serve with
-:class:`~hermes_state_port.StoragePinRefused`. Memory is the agent's own learning, not
+:class:`~hermes_storage_levels.StoragePinRefused`. Memory is the agent's own learning, not
 session-owned data, so a turn's fence does not gate these writes: any activity whose scope pins
 the agent (a turn, an approval replay, the gateway's ``/memory``) may write it, with or without
 ``can_administer``.
@@ -45,7 +45,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from hermes_state_port import LEVELS, StoragePinRefused
+from hermes_storage_levels import LEVELS, StoragePinRefused
 
 __all__ = [
     "LEVELS", "MemoryLevelRefused", "MemoryStorage", "MemoryStorageProvider", "MemoryStore",

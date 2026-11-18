@@ -466,9 +466,10 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
                 return _accept()
             base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
             return _reject(
-                f"`{req.requested}` is not a valid large-context variant — `{base_guess}` enforces the "
-                "standard 272K window on Codex, so no `-900k` option exists for it. Pick the base model, "
-                "or a verified variant from the `/model` picker (e.g. `gpt-5.6-sol-900k`)."
+                f"`{req.requested}` is not a recognized large-context variant in this Hermes version. "
+                f"Pick `{base_guess}` or an available variant from `/model`. "
+                "If support was recently added, update Hermes and restart the process handling this chat. "
+                "This check does not determine the provider's actual context limit."
             )
     if not catalog:
         return None

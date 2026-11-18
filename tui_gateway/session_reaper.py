@@ -618,6 +618,9 @@ _CACHE_EXPIRY_CONCURRENCY = 3
 _cache_expiry_queue: queue.SimpleQueue = queue.SimpleQueue()
 _cache_expiry_workers: list[threading.Thread] = []
 _cache_expiry_in_flight: set[str] = set()
+# Reaper closes waiting behind a ticker job already queued for that sid: run once it finishes, so the
+# close never lands first (the job would see ``_closing`` and drop its compaction or offload).
+_cache_expiry_after: dict[str, list[Callable[[], None]]] = {}
 # Sessions a reaper is releasing behind their release-time compaction: the session cap counts them as gone.
 _cache_expiry_releasing: set[str] = set()
 
@@ -728,6 +731,9 @@ def _cache_expiry_job(sid: str, session: dict, action: str = "compact") -> None:
     finally:
         with _cache_expiry_lock:
             _cache_expiry_in_flight.discard(sid)
+            waiting = _cache_expiry_after.pop(sid, [])
+        for then in waiting:
+            then()
 
 
 def _cache_expiry_tick() -> list[concurrent.futures.Future]:
@@ -752,13 +758,39 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
     budget now, so nothing is warmed after it), compact or offload on the bounded pool first and close
     afterwards if the session is still reapable then and ``still_due()`` (the session cap: other closes
     may have brought it under) still holds. Returns that job's future, or None when the caller closes
-    the session now as before."""
+    the session now as before. A ticker job already queued for *sid* is waited for, never pre-empted:
+    closing first would make it see ``_closing`` and drop the compaction or offload it claimed."""
     warmer = getattr(session.get("agent"), "_prompt_cache_warmer", None)
     if warmer is None or _session_uses_compute_host(session):
         return None
+
+    def _closable(current: dict) -> bool:
+        with _cache_expiry_lock:
+            _cache_expiry_releasing.discard(sid)  # under _sessions_lock: no longer counted as pending
+        return _session_is_reapable(sid, current) and (still_due is None or still_due())
+
+    def _close() -> None:
+        if not _close_session_by_id(sid, end_reason=end_reason, predicate=_closable):
+            with _cache_expiry_lock:
+                _cache_expiry_releasing.discard(sid)
+
     with _cache_expiry_lock:
-        if sid in _cache_expiry_in_flight:
-            return None
+        if sid in _cache_expiry_releasing:  # a close already waits behind this sid's job
+            done: concurrent.futures.Future = concurrent.futures.Future()
+            done.set_result(None)
+            return done
+        if sid in _cache_expiry_in_flight:  # the ticker's job is queued or running: close after it
+            closed: concurrent.futures.Future = concurrent.futures.Future()
+
+            def _after_queued() -> None:
+                try:
+                    closed.set_result(_close())
+                except BaseException as exc:  # health: allow BLE001 -- handed to the future's owner
+                    closed.set_exception(exc)
+
+            _cache_expiry_releasing.add(sid)
+            _cache_expiry_after.setdefault(sid, []).append(_after_queued)
+            return closed
     with _session_profile_runtime_scope(session):
         action = warmer.claim_edge(releasing=True)
     if action is None:
@@ -767,18 +799,11 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
         _cache_expiry_in_flight.add(sid)
         _cache_expiry_releasing.add(sid)
 
-    def _closable(current: dict) -> bool:
-        with _cache_expiry_lock:
-            _cache_expiry_releasing.discard(sid)  # under _sessions_lock: no longer counted as pending
-        return _session_is_reapable(sid, current) and (still_due is None or still_due())
-
     def _job() -> None:
         try:
             _cache_expiry_job(sid, session, action)
         finally:
-            if not _close_session_by_id(sid, end_reason=end_reason, predicate=_closable):
-                with _cache_expiry_lock:
-                    _cache_expiry_releasing.discard(sid)
+            _close()
 
     return _cache_expiry_submit(_job)
 

@@ -310,3 +310,38 @@ def test_disabling_cap_while_a_release_is_queued_preserves_the_chat(server, monk
             if job is not None:
                 job.result(timeout=10)
     assert not closed and len(server._sessions) == 3
+
+
+def test_a_reaper_close_of_a_chat_queued_behind_busy_slots_waits_for_its_compaction(server, monkeypatch):
+    """The ticker queued this chat's job behind three busy summaries; the idle reaper reaching it must
+    not close it first (the queued job would see ``_closing`` and drop the compaction): it closes after."""
+    order = []
+    agent = _Agent()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    monkeypatch.setattr(server, "_session_is_reapable", lambda sid, s: True)
+
+    def close(sid, *, end_reason, predicate=None):
+        with server._sessions_lock:
+            current = server._sessions.get(sid)
+            if current is None or (predicate is not None and not predicate(current)):
+                return False
+            server._sessions.pop(sid)
+            current["_closing"] = True
+        order.append(("closed", len(session["history"])))
+        return True
+
+    monkeypatch.setattr(server, "_close_session_by_id", close)
+    gate = threading.Event()
+    held = [server._cache_expiry_submit(gate.wait, 10) for _ in range(server._CACHE_EXPIRY_CONCURRENCY)]
+    try:
+        (queued,) = server._cache_expiry_tick()
+        release = server._compact_then_close("s", session, end_reason="idle_timeout")
+        assert release is not None and order == []  # the caller must not close it now
+    finally:
+        gate.set()
+    for job in (*held, queued, release):
+        job.result(timeout=10)
+    assert [c["trigger"] for c in agent.calls] == ["cache_expiry"]
+    assert order == [("closed", 2)]  # compacted first, then closed
+    assert agent._prompt_cache_warmer.claims == [False]  # the queued claim stands; no second claim

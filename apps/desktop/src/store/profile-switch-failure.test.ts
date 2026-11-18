@@ -37,10 +37,14 @@ vi.mock('@/hermes', async importOriginal => ({
 
 // Load after the transport mock is installed; activation must use the real store graph.
 const { $activeGatewayProfile, $freshSessionRequest, ensureGatewayProfile, selectProfile } = await import('./profile')
+
 const { activeGatewayProfileKey, closeSecondaryGateways, setPrimaryGateway, setPrimaryGatewayConnectionId } =
   await import('./gateway')
+
 const { $profileSwitchFailure, $profileSwitchPending } = await import('./profile-switch-state')
 const { HermesGateway } = await import('@/hermes')
+
+await import('./session-states')
 
 function installDesktop(stub: Record<string, unknown>): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub

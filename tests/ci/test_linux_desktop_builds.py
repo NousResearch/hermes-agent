@@ -57,6 +57,13 @@ def test_linux_userland_can_load_electron(tmp_path, target):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
+def test_linux_userland_can_compile_the_x11_hud_helper(tmp_path, target):
+    _, packages = _run_userland(tmp_path, target, dict(os.environ))
+    assert {"build-essential", "libx11-dev", "libxi-dev"} <= packages
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
 def test_linux_checkout_exemption_survives_the_preparation_home(tmp_path, target):
     """The checkout is the runner's uid, not the container's root, and preparation runs git there under its own HOME."""
     from scripts.bundles.desktop_toolchain import bootstrap_environment

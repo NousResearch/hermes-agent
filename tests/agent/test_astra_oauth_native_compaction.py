@@ -20,6 +20,11 @@ _CODEX = "https://chatgpt.com/backend-api/codex"
 
 @pytest.mark.parametrize("model,provider,base_url,eligible", [
     ("gpt-6-astra", "openai-codex", _CODEX, True),
+    ("gpt-6.2-astra", "openai-codex", _CODEX, True),
+    ("gpt-6.2-astra", "openai", "https://api.openai.com/v1", False),
+    ("gpt-6.2-astra", "openai-codex", "https://relay.example/v1", False),
+    ("gpt-6.2-astra-900k", "openai-codex", _CODEX, False),
+    ("gpt-6.2-sol", "openai-codex", _CODEX, False),
     ("GPT-6-ASTRA", "openai-codex", "https://chatgpt.com:443/backend-api/codex/", True),
     ("gpt-6-astra-900k", "openai-codex", _CODEX, True),
     ("gpt-6-astra-900k", "openai-codex", "https://relay.example/v1", False),

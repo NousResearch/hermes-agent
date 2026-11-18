@@ -3,7 +3,7 @@
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
 Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus gpt-6-astra
-(and its ``-900k`` picker alias) on official Codex OAuth. The local compressor
+(and its ``-900k`` picker alias) and gpt-6.2-astra on official Codex OAuth. The local compressor
 stays armed as fallback (native threshold clamped below the local trigger); compaction items
 ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
@@ -34,7 +34,7 @@ def is_native_compaction_model(
     """Preserve gpt-5.6 eligibility; Astra (``-900k`` is a picker alias of the same wire slug)
     additionally requires official Codex OAuth."""
     return _ELIGIBLE_MODEL_MARKER in (model or "").lower() or (
-        is_astra_model(model)
+        (is_astra_model(model) or (model or "").strip().lower() == "gpt-6.2-astra")
         and (provider or "").strip().lower() == "openai-codex"
         and is_official_codex_base_url(base_url or "")
     )

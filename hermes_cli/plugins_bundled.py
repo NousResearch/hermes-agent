@@ -14,13 +14,18 @@ def get_bundled_plugins_dir() -> Path:
     the override: the tree its in-process trust resolves from is always the one inside the
     installed Hermes package, never a root the process environment names. (The frozen boot
     verdict is consulted, not ``is_hosted()``: this runs inside discovery, which a first config
-    read can trigger, so it must never start — or re-enter — one. Until the boot's first read
-    decides the process, the override keeps its local meaning, and nothing imports plugin code
-    before a hosted verdict froze.)"""
+    read can trigger, so it must never start — or re-enter — one.) Either hosted signal ignores
+    it: the start command's ``--hosted`` flag (honoured before any verdict freezes, exactly as
+    the shared code-admission predicate honours it — the fence's allowed roots read this tree,
+    so a pre-freeze override would otherwise admit a writable root) or a frozen hosted verdict.
+    Both reads are import-free beyond the stdlib-only fence."""
+    from hermes_cli.hosted_code_fence import armed_by_start_flag, hosted_start_flag_requested
     from hermes_cli.hosted_mode import hosted_verdict_frozen
 
     env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
-    if env_override and hosted_verdict_frozen() is not True:
+    hosted = (hosted_start_flag_requested() or armed_by_start_flag()
+              or hosted_verdict_frozen() is True)
+    if env_override and not hosted:
         return Path(env_override)
     from hermes_cli._startup_fast import project_root_str
 

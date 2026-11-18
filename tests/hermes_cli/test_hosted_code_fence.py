@@ -859,6 +859,34 @@ def test_a_real_preflight_refuses_a_dotted_home_entrypoint_without_importing_the
         sys.modules.pop("fence_real_parent.child", None)
 
 
+def test_the_start_flag_ignores_the_bundled_override_before_the_verdict_freezes(tmp_path, monkeypatch):
+    """Both hosted signals receive the same provenance policy: under the start command's
+    ``--hosted`` flag, before any verdict froze, a writable root named by
+    ``HERMES_BUNDLED_PLUGINS`` is not the bundled tree — so the shared admission predicate (the
+    one dependency activation consults before the arm) refuses it rather than admitting it as
+    an image root. Without either signal the override keeps its local meaning."""
+    from hermes_cli import plugins
+
+    root = tmp_path / "tenant-writable-plugins"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(root))
+    monkeypatch.setattr(hosted_mode, "_VERDICT", {"hosted": None, "config": None, "plugins_permitted": False})
+    # an earlier armed test in this process may have recorded the flag; this one decides it
+    monkeypatch.setattr(hosted_code_fence, "_armed_by_start_flag", False)
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run"])
+    assert plugins.get_bundled_plugins_dir() == root  # local: the override is honoured
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run", "--hosted"])
+    assert hosted_code_fence.hosted_start_flag_requested()
+    assert hosted_mode.hosted_verdict_frozen() is None
+    assert plugins.get_bundled_plugins_dir() != root
+    assert root.resolve() not in hosted_code_fence.allowed_inprocess_roots()
+    refusal = hosted_code_refusal(root)
+    assert refusal, "hosted start admitted an environment-selected writable root"
+    assert "deployment image" in refusal
+
+
 # --------------------------------------------------------------------------------------------------
 # sys.path pruning: nothing outside the image stays searchable
 

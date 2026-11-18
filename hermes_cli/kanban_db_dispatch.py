@@ -1379,6 +1379,7 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    expected_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
 ) -> bool:
@@ -1410,6 +1411,10 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        if expected_run_id is not None and row["current_run_id"] != expected_run_id:
+            return False
+        if end_run and (row["status"] != "running" or row["current_run_id"] is None):
+            return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1424,7 +1429,36 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        if infrastructure or not (force_trip or failures >= effective_limit):
+        tripped = force_trip or failures >= effective_limit
+        disposition = "blocked" if tripped else retry_status
+        payload = {"error": error, "failures": failures, "retry_status": disposition}
+        if event_payload_extra:
+            payload.update(event_payload_extra)
+        payload["retry_status"] = disposition
+        # Resume phase is distinct from the actual queued disposition. Human
+        # unblocking must restore review even when the breaker stopped retries.
+        payload["resume_status"] = retry_status
+        if tripped:
+            payload.update(effective_limit=effective_limit, limit_source=limit_source,
+                           trigger_outcome=outcome)
+        if infrastructure:
+            # The early close below writes this payload as run metadata, so the
+            # flag must be present before ``_end_run`` rather than merged into
+            # the event afterwards.
+            payload["infrastructure"] = True
+        run_id = None
+        if end_run:
+            # Close before accounting/event append, in the same transaction.
+            # A lost CAS must not spend a retry or announce a stale timeout.
+            run_id = _kb._end_run(
+                conn, task_id, outcome="gave_up" if tripped else outcome,
+
+                error=error, metadata=payload, expected_run_id=expected_run_id,
+            )
+            if run_id is None:
+                return False
+
+        if infrastructure or not tripped:
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
@@ -1445,10 +1479,8 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
-                run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
-                )
-                _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
+                payload.update(detail)
+                _kb._append_event(conn, task_id, outcome, payload, run_id=run_id)
             return False
 
         # Spawn path (release_claim) is still running and also clears claim
@@ -1461,33 +1493,18 @@ def _record_task_failure(
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",
             (failures, error, task_id),
         )
-        payload = {
+        payload.update({
             "failures": failures,
             "effective_limit": effective_limit,
             "limit_source": limit_source,
             "error": error,
             "trigger_outcome": outcome,
-            "retry_status": retry_status,
-        }
-        run_id = None
-        if end_run:
-            # Only the spawn path has an open run to close.
-            run_id = _kb._end_run(
-                conn, task_id, outcome="gave_up", status="gave_up", error=error,
-                metadata={
-                    "failures": failures,
-                    "trigger_outcome": outcome,
-                    "effective_limit": effective_limit,
-                    "limit_source": limit_source,
-                    "retry_status": retry_status,
-                },
-            )
+            "retry_status": "blocked",
+        })
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot
             # judge this block: ``recompute_ready`` holds it for an operator.
             payload["sticky"] = True
-        if event_payload_extra:
-            payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
         return True
 

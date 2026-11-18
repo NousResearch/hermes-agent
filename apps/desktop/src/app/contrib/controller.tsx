@@ -129,6 +129,7 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
+import { installDesignSystemPaletteRow } from '../redesign/design-system/palette'
 import { $terminalCollapsedRail, $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
@@ -508,6 +509,7 @@ registry.registerMany([
 ])
 
 registerLayoutPresets()
+installDesignSystemPaletteRow()
 
 declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
 

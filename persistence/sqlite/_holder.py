@@ -464,14 +464,14 @@ class StoreHolder:
                 self._conn = conn = self._connect_read_only(timeout=self._read_busy_timeout_s)
                 try:
                     apply_database_pragmas(conn, db_label="state.db")
+                    if self._check_drift and (drift := declared_schema_drift(conn, self.db_path.parent)):
+                        raise DeclarativeDrift(drift)
                     cursor = conn.cursor()
                     self._fts_enabled = _fts_table_probe(self, cursor, "messages_fts") is True
                     if self._fts_enabled:
                         self._trigram_available = (
                             _fts_table_probe(self, cursor, "messages_fts_trigram") is True
                         )
-                    if self._check_drift and (drift := declared_schema_drift(conn, self.db_path.parent)):
-                        raise DeclarativeDrift(drift)
                 except BaseException:
                     self._conn = None
                     self._close_connection_quietly(conn)

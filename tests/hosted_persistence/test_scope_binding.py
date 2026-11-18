@@ -190,6 +190,20 @@ def test_hosted_doors_never_touch_a_local_store(assembled, tmp_path: Path) -> No
     assert not list(home.iterdir())
 
 
+def test_live_stores_lends_no_local_store_to_a_hosted_activity(tmp_path: Path) -> None:
+    home = tmp_path / "local-profile"
+    home.mkdir()
+    handle = pa.open_persistence(pa.profile_scope(home=home), eager=True)
+    try:
+        with pa.live_stores() as lent:
+            assert home.resolve() in {handle_.scope.profile_dir for handle_ in lent}
+        with hosted("tenant-a"), pa.live_stores() as lent:
+            assert lent == []
+    finally:
+        handle.close()
+        pa.close_all_stores()
+
+
 def test_local_doors_refuse_a_pinned_scope(tmp_path: Path) -> None:
     pinned = ProfileScope(profile_dir=tmp_path, name="hosted", pin=StorePin("tenant-a", "agent-1"))
     local = ProfileScope(profile_dir=tmp_path, name="default")

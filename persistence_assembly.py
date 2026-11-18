@@ -305,8 +305,8 @@ def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] =
     configured provider and assembles its backend; closing the handle closes that backend. ``patience_s`` is how
     long the handle's open and its reads wait for a store another connection holds before raising
     ``StoreContention`` (a verb that sets its own wait reads with that one); None keeps the backend's read wait.
-    A hosted activity names no target: it raises ``ScopePinRefused`` and reads its own store through its handle."""
-    _refuse_hosted("open a reader on a profile, home or file")
+    A hosted activity names no target: ``profile_scope`` raises ``ScopePinRefused`` for every target it could name,
+    so it reads its own store through its handle."""
     path = target if isinstance(target, Path) and (target.name == "state.db" or target.is_file()) else None
     if isinstance(target, Path):
         scope = profile_scope(home=path.parent if path is not None else target)

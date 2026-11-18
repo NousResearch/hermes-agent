@@ -105,6 +105,23 @@ def test_an_address_no_interface_holds_leaves_the_webapp_unavailable_and_native_
     assert report["native_session_list"] is True
 
 
+@pytest.mark.platforms("linux")
+def test_an_interface_broadcast_is_not_served_as_a_machine_address(tmp_path):
+    import socket
+    import psutil
+
+    rows = [row for group in psutil.net_if_addrs().values() for row in group if row.family == socket.AF_INET]
+    assigned = {row.address for row in rows}
+    broadcast = next((row.broadcast for row in rows if row.broadcast and row.broadcast not in assigned), None)
+    if broadcast is None:
+        pytest.skip("no IPv4 interface with a directed broadcast")
+    port = free_port()
+    report = run(tmp_path, {"webapp": {"enabled": True, "host": broadcast, "port": port}, "basic_auth": True})
+    assert report["status"]["state"] == "unavailable"
+    assert "not assigned to any network interface" in report["status"]["reason"]
+    assert report["native_session_list"] is True
+
+
 def test_a_busy_loopback_port_refuses_the_address_too_and_leaves_nothing_listening_there(tmp_path):
     address = _this_machines_address()
     if address is None:

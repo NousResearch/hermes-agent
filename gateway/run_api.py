@@ -15,6 +15,7 @@ process that already imported it mount it before the listener starts, exactly as
 
 import asyncio
 from dataclasses import dataclass
+import errno
 import logging
 import os
 import socket
@@ -216,6 +217,14 @@ def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False
     return listener
 
 
+def _bind_primary(listener, address, companion) -> None:
+    if companion:
+        from hermes_platform.host.facts import has_interface_address
+        if not has_interface_address(address[0]):
+            raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
+    listener.bind(address)
+
+
 def _companion_socket(host: str, port: int, backlog: int) -> socket.socket:
     """The listening loopback socket on *port* beside a specific-address bind; a failure names it."""
     family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
@@ -277,7 +286,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     _ACTIVE_RUNNER = runner
     companion = None
     try:
-        listener.bind(address)
+        _bind_primary(listener, address, state.loopback_companion)
         if port:
             # Under SO_REUSEADDR another socket may bind a fixed port too, and the first to listen
             # owns it. Listening now settles that before the dashboard mounts, so a lost race falls

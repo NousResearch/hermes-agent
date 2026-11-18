@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -463,7 +464,8 @@ def test_unit_environment_follows_systemd_precedence(tmp_path, monkeypatch):
              f"EnvironmentFiles={first} (ignore_errors=no)\nEnvironmentFiles={second} (ignore_errors=yes)\n"
              f"EnvironmentFiles={tmp_path}/absent.env (ignore_errors=yes)\n")
     monkeypatch.setattr(host_mod, "_systemctl",
-                        lambda scope, args: SimpleNamespace(returncode=0, stdout=shown, stderr=""))
+                        lambda scope, args: SimpleNamespace(returncode=0, stdout="" if args == ["show-environment"] else shown,
+                                                           stderr=""))
 
     env, problem = SystemHost(tmp_path).unit_environment("x.service", "system")
 
@@ -480,7 +482,8 @@ def test_unit_environment_is_unknown_when_a_required_file_cannot_be_read(tmp_pat
                             lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
     shown = f"Environment=\nEnvironmentFiles={path} (ignore_errors=no)\n"
     monkeypatch.setattr(host_mod, "_systemctl",
-                        lambda scope, args: SimpleNamespace(returncode=0, stdout=shown, stderr=""))
+                        lambda scope, args: SimpleNamespace(returncode=0, stdout="" if args == ["show-environment"] else shown,
+                                                           stderr=""))
 
     _, problem = SystemHost(tmp_path).unit_environment("x.service", "system")
 
@@ -547,7 +550,8 @@ def test_a_glob_environment_file_makes_the_units_home_unknown(tmp_path, monkeypa
     (tmp_path / "override.env").write_text("HERMES_HOME=/srv/other-profile\n", encoding="utf-8")
     shown = f"Environment=HERMES_HOME={tmp_path}\nEnvironmentFiles={tmp_path}/*.env (ignore_errors=yes)\n"
     monkeypatch.setattr(host_mod, "_systemctl",
-                        lambda scope, args: SimpleNamespace(returncode=0, stdout=shown, stderr=""))
+                        lambda scope, args: SimpleNamespace(returncode=0, stdout="" if args == ["show-environment"] else shown,
+                                                           stderr=""))
 
     _, problem = SystemHost(tmp_path).unit_environment("x.service", "system")
 
@@ -755,3 +759,53 @@ def test_the_config_url_includes_the_managed_overlay(home, capsys, monkeypatch):
                           managed={"dashboard": {"public_url": "https://managed.example"}})
 
     assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://managed.example"
+
+
+# --- review round 1: a stopped unit's account and startup environment, not this shell's
+
+
+def test_a_pinned_system_unit_of_another_account_is_skipped(home, capsys):
+    """Returning on HERMES_HOME skipped the User= check: a unit of root pinned to this path is root's."""
+    code, out = _plan(StoppedUnitHost(home, user="root", environment={"HERMES_HOME": str(home)}), capsys)
+
+    assert code == engine.EXIT_OK and out["plan"]["nothing_to_do"]
+    assert any("runs as root, not as u" in n for n in out["plan"]["notices"])
+
+
+def test_a_unit_that_picks_a_profile_on_its_command_line_blocks(home, capsys):
+    host = StoppedUnitHost(home, user="u", environment={"HERMES_HOME": str(home)}, exec_start=(
+        "{ path=/venv/bin/hermes ; argv[]=/venv/bin/hermes -p work dashboard --no-open --port 9119 ; "
+        "ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) }"))
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED
+    assert any("picks a profile" in b and "Identify the owner" in b for b in out["plan"]["blockers"])
+
+
+def test_the_default_home_is_the_accounts_not_the_shells_root(tmp_path, monkeypatch):
+    """A shell pinned to a custom root does not make that root the service account's default home."""
+    import getpass
+    import pwd
+    account = Path(pwd.getpwnam(getpass.getuser()).pw_dir) / ".hermes"
+    custom = tmp_path / "custom-root"
+    custom.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(custom))
+
+    assert SystemHost(custom).default_home() is False
+    assert SystemHost(account).default_home() is True
+
+
+def test_the_managers_environment_sets_a_units_home_unless_the_unit_overrides_it(tmp_path, monkeypatch):
+    from hermes_cli import gateway_migrate_backends_host as host_mod
+    answers = {"show-environment": "HERMES_HOME=/srv/from-manager\nLANG=C\n"}
+
+    def systemctl(scope, args):
+        unit = "Environment=" + answers.get("unit", "")
+        return SimpleNamespace(returncode=0, stdout=answers["show-environment"] if args == ["show-environment"]
+                               else unit + "\n", stderr="")
+
+    monkeypatch.setattr(host_mod, "_systemctl", systemctl)
+    assert SystemHost(tmp_path).unit_environment("x.service", "user")[0]["HERMES_HOME"] == "/srv/from-manager"
+    answers["unit"] = "HERMES_HOME=/srv/from-unit"
+    assert SystemHost(tmp_path).unit_environment("x.service", "user")[0]["HERMES_HOME"] == "/srv/from-unit"

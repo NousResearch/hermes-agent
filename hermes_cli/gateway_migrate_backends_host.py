@@ -105,9 +105,15 @@ class SystemHost:
         return _normalized_home_for_compare(path) == _normalized_home_for_compare(str(self.home))
 
     def default_home(self) -> bool:
-        from hermes_constants import get_default_hermes_root
-        from hermes_cli.dashboard_procs import _normalized_home_for_compare
-        return _normalized_home_for_compare(str(get_default_hermes_root())) == _normalized_home_for_compare(str(self.home))
+        """Whether this home is the calling account's own default home: ``.hermes`` in its passwd home
+        directory, not whatever root this shell's HERMES_HOME names (a unit started by systemd does not
+        inherit this shell's environment)."""
+        from hermes_constants import _get_platform_default_hermes_home
+        native = _get_platform_default_hermes_home()
+        with contextlib.suppress(ImportError, KeyError):
+            import pwd
+            native = Path(pwd.getpwnam(self.username()).pw_dir) / ".hermes"
+        return self.same_home(str(native))
 
     def unit_props(self, unit: str, scope: str) -> dict[str, str]:
         res = _systemctl(scope, ["show", unit, "--no-pager", *(f"--property={p}" for p in _SHOW_PROPS)])
@@ -122,6 +128,9 @@ class SystemHost:
         if res.returncode != 0:
             return {}, f"systemctl show {unit} failed"
         env: dict[str, str] = {}
+        manager = _systemctl(scope, ["show-environment"])  # the manager's own environment comes first
+        if manager.returncode == 0:
+            env.update(_env_tokens(" ".join(shlex.quote(line) for line in (manager.stdout or "").splitlines())))
         files: list[tuple[str, bool]] = []
         for line in (res.stdout or "").splitlines():
             key, _, value = line.partition("=")

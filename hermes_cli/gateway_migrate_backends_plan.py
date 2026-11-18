@@ -233,12 +233,22 @@ def redacted_argv(argv: list[str]) -> list[str]:
 
 
 def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) -> bool:
-    """Whether *item* serves this home. A stopped (Nix) systemd unit is judged by the environment systemd
-    would give it (``host.unit_environment``: ``Environment=`` first, every ``EnvironmentFile=`` after it,
-    later wins), not by the report's ``this_home``, which reads ``Environment=`` alone; when that
-    environment cannot be read the plan is blocked rather than guessing."""
+    """Whether *item* serves this home. A stopped (Nix) systemd unit is judged by the account it runs as
+    (``User=``; root when unset, a user unit runs as the caller) and the environment systemd would give it
+    (``host.unit_environment``: the manager's environment, ``Environment=``, then every ``EnvironmentFile=``,
+    later wins), not by the report's ``this_home`` or the shell's own HERMES_HOME. When that cannot be
+    told (an unreadable environment, a profile chosen on its command line) the plan is blocked."""
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
+        if item.scope != "user":
+            user = host.unit_props(item.unit, item.scope).get("User") or "root"
+            if user != host.username():
+                if plan is not None:
+                    plan.notices.append(f"Skipped {item.unit}: it runs as {user}, not as {host.username()}; "
+                                        f"its HERMES_HOME is that account's.")
+                return False
         env, problem = host.unit_environment(item.unit, item.scope)
+        if problem is None and _profile_flag(_argv_of(item, host)):
+            problem = "its command line picks a profile (-p/--profile), which moves it to that profile's home"
         if problem:
             if plan is not None:
                 plan.blockers.append(f"Cannot tell which Hermes home {item.unit} serves: {problem}. Identify the "
@@ -248,18 +258,14 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
             return False
         if env.get("HERMES_HOME"):
             return host.same_home(env["HERMES_HOME"])
-        if item.scope != "user":
-            # A system unit runs as its User= (root when unset), whose default home is not the caller's.
-            user = host.unit_props(item.unit, item.scope).get("User") or "root"
-            if user != host.username():
-                if plan is not None:
-                    plan.notices.append(f"Skipped {item.unit}: it runs as {user}, not as {host.username()}; "
-                                        f"its HERMES_HOME is that account's.")
-                return False
         return host.default_home()  # a unit that pins no HERMES_HOME runs its account's default home
     if item.this_home is not None:
         return item.this_home
     return not item.running and item.hermes_home is None and host.default_home()
+
+
+def _profile_flag(argv: list[str]) -> bool:
+    return any(a in ("-p", "--profile") or a.startswith("--profile=") for a in argv or [])
 
 
 def _supervisor_kind(item: BackendItem, host) -> str:

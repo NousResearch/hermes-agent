@@ -81,6 +81,12 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
         return json.dumps({"status": "ok", "replacements": 1})
     if function_name == "web_extract":
         return json.dumps("# Extracted content\nSome text from the page.")
+    if function_name == "skills_list":
+        return json.dumps({"skills": [{"name": "alpha"}, {"name": "beta"}]})
+    if function_name == "skill_view":
+        return json.dumps({"content": "skill:" + str(function_args.get("name")), "linked_files": {}})
+    if function_name == "session_search":
+        return json.dumps({"matches": [{"session_id": "s1"}, {"session_id": "s2"}]})
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
 
 
@@ -781,6 +787,36 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             ))
         self.assertEqual(result["status"], "success", msg=result)
         self.assertIn("mock output for: echo hi", result["output"])
+
+
+class TestReadOnlySandboxTools(unittest.TestCase):
+    """skills_list / skill_view / session_search are read-only and safe to
+    call programmatically; mixed read/write and interactive tools stay out."""
+
+    def test_read_only_tools_in_allowlist(self):
+        for name in ("skills_list", "skill_view", "session_search"):
+            self.assertIn(name, SANDBOX_ALLOWED_TOOLS)
+
+    def test_mixed_or_interactive_tools_stay_out(self):
+        for name in ("memory", "todo_list", "cronjob_manage", "clarify",
+                     "browser_exec", "vision_analyze", "delegate_task"):
+            self.assertNotIn(name, SANDBOX_ALLOWED_TOOLS)
+
+    def test_batched_read_only_calls_in_one_script(self):
+        code = (
+            "from hermes_tools import skills_list, skill_view, session_search\n"
+            "names = [s['name'] for s in skills_list()['skills']]\n"
+            "body = skill_view(names[0])['content']\n"
+            "hits = session_search(query='ptc', limit=2)['matches']\n"
+            "print(names, body, len(hits))\n"
+        )
+        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code=code, task_id="test-readonly",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS)))
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("['alpha', 'beta'] skill:alpha 2", result["output"])
+        self.assertEqual(result["tool_calls_made"], 3)
 
 
 class TestResolveSandboxTools(unittest.TestCase):

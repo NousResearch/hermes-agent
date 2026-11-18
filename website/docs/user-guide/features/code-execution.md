@@ -27,7 +27,7 @@ for r in results["data"]["web"]:
 print(summary)
 ```
 
-**Available tools inside scripts:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
+**Available tools inside scripts:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only); `skills_list`, `skill_view`, `session_search` (read-only).
 
 ## When the Agent Uses This
 

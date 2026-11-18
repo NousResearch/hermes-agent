@@ -27,7 +27,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_nt_namespace_error, get_write_denied_error, is_write_approval_required
+from agent.file_safety import (
+    HOME_CREDENTIAL_DIRS, HOME_CREDENTIAL_FILES, deny_key, deny_path_under, get_nt_namespace_error,
+    get_write_denied_error, is_write_approval_required, resolved_home_credential_stores,
+)
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
@@ -89,7 +92,7 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_token.json", "google_client_secret.json", "google_oauth_pending.json", "google_oauth.json",
     "webhook_subscriptions.json", *HOME_ENV_FILES, "vault.key", "vault.json.enc",
     *(PurePosixPath(store).name for store in SECRET_CACHE_STORES),  # secret caches, Photon sidecar token
-    ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
+    *HOME_CREDENTIAL_FILES,  # ~/.netrc, ~/.npmrc, ~/.git-credentials, ... (file_safety's write guard)
 })
 
 # Directory names whose whole subtree is credential material (the canonical
@@ -102,6 +105,11 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # common (an Obsidian vault) to hide wherever it appears.
 _SENSITIVE_MANAGED_DIR_PARTS = tuple(
     tuple(PurePosixPath(store).parts) for store in CREDENTIAL_STORE_DIRS if store != "vault")
+
+# OS/CLI credential trees (~/.ssh, ~/.aws, ~/.config/gh, ...) as lowercase component
+# sequences, matched as consecutive path components for the same reason: the default
+# managed root is $HOME, and a home-anchored check would miss them under any other root.
+_SENSITIVE_MANAGED_DIR_SEQUENCES = tuple(tuple(d.lower().split("/")) for d in HOME_CREDENTIAL_DIRS)
 
 
 def _is_sensitive_filename(name: str) -> bool:
@@ -123,8 +131,36 @@ def _is_sensitive_path(path: Path) -> bool:
     if _is_sensitive_filename(path.name):
         return True
     parts = tuple(part.lower() for part in path.parts)
-    return any(parts[i:i + len(store)] == store
-               for store in _SENSITIVE_MANAGED_DIR_PARTS for i in range(len(parts) - len(store) + 1))
+    return any(
+        parts[i:i + len(seq)] == seq
+        for seq in (*_SENSITIVE_MANAGED_DIR_PARTS, *_SENSITIVE_MANAGED_DIR_SEQUENCES)
+        for i in range(len(parts) - len(seq) + 1)
+    )
+
+
+def _is_local_sensitive_path(
+    path: Path, stores: Optional[tuple[set[str], list[str]]] = None, real: Optional[str] = None,
+) -> bool:
+    """:func:`_is_sensitive_path`, or *path* (a path on THIS host) resolves to or under a home
+    credential store: names alone miss ``~/.ssh -> ~/keys`` (both ``~/.ssh/id_rsa`` and
+    ``~/keys/id_rsa`` resolve into the store). *stores* lets a directory scan resolve the
+    store locations once (:func:`agent.file_safety.resolved_home_credential_stores`), and
+    *real* its entries' resolved paths (:func:`_scan_entry_realpath`)."""
+    if _is_sensitive_path(path):
+        return True
+    files, dirs = stores if stores is not None else resolved_home_credential_stores()
+    try:
+        real = real if real is not None else os.path.realpath(path)
+    except (OSError, ValueError):
+        return True  # fail closed: a path that cannot be resolved cannot be cleared
+    return deny_key(real) in {deny_key(f) for f in files} or any(deny_path_under(real, d) for d in dirs)
+
+
+def _scan_entry_realpath(base: str, entry: os.DirEntry) -> Optional[str]:
+    """*entry*'s realpath given its directory's (*base*): only a link needs a walk of its own,
+    so a large listing doesn't lstat every component of every entry. None: resolve it. Windows
+    always resolves: a junction is no symlink to ``DirEntry``, but realpath follows it."""
+    return None if entry.is_symlink() or os.name == "nt" else os.path.join(base, entry.name)
 
 
 _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
@@ -166,7 +202,8 @@ def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] =
     if not anchor.is_absolute():
         anchor = root.expanduser() / anchor if root is not None else None
     hops = _link_chain(anchor) if anchor is not None else []
-    if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
+    if (hops is None or any(_is_sensitive_path(p) for p in (Path(requested), Path(os.path.realpath(target)), *hops))
+            or _is_local_sensitive_path(target)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
@@ -261,7 +298,7 @@ def _fs_regular_file(path: Path, profile_home: Optional[Path] = None) -> tuple[P
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
-    if _is_sensitive_path(target):
+    if _is_local_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
@@ -711,11 +748,12 @@ def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    stores, base = resolved_home_credential_stores(), os.path.realpath(target)
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = []
         for entry in scan:
             entry_path = Path(entry.path)
-            if _is_sensitive_path(entry_path):
+            if _is_local_sensitive_path(entry_path, stores, _scan_entry_realpath(base, entry)):
                 continue
             metadata = _managed_file_entry(policy, entry_path, skip_missing=True)
             if metadata is not None:
@@ -744,7 +782,7 @@ def _managed_readable_file(
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
+    if _is_local_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return policy, target, display_path, _MANAGED_FILE_MAX_BYTES, mime_type
@@ -799,7 +837,7 @@ async def _managed_file_response(
             content_disposition_type=content_disposition_type,
             headers={"X-Content-Type-Options": "nosniff"} if media_only else None,
         )
-    _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
+    _policy, target, _display_path, max_bytes, mime_type = await asyncio.to_thread(_managed_readable_file, request, path)
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     if not media_only:
@@ -1036,7 +1074,7 @@ async def upload_managed_file_stream(
 ):
     """Chunked multipart upload: constant memory and no base64 inflation, unlike
     the JSON data-URL endpoint that trips proxy body-size limits on large archives."""
-    policy, target, display_path = _managed_write_target(path, request, overwrite)
+    policy, target, display_path = await asyncio.to_thread(_managed_write_target, path, request, overwrite)
     with _io_errors("File is not writable", "Could not create parent directory"):
         target.parent.mkdir(parents=True, exist_ok=True)
     await stream_upload_to_path(
@@ -1092,10 +1130,11 @@ _FS_LIST_ERRNO = (
 
 
 def _fs_list_entries(target: Path) -> list[dict[str, Any]]:
-    entries = []
+    entries, stores, base = [], resolved_home_credential_stores(), os.path.realpath(target)
     with os.scandir(target) as scan:
         for entry in scan:
-            if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
+            real = _scan_entry_realpath(base, entry)
+            if entry.name in _FS_READDIR_HIDDEN or _is_local_sensitive_path(Path(entry.path), stores, real):
                 continue
             entries.append({
                 "name": entry.name,
@@ -1111,11 +1150,14 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
         try:
-            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+            listing = await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
+        # Entry paths are the SSH host's own: hide its credential stores as the local scan does.
+        listing["entries"] = [e for e in listing["entries"] if not _is_sensitive_path(PurePosixPath(e["path"]))]
+        return listing
     target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
-    _hosted_fs_read_guard(target, request)
+    await asyncio.to_thread(_hosted_fs_read_guard, target, request)
     try:
         # The scan stats every entry (a network share answers in seconds): off the event loop.
         return {"entries": await asyncio.to_thread(_fs_list_entries, target)}
@@ -1159,8 +1201,9 @@ async def fs_read_text(
     target = await _fs_download_path(path, profile, session_id, session=session)
     # The same staged-file exception read-data-url makes under a locked files root.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target, profile_home)
+        await asyncio.to_thread(_hosted_fs_read_guard, target, request)
+    # Off the loop: the credential-store check resolves every guard home's stores.
+    target, st = await asyncio.to_thread(_fs_regular_file, target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = await asyncio.to_thread(
@@ -1230,7 +1273,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     )
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
-    _refuse_sensitive_write(target, payload.path, Path(cwd))
+    await asyncio.to_thread(_refuse_sensitive_write, target, payload.path, Path(cwd))
     # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
     # under the requested profile's scope so its own state.db / sessions/ count as protected. A save has
     # no approval channel, so a path the file tools gate on approval (~/.ssh/config) fails closed.
@@ -1239,7 +1282,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     if denied:
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target)
+        await asyncio.to_thread(_hosted_fs_read_guard, target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1336,8 +1379,8 @@ async def fs_read_data_url(
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
-        _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target, _fs_profile_home(profile))
+        await asyncio.to_thread(_hosted_fs_read_guard, target, request)
+    target, st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     # A transcript image is read again on every remount. The browser keeps the body in its own
@@ -1374,7 +1417,11 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
         target, size = backend.inspect_file(path)
     except SshWorkspaceFsError as exc:
         _raise_fs_backend_error(exc)
-    if _is_sensitive_path(Path(target)):
+    # SSH inspect_file realpaths symlinks; guard the requested name too, so
+    # ~/.ssh -> ~/keys cannot make a requested ~/.ssh/id_ed25519 readable.
+    # Judge the spelling inspect_file resolved too: normalize strips whitespace and joins a relative path to the cwd.
+    requested = (PurePosixPath(path), PurePosixPath(backend.normalize(path)))
+    if any(_is_sensitive_path(p) for p in (*requested, PurePosixPath(target))):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
 
@@ -1499,8 +1546,8 @@ async def fs_download(
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
-    _hosted_fs_read_guard(target, request)
-    target, _st = _fs_regular_file(target, _fs_profile_home(profile))
+    await asyncio.to_thread(_hosted_fs_read_guard, target, request)
+    target, _st = await asyncio.to_thread(_fs_regular_file, target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),

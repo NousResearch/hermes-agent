@@ -68,7 +68,8 @@ class TestCLIStatusBar:
         cli_obj = _make_cli()
         cli_obj.session_id = "session-1"
         cli_obj._session_db = SimpleNamespace(  # type: ignore[assignment]
-            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None
+            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None,
+            get_compression_tip=lambda sid: sid,
         )
 
         snapshot = cli_obj._get_status_bar_snapshot()

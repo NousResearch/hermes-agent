@@ -18,7 +18,7 @@ from gateway.run_turn import _unexpected_silence_reply
 from gateway.session import SessionSource
 from gateway.session_identity import RoutingIdentity
 from hermes_constants import get_hermes_home
-from tests.gateway.test_active_turn_recovery import _close_store_db, _db_runner, _entry_for
+from tests.gateway.test_active_turn_recovery import _close_store_handles, _db_runner, _entry_for
 from tests.gateway.test_gateway_silence_tokens import _runner
 from tests.gateway.test_slack_ignore_other_user_mentions import BOT_USER_ID, CHANNEL_ID
 
@@ -78,14 +78,14 @@ async def _recovered(runner, event, tmp_path, platform):
         {"role": "user", "content": "side chatter"}, {"role": "assistant", "content": "NO_REPLY"}]))
     try:
         await runner._handle_message_with_agent(event, event.source, store._generate_session_key(event.source), 1)
-        _close_store_db(store)
+        _close_store_handles(store)
         recovered, store = _db_runner(tmp_path)
         await recovered._recover_unclean_sessions()
         owed = sweep_recoverable(deliverable_platforms={platform})
         assert _entry_for(store, event.source).active_turn_token is None
         return owed
     finally:
-        _close_store_db(store)
+        _close_store_handles(store)
 
 
 def _event(source, reply_expected=None):

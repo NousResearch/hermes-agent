@@ -1,6 +1,6 @@
 """Tests for BaseEnvironment unified execution model.
 
-Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
+Tests _wrap_command(), _parse_cwd_marker(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
@@ -9,19 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools import terminal_tool_sudo
-from tools.environments.base import BaseEnvironment, _load_json_store
+from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
-
-
-def test_snapshot_store_reads_dict_and_tolerates_missing_or_damaged_file(tmp_path):
-    path = tmp_path / "snapshots.json"
-    assert _load_json_store(path) == {}
-    path.write_text('{"task": "snapshot"}', encoding="utf-8")
-    assert _load_json_store(path) == {"task": "snapshot"}
-    path.write_text('["not a mapping"]', encoding="utf-8")
-    assert _load_json_store(path) == {}
-    path.write_text("{bad json", encoding="utf-8")
-    assert _load_json_store(path) == {}
 
 
 class _TestableEnv(BaseEnvironment):
@@ -233,7 +222,7 @@ class TestExtractCwdFromOutput:
         result = {
             "output": f"hello\n{marker}/home/user{marker}\n",
         }
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == "/home/user"
         assert marker not in result["output"]

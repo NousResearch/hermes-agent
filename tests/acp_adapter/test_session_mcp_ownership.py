@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import policy_scope
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 
@@ -102,20 +102,20 @@ def test_editor_mcp_change_requires_control_in_the_owning_profile(server_spec, a
     actor = SessionActor('viewer', actor_profile, frozenset(capabilities), 'viewer-transport')
     params = {'session_id': 'held', 'request_id': 'r', 'expected_revision': 0, 'expected_generation': 0,
               'operation': 'editor_mcp', 'payload': {'mcp_servers': [server_spec]}}
-    with pytest.raises(RuntimeStoreError, match=reason):
+    with pytest.raises(AuthorityRefusal, match=reason):
         asyncio.run(_mutate_session(authority, actor, SessionRef('owned-profile', 'held'), params))
     assert not _editor_servers()  # refused before any discovery
 
 
 def test_store_payload_carries_only_the_fingerprint(server_spec):
     from gateway.session_local_mcp import fingerprint, private_mutation_payload
-    from hermes_state_mutations import validate_action
+    from persistence.authority.runtime import parse_mutation
     payload, servers = private_mutation_payload('editor_mcp', {'mcp_servers': [server_spec]})
     assert servers == [server_spec]
     assert payload == {'mcp_servers': {'fingerprint': fingerprint([server_spec])}}
     assert 'PRIVATE_A' not in json.dumps(payload)
-    validate_action('editor_mcp', payload)
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        validate_action('editor_mcp', {'mcp_servers': [server_spec]})
+    parse_mutation('editor_mcp', payload)
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
+        parse_mutation('editor_mcp', {'mcp_servers': [server_spec]})
     branch, _ = private_mutation_payload('branch', {'mcp_servers': [server_spec]})
-    validate_action('branch', branch)
+    parse_mutation('branch', branch)

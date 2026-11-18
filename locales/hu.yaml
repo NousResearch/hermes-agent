@@ -438,6 +438,17 @@ gateway:
       provider_usage_plus_estimate: "szolgáltatói használat + becsült új üzenetek"
     source_line: "Forrás: {source}; a kategóriánkénti számok helyi becslések."
     hint_all: "A /context all parancs skillenkénti és eszközkészletenkénti költségeket is mutat."
+    cache_warm: "Prompt-gyorsítótár: aktív {until}-ig (még {remaining}; {ttl}, {confidence})."
+    cache_expired: "Prompt-gyorsítótár: {ago} óta lejárt ({ttl}, {confidence}); a következő üzenet újra feldolgozza a teljes promptot."
+    cache_maybe_warm: "Prompt-gyorsítótár: {until}-ig még meleg lehet (legfeljebb még {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt-gyorsítótár: ismeretlen (az útvonal, a munkamenet vagy a kontextus megváltozott az utolsó gyorsítótárazott kérés óta)."
+    cache_unknown_route: "Prompt-gyorsítótár: ismeretlen (ez a szolgáltató nem teszi közzé a gyorsítótár megőrzési idejét)."
+    cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a Hermes nem lát)."
+    cache_unknown_storage: "Prompt-gyorsítótár: ismeretlen (a munkamenet-tároló nem olvasható)."
+    cache_confidence:
+      proven: "igazolt"
+      declared: "kért"
+      assumed: "feltételezett"
   status:
     header: "📊 **Hermes Gateway állapot**"
     matrix_scope_header: "**Matrix-hatókör:**"
@@ -4027,7 +4038,7 @@ plan_usage:
   large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
   large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
     more: "+{count} további"

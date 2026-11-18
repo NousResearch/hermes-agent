@@ -103,9 +103,9 @@ def _validate_dashboard_cron_security(
     must not vouch for an endpoint that would receive another profile's key.
     """
     from hermes_cli.web_server_profiles import _config_profile_scope
-    from tools.cronjob_job_args import (
+    from cron.job_args import (
         _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
-    from tools.cronjob_prompt_scan import _scan_cron_prompt
+    from cron.prompt_scan import _scan_cron_prompt
 
     def _touched(key: str) -> bool:
         return updates is None or key in updates

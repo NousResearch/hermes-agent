@@ -16080,7 +16080,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``cron/job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -24779,7 +24779,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -28738,7 +28738,7 @@
       },
       "PluginScanFinding": {
         "additionalProperties": false,
-        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "description": "One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked.",
         "properties": {
           "pattern_id": {
             "title": "Pattern Id",
@@ -29945,7 +29945,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``tools/preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",
@@ -33576,6 +33576,82 @@
         "title": "ProjectsUpdateParams",
         "type": "object"
       },
+      "PromptCacheWindow": {
+        "additionalProperties": false,
+        "description": "``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.\n``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);\n``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``\nmaps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |\n``unknown``; times are epoch seconds.",
+        "properties": {
+          "guaranteed_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guaranteed Until"
+          },
+          "estimated_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Until"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refreshed At"
+          },
+          "coverage": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "default": {},
+            "title": "Coverage",
+            "type": "object"
+          }
+        },
+        "required": [
+          "guaranteed_until",
+          "estimated_until",
+          "tier",
+          "confidence",
+          "reason"
+        ],
+        "title": "PromptCacheWindow",
+        "type": "object"
+      },
       "PromptCancelParams": {
         "additionalProperties": false,
         "properties": {
@@ -35167,7 +35243,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",
@@ -37878,6 +37954,17 @@
             },
             "title": "Context Files",
             "type": "array"
+          },
+          "prompt_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptCacheWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39824,7 +39911,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
+        "description": "``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -39952,7 +40039,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
         "properties": {
           "filters": {
             "anyOf": [

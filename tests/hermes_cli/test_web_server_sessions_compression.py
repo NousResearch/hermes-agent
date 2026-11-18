@@ -7,6 +7,9 @@ its file-lines ratchet cap and may only go down).
 """
 
 import pytest
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _SessionsCompressionEndpoints:
@@ -19,13 +22,8 @@ class _SessionsCompressionEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        import hermes_state
-        from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-        monkeypatch.setattr(
-            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
-        )
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -38,29 +36,29 @@ class TestSessionStatsCompressionChildren(_SessionsCompressionEndpoints):
         """Stats counts every physical row while the paired list collapses each
         chain to one row — total/active_store/archived were inflated by the
         hidden chain links and never matched the listed rows."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
+        db = open_persistence(profile_scope())
         try:
             # compression chain: root -> child1 -> child2 -> live tip
-            db.create_session(session_id="comp-root", source="cli")
-            db.append_message("comp-root", role="user", content="root")
-            db.end_session("comp-root", end_reason="compression")
-            db.create_session(session_id="comp-child1", source="cli", parent_session_id="comp-root")
-            db.append_message("comp-child1", role="user", content="child1")
-            db.end_session("comp-child1", end_reason="compression")
-            db.create_session(session_id="comp-child2", source="cli", parent_session_id="comp-child1")
-            db.append_message("comp-child2", role="user", content="child2")
-            db.end_session("comp-child2", end_reason="compression")
-            db.create_session(session_id="comp-tip", source="cli", parent_session_id="comp-child2")
-            db.append_message("comp-tip", role="user", content="tip")
+            seed_session(db, "comp-root", "cli")
+            seed_messages(db, "comp-root", {"role": "user", "content": "root"})
+            db.sessions.end("comp-root", "compression")
+            seed_session(db, "comp-child1", "cli", parent_session_id="comp-root")
+            seed_messages(db, "comp-child1", {"role": "user", "content": "child1"})
+            db.sessions.end("comp-child1", "compression")
+            seed_session(db, "comp-child2", "cli", parent_session_id="comp-child1")
+            seed_messages(db, "comp-child2", {"role": "user", "content": "child2"})
+            db.sessions.end("comp-child2", "compression")
+            seed_session(db, "comp-tip", "cli", parent_session_id="comp-child2")
+            seed_messages(db, "comp-tip", {"role": "user", "content": "tip"})
             # an archived standalone session
-            db.create_session(session_id="archived", source="cli")
-            db.append_message("archived", role="user", content="old")
-            db.set_session_archived("archived", True)
+            seed_session(db, "archived", "cli")
+            seed_messages(db, "archived", {"role": "user", "content": "old"})
+            db.sessions.set_archived("archived", True)
             # an active standalone session
-            db.create_session(session_id="standalone", source="cli")
-            db.append_message("standalone", role="user", content="solo")
+            seed_session(db, "standalone", "cli")
+            seed_messages(db, "standalone", {"role": "user", "content": "solo"})
         finally:
             db.close()
 
@@ -85,20 +83,20 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
         from gateway.session_authority import LiveSession, SessionAuthority
         from hermes_cli.web_server import app
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
+        db = open_persistence(profile_scope())
         try:
-            db.create_session("conv_root", source="tui")
-            db.end_session("conv_root", end_reason="compression")
-            db.create_session(
-                session_id="conv_tip", source="tui", parent_session_id="conv_root"
+            seed_session(db, "conv_root", "tui")
+            db.sessions.end("conv_root", "compression")
+            seed_session(
+                db, "conv_tip", "tui", parent_session_id="conv_root"
             )
             # The dashboard never opens a second writer: DELETE admits through the owner.
             authority = SessionAuthority(
                 SimpleNamespace(_draining=False), profile_id=str(get_hermes_home()),
-                instance_id="owner", db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
+                instance_id="owner", epoch=db.runtime.begin_epoch(instance_id="owner"),
+                persistence=storage_handle(get_hermes_home()))
             authority.sessions["conv_tip"] = LiveSession(None, "route")
             monkeypatch.setattr(app.state, "session_authority", authority, raising=False)
 
@@ -109,8 +107,8 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
             assert resp.status_code == 200, resp.text
             assert resp.json().get("ok") is True
 
-            assert db.get_session("conv_tip") is None
-            assert db.get_session("conv_root") is None
+            assert session_row(db, "conv_tip") is None
+            assert session_row(db, "conv_root") is None
         finally:
             db.close()
 
@@ -124,26 +122,26 @@ class TestBulkDeleteCompressionChain(_SessionsCompressionEndpoints):
         chain — otherwise the root resurfaces as the previous link on the next
         reload and the user sees the delete "not work". ``deleted`` counts
         selected rows, and other lineages / standalone rows survive untouched."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
+        db = open_persistence(profile_scope())
         try:
             # chain A (selected): a_root -> a_tip
-            db.create_session("a_root", source="tui")
-            db.end_session("a_root", end_reason="compression")
-            db.create_session("a_tip", source="tui", parent_session_id="a_root")
+            seed_session(db, "a_root", "tui")
+            db.sessions.end("a_root", "compression")
+            seed_session(db, "a_tip", "tui", parent_session_id="a_root")
             # chain B (selected): b_root -> b_mid -> b_tip
-            db.create_session("b_root", source="tui")
-            db.end_session("b_root", end_reason="compression")
-            db.create_session("b_mid", source="tui", parent_session_id="b_root")
-            db.end_session("b_mid", end_reason="compression")
-            db.create_session("b_tip", source="tui", parent_session_id="b_mid")
+            seed_session(db, "b_root", "tui")
+            db.sessions.end("b_root", "compression")
+            seed_session(db, "b_mid", "tui", parent_session_id="b_root")
+            db.sessions.end("b_mid", "compression")
+            seed_session(db, "b_tip", "tui", parent_session_id="b_mid")
             # chain C — NOT selected
-            db.create_session("c_root", source="tui")
-            db.end_session("c_root", end_reason="compression")
-            db.create_session("c_tip", source="tui", parent_session_id="c_root")
+            seed_session(db, "c_root", "tui")
+            db.sessions.end("c_root", "compression")
+            seed_session(db, "c_tip", "tui", parent_session_id="c_root")
             # standalones — NOT selected
-            db.create_session("solo", source="tui")
+            seed_session(db, "solo", "tui")
         finally:
             db.close()
 
@@ -153,11 +151,11 @@ class TestBulkDeleteCompressionChain(_SessionsCompressionEndpoints):
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "deleted": 2, "skipped_active": []}
 
-        db = SessionDB()
+        db = open_persistence(profile_scope())
         try:
             for gone in ("a_root", "a_tip", "b_root", "b_mid", "b_tip"):
-                assert db.get_session(gone) is None, gone
+                assert session_row(db, gone) is None, gone
             for kept in ("c_root", "c_tip", "solo"):
-                assert db.get_session(kept) is not None, kept
+                assert session_row(db, kept) is not None, kept
         finally:
             db.close()

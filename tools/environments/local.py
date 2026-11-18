@@ -1183,25 +1183,32 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
-    def _recover_cwd(self) -> None:
-        """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible
-        (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash
-        starts and every subsequent call fails. A benign MSYS→Windows normalization
-        is not warned about."""
-        # Recover when the cwd has been deleted out from under us — usually by a previous tool call that ran
-        # ``rm -rf`` on its own working dir (issue #17558). On Windows, ``_resolve_safe_cwd`` also
-        # normalises Git Bash-style POSIX paths (``/c/Users/...``) to native form so a perfectly valid ``pwd
-        # -P`` result from bash isn't mistakenly treated as "missing" and spammed as a warning on every
-        # command.
-        safe_cwd = _resolve_safe_cwd(self.cwd)
-        if safe_cwd == self.cwd:
-            return
-        if safe_cwd != _msys_to_windows_path(self.cwd):
-            logger.warning(
-                "LocalEnvironment cwd %r is missing on disk; "
-                "falling back to %r so terminal commands keep working.",
-                self.cwd, safe_cwd)
-        self.cwd = safe_cwd
+    def _usable_cwd(self, cwd: str) -> tuple[str, dict | None]:
+        """The directory ``execute`` embeds in the wrapper's ``cd``: ``cwd`` if enterable, else
+        what ``_resolve_safe_cwd`` picks. Recovering only ``self.cwd`` (inside ``_run_bash``)
+        came too late — the script was already built and exited 126 at ``cd`` on every call —
+        and missed the explicit cwd the terminal tool passes from the session record. A real
+        fallback (not a benign MSYS→Windows normalization) is returned for ``execute`` to report,
+        because relative paths now resolve somewhere the model did not ask for.
+
+        A relative or ``~`` cwd is checked where bash's ``cd`` resolves it (``self.cwd``, the
+        Popen cwd; ``$HOME``), not against this process's cwd, and kept as written when usable."""
+        resolved = os.path.expanduser(cwd)
+        if resolved and not os.path.isabs(_msys_to_windows_path(resolved)):
+            resolved = os.path.join(self.cwd, resolved)
+        safe_cwd = _resolve_safe_cwd(resolved)
+        if safe_cwd == resolved or safe_cwd == _msys_to_windows_path(resolved):
+            return (cwd if resolved != cwd else safe_cwd), None
+        return safe_cwd, {"requested": cwd, "used": safe_cwd}
+
+    def _spawn_cwd(self) -> str:
+        """A directory bash can be spawned in: ``self.cwd``, or a usable ancestor if it vanished
+        (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash starts
+        (#17558). Never stored: the wrapper's ``cd`` decides where the command runs, and only
+        ``execute(allow_cwd_fallback=True)`` may move it (the cwd marker then heals ``self.cwd``).
+        Persisting the swap here made file operations resolve relative paths against the ancestor
+        and read a different file. On Windows ``_resolve_safe_cwd`` also normalises ``/c/...``."""
+        return _resolve_safe_cwd(self.cwd)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -1214,7 +1221,6 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
-        self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
         proc = subprocess.Popen(
@@ -1222,7 +1228,7 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self.cwd,
+            start_new_session=True, cwd=self._spawn_cwd(),
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
@@ -1293,20 +1299,17 @@ class LocalEnvironment(BaseEnvironment):
         with contextlib.suppress(OSError):
             proc.kill()
 
-    def _extract_cwd_from_output(self, result: dict):
+    def _parse_cwd_marker(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —
         normalize to native and require the dir to exist, else ``_run_bash`` would
-        warn every command. A stale path rolls back to the previous cwd, which this
-        command did not observe, so ``cwd_observed`` is dropped."""
-        prev_cwd = self.cwd
-        super()._extract_cwd_from_output(result)
-        if self.cwd != prev_cwd:
-            normalized = _msys_to_windows_path(self.cwd)
+        warn every command. A stale path is not an observation, so ``cwd_observed``
+        is dropped and ``self.cwd`` keeps its value."""
+        super()._parse_cwd_marker(result)
+        if result.get("cwd_observed"):
+            normalized = _msys_to_windows_path(result["cwd"])
             if normalized and os.path.isdir(normalized):
-                self.cwd = normalized
                 result["cwd"] = normalized
             else:
-                self.cwd = prev_cwd
                 result.pop("cwd_observed", None)
                 result.pop("cwd", None)
 

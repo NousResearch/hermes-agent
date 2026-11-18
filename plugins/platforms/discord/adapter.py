@@ -1226,8 +1226,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
-        # Last application_info() read for the current client; a newer login snapshot replaces it.
-        self._app_info: Optional[tuple[Any, Any]] = None
+        # Last successful application_info() for self._client; cleared whenever the client is replaced.
+        self._app_info: Any = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
@@ -1464,6 +1464,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 finally:
                     self._client = None
                     self._ready_event.clear()
+            self._app_info = None
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
@@ -2155,6 +2156,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                     pass
         self._running = False
         self._client = None
+        self._app_info = None
         self._ready_event.clear()
         self._post_connect_task = None
         self._liveness_task = None
@@ -2334,14 +2336,16 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
                 return
+            client = self._client
             try:
-                app_info = await asyncio.wait_for(self._client.application_info(), timeout=15)
-                self._app_info = (self._client, app_info)
+                fresh = await asyncio.wait_for(client.application_info(), timeout=15)
             except Exception:
                 logger.warning("[%s] Could not refresh Discord application info", self.name, exc_info=True)
-                client, app_info = self._app_info or (None, None)
-                if client is not self._client:
-                    app_info = getattr(self._client, "application", None)
+                fresh = None
+            if client is not self._client:
+                return  # replaced mid-refresh; the new client's READY runs its own sync
+            self._app_info = fresh or self._app_info
+            app_info = self._app_info or getattr(client, "application", None)
             scopes = _app_command_scopes(app_info)
             if scopes is not None:
                 self._client.tree.allowed_installs, self._client.tree.allowed_contexts = scopes

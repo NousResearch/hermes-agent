@@ -360,3 +360,17 @@ def test_deadline_stop_finished_with_the_limit_turned_off_stores_strict_json(db,
                             (identity.task_id,)).fetchone()
     assert json.loads(raw, parse_constant=lambda name: pytest.fail(f'{name} is not JSON'))[
         'reason_code'] == 'turn_deadline_exceeded'
+
+
+def test_new_progress_at_deadline_survives_a_failed_receipt_read(observed, monkeypatch):
+    o = observed
+    o.runtime.turn_timeout_seconds = 10
+    o.rpc.required_lock = None
+    info = o.rpc.info
+    monkeypatch.setattr(o.rpc, 'info', lambda **kw: {
+        **info(**kw), 'execution_generation': 1, 'progress_at': 2 if o.now[0] >= 110 else 1})
+    o.fail = lambda: o.now[0] == 110
+    fail_observation(o, monkeypatch)
+    o.action = lambda: o.rpc.complete(o.identity.task_id, content='Finished.') if o.now[0] == 111 else None
+    o.runtime._process_room(BINDING)
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'settled'

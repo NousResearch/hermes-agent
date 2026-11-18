@@ -1089,6 +1089,17 @@ class HostedRoomRuntime:
         self._inspected_indeterminate_attempts.discard((
             binding.room_id, attempt.identity.task_id, attempt.execution_generation))
 
+    def _watched_receipt(self, transport, profile, session_id, task, attempt, admission_id):
+        try:
+            return self._terminal_receipt(transport, profile, session_id, task, admission_id=admission_id), True
+        except DriverStateError:
+            raise
+        except Exception as exc:
+            if getattr(exc, "not_admitted", False) or getattr(exc, "refused_before_submit", False):
+                raise
+            self._record_task_error(attempt, f"observation failed after submit: {exc}")
+            return None, False
+
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
         attempt: TaskAttempt, transport: InternalSessionRPC, admission_id: str | None = None,
@@ -1125,14 +1136,13 @@ class HostedRoomRuntime:
             lease = self._renew_lease_if_needed(lease)
             progress_at, alive = None, False
             try:
-                receipt = self._terminal_receipt(
-                    transport, profile, session_id, task, admission_id=admission_id)
+                receipt, readable = self._watched_receipt(transport, profile, session_id, task, attempt, admission_id)
                 if receipt is not None:
                     return receipt
                 info = transport.info(**_session_kw(profile, session_id))
                 progress_at = _attempt_progress_at(info, task)
                 self._report_pending_action(task, session_id=session_id, info=info)
-                alive = _info_active(info)
+                alive = _info_active(info) and readable
             except DriverStateError:
                 raise
             except Exception as exc:

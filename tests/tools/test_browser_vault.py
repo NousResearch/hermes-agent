@@ -30,8 +30,6 @@ from agent.vault_login_classifier import (
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
-    build_fill_verify_js,
-    build_focus_js,
     classify_login_control,
     select_password_fill,
 )
@@ -251,26 +249,8 @@ class TestClassifier:
         )
         assert 'new InputEvent("input", { bubbles: true, composed: true, data: f.value, inputType: "insertText" })' in js
 
-    def test_build_fill_verify_js_reads_back_and_unstamps(self):
-        # The fill's own count is a claim about the write. This pass is the claim about the page:
-        # exact value compare, counts only, and it removes the stamps the fill deliberately left.
-        js = build_fill_verify_js(
-            [{"index": 0, "token": "current-password", "value": "x"}],
-            nonce="n1",
-        )
-        assert "landed" in js and "reverted" in js and "missing" in js
-        assert 'String(el.value) === String(f.value)' in js
-        assert 'removeAttribute("data-hermes-vault-slot")' in js
-        assert "vaultSecret" not in js
-
-    def test_build_focus_js_asserts_focus_and_refuses_a_text_box(self):
-        # Input.insertText types into whatever holds focus, so the focus must be proven in the page
-        # right before the secret is typed — and a password fill still never lands in a text box.
-        js = build_focus_js([{"index": 0, "token": "current-password"}], nonce="n1")
-        assert "document.activeElement === el" in js
-        assert 'refused: "focus_lost"' in js
-        assert 'el.type !== "password"' in js
-        assert js.index("el.focus()") < js.index("document.activeElement === el")
+    # The read-back and focus scripts are executed against a synthetic DOM in
+    # tests/agent/test_vault_fill_scripts.py.
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
@@ -483,7 +463,7 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}          # in-page origin assert
-            if "document.activeElement === el" in expression:
+            if 'refused: "focus_lost"' in expression:
                 return {"success": True, "result": json.dumps(focus_result)}          # focus assert
             if "reverted" in expression:
                 return {"success": True, "result": json.dumps(verify_result)}         # read-back
@@ -625,7 +605,7 @@ class TestBrowserVaultTools:
         def fake_eval_secret(task_id, expression):
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
-            if "document.activeElement === el" in expression:
+            if 'refused: "focus_lost"' in expression:
                 match = re.search(r'"index":\s*(\d+)', expression)
                 index = int(match.group(1)) if match else -1
                 return {"success": True, "result": json.dumps({"focused": index})}
@@ -677,7 +657,7 @@ class TestBrowserVaultTools:
         def fake_eval_secret(task_id, expression):
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
-            if "document.activeElement === el" in expression:
+            if 'refused: "focus_lost"' in expression:
                 return {"success": True, "result": json.dumps({"focused": 1})}
             if "reverted" in expression:
                 verifies.append(expression)

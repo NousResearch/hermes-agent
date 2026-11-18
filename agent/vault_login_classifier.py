@@ -305,8 +305,20 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+    return (_FILL_JS_TEMPLATE.replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
+            .replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+
+
+# How a requested value names a <select> option: by value or visible text, trimmed and
+# case-insensitive, and an expiry month "07" also names option "7". The fill script picks the first
+# option this matches; the read-back accepts the selected option only if it matches too, so the two
+# can never disagree about what "the right option" is.
+_OPTION_MATCH_JS = """  const norm = (t) => String(t || "").trim().toLowerCase();
+  const optionMatches = (o, value) => {
+    const want = norm(value);
+    return [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, ""));
+  };"""
 
 
 _FILL_JS_TEMPLATE = """(() => {
@@ -325,14 +337,13 @@ _FILL_JS_TEMPLATE = """(() => {
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   let filled = 0;
-  const norm = (t) => String(t || "").trim().toLowerCase();
+__OPTION_MATCH__
   for (const f of fills) {
     const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
-        const want = norm(f.value);
-        const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
+        const opt = Array.from(el.options).find((o) => optionMatches(o, f.value));
         if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true, composed: true })); filled += 1; }
         continue;
       }
@@ -363,11 +374,15 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstam
 
     ``unstamp=False`` keeps the inspection stamps: the trusted-typing path verifies ONE field
     between two ``Input.insertText`` calls and must still find the next field by its stamp.
+
+    A ``<select>`` holds the value when its selected option matches it the way the fill script
+    picks options; a text control holds it when it reads back exactly.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+    return (_VERIFY_JS_TEMPLATE.replace("__OPTION_MATCH__", _OPTION_MATCH_JS)
+            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
             .replace("__UNSTAMP__", "true" if unstamp else "false"))
 
 
@@ -379,6 +394,9 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
     stamped ``<nonce>:<index>`` by the inspection and only reports success when
     ``document.activeElement`` IS that element — a page that moves focus (a re-render, a modal,
     an autofocus elsewhere) is refused instead of receiving the secret.
+
+    Focus is read through open shadow roots (a focused input inside a component reports its HOST as
+    ``document.activeElement``), the same roots the inspection and fill scripts reach.
 
     Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
     Returns JSON: ``{"focused": <index>}`` or
@@ -409,8 +427,9 @@ _FOCUS_JS_TEMPLATE = """(() => {
     return JSON.stringify({ refused: "not_password" });
   }
   try { el.focus(); } catch (e) { /* focus can throw on a detached node */ }
-  if (document.activeElement === el) return JSON.stringify({ focused: f.index });
-  const active = document.activeElement;
+  let active = document.activeElement;
+  while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+  if (active === el) return JSON.stringify({ focused: f.index });
   return JSON.stringify({ refused: "focus_lost", tag: el.tagName,
                           found: active ? active.tagName : null });
 })()"""
@@ -489,13 +508,18 @@ _VERIFY_JS_TEMPLATE = """(() => {
     for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+__OPTION_MATCH__
   let landed = 0;
   let reverted = 0;
   const missing = [];
   for (const f of fills) {
     const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el) { missing.push(f.index); continue; }
-    if (el.tagName === "SELECT") { landed += 1; continue; }
+    if (el.tagName === "SELECT") {
+      const selected = el.options[el.selectedIndex];
+      if (selected && optionMatches(selected, f.value)) landed += 1; else reverted += 1;
+      continue;
+    }
     if (String(el.value) === String(f.value)) landed += 1; else reverted += 1;
   }
   if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));

@@ -263,3 +263,20 @@ def test_a_skipped_peer_message_and_citation_wait_for_the_next_batch(tmp_path, m
         assert replayed.task.identity == follow_up.identity
         _settle(service, follow_up, "Built it.")
         assert plan(service) is None
+
+
+def test_new_authority_can_plan_after_a_peer_reply_ages_out(service):
+    from gateway import hosted_room_replicas
+
+    send(service, "before", text="@writer First question")
+    _settle(service, plan(service), "Old answer")
+    hosted_room_replicas.demote_room(
+        service.store, placement=service.placement, room_id="room", observed_gateway_id="next", observed_epoch=2)
+    for seq in range(24):
+        hosted_rooms.append_event(
+            service.store, placement=service.placement, room_id="room", event_id=f"later-{seq}", kind="message.user",
+            actor={"kind": "user", "id": "desktop"}, payload={"thread_id": "work", "text": "@reviewer Next question"},
+            authority_gateway_id="next", authority_epoch=2)
+    task = plan(service)
+    assert task.member.member_id == "reviewer"
+    assert "Next question" in task.payload["prompt"]

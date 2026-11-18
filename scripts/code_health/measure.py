@@ -116,7 +116,7 @@ class Measurer:
 
     def measure(self, tree: str | None, paths: list[str], hosted: frozenset[str] | None = None,
                 hosted_only: frozenset[str] = frozenset()) -> dict[str, FileMeasure]:
-        """``hosted``: the paths hosted-only rules (HX015) apply to, ``hosted_graph.reachable``
+        """``hosted``: the paths hosted-only rules (HX018) apply to, ``hosted_graph.reachable``
         of this same tree; None applies them everywhere. The ratchet passes each side its own
         graph, so base credit covers only state that was already on the hosted path.
 

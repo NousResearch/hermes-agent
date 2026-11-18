@@ -171,7 +171,7 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     if body:
         print(body)
     elapsed = time.monotonic() - started
-    reached = f" (+{len(newly)} newly on the hosted path, judged for HX015)" if newly else ""
+    reached = f" (+{len(newly)} newly on the hosted path, judged for HX018)" if newly else ""
     print(f"\ncode health: {len(head_paths)} files{reached} vs {base[:12]}: {blocking} blocking, "
           f"{advisory} advisory ({elapsed:.1f}s)")
     if blocking:

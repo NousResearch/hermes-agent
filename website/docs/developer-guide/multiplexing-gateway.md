@@ -172,7 +172,7 @@ edited.
 
 A hosted process serves many tenants' agents at once, so a module-level dict,
 list or set, an `lru_cache`, or a class attribute filled at runtime is shared by
-all of them. The code-health rule HX015 refuses new state of that kind in every
+all of them. The code-health rule HX018 refuses new state of that kind in every
 module the hosted entry point imports. Two forms pass (`hermes_scope_cache`):
 
 - `ScopedCache(name)`: one slot per `(tenant, agent)` of the bound scope.
@@ -238,7 +238,7 @@ over the base source and crediting what survives, so existing state the rules
 now detect is credited too. That makes this a ratchet: credited state is debt
 that must not grow, not a reviewed declaration that it is tenant-neutral.
 
-Measured on the committed tree (`HX015` over `reachable()`, with the rule's
+Measured on the committed tree (`HX018` over `reachable()`, with the rule's
 `registry_freeze.py` exclusion applied): before the lazy imports were added as
 roots, 685 modules and 510 enforced hits in 162 files; with the stricter
 instance-copy, walrus, conditional-method and `from m import X` checks, 537

@@ -122,7 +122,6 @@ def _writes_through_reads(reg):
         "bulk entries": lambda: reg.get_all_entries()[0].schema.update(description="after"),
         "global map": lambda: reg._tools.pop("t"),
         "overlay map": lambda: reg._scoped_tools.setdefault("/p", {}),
-        "toolset checks": lambda: reg._toolset_checks.__setitem__("ts", lambda: False),
         "aliases": lambda: reg._toolset_aliases.__setitem__("a", "ts"),
         "override policy": lambda: reg._plugin_override_policy.clear(),
         "module scopes": lambda: reg._plugin_module_scopes["hermes_plugins.p"].add("/other"),

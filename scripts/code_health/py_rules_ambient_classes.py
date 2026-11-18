@@ -1,4 +1,4 @@
-"""HX015, class attributes: class-level state a method changes at runtime.
+"""HX018, class attributes: class-level state a method changes at runtime.
 
 A class attribute is shared by every instance, so a method that rebinds it through the class
 (``cls.x = v``, ``ClassName.x = v``, ``type(self).x = v``, ``setattr(cls, "x", v)``), or that

@@ -44,8 +44,7 @@ async def test_frozen_reload_answers_restart_required_through_the_dispatcher(tmp
     frozen outcome must be a declared status: the reply dispatches clean and refreshes nothing."""
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
 
     def refused():
         registry_freeze.refuse_if_frozen("MCP registry")
@@ -53,13 +52,14 @@ async def test_frozen_reload_answers_restart_required_through_the_dispatcher(tmp
     monkeypatch.setattr("tools.mcp_tool_discovery.mcp_servers_not_connected", list)
     monkeypatch.setattr("tools.mcp_tool_discovery.mcp_servers_ready", list)
     refreshed = []
-    db = SessionDB(db_path=tmp_path / "state.db")
+    persistence = open_persistence(profile_scope(home=tmp_path))
     viewer = None
     try:
-        epoch = begin_runtime_epoch(db, instance_id="test")
+        epoch = persistence.runtime.begin_epoch(instance_id="test")
         runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False),
                                  _mcp_reload_refresh_cached_agents=lambda multiplex, profile: refreshed.append(profile))
-        authority = SessionAuthority(runner, profile_id="test", instance_id="test", db=db, epoch=epoch)
+        authority = SessionAuthority(runner, profile_id="test", instance_id="test", epoch=epoch,
+                                     persistence=persistence)
         authority.sessions["s"] = LiveSession(None, "route")
         viewer = AuthorityConnection(authority, object(), {"user_id": "human"})
         registry_freeze.freeze_registries()
@@ -71,4 +71,4 @@ async def test_frozen_reload_answers_restart_required_through_the_dispatcher(tmp
     finally:
         if viewer is not None:
             await viewer.close()
-        db.close()
+        persistence.close()

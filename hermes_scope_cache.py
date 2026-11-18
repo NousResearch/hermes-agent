@@ -3,7 +3,7 @@ tenant-neutral values.
 
 A hosted process serves many tenants' agents at once, so a module-level ``dict``/``list``/``set``,
 an ``lru_cache`` or a class attribute filled at runtime is shared by all of them: one agent's
-entry is visible to the next. The hosted-path lint (rule HX015 in ``scripts/code_health``)
+entry is visible to the next. The hosted-path lint (rule HX018 in ``scripts/code_health``)
 refuses such state in every module the hosted entry point can import, unless it is one of:
 
 - a :class:`ScopedCache`, keyed by the ``(tenant, agent)`` of the bound scope, so each agent sees

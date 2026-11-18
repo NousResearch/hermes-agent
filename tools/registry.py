@@ -647,7 +647,6 @@ class ToolRegistry:
                 _seal_entry(entry)
             self._tools = seal(self._tools)
             self._scoped_tools = seal(self._scoped_tools)
-            self._toolset_checks = seal(self._toolset_checks)
             self._toolset_aliases = seal(self._toolset_aliases)
             self._plugin_override_policy = seal(self._plugin_override_policy)
             self._plugin_module_scopes = seal(self._plugin_module_scopes)

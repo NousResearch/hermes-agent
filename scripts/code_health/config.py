@@ -67,7 +67,7 @@ class Rule:
     hosted: bool = False  # applies only to modules the hosted entry point imports (hosted_graph)
 
 
-# The hosted entry point: the modules a shared (multi-tenant) process starts from. HX015 judges
+# The hosted entry point: the modules a shared (multi-tenant) process starts from. HX018 judges
 # every module these import at import time (``hosted_graph``). There is no hosted boot module
 # yet, so the roots are what it will load whatever its shape: the inbound turn path, the turn
 # loop, the scope modules and the four registries ``registry_freeze`` freezes. The hosted boot,
@@ -248,7 +248,7 @@ RULES: tuple[Rule, ...] = (
          " existing call stays until someone migrates it", "ast",
          exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
                                    "agent/secret_scope.py", "tools/terminal_scope.py")),
-    Rule("HX015", "process-wide mutable state on the hosted path", "one hosted process serves"
+    Rule("HX018", "process-wide mutable state on the hosted path", "one hosted process serves"
          " every tenant, so this state is shared by all of them: key it per agent with"
          " `hermes_scope_cache.ScopedCache(name)` (raises with no scope bound), or, when it is"
          " identical for every tenant (a catalog, tool schemas), declare it with"
@@ -257,7 +257,7 @@ RULES: tuple[Rule, ...] = (
          " filter applied from the bound scope, never a registration. A hit on a `from m import X`"
          " line is m's state changed here: when m already reports X (a function moved out of a"
          " facade that late-imports its state), allow the import line with"
-         " `# health: allow HX015 -- X is m's state, judged there`", "ast", hosted=True,
+         " `# health: allow HX018 -- X is m's state, judged there`", "ast", hosted=True,
          # The freeze flag is process-wide by definition: one boot freezes every tenant's view.
          exclude=TESTS + ("registry_freeze.py",)),
     # Process identity.

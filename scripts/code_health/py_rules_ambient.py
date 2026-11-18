@@ -1,4 +1,4 @@
-"""HX015: process-wide mutable state in a module the hosted entry point imports.
+"""HX018: process-wide mutable state in a module the hosted entry point imports.
 
 One hosted process serves many tenants' agents, so module state is shared by all of them. The
 rule flags, in a module reachable from ``config.HOSTED_ENTRY`` (``hosted_graph``):

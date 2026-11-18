@@ -1,4 +1,4 @@
-"""HX015: process-wide mutable state is refused in every module the hosted entry point imports.
+"""HX018: process-wide mutable state is refused in every module the hosted entry point imports.
 
 A planted module-level dict reachable from the hosted roots blocks the ratchet; the same dict in
 a module the roots never import does not; state that existed before is baselined; the two
@@ -21,7 +21,7 @@ from tests.scripts.test_code_health import REPO, _commit, _repo, _verdict
 
 
 def _hits(src: str) -> list[int]:
-    return sorted(set(CHECKERS["HX015"](canonical_tree(ast.parse(src)), Ctx())))
+    return sorted(set(CHECKERS["HX018"](canonical_tree(ast.parse(src)), Ctx())))
 
 
 @pytest.mark.parametrize("src, flagged", [
@@ -492,7 +492,7 @@ def test_state_behind_each_edge_blocks(tmp_path, monkeypatch, capsys, name):
     repo, _ = _repo(tmp_path)
     base = _commit(repo, files)
     code, out = _verdict(repo, base, {target: files[target] + "\n_PLANTED = {}\n"}, capsys)
-    assert code != 0 and "HX015" in out, out
+    assert code != 0 and "HX018" in out, out
 
 
 def test_every_hosted_root_names_a_module():
@@ -534,7 +534,7 @@ def test_ratchet(hosted_repo, capsys, head, blocks):
     code, out = _verdict(repo, base, head, capsys)
     assert (code != 0) is blocks, out
     if blocks:
-        assert "HX015" in out
+        assert "HX018" in out
 
 
 def test_new_reachability_cannot_import_unchecked_state(tmp_path, monkeypatch, capsys):
@@ -544,7 +544,7 @@ def test_new_reachability_cannot_import_unchecked_state(tmp_path, monkeypatch, c
     repo, _ = _repo(tmp_path)
     base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "", "pkg/state.py": "X = {}\n"})
     code, out = _verdict(repo, base, {"pkg/entry.py": "import pkg.state\n"}, capsys)
-    assert code != 0 and "pkg/state.py" in out and "HX015" in out, out
+    assert code != 0 and "pkg/state.py" in out and "HX018" in out, out
     assert "1 newly on the hosted path" in out
 
 
@@ -583,7 +583,7 @@ def test_new_root_has_no_base_credit(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config, "HOSTED_ENTRY", ("entry", "state"))
     result = run(repo, base, head)
     output = capsys.readouterr().out
-    assert result != 0 and "state.py" in output and "HX015" in output, output
+    assert result != 0 and "state.py" in output and "HX018" in output, output
 
 
 def test_base_without_declared_roots_uses_the_head_roots(tmp_path, monkeypatch, capsys):
@@ -606,15 +606,15 @@ def test_moved_function_state_import_allowed_by_the_fix_texts_comment(tmp_path, 
     base = _commit(repo, {"pkg/__init__.py": "", "pkg/entry.py": "import pkg.facade\n",
                           "pkg/facade.py": "_LOCAL = {}\n\ndef publish():\n    _LOCAL['x'] = 1\n"})
     moved = ("def publish_notice():\n"
-             "    from pkg.facade import _LOCAL  # health: allow HX015 -- _LOCAL is pkg.facade's state, judged there\n"
+             "    from pkg.facade import _LOCAL  # health: allow HX018 -- _LOCAL is pkg.facade's state, judged there\n"
              "    _LOCAL['x'] = 2\n")
     files: dict[str, str | None] = {"pkg/facade.py": "from pkg.sibling import publish_notice\n\n_LOCAL = {}\n\ndef publish():\n    _LOCAL['x'] = 1\n",
              "pkg/sibling.py": moved}
     code, out = _verdict(repo, base, files, capsys)
     assert code == 0 and "Allowed by comment" in out and "pkg/sibling.py:2" in out, out
-    files["pkg/sibling.py"] = moved.replace("  # health: allow HX015 -- _LOCAL is pkg.facade's state, judged there", "")
+    files["pkg/sibling.py"] = moved.replace("  # health: allow HX018 -- _LOCAL is pkg.facade's state, judged there", "")
     code, out = _verdict(repo, base, files, capsys)
-    assert code != 0 and "pkg/sibling.py" in out and "HX015" in out, out
+    assert code != 0 and "pkg/sibling.py" in out and "HX018" in out, out
 
 
 @pytest.mark.parametrize(("text", "expected"), [

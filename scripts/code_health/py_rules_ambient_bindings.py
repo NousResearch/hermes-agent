@@ -1,4 +1,4 @@
-"""Lexical bindings for HX015: which binding a name read or written in any scope refers to.
+"""Lexical bindings for HX018: which binding a name read or written in any scope refers to.
 
 A name mutated inside a function is the module's only when no scope between them binds it: a
 parameter, a local assignment (without ``global``), a nested function's local, a comprehension
@@ -10,7 +10,7 @@ It also lists the writes a module makes at runtime (inside a function): assignme
 targets, mutating method calls and ``setattr``/``delattr``, each with the scope it runs in.
 
 This is the one binding walk for the HX checkers: it records both the owning scope of every name
-(the HX015 rules resolve through :meth:`Scope.binder`) and the import a name means
+(the HX018 rules resolve through :meth:`Scope.binder`) and the import a name means
 (:meth:`Scope.resolve` feeds ``py_rules.canonical_tree``, which spells import-bound names out as
 their canonical dotted API), so a Python-scope rule lives here once.
 """

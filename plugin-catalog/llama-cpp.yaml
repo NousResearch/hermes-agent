@@ -1,0 +1,33 @@
+name: llama-cpp
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 6c4a3e81aeb85f6d56ebf0f7f430476cdef217f3
+subdir: plugins/llama-cpp
+title: llama.cpp GPU Manager
+description: >-
+  Desktop page + FastAPI backend for the Hermes-managed llama.cpp runtime. It
+  detects the GPU by model (not just vendor: Vulkan/CUDA/ROCm, AMD RDNA bucket
+  gfx120X / gfx110X / gfx103X) and offers the matching build; lists local GGUF
+  models with size and state; edits and applies per-model presets (context
+  window, n-gpu-layers, KV cache type/quant, flash attention, batch, sampling);
+  loads/unloads the active model; and benchmarks generation and prefill tok/s
+  with a leaderboard that records the preset and the llama.cpp build used for
+  each test. It also registers the llama_server_status agent tool. Disclosure —
+  it reads and writes inside $HERMES_HOME (runtimes/llamacpp: server state,
+  presets, bench history), launches/stops the managed llama-server, and calls
+  only the local server for benchmarks. Update checks fetch public GitHub
+  release metadata (ggml-org/llama.cpp, lemonade-sdk/llamacpp-rocm); downloading
+  a build is an explicit user action and never fetches or replaces the plugin's
+  own files. No telemetry, no credentials in the UI, no third-party network
+  calls.
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/llama-cpp
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: [llama_server_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -94,7 +94,7 @@ _FIRING = "firing"
 # gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
 # share no object, and only one gateway startup ever runs per process.
 _handle_lock = threading.Lock()
-_handle: Optional[StartupWatchdogHandle] = None
+_handle: Optional[StartupWatchdogHandle] = None  # health: allow HX018 -- one startup per process, disarmed before serving begins
 
 
 def _process_hermes_home() -> Path:

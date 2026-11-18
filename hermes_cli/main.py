@@ -45,7 +45,6 @@ _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pa
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast
-import itertools
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
 # before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
@@ -60,11 +59,7 @@ _startup_fast.normalize_hermes_home_env()
 # mentioning both words never arm a 300s hard-exit timer. Foreground runs arm
 # too — a pre-loop wedge is just as dead without a supervisor; GatewayRunner
 # disarms once the event loop is live.
-def _argv_is_gateway_run(argv: list) -> bool:
-    return any(a == "gateway" and b == "run" for a, b in itertools.pairwise(argv))
-
-
-if _argv_is_gateway_run(sys.argv[1:]):
+if _startup_fast.is_gateway_run_argv(sys.argv[1:]):
     try:
         from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
 
@@ -72,6 +67,11 @@ if _argv_is_gateway_run(sys.argv[1:]):
         del _arm_sw
     except Exception:
         pass
+    # The --hosted start flag arms the process-wide code fence here, before the heavy import
+    # graph below (the boot's preflight confirms the flag against config; no flag: no arm).
+    from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+    arm_from_start_argv()
 
 
 def _exit_after_oneshot(rc: object) -> None:

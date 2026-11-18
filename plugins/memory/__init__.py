@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
+from registry_freeze import registries_frozen
 from plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
@@ -619,7 +620,10 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:
-    """Remove tracked skills that no longer belong to the active provider."""
+    """Remove tracked skills that no longer belong to the active provider. Not after the hosted boot froze
+    the registries: the plugin registry is fixed then, and pruning would be a registry change."""
+    if registries_frozen():
+        return
     if active_provider is None:
         active_provider = _get_active_memory_provider()
 
@@ -648,6 +652,15 @@ def discover_plugin_cli_commands() -> list[dict]:
     if not _is_bundled(plugin_dir):
         from hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
+            return []
+        # A hosted process never imports a home cli.py: the one shared predicate refuses
+        # the provider directory before the file is read, so the CLI surface is absent.
+        from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+        refusal = hosted_code_refusal(plugin_dir)
+        if refusal:
+            logger.error("Memory provider %s CLI commands refused in hosted mode: %s",
+                         active_provider, refusal)
             return []
     try:
         cli_mod = sys.modules.get(module_name)

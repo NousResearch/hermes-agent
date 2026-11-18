@@ -33,13 +33,13 @@ _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
 # Retained paths a capture published or reused whose admission has not committed or been refused
 # yet: no committed row holds them, so ``release_unheld_media`` must treat them as held. The lock
 # orders a capture's lease-then-publish against a release's lease-check-then-unlink, per path.
-_leases = Counter()
+_leases = Counter()  # health: allow HX018 -- keyed by the media file's absolute path, under its own profile's home
 _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
 # One set per running release: the paths a capture published, reused or ended a lease on since that
 # release began. Its held set is read in a write that ends before its unlinks, so an admission
 # committed in between is only seen through its lease.
-_releases = {}
+_releases = {}  # health: allow HX018 -- one entry per running release, removed when it ends; paths are per-profile
 
 
 def _touch(path):
@@ -485,7 +485,7 @@ def release_admission_media(store, admission_id):
 
 
 _SWEEP_INTERVAL_S = 3600
-_last_sweep = {}
+_last_sweep = {}  # health: allow HX018 -- keyed by each store's hermes_home_key: an hourly sweep throttle, no tenant data
 
 
 def sweep_settled_media(store, *, now=None):

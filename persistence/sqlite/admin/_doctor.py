@@ -23,7 +23,7 @@ from sqlite_support import (
 )
 
 from .._backend import translated
-from ._base import AdminFile
+from ._base import AdminFile, local_only_methods
 
 logger = logging.getLogger("gateway.lifecycle_ledger")
 
@@ -108,6 +108,7 @@ def _newest_mtime_ns(paths) -> int | None:
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
 
 
+@local_only_methods
 class SQLiteRepairGuard(RepairGuard):
     """:class:`RepairGuard` on the exclusive repair connection."""
 

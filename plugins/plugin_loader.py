@@ -19,6 +19,13 @@ from typing import Any, Callable, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
+_PLUGINS_ROOT = Path(__file__).parent
+
+
+class NamedProviderRefused(RuntimeError):
+    """A named provider that exists but may not load in this process (the reason is the message)."""
+
+
 _MODULE_LOAD_LOCKS: dict[str, threading.RLock] = {}
 _MODULE_LOAD_LOCKS_GUARD = threading.Lock()
 # Inside bounded_load_wait(), how long a second caller waits for another thread's in-flight load of
@@ -135,7 +142,19 @@ def read_plugin_description(plugin_dir: Path) -> str:
 
 
 def _new_module(name: str, file: Path, search_locations: Optional[list[str]] = None) -> Optional[Any]:
-    """spec -> module -> sys.modules[name] (NOT executed); None if no spec."""
+    """spec -> module -> sys.modules[name] (NOT executed); None if no spec.
+
+    The one choke point every plugin-file load here goes through, so the shared hosted
+    predicate answers every one of them (the directory, its parents and its siblings)
+    before a spec — and any code — exists."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(file)
+    if refusal:
+        # Fail-soft like every other load failure here (one bad file never blocks the
+        # rest), but LOUD: a hosted process never builds a module for this file.
+        _log.warning("Refusing to load %s in hosted mode: %s", file, refusal)
+        return None
     spec = importlib.util.spec_from_file_location(
         name, str(file), submodule_search_locations=search_locations)
     if not spec:
@@ -283,7 +302,19 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
 
 def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Optional[Any]], *, kind: str,
                noun: str, logger: logging.Logger) -> Optional[Any]:
-    """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure."""
+    """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure.
+
+    A provider outside the deployment image is refused in a hosted process BEFORE its module
+    is imported — this is the discovery-layer pre-check that raises :exc:`NamedProviderRefused`
+    with the reason. The shared predicate (:func:`hermes_cli.hosted_code_fence.
+    hosted_code_refusal`) answers it; enforcement is the process-wide code fence the hosted boot
+    installed, which refuses any load this seam missed."""
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(plugin_dir)
+    if refusal:
+        logger.error("%s %s: %s", kind, name, refusal)
+        raise NamedProviderRefused(refusal)
     try:
         instance = load_from_dir(plugin_dir)
     except Exception as e:

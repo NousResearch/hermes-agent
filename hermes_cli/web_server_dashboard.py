@@ -1232,6 +1232,9 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         return False
     dashboard_dir = Path(plugin["_dir"])
     api_path = dashboard_dir / api_file_name
+    # A backend api file under the deployment home is tenant-writable code: a hosted process's
+    # code fence refuses its import, the load below fails and is logged, and the dashboard of a
+    # hosted deployment serves only the plugins its image bundles.
     try:
         api_path.resolve().relative_to(dashboard_dir.resolve())
     except (OSError, RuntimeError, ValueError):
@@ -1244,6 +1247,15 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         return False
     if not api_path.exists():
         _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
+        return False
+    # A backend api file under the deployment home is tenant-writable code: the one
+    # shared predicate refuses it in hosted mode before it is read, so the dashboard of a
+    # hosted deployment mounts only the plugins its image bundles.
+    from hermes_cli.hosted_code_fence import hosted_code_refusal
+
+    refusal = hosted_code_refusal(api_path)
+    if refusal:
+        _log.error("Plugin %s api mount refused in hosted mode: %s", plugin.get("name", ""), refusal)
         return False
     try:
         from hermes_cli.plugin_isolation import import_user_code

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_constants import hermes_home_key
+from registry_freeze import check_at_freeze
 
 logger = logging.getLogger(__name__)
 # The verdict of an ``ensure_deps`` an async gateway caller already ran in an executor (#125607).
@@ -276,6 +277,22 @@ class PlatformRegistry:
         with self._lock:
             self._activation_env[name] = self._activation_env.get(name, frozenset()) | names
 
+    def drop_pending_deferred(self) -> list[str]:
+        """Drop every deferred loader still pending (process-wide and every scope), without
+        loading anything. The hosted boot calls this before it freezes the registries: it serves
+        only the adapters its config connects, and a loader left pending could never register
+        after the freeze, silently losing that platform instead. A later lookup of a dropped name
+        finds no entry and no loader, as if the plugin were absent. Returns the dropped names
+        (``name`` process-wide, ``name@scope`` scoped), in sorted order."""
+        dropped: list[str] = []
+        with self._lock:
+            dropped.extend(self._deferred)
+            self._deferred.clear()
+            for scope, loaders in self._scoped_deferred.items():
+                dropped.extend(f"{name}@{scope}" for name in loaders)
+                loaders.clear()
+        return sorted(dropped)
+
     def activation_env(self, name: str) -> frozenset[str]:
         with self._lock:
             return self._activation_env.get(name, frozenset())
@@ -309,6 +326,15 @@ class PlatformRegistry:
             self._consumed_loaders.pop(load_key, None)
             self._prune_scope(scope)
             return True
+
+    def pending_deferred(self) -> list[str]:
+        """``name`` (process-wide) or ``name@scope`` of every deferred loader not yet resolved,
+        in-flight ones included."""
+        with self._lock:
+            pending = {name for name in self._deferred}
+            pending |= {f"{name}@{scope}" for scope, loaders in self._scoped_deferred.items() for name in loaders}
+            pending |= {name if scope is None else f"{name}@{scope}" for scope, name in self._inflight}
+        return sorted(pending)
 
     def _resolve(self, name: str, scope: Optional[str] = None) -> None:
         """Run the deferred loader for *name* if one is pending."""
@@ -583,3 +609,11 @@ class PlatformRegistry:
 
 # Module-level singleton
 platform_registry = PlatformRegistry()
+
+
+def _pending_platforms() -> list[str]:
+    # Read the module attribute at call time: a test may swap the registry instance.
+    return [f"deferred platform {name}" for name in sys.modules[__name__].platform_registry.pending_deferred()]
+
+
+check_at_freeze(_pending_platforms)

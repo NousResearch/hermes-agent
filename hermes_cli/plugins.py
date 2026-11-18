@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
+from registry_freeze import refuse_if_frozen, seal_at_freeze
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
@@ -65,16 +66,9 @@ from hermes_cli.plugins_state import (
 )
 # PluginContext lives in plugins_context.py; this facade stays its public import path.
 from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
-from hermes_cli._startup_fast import project_root_str
-
-
-def get_bundled_plugins_dir() -> Path:
-    """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only
-    store paths) first, else the in-repo path."""
-    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
-    if env_override:
-        return Path(env_override)
-    return Path(project_root_str()) / "plugins"
+# The bundled tree lives in a topical sibling (the facade is over its file-size cap); the
+# re-export keeps ``hermes_cli.plugins.get_bundled_plugins_dir`` the one import seam.
+from hermes_cli.plugins_bundled import get_bundled_plugins_dir
 
 
 class PluginToolOverrideError(PermissionError):
@@ -305,6 +299,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
         self._portable_mcp_server_plugins: dict[str, str] = {}
         self._aux_tasks: dict[str, dict[str, Any]] = {}
+        seal_at_freeze(self._seal_storage)  # after the maps it seals exist
         self._approval_transports: dict[str, Any] = {}
         self._slack_action_handlers: list[tuple] = []
         self._platform_handler_factories: dict[str, list[tuple]] = {}
@@ -398,6 +393,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if safe_worker_enabled() or plugin_discovery_suppressed():
             # Safe workers never discover; a config-only read of a profile this process must not
             # load plugins for is suppressed too.
+            return
+        from hermes_cli.hosted_mode import plugin_loading_permitted
+
+        if not plugin_loading_permitted():
+            # Hosted: plugin code loads only after the import-free boot preflight refused every
+            # uncurated plugin; until then discovery is a no-op.
             return
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
@@ -572,6 +573,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
         """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
         method is the tracked path plugins normally use. Same validation, no unload tracking."""
+        refuse_if_frozen("plugin registry")
         from hermes_cli.approval_transport import RegisteredApprovalTransport
         clean = str(name).strip().lower()
         if clean == "builtin":
@@ -697,7 +699,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         return dict(self._portable_mcp_server_plugins)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
-        """Remove a stale registry entry (silently ignores missing keys)."""
+        """Remove a stale registry entry (silently ignores missing keys). Refused once the hosted boot
+        froze the registries: a reader that finds the file gone reports it missing instead."""
+        refuse_if_frozen("plugin registry")
         self._plugin_skills.pop(qualified_name, None)
 
 

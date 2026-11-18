@@ -1,0 +1,180 @@
+"""The end of a hosted boot that passes every check: the registries freeze, one-way.
+
+Real imports, a temp ``HERMES_HOME``, and the stub sandbox and storage providers installed through
+their real discovery (a plugin dir under the home). The freeze is process-global and irreversible,
+so the freezing test is the LAST one in this file and nothing after it touches a registry.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from hermes_cli import hosted_mode
+import hermes_cli.plugins as plugins_mod
+import registry_freeze
+from hermes_constants import get_hermes_home
+from tests.hermes_cli.test_hosted_mode import (
+    SANDBOX_PLUGIN, STORAGE_PLUGIN, STORAGE_PROVIDER, VERIFIER_PLUGIN, _bundled_verifier,
+    _clean_hosted_config, _write_config,
+)
+
+
+@pytest.fixture
+def start_command_flag(monkeypatch):
+    """The hosted start command's ``--hosted`` flag, through the real seam that reads it at
+    process entry: the flag arms the process-wide code fence (idempotent — the first armed
+    test in this file's process installs it, and an armed fence cannot be disarmed), and the
+    boot's preflight confirms it against the config each test writes."""
+    import sys
+
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--hosted"])
+    from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+    arm_from_start_argv()
+
+
+@pytest.fixture
+def verdict(monkeypatch):
+    monkeypatch.setattr(hosted_mode, "_VERDICT", {"hosted": None})
+
+
+@pytest.fixture
+def clean_hosted(verdict, monkeypatch, tmp_path, start_command_flag):
+    """The deployment of the passing-boot test, with its own empty bundled tree: its stubs are
+    baked into it (a hosted boot loads in-process only what the image ships; the storage stub
+    installs in the persistence providers' bundled dir, the verifier stub in its kind's)."""
+    import plugins.persistence as persistence_registry
+    from plugins import identity_verifier
+
+    bundled = tmp_path / "bundled"
+    (bundled / "persistence").mkdir(parents=True)
+    (bundled / "identity_verifier").mkdir(parents=True)
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
+    monkeypatch.setattr(persistence_registry, "_PERSISTENCE_PLUGINS_DIR", bundled / "persistence")
+    monkeypatch.setattr(identity_verifier, "_PLUGINS_DIR", bundled / "identity_verifier")
+    _write_config(_clean_hosted_config())
+    sandbox = bundled / "stub-sandbox"
+    sandbox.mkdir(parents=True)
+    (sandbox / "__init__.py").write_text(SANDBOX_PLUGIN, encoding="utf-8")
+    (sandbox / "plugin.yaml").write_text("name: stub-sandbox\nversion: '1.0'\n", encoding="utf-8")
+    storage = persistence_registry._PERSISTENCE_PLUGINS_DIR / STORAGE_PROVIDER
+    storage.mkdir(parents=True)
+    (storage / "__init__.py").write_text(STORAGE_PLUGIN, encoding="utf-8")
+    _bundled_verifier("stub-verifier", VERIFIER_PLUGIN)
+
+
+def test_a_local_boot_never_freezes_the_registries(verdict):
+    """hosted false: finish_hosted_boot does nothing, and a tool can still register."""
+    assert hosted_mode.finish_hosted_boot() is None
+    assert registry_freeze.registries_frozen() is False
+    from tools.registry import registry
+
+    registry.register(name="late_local_tool", toolset="probe",
+                      schema={"name": "late_local_tool", "description": "x", "parameters": {}},
+                      handler=lambda args, **kw: "{}")
+    registry.deregister("late_local_tool")
+
+
+def test_a_pending_platform_loader_blocks_the_freeze_until_the_boot_drops_it(clean_hosted, monkeypatch):
+    """A deferred platform loader nobody looked up would be lost by the freeze (its registration
+    would be refused afterwards); the hosted boot drops the pending ones first. Without the drop
+    the freeze refuses, naming the platform."""
+    from gateway.platform_registry import PlatformRegistry, platform_registry
+
+    seen = []
+    platform_registry.register_deferred("lazyplat", lambda: seen.append("loaded"))
+
+    hosted_mode.assert_hosted_boot(env={"PATH": "/usr/bin"})
+    assert registry_freeze.registries_frozen() is False
+    monkeypatch.setattr(PlatformRegistry, "drop_pending_deferred", lambda self: [])
+    with pytest.raises(registry_freeze.RegistriesIncomplete, match="lazyplat"):
+        hosted_mode.finish_hosted_boot()
+    assert seen == []  # it was never materialised
+
+
+def test_finish_refuses_when_a_core_tool_did_not_register(clean_hosted, monkeypatch):
+    """Builtin tool discovery is mandatory and synchronous before the freeze: a core tool that
+    never registered (its module failed to import, or discovery was left to the first turn's
+    lazy import) refuses the boot instead of freezing an incomplete registry."""
+    from hermes_cli.hosted_mode import HostedBootRefused
+    from tools.registry import registry
+
+    real_names = registry.get_all_tool_names
+    monkeypatch.setattr(registry, "get_all_tool_names",
+                        lambda: [name for name in real_names() if name != "web_search"])
+    with pytest.raises(HostedBootRefused, match="web_search"):
+        hosted_mode.finish_hosted_boot()
+    assert registry_freeze.registries_frozen() is False  # refused before anything froze
+
+
+def test_a_hosted_boot_that_passes_every_check_freezes_the_registries(clean_hosted):
+    """The passing boot: every check green through the real discovery, then the freeze — after
+    which every registration entry point refuses, and reads keep working."""
+    import providers
+    from hermes_cli.plugins import get_plugin_manager
+    from tools.registry import registry
+
+    hosted_mode.assert_hosted_boot(env={"PATH": "/usr/bin", "HOME": "/home/op", "LC_ALL": "C"})
+    assert registry_freeze.registries_frozen() is False
+    hosted_mode.finish_hosted_boot()
+    assert registry_freeze.registries_frozen() is True
+
+    with pytest.raises(registry_freeze.RegistryFrozen):
+        registry.register(name="too_late", toolset="probe",
+                          schema={"name": "too_late", "description": "x", "parameters": {}},
+                          handler=lambda args, **kw: "{}")
+    with pytest.raises(registry_freeze.RegistryFrozen):
+        providers.register_provider(SimpleNamespace())  # the refusal fires before the payload
+    with pytest.raises(registry_freeze.RegistryFrozen):
+        get_plugin_manager().register_approval_transport(
+            "too-late", lambda: True, plugin_id="test")
+    assert sorted(p.name for p in providers.list_providers())  # reads keep working
+
+
+_FINISH_PROBE = '''
+import json
+
+from hermes_cli import hosted_mode
+
+assert hosted_mode.is_hosted() is True
+hosted_mode.finish_hosted_boot()
+import model_tools  # the finish imported it already; the core set is registered
+from tools.registry import registry
+
+from registry_freeze import RegistryFrozen, registries_frozen
+
+result = {"frozen": registries_frozen(),
+          "core": {"terminal", "read_file"} <= set(registry.get_all_tool_names())}
+try:
+    registry.register(name="too_late", toolset="probe",
+                      schema={"name": "too_late", "description": "x", "parameters": {}},
+                      handler=lambda args, **kw: "{}")
+    result["refused"] = False
+except RegistryFrozen:
+    result["refused"] = True
+print("PROBE " + json.dumps(result))
+'''
+
+
+def test_a_fresh_hosted_finish_registers_the_core_tools_and_freezes(tmp_path):
+    """A fresh process runs a hosted finish, then imports the tool layer: the core tools are
+    registered (builtin discovery was synchronous during the finish, not a lazy first-turn
+    import the freeze would have refused), and a registration after the freeze raises instead
+    of being swallowed by a discovery path."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("hosted:\n  enabled: true\n", encoding="utf-8")
+    env = {**os.environ, "HERMES_HOME": str(home),
+           "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+    probe = subprocess.run([sys.executable, "-c", _FINISH_PROBE], env=env, check=False,
+                            capture_output=True, text=True, timeout=300)
+    assert probe.returncode == 0, probe.stderr
+    (line,) = [line for line in probe.stdout.splitlines() if line.startswith("PROBE ")]
+    assert json.loads(line[len("PROBE "):]) == {"frozen": True, "core": True, "refused": True}

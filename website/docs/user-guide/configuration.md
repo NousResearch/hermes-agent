@@ -177,6 +177,28 @@ processes currently holding the database (`<db> is held by PID <n> (<command>)`)
 so you know what to stop; when the holder scan is partial or unavailable it says
 `cannot prove the database is quiet` instead of giving an all-clear.
 
+## Hosted Shared-Tenancy Mode
+
+A local install leaves this off. `hosted.enabled: true` (or the shorthand `hosted: true`) marks a deployment where one shared Hermes process serves many tenants' agents, with each agent's code running in its own remote sandbox:
+
+```yaml
+hosted:
+  enabled: true
+  identity_verifier: <name>   # admits each inbound relay frame from the connector's signed claim
+  turn_claim_issuer: https://connector.example   # the reference verifier's one trust root for signing keys
+persistence:
+  provider: <name>            # a provider whose assert_isolating() passes; the built-in sqlite is refused
+```
+
+A hosted boot refuses to serve, exiting with status 78 and a message that names the condition and its fix, when any of the following holds:
+- a profile `.env` or `auth.json` exists;
+- a credential is in the process environment;
+- the terminal backend is not a sandbox;
+- a direct platform adapter is configured;
+- a user-added plugin or MCP server would load in-process;
+- `hosted.identity_verifier` is missing, or it is the reference turn-claim verifier and `hosted.turn_claim_issuer` is empty;
+- `persistence.provider` cannot prove tenant isolation.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

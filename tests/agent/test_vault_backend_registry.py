@@ -53,7 +53,11 @@ def test_reload_cannot_change_prefix_and_leave_ambiguous_restore(tmp_path):
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
     scope = str(tmp_path / "home")
-    context = PluginContext(PluginManifest(name="login-example", source="bundled"), PluginManager(scope_key=scope))
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    context = PluginContext(PluginManifest(name="login-example", source="bundled",
+                                           path=str(get_bundled_plugins_dir())),
+                            PluginManager(scope_key=scope))
     original = Example()
     first = context.register_login_backend(original)
     class ChangedPrefix(Example):
@@ -71,7 +75,9 @@ def test_lease_reload_and_unload_do_not_cross_profiles(tmp_path):
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
     first, second = str(tmp_path / "first"), str(tmp_path / "second")
-    manifest = PluginManifest(name="test-vault", source="bundled")
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    manifest = PluginManifest(name="test-vault", source="bundled", path=str(get_bundled_plugins_dir()))
     first_ctx = PluginContext(manifest, PluginManager(scope_key=first))
     second_ctx = PluginContext(manifest, PluginManager(scope_key=second))
     original, replacement, sibling = Example(), Example(), Example()

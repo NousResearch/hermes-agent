@@ -1,8 +1,10 @@
 """Dependency-environment layout: where a project's venv generations live, which one
 is selected, and the interpreter inside any venv. Shared by PM and pre-import launchers.
 
-Only stdlib and hermes_constants: environment selection must work before
-any dependency from that environment has been imported.
+Only stdlib and hermes_constants at module scope: environment selection must work
+before any dependency from that environment has been imported. The activation's
+provenance guard imports the fence module lazily at call time — image code that itself
+imports only the stdlib, so activation still runs ahead of any dependency.
 """
 from __future__ import annotations
 
@@ -461,6 +463,17 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise NoCommittedEnvironment("no dependency environment is committed for this install")
 
 
+def _hosted_verdict_already_frozen() -> bool:
+    """True when a boot in this process has already frozen a hosted verdict. Read from
+    ``sys.modules`` only: importing ``hermes_cli.hosted_mode`` here would pull Hermes code
+    into the bootstrap, and a verdict can only be frozen once that module is loaded."""
+    import sys
+
+    hosted_mode = sys.modules.get("hermes_cli.hosted_mode")
+    frozen = getattr(hosted_mode, "hosted_verdict_frozen", None)
+    return bool(frozen is not None and frozen() is True)
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -501,6 +514,28 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    # Site processing is a code load, not a path step: a .pth in the directory executes
+    # import-time code, and this activation runs during the bootstrap — BEFORE the start
+    # command's fence arms, so the fence cannot see it. The guard runs whenever this process
+    # is hosted by either signal: the start command's hosted flag, or a hosted verdict a boot
+    # already froze (an in-process host that records its config before activating). Both
+    # reads are import-free — the flag is argv, and a frozen verdict can only exist once
+    # ``hermes_cli.hosted_mode`` is loaded, so it is read from ``sys.modules`` rather than
+    # imported (this module may not import Hermes code beyond the stdlib-only fence: a
+    # local bootstrap imports nothing new here). A hosted deployment's dependency
+    # environment must live inside the image (its interpreter's own site-packages).
+    try:
+        from hermes_cli.hosted_code_fence import (HostedCodeRefused, hosted_code_refusal,
+                                                  hosted_start_flag_requested)
+    except ModuleNotFoundError:
+        pass  # a tree that ships no fence can start nothing hosted: the guard is vacuous
+    else:
+        if hosted_start_flag_requested() or _hosted_verdict_already_frozen():
+            refusal = hosted_code_refusal(selected)
+            if refusal:
+                raise HostedCodeRefused(
+                    f"{refusal}; a hosted deployment's dependency environment must live "
+                    "inside the image (its interpreter's own site-packages)")
     import site
 
     sys.path[:] = [entry for entry in sys.path

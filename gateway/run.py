@@ -10,6 +10,13 @@ except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the 
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
+# The hosted start command's --hosted flag arms the code fence HERE, before this module's
+# application imports below — the deployment's own assertion that this process serves
+# tenants, with the preflight confirming the flag against config later. No flag: no arm.
+from hermes_cli.hosted_code_fence import arm_from_start_argv
+
+arm_from_start_argv()
+
 import asyncio
 import concurrent.futures
 import dataclasses
@@ -18,7 +25,6 @@ import logging
 import os
 import re
 import shlex
-import site
 import sys
 import signal
 import threading
@@ -406,54 +412,9 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
-def _ensure_windows_gateway_venv_imports() -> None:
-    """Make detached Windows gateway runs see the Hermes venv packages.
-
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
-    if sys.platform != "win32":
-        return
-
-    project_root = Path(project_root_str())
-    from pm.environments import committed_venv, venv_python_version
-
-    # A PM install's store Python was already activated onto the committed generation by
-    # hermes_bootstrap; overlaying the leftover pre-PM venv loads a foreign ABI (#122183).
-    if committed_venv(project_root) is not None:
-        return
-    candidates = [Path(v) for v in (os.environ.get("VIRTUAL_ENV"),) if v] + [project_root / "venv"]
-
-    seen: set[str] = set()
-    for venv_dir in candidates:
-        try:
-            resolved_venv = venv_dir.resolve()
-        except OSError:
-            resolved_venv = venv_dir
-        venv_key = str(resolved_venv).lower()
-        if venv_key in seen:
-            continue
-        seen.add(venv_key)
-
-        site_packages = resolved_venv / "Lib" / "site-packages"
-        if not site_packages.exists():
-            continue
-        # Built for another (or an unreadable) Python: its compiled modules crash this one (#139085).
-        if (found := venv_python_version(resolved_venv)) != sys.version_info[:2]:
-            logger.debug("Skipping venv overlay %s: Python %s, gateway %s", resolved_venv, found or "unknown", sys.version_info[:2])
-            continue
-        project_entry = str(project_root)
-        site_entry = str(site_packages)
-        if project_entry not in sys.path:
-            sys.path.insert(0, project_entry)
-        # addsitedir semantics matter: pywin32 (MCP SDK on Windows) needs .pth processing for pywintypes.
-        site.addsitedir(site_entry)
-        if site_entry in sys.path:
-            sys.path.remove(site_entry)
-        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
-        sys.path.insert(insert_at, site_entry)
-
-        os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        return
-
+# The Windows venv overlay lives in its own module (this file has a line cap that only
+# goes down); re-exported under the name the bootstrap and tests already use.
+from gateway.run_windows_venv import _ensure_windows_gateway_venv_imports
 
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
@@ -5047,6 +5008,10 @@ def main():
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    # Arms at import time (top of this module), before any application import; the boot's
+    # preflight confirms the flag against config. The argparse entry only tolerates it.
+    parser.add_argument("--hosted", action="store_true",
+                        help="Mark this a hosted deployment's start (arms the code fence at import)")
     args = parser.parse_args()
 
     config = None

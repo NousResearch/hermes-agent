@@ -68,6 +68,7 @@ class BackendPlan:
     new_host: Optional[str] = None
     new_port: Optional[int] = None
     keep_webapp: bool = False
+    no_service: bool = False
     carry: dict[str, str] = field(default_factory=dict)  # VALUES: never printed; only the names are shown
     old_argv: list[str] = field(default_factory=list)  # the exact argv (in memory only; ``rec`` has it redacted)
     generate_secret: bool = False
@@ -129,6 +130,12 @@ class BackendPlan:
             return EXIT_BLOCKED
         return EXIT_UNSUPPORTED if self.unsupported else EXIT_OK
 
+    @property
+    def shows_steps(self) -> bool:
+        """The automatic move's steps are shown only for a move that could run: none while anything blocks
+        it, and none when the move is by hand (its own steps are under ``unsupported``)."""
+        return bool(self.rec) and self.new_host is not None and not self.blockers and not self.unsupported
+
     def to_dict(self) -> dict:
         return {
             "home": self.home, "old_backend": self.rec or None,
@@ -143,7 +150,7 @@ class BackendPlan:
                              "pid": i.pid if i else None, "instructions": t, "steps": list(s)}
                             for i, t, s in self.unsupported],
             "notices": list(self.notices), "nothing_to_do": self.nothing_to_do,
-            "steps": self.step_titles() if self.rec and self.new_host is not None else [],
+            "steps": self.step_titles() if self.shows_steps else [],
         }
 
 
@@ -317,7 +324,8 @@ def public_url_steps(hermes: str, public_url) -> list[str]:
 
 
 def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optional[BackendItem], *, env_keys=(),
-                 home: Optional[str] = None, no_service: bool = False, public_url=None) -> list[str]:
+                 home: Optional[str] = None, no_service: bool = False, public_url=None,
+                 keep_address: bool = False) -> list[str]:
     """The steps an operator runs by hand, in order, one shell line each (prose lines start with ``#``).
     Every ``hermes`` command names *home* (``-p PROFILE`` or ``HERMES_HOME=``).
 
@@ -362,8 +370,12 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item: Optiona
                 "`dashboard` service and run: docker compose up -d --remove-orphans",
                 f"# publish {port} on the gateway's container and restart it, so its gateway serves the address"]
     steps = [f"{hermes} webapp --build-only", f"{hermes} config set webapp.enabled true"]
-    steps += [f"{hermes} config set webapp.host {old_host}", f"{hermes} config set webapp.port {old_port}"] if known \
-        else [f"# set the old backend's address: {hermes} config set webapp.host HOST, then webapp.port PORT"]
+    if keep_address:
+        pass  # --keep-webapp-address: the Webapp stays where webapp.host/webapp.port already put it
+    elif known:
+        steps += [f"{hermes} config set webapp.host {old_host}", f"{hermes} config set webapp.port {old_port}"]
+    else:
+        steps.append(f"# set the old backend's address: {hermes} config set webapp.host HOST, then webapp.port PORT")
     steps += public_url_steps(hermes, public_url)
     steps.append(copy)
     if item is not None and item.supervisor == "systemd" and item.scope != "user" and item.unit:
@@ -579,9 +591,7 @@ def _gateway(plan: BackendPlan, host) -> None:
     gs = host.gateway_state()
     plan.gateway, plan.linger = gs, host.linger()
     if gs["kind"] is None:
-        plan.unsupported.append((None, _UNSUPPORTED["no-service"],
-                                 manual_steps(plan.old_host, plan.old_port, plan.item, home=plan.home,
-                                              no_service=True, public_url=(plan.public_url, None))))
+        plan.no_service = True  # its by-hand steps are built once every check has run (build_plan)
         return
     if gs["running_pid"] and not gs["active"]:
         plan.blockers.append(
@@ -621,6 +631,18 @@ def _own_cgroup_inside(plan: BackendPlan) -> bool:
 
 
 def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) -> BackendPlan:
+    plan = _build_plan(host, address=address, keep_webapp=keep_webapp, force_interrupt=force_interrupt)
+    if plan.no_service:  # built last, from the selected target, once every check has run
+        steps = [] if plan.blockers else manual_steps(
+            plan.new_host, plan.new_port, plan.item, home=plan.home, no_service=True,
+            public_url=(plan.public_url, None), keep_address=plan.keep_webapp)
+        plan.unsupported.append((None, _UNSUPPORTED["no-service"], steps))
+    if plan.blockers:  # no step, in text or JSON, while anything blocks the move
+        plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
+    return plan
+
+
+def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) -> BackendPlan:
     plan = BackendPlan(home=str(host.home))
     if problem := host.config_problem():
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
@@ -720,7 +742,7 @@ def _plan_body(plan: BackendPlan) -> list[str]:
     lines += [f"  gateway:       {_gateway_line(plan)}",
               f"  webapp bundle: {'missing → build it first' if plan.bundle_missing else 'present'}",
               f"  running turns: {plan.running_turns}"]
-    if plan.new_host is not None:
+    if plan.shows_steps:
         steps = [s["title"] for s in plan.step_titles() if s["name"] != "preflight"]
         lines += ["", "  Steps:", *[f"    {n}. {s}" for n, s in enumerate(steps, 1)]]
     lines += ["  This version only prints the plan: it changes nothing.",

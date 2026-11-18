@@ -1159,6 +1159,9 @@ def _bg_review_auto_deny(command, description, **kwargs):
     return "deny"
 
 
+_bg_review_auto_deny.non_interactive = True  # no person behind it: see tools/delegate_tool_config.py
+
+
 def _bg_review_skip_secret(var_name, prompt, metadata=None):
     """Non-interactive secret capture: a skill the review opens never asks the user for a key.
 

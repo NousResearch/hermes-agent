@@ -9,6 +9,7 @@ import { $layoutTree, $narrowViewport } from '@/components/pane-shell/tree/store
 import { registry } from '@/contrib/registry'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionTiles, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
+import { $shellChoice } from '@/store/shell-variant'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -61,6 +62,8 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  // The phone tab picker belongs to the explicit classic rollback.
+  $shellChoice.set(false)
   stubResizeObserver()
   stubMenuDomApis()
   vi.stubGlobal('CSS', { escape: (value: string) => value })
@@ -86,6 +89,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   disposeWorkspace()
   $layoutTree.set(null)
   $narrowViewport.set(false)

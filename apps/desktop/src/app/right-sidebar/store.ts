@@ -1,7 +1,8 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
-import { modeBound } from '@/store/interface-mode'
+import { $showsAdvancedChrome, modeBound } from '@/store/interface-mode'
+import { $portalShell } from '@/store/shell-variant'
 
 const TAKEOVER_KEY = 'hermes.desktop.terminalTakeover'
 
@@ -13,6 +14,12 @@ $terminalTakeoverPref.subscribe(active => persistBoolean(TAKEOVER_KEY, active))
 
 export const $terminalTakeover = modeBound('terminalOpen', $terminalTakeoverPref, active =>
   $terminalTakeoverPref.set(active)
+)
+
+// The redesigned developer rail already provides the terminal's reopen button.
+export const $terminalCollapsedRail = computed(
+  [$showsAdvancedChrome, $portalShell],
+  (advanced, redesigned) => advanced && !redesigned
 )
 
 export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(active)

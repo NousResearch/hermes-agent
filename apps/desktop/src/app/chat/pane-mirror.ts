@@ -43,6 +43,8 @@ export interface PaneMirror<T> {
   /** Center docks: the strip slot (stack before this pane id). */
   before?: (tile: T) => null | string | undefined
   minWidth: string
+  /** A declared width (a fixed track), read on every sync: a change re-registers the tiles. */
+  width?: () => string | undefined
   title: (key: string) => string
   /** Custom lead NODE for the tile's tab (rendered before the label). A live,
    *  self-subscribing component (e.g. a session's status dot) so the strip needn't
@@ -52,6 +54,9 @@ export interface PaneMirror<T> {
    *  as `tabLead` — a name that moves faster than re-registration (see
    *  PaneChrome.tabTitle). Falls back to `title`. */
   tabTitle?: (key: string) => ReactNode
+  /** The plain-text twin of `tabTitle`, read when a menu lists the tab (see PaneChrome.tabTitleText).
+   *  Absent, those readers fall back to `title`. */
+  tabTitleText?: (key: string) => string
   /** Mint another tile of this kind — the strip's "+" (see PaneChrome.newTab).
    *  Per tile so a mirror can offer it for some of its tabs and not others. */
   newTab?: (key: string) => (() => void) | undefined
@@ -82,7 +87,7 @@ export interface PaneMirror<T> {
 /** Build a `watch*` fn: syncs once, then re-syncs on every source/also change.
  *  Module-level state lives in the returned closure, so call it once per app. */
 export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
-  const registered = new Map<string, { dispose: () => void; dock: DockHint; title: string }>()
+  const registered = new Map<string, { dispose: () => void; dock: DockHint; title: string; width?: string }>()
   // Retained tiles, oldest first (Set order = the order they were parked).
   const parked = new Set<string>()
 
@@ -103,6 +108,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       : undefined,
     tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
     tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
+    tabTitleText: cfg.tabTitleText ? () => cfg.tabTitleText!(key) : undefined,
     tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
   })
 
@@ -119,6 +125,8 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
     const wanted = new Set(tiles.map(cfg.key))
     let unparked = false
 
+    const width = cfg.width?.()
+
     for (const tile of tiles) {
       const key = cfg.key(tile)
       const title = cfg.title(key)
@@ -134,7 +142,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       }
 
       // register() replaces same-id in place — safe for live title refreshes.
-      if (current && current.title === title) {
+      if (current && current.title === title && current.width === width) {
         continue
       }
 
@@ -149,6 +157,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
           dock,
           lifecycleKeepAlive: cfg.lifecycleKeepAlive?.(key),
           minWidth: cfg.minWidth,
+          width,
           newTab: cfg.newTab?.(key),
           // Every mirrored tile is a full workspace surface docked beside main —
           // and closeable, which is what keeps its tab when it lands in a zone of
@@ -159,7 +168,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         render: () => cfg.render(key)
       })
 
-      registered.set(key, { dispose: disposeRegistration, dock, title })
+      registered.set(key, { dispose: disposeRegistration, dock, title, width })
 
       if (!current) {
         registerPaneCloser(paneId(key), () => cfg.close(key))

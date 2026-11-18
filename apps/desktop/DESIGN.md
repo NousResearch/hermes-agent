@@ -678,6 +678,15 @@ in words and an error dot while it needs attention, and opens one on the Routine
 carries no routines; runs never join Chats. The sidebar's scheduled-jobs
 section and the statusbar's Cron item are classic only.
 
+### The chat sidebar is a variant
+
+The chat sidebar (`app/chat/sidebar/portal/**`) is matched to "Prod - Desktop" (Panel 16292:15497).
+Where it draws a state differently from the page language (row hover ink 4, the open chat marked by ink
+alone, mono sentence-case captions, the r10 brand count pill, rimless mono keycaps, agent cards, its
+inset focus rings), the sidebar keeps those values as its own named roles in `tokens/sidebar.css`
+(`--portal-sidebar-*`) instead of the page roles. That is deliberate, not drift: change the sidebar there, and never point
+page components at `--portal-sidebar-*`.
+
 ### Rules of thumb
 
 - A new colour must be a role in `color.css`. A new alpha is not allowed: pick
@@ -1011,6 +1020,10 @@ inline-edit composers.
 It does not resize the sidebar, settings, toolbars, media, or pane geometry.
 Conversation size and line-height tokens are derived inside the transcript/editor
 from their root base tokens; do not multiply the global tokens or nest CSS zoom.
+In the redesign the working row under a running turn ("Working on …", "waiting for the first stream
+chunk") is regular-weight text in full ink, quieted as a whole by `--portal-text-quiet-opacity` (the
+ladder's floor, 50% dark / 64% light), never a pale ink under a second fade; its timer takes the brand
+ink beside the brand pixel.
 
 ## Chat, tools & boot surfaces
 

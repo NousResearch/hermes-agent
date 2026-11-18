@@ -1,0 +1,156 @@
+/* The status bar ("status bar", rev 11/16: open Frame 403 1262:39850, collapsed Footer toggle
+   1264:40699): the chat's readouts as chips in the floor under the workspace frame, ending at the
+   frame's end, with the toggle that collapses them. Collapsed, the frame takes the floor back and
+   the toggle floats in its end corner. Over the route pages (z-50), under menus opened after it. */
+:root[data-shell='portal'] [data-slot='portal-status-bar'] {
+  position: fixed;
+  z-index: var(--portal-layer-status-bar);
+  inset-block-end: calc(var(--portal-workspace-inset-bottom) + var(--portal-status-bar-corner));
+  inset-inline-end: calc(var(--portal-workspace-inset-end) + var(--portal-status-bar-corner));
+  display: flex;
+  max-width: calc(100vw - var(--portal-rail-reserve) - 2 * var(--portal-workspace-inset-end));
+  height: var(--portal-status-bar-height);
+  align-items: center;
+  gap: var(--portal-status-bar-gap);
+}
+
+:root[data-shell='portal'] [data-slot='portal-status-bar'][data-open] {
+  inset-block-end: var(--portal-status-bar-floor);
+  inset-inline-end: var(--portal-workspace-inset-end);
+}
+
+/* The open bar rests quiet and comes up when the pointer reaches the window's end corner, when the
+   keyboard is in it, or while one of its menus is open. Its reach covers the floor around it, up to the frame,
+   so the corner wakes it, not just a chip. A touch screen has no pointer to wake it: it stays full. */
+@media (hover: hover) {
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open] {
+    opacity: var(--portal-status-bar-rest-opacity);
+  }
+
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open]::before {
+    position: absolute;
+    z-index: -1;
+    inset: calc(var(--portal-status-bar-floor) + var(--portal-status-bar-height) - var(--portal-status-bar-open-inset))
+      calc(-1 * var(--portal-workspace-inset-end)) calc(-1 * var(--portal-status-bar-floor));
+    content: '';
+  }
+
+  :root[data-shell='portal']
+    [data-slot='portal-status-bar'][data-open]:is(:hover, :focus-within, :has([data-state='open'])) {
+    opacity: 1;
+  }
+}
+
+/* Hover enters instantly; only the return to rest eases. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open]:not(:hover, :focus-within) {
+    transition: opacity var(--portal-motion-slow) var(--portal-ease);
+  }
+}
+
+/* The developer rail stands between the frame and the window's end: the bar ends with the frame. */
+:root[data-shell='portal']:has([data-slot='layout-cover'] + [data-slot='developer-rail'])
+  [data-slot='portal-status-bar'] {
+  --portal-workspace-inset-end: calc(var(--portal-rail-width) + var(--portal-workspace-inset-start));
+}
+
+/* The frame's floor gap makes room for the open bar. */
+@media (min-width: 640px) and (min-height: 30.01rem) {
+  :root[data-shell='portal'][data-portal-status-bar] {
+    --portal-workspace-inset-bottom: var(--portal-status-bar-open-inset);
+  }
+}
+
+:root[data-shell='portal'] [data-slot='portal-status-bar-items'] {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--portal-status-bar-gap);
+  overflow-x: clip;
+}
+
+/* Every item, whatever element the classic bar gave it, is one chip (tab 1262:39845). */
+:root[data-shell='portal'] [data-slot='portal-status-bar-items'] > * {
+  flex: none;
+  height: 100%;
+  padding: 0 0.375rem;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-status-chip-fill);
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+}
+
+/* The workspace is the one chip that gives way when the window is narrow. */
+:root[data-shell='portal'] [data-slot='portal-status-bar-items'] > :first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] [data-slot='portal-status-bar-items'] > :is(button, a):is(:hover, [data-state='open']) {
+  color: var(--ui-text-primary);
+}
+
+/* The toggle (Footer toggle / pixel 1265:8520): a bare 13px glyph at the open bar's end. */
+:root[data-shell='portal'] [data-slot='portal-status-bar-toggle'] {
+  display: grid;
+  flex: none;
+  width: var(--portal-status-bar-height);
+  height: var(--portal-status-bar-height);
+  place-items: center;
+  border-radius: var(--portal-radius-surface);
+  color: var(--portal-text-chrome);
+  cursor: pointer;
+}
+
+:root[data-shell='portal'] [data-slot='portal-status-bar-toggle'] > span {
+  width: var(--portal-status-bar-glyph);
+  height: var(--portal-status-bar-glyph);
+  background: currentcolor;
+  mask: url('../../assets/portal-status-bar-toggle.svg') center / contain no-repeat;
+}
+
+:root[data-shell='portal'] [data-slot='portal-status-bar-toggle']:is(:hover, :focus-visible) {
+  color: var(--ui-text-primary);
+}
+
+/* Collapsed, it is a chip of its own floating over the frame (1264:40699). */
+:root[data-shell='portal'] [data-slot='portal-status-bar']:not([data-open]) [data-slot='portal-status-bar-toggle'] {
+  border: 1px solid var(--ui-stroke-secondary);
+  background: var(--portal-status-chip-fill);
+  box-shadow: var(--portal-shadow-settings-link);
+  backdrop-filter: blur(8px);
+}
+
+/* A phone keeps every pixel: no bar, no toggle. Its readouts stay in the System popover. */
+@media (max-width: 639.98px), (max-height: 30rem) {
+  :root[data-shell='portal'] [data-slot='portal-status-bar'] {
+    display: none;
+  }
+}
+
+/* ── The System popover's rows, under the machine card ──────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-space-tight);
+  padding: 0 0.75rem 0.75rem;
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] {
+  gap: 0;
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] :is(button, a, div > div) {
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] [data-slot='portal-system-status'] [data-slot='sidebar-status'] :is(button, a):hover {
+  background: var(--portal-raw-ink-4);
+  color: var(--ui-text-primary);
+}

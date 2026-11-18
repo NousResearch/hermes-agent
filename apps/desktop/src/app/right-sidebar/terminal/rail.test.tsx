@@ -6,6 +6,7 @@ import { $connectionsRegistry } from '@/store/connections'
 import { $bindings } from '@/store/keybinds'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { TerminalRail } from './rail'
 import { $activeTerminalId, $terminals } from './terminals'
@@ -19,8 +20,17 @@ describe('TerminalRail', () => {
 
   afterEach(() => {
     cleanup()
+    $shellChoice.set(null)
     $terminals.set([])
     $activeTerminalId.set(null)
+  })
+
+  it.each([true, false])('labels the redesigned shell toolbar and retains classic tabs (%s)', redesigned => {
+    $shellChoice.set(redesigned)
+    render(<TerminalRail />)
+    expect(screen.getByRole('tablist').getAttribute('aria-orientation')).toBe(redesigned ? 'horizontal' : 'vertical')
+    expect(screen.getByRole('tab', { name: '1. PowerShell' }).textContent?.includes('PowerShell')).toBe(redesigned)
+    expect(screen.getByRole('button', { name: 'Hide terminal' })).toBeTruthy()
   })
 
   it('⌘-click closes the tab; a plain click selects it', () => {

@@ -8,25 +8,31 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, memo, type ReactNode, Suspense, useMemo } from 'react'
+import { type ComponentProps, memo, type ReactNode, Suspense, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
+import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
 import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
+import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
+import { PortalStatusBarItems, PortalSystemStatus } from '../redesign/portal-status-bar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
-import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
+import { contributedRoutes, isOverlayView, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
 import { backupSettingsHrefForLegacy } from '../settings/backup-palette'
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from '../shell/hooks/use-statusbar-items'
@@ -60,7 +66,20 @@ export const SidebarSurface = memo(function SidebarSurface({
 }) {
   const latestActions = useMemo(() => latestSidebarActions(actions), [actions])
 
-  return <ChatSidebar currentView={currentView} {...latestActions} />
+  const portal = usePortalShell()
+  const Sidebar = portal ? PortalSidebar : ChatSidebar
+  // Under a route overlay the redesign's sidebar is covered, and beside a page it is collapsed, but
+  // never gone (route-cover.tsx, NavigationWithChatSidebar): it keeps the view it was showing, so moving
+  // between pages and overlays never re-renders it.
+  const focusedTile = useStore($focusedSessionIsTile)
+  const covered = portal && (isOverlayView(currentView) || (currentView !== 'chat' && !focusedTile))
+  const [shownView, setShownView] = useState(currentView)
+
+  if (!covered && shownView !== currentView) {
+    setShownView(currentView)
+  }
+
+  return <Sidebar currentView={covered ? shownView : currentView} {...latestActions} />
 })
 
 export const TerminalSurface = memo(function TerminalSurface() {
@@ -78,14 +97,23 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   actions,
   agentsOpen,
   chatOpen,
-  commandCenterOpen
+  chatStatus,
+  commandCenterOpen,
+  onClose
 }: {
   actions: WiringActions
   agentsOpen: boolean
   chatOpen: boolean
+  /** The redesign's status bar chips, in place of the classic bar. */
+  chatStatus?: boolean
   commandCenterOpen: boolean
+  onClose?: () => void
 }) {
   const portal = usePortalShell()
+  const advanced = useStore($showsAdvancedChrome)
+  // The mode-resolved bar visibility: in Simple it is up exactly when the bar carries something
+  // that must stay reachable (the free tier's Sign in, onboarding progress).
+  const statusbarVisible = useStore($statusbarVisible)
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
@@ -120,6 +148,31 @@ export const StatusbarSurface = memo(function StatusbarSurface({
 
   if (demoLayout) {
     return null
+  }
+
+  const portalItems = [...leftStatusbarItems, ...statusbarItems]
+  const contributed = new Set([...extraLeftItems, ...extraRightItems].map(item => item.id))
+
+  if (chatStatus) {
+    return <PortalStatusBarItems contributed={contributed} items={portalItems} />
+  }
+
+  if (onClose) {
+    return (
+      <>
+        <PortalGatewayMenuPanel
+          gatewayState={gatewayState}
+          inferenceStatus={inferenceStatus}
+          key={gatewayScope}
+          onClose={onClose}
+          onOpenSystem={() => actions.openCommandCenterSection('system')}
+          statusSnapshot={statusSnapshot}
+        />
+        {(advanced || statusbarVisible) && (
+          <PortalSystemStatus contributed={contributed} items={portalItems} />
+        )}
+      </>
+    )
   }
 
   return <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} sidebar={portal} />

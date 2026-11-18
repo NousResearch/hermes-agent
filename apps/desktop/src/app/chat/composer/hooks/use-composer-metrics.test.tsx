@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import { type RefObject, StrictMode, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,8 +8,9 @@ import { COMPOSER_MINIMAL_PX } from '../composer-utils'
 
 import { useComposerMetrics } from './use-composer-metrics'
 
+const draft = vi.hoisted(() => ({ text: '' }))
 vi.mock('@assistant-ui/react', () => ({
-  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } })
+  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: draft })
 }))
 
 // The shared ResizeObserver delivers once per observed element after
@@ -100,7 +101,7 @@ const surfaceOf = (container: HTMLElement) => container.querySelector<HTMLElemen
 
 describe('useComposerMetrics — published clearance survives an effect replay', () => {
   beforeEach(() => {
-    observers.length = 0
+    draft.text = ''
     vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   })
 
@@ -180,5 +181,27 @@ describe('useComposerMetrics — published clearance survives an effect replay',
 
     expect(surface.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('200px')
     expect(surface.style.getPropertyValue(COMPOSER_SURFACE_HEIGHT_VAR)).toBe('120px')
+  })
+
+  it('distinguishes a taller writing area from text wrapping and still collapses an emptied draft', () => {
+    draft.text = 'Hello'
+    const { container, getByTestId, rerender } = render(<Harness dockHeight={180} surfaceHeight={148} />)
+    const editor = container.querySelector<HTMLElement>('form > div > div')!
+    editor.style.minHeight = '72px'
+    let contentHeight = 72
+    Object.defineProperty(editor, 'scrollHeight', { get: () => contentHeight })
+    const stacked = () => JSON.parse(getByTestId('fit').textContent!).stacked
+
+    act(deliverResize)
+    expect(stacked()).toBe(false)
+    contentHeight = 96
+    act(deliverResize)
+    expect(stacked()).toBe(true)
+
+    draft.text = ''
+    contentHeight = 72
+    rerender(<Harness dockHeight={180} surfaceHeight={148} />)
+    act(deliverResize)
+    expect(stacked()).toBe(false)
   })
 })

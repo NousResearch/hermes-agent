@@ -5,10 +5,10 @@ import { $widthClass } from '@/app/redesign/breakpoints'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
 import { canUseHud } from '@/store/hud'
-import { $interfaceMode } from '@/store/interface-mode'
+import { $interfaceMode, type InterfaceMode } from '@/store/interface-mode'
 import { $leftSideOpen, $sidebarOpen } from '@/store/layout'
 import { $portalShell } from '@/store/shell-variant'
-import type { BandToolId } from '@/store/titlebar-app-actions'
+import { $titlebarAppActionsSide, type BandToolId, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 
 import { $workspaceIsPage } from '../routes'
 
@@ -63,4 +63,15 @@ export function useBandHiddenTools(): ReadonlySet<BandToolId> {
   }
 
   return new Set((Object.keys(hidden) as BandToolId[]).filter(id => hidden[id]))
+}
+
+/** The titlebar's app-action cluster counts for this window. The redesign leaves out the band tools
+ *  it hides (useBandHiddenTools), so the width reservation never holds a phantom slot; classic
+ *  counts every tool its mode shows. */
+export function useTitlebarClusterCounts(leftExtras: number, mode: InterfaceMode): { left: number; right: number } {
+  const side = useStore($titlebarAppActionsSide)
+  const portal = useStore($portalShell)
+  const hidden = useBandHiddenTools()
+
+  return titlebarAppActionsClusterCounts(side, leftExtras, 0, mode, portal ? hidden : undefined)
 }

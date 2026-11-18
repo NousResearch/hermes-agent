@@ -16,6 +16,7 @@ import {
   initOpenFindBarListener,
   setFindQuery
 } from '@/store/find-in-page'
+import { usePortalShell } from '@/store/shell-variant'
 
 /**
  * Find-in-page overlay (⌘F).
@@ -42,6 +43,7 @@ export function FindBar() {
   const [localQuery, setLocalQuery] = useState('')
   const [filesPaneRight, setFilesPaneRight] = useState<number | null>(null)
   const { pathname } = useLocation()
+  const portal = usePortalShell()
 
   // Navigating away (opening another session, a settings page, …) closes the
   // bar and clears the native highlight. Electron's findInPage selection is
@@ -298,15 +300,16 @@ export function FindBar() {
   return (
     <div
       className={cn(
-        // Floats BELOW the titlebar band. The bar mounts at the overlay root,
-        // outside the app-shell subtree that defines --titlebar-height, so the
-        // fallback must be the real titlebar height (34px, matching
-        // floating-hud.ts / notifications.tsx) — a 0px fallback parks the bar
-        // inside the titlebar strip, underneath the native min/max/close
-        // window-controls overlay on Windows/Linux.
-        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-height,34px)+0.5rem)] z-50',
+        // Floats BELOW the titlebar band (the root --titlebar-band-height: the
+        // bar mounts outside the shell subtree that scopes --titlebar-height).
+        // Inside the band it would sit under the native min/max/close overlay
+        // on Windows/Linux.
+        'pointer-events-auto fixed right-4 top-[calc(var(--titlebar-band-height)+0.5rem)] z-50',
+        // The redesign's taller band can still reach it with a drag region; no-drag keeps it clickable.
+        portal && '[-webkit-app-region:no-drag]',
         'flex items-center gap-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-surface-background) px-2 py-1.5 shadow-md'
       )}
+      data-slot="find-bar"
       role="search"
       style={barStyle}
     >

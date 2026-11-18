@@ -153,7 +153,7 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Stop', '↵')
   })
 
-  it('answers a waiting card with Send when the draft has text, and offers no Queue', () => {
+  it('answers a waiting classic setup card with Send and offers no Queue', () => {
     renderControls({ busy: true, busyAction: 'queue', cardWaiting: true, hasComposerPayload: true })
 
     expect(screen.getByLabelText('Send')).toBeTruthy()
@@ -161,7 +161,7 @@ describe('ComposerControls shortcut tooltips', () => {
     expect(screen.queryByLabelText('Queue message')).toBeNull()
   })
 
-  it('keeps Stop enabled while a card waits and the draft is empty', () => {
+  it('keeps Stop enabled while a classic setup card waits and the draft is empty', () => {
     renderControls({ busy: true, busyAction: 'stop', canSubmit: true, cardWaiting: true, hasComposerPayload: false })
 
     expect(screen.getByLabelText('Stop').hasAttribute('disabled')).toBe(false)
@@ -178,6 +178,46 @@ describe('ComposerControls shortcut tooltips', () => {
 
     expect(screen.queryByLabelText('Queue message')).toBeNull()
     expect(screen.getByLabelText('Send')).toBeTruthy()
+  })
+})
+
+describe('redesigned composer footer', () => {
+  it('keeps an empty Send disabled and voice conversation available through the mic menu', () => {
+    const onStart = vi.fn()
+    renderControls({
+      canSubmit: false,
+      hasComposerPayload: false,
+      minimal: true,
+      redesigned: true,
+      conversation: {
+        active: false,
+        level: 0,
+        muted: false,
+        onEnd: vi.fn(),
+        onStart,
+        onStopTurn: vi.fn(),
+        onToggleMute: vi.fn(),
+        status: 'idle'
+      }
+    })
+
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Voice' }), { button: 0, ctrlKey: false })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Start voice conversation' }))
+    expect(onStart).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps queue separate from submit and exposes Stop when the draft empties', () => {
+    const onQueue = vi.fn()
+    renderControls({ busy: true, busyAction: 'interrupt', onQueue, redesigned: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue message' }))
+    expect(onQueue).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Redirect the current run' }).getAttribute('type')).toBe('submit')
+    cleanup()
+
+    renderControls({ busy: true, hasComposerPayload: false, minimal: true, redesigned: true })
+    expect(screen.getByRole('button', { name: 'Stop' }).getAttribute('type')).toBe('submit')
+    expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
 

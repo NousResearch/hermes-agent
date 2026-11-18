@@ -8,7 +8,7 @@ Catalogs are flat dotted-key mappings resolved through layers, top first:
 4. the same chain for ``en``
 5. the bare key
 
-Every layer may be partial. Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` >
+Every layer may be partial. Language resolution: explicit ``lang=`` > message scope > ``HERMES_LANGUAGE`` >
 ``display.language`` > ``en``; any id that some layer supplies is accepted, so a pack-only language
 (``pl``) works the moment its plugin loads. ``t()`` is a hot path: one cached merged dict per
 ``(home, lang)``, invalidated by :func:`reset_language_cache` (which every pack registration calls).
@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,22 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
+_message_language: ContextVar[str | None] = ContextVar("message_language", default=None)
+
+
+@contextmanager
+def use_language(language: str | None):
+    """Bind a display language to this activity, including copied worker contexts.
+
+    Resolve against the active profile at render time, so routed language packs
+    work. None/unknown IDs use that profile's configured language. A nested
+    activity with no language clears its caller's override, then restores it.
+    """
+    token = _message_language.set(language)
+    try:
+        yield
+    finally:
+        _message_language.reset(token)
 
 # Natural aliases so "chinese" / "zh-CN" / "jp" hit the right catalog instead of
 # silently falling back to English. Bare "chinese" defaults to Simplified;
@@ -230,6 +248,9 @@ def reset_language_cache() -> None:
 
 
 def _resolve_language(home: str) -> str:
+    message_language = resolve_language_id(_message_language.get(), home)
+    if message_language is not None:
+        return message_language
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
         env_lang = get_secret("HERMES_LANGUAGE")
@@ -239,7 +260,7 @@ def _resolve_language(home: str) -> str:
 
 
 def get_language() -> str:
-    """Resolve the active language using env > config > default order. ``HERMES_LANGUAGE`` is a
+    """Resolve the active language using message > env > config > default order. ``HERMES_LANGUAGE`` is a
     per-profile ``.env`` value, so it is read through the secret scope: under multiplexing a raw
     environ read would impose the default profile's language on every other profile."""
     return _resolve_language(_current_home())
@@ -279,4 +300,5 @@ __all__ = [
     "supported_languages",
     "surface_catalog",
     "t",
+    "use_language",
 ]

@@ -451,7 +451,7 @@ from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, in_message_language
 from gateway.session_dm_threads import dm_thread_batch_suffix, dm_thread_key_source, session_db_for_source
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home, get_real_home
@@ -3867,9 +3867,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         from gateway.platforms.base_session_command import dispatch_active_session_command
         await dispatch_active_session_command(self, event, session_key, cmd)
 
+    @in_message_language
     async def handle_message(self, event: MessageEvent) -> None:
-        """Process an incoming message; returns quickly by spawning a background
-        task so new messages (and interrupts) can arrive while an agent runs."""
+        """Spawn processing so new messages and interrupts can arrive while an agent runs."""
         event._gateway_accepted = False
         if not self._message_handler:
             # No handler = every inbound silently discarded on an adapter that still polls and sends;
@@ -4330,8 +4330,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
+    @in_message_language
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
-        """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
 
         def _record_delivery(result):

@@ -724,6 +724,65 @@ class TestSteerSurvivesRedirectRebuild:
         assert result.get("pending_steer") is None
         assert result["completed"] is True
 
+    @pytest.mark.parametrize(
+        ("previous_turn_used_tool", "current_turn_uses_tool"),
+        [(True, True), (True, False), (False, False)],
+        ids=["next-tool-delivery", "leftover-with-old-tool", "leftover-without-old-tool"],
+    )
+    def test_first_iteration_steer_preserves_previous_turn(
+        self, previous_turn_used_tool, current_turn_uses_tool, monkeypatch,
+    ):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from tests.agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        history = [{"role": "user", "content": "previous question"}]
+        if previous_turn_used_tool:
+            history.extend([
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "prior_call", "type": "function",
+                    "function": {"name": _STEER_SURVIVAL_TOOL, "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "prior_call", "content": "previous result"},
+            ])
+        history.append({"role": "assistant", "content": "previous final answer"})
+        first_request_tail = deepcopy(history) + [{"role": "user", "content": "new question"}]
+        requests = []
+
+        def model_call(api_kwargs):
+            requests.append(deepcopy(api_kwargs["messages"]))
+            if current_turn_uses_tool and len(requests) == 1:
+                tool_call = SimpleNamespace(
+                    id="current_call", type="function",
+                    function=SimpleNamespace(name=_STEER_SURVIVAL_TOOL, arguments="{}"),
+                )
+                return _mock_response(content=None, finish_reason="tool_calls", tool_calls=[tool_call])
+            return _mock_response(content="new final answer", finish_reason="stop")
+
+        agent._interruptible_api_call = model_call
+        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
+            monkeypatch.setattr(agent, method, MagicMock())
+
+        assert agent.steer(self.STEER_TEXT) is True
+        result = agent.run_conversation("new question", conversation_history=history)
+
+        assert result["completed"] is True
+        assert requests[0][1:] == first_request_tail
+        if current_turn_uses_tool:
+            first, second = requests
+            assert second[:len(first)] == first
+            tool_call, tool_result, steer = second[len(first):]
+            assert tool_call["tool_calls"][0]["id"] == "current_call"
+            assert tool_result["role"] == "tool" and tool_result["tool_call_id"] == "current_call"
+            assert steer == {"role": "user", "content": format_steer_marker(self.STEER_TEXT).lstrip()}
+            assert result.get("pending_steer") is None
+        else:
+            assert len(requests) == 1
+            assert result["pending_steer"] == self.STEER_TEXT
+
 
 class TestPreApiCallSteerDrain:
     """Test that steers arriving during an API call are drained before the
@@ -748,7 +807,9 @@ class TestPreApiCallSteerDrain:
             tool_row,
         ]
         agent.steer("focus on error handling")
-        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=0,
+        )
         assert tool_row == before
         assert messages[-2] is tool_row
         assert messages[-1]["role"] == "user"

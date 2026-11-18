@@ -173,12 +173,16 @@ def prepare_iteration(
     agent._adopt_nous_key_before_expiry()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
-    # standalone user row after the newest tool result (never smeared onto the tool row: that
-    # row is already persisted append-only, so replay would diverge from the live request and
-    # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
+    # standalone user row after the newest tool result in this turn. Prior turns are already
+    # cached, and persisting a steer there would reorder it on replay.
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        steer_boundary = current_turn_user_idx
+        if user_message is not None and not _anchors_current_turn(messages, steer_boundary, user_message):
+            from agent.turn_context import reanchor_current_turn_user_idx
+
+            steer_boundary = reanchor_current_turn_user_idx(messages, user_message)
+        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer, steer_boundary)
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -281,16 +285,18 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
-        _sm = messages[_si]
-        if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import steer_user_row
-            messages.insert(_si + 1, steer_user_row(steer_text))
-            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
-            return
+def _inject_steer_after_newest_tool_result(
+    agent: Any, messages: Any, steer_text: str, current_turn_user_idx: int | None,
+) -> None:
+    """Insert a standalone steer after this turn's newest tool result, or requeue it."""
+    if current_turn_user_idx is not None and current_turn_user_idx >= 0:
+        for idx in range(len(messages) - 1, current_turn_user_idx, -1):
+            row = messages[idx]
+            if isinstance(row, dict) and row.get("role") == "tool":
+                from agent.prompt_builder import steer_user_row
+                messages.insert(idx + 1, steer_user_row(steer_text))
+                logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", idx)
+                return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
 

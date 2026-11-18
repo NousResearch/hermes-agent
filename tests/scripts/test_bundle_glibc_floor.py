@@ -123,6 +123,16 @@ def test_a_file_whose_needs_cannot_be_read_fails_instead_of_passing(tmp_path, ca
     assert "3 ELF files" in out
 
 
+def test_short_file_with_elf_magic_fails_the_audit(tmp_path, capsys):
+    (tmp_path / "notes.txt").write_bytes(b"\x7fEL")
+    (tmp_path / "short.so").write_bytes(b"\x7fELF\x02\x01\x01")
+
+    assert main(["--arch", "x64", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert "1 ELF files" in out
+    assert "::error::short.so: can't read its version needs (truncated ELF file)" in out
+
+
 def test_the_command_fails_the_build_and_names_each_requirement(tmp_path, capsys):
     app = tmp_path / "linux-unpacked"
     write_elf(app / "chrome-sandbox", {"libc.so.6": ["GLIBC_2.36"]})

@@ -263,16 +263,17 @@ def _ends(coverage: dict[str, float]) -> tuple[Optional[float], Optional[float]]
 
 
 def _estimated_end(coverage: dict[str, float], *, base_url: str, retention: Any, at: float,
-                   previous: Optional[CacheEvent], carried: bool) -> Optional[float]:
-    """When the entry is treated as gone: None for a local endpoint (no time-based expiry), else the
-    latest coverage deadline, stretched to ``at + retention`` when the request asked for a longer
+                   previous: Optional[CacheEvent], carried: bool, idle_from: float) -> Optional[float]:
+    """When the entry is treated as gone: for a local endpoint, the managed server's unload counted from
+    ``idle_from`` (the response's completion: the model idles from there, not from the send) or None; else
+    the latest coverage deadline, stretched to ``at + retention`` when the request asked for a longer
     retention (and never shortened below what a carried event already estimated)."""
     from agent.model_metadata import is_local_endpoint
 
     if not coverage:
         return None
     if is_local_endpoint(base_url):
-        return _managed_unload_end(base_url, at)
+        return _managed_unload_end(base_url, max(at, idle_from))
     estimated = max(coverage.values())
     if isinstance(retention, str) and retention in _RETENTION_SECONDS:
         estimated = max(estimated, at + _RETENTION_SECONDS[retention])
@@ -281,10 +282,10 @@ def _estimated_end(coverage: dict[str, float], *, base_url: str, retention: Any,
     return estimated
 
 
-def _managed_unload_end(base_url: str, at: float) -> Optional[float]:
+def _managed_unload_end(base_url: str, idle_from: float) -> Optional[float]:
     """When Hermes' own managed llama-server has certainly unloaded an idle model (and its prompt cache):
-    the idle-unload limit plus two sweeps after the last request. A user's own local server has no
-    time-based expiry (None)."""
+    the idle-unload limit plus two sweeps after the model went idle (the last request finished). A
+    user's own local server has no time-based expiry (None)."""
     from hermes_cli.local_runtime.growth import is_managed_endpoint
 
     if not is_managed_endpoint(base_url):
@@ -292,7 +293,7 @@ def _managed_unload_end(base_url: str, at: float) -> Optional[float]:
     from hermes_cli.local_runtime.bootstrap import _SWEEP_EVERY_S
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-    return at + LlamaServerSupervisor.IDLE_UNLOAD_S + 2 * _SWEEP_EVERY_S
+    return idle_from + LlamaServerSupervisor.IDLE_UNLOAD_S + 2 * _SWEEP_EVERY_S
 
 
 def _confidence(verdict: _Verdict, previous: Optional[CacheEvent], carried: bool, write: int) -> tuple[str, str]:
@@ -497,7 +498,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     ``attempt`` (:func:`attempt_facts`) and ``witness`` (:func:`context_witness` when it was armed)
     are for a request sent outside the loop (a keep-alive): the event is stamped with the context
     that request was built from, so a rewrite committed meanwhile leaves the window unknown.
-    ``upstream`` is :func:`response_upstream` of the reply.
+    ``upstream`` is :func:`response_upstream` of the reply. Called as the response completes.
     Returns the new event, or None when the response touched no cache (the previous window stands)."""
     read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
     if read + write <= 0:
@@ -529,7 +530,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
     guaranteed = _ends(coverage)[0]
     estimated = _estimated_end(coverage, base_url=base_url, retention=ctx.retention, at=at, previous=previous,
-                               carried=carried)
+                               carried=carried, idle_from=time.time())
     if guaranteed is not None and estimated is not None:
         guaranteed = min(guaranteed, estimated)  # never warm past the moment the entry is certainly gone
     confidence, reason = _confidence(verdict, previous, carried, write)

@@ -985,11 +985,10 @@ class GatewayInboundMixin(
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
         query = event.get_command_args().strip()
-        if not query:
-            return True, "Usage: /fresh <prompt>"
-        # /new consumes arguments as a title; clear them before the reset.
+        if not query or query.startswith("/"):
+            return True, "Usage: /fresh <prompt>" if not query else "`/fresh` accepts a prompt, not another slash command. Use `/new` first, then send the command."
         event.text = "/fresh"
-        event._fresh_reset = True  # _handle_reset_command pins the epoch it just produced
+        event._fresh_reset = True
         notice = await self._handle_reset_command(event)
         if notice:
             await self._send_command_ack(source, str(notice), "fresh")
@@ -1273,8 +1272,7 @@ class GatewayInboundMixin(
         if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
             if getattr(event, "_fresh_reset", False):
                 stamped = getattr(event, "_fresh_stop_epoch", None)
-                if stamped is None:
-                    # No epoch from this reset means we cannot prove the turn is fenced.
+                if stamped is None or self._route_stop_epoch(_quick_key) != stamped:
                     return True, "Could not start a fresh session safely — please resend your prompt."
                 stop_epoch = stamped
             _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)

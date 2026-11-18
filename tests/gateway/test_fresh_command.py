@@ -97,7 +97,20 @@ class FreshCommandTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/fresh", reply)
         runner._handle_reset_command.assert_not_awaited()
 
-    async def test_fresh_turn_keeps_epoch_pinned_by_its_reset(self):
+    async def test_fresh_rejects_nested_slash_command_without_reset(self):
+        runner = _make_runner()
+        event = _make_event("/fresh /tingle")
+
+        handled, reply = await runner._hm_cmd_fresh(
+            event, event.source, build_session_key(event.source)
+        )
+
+        self.assertTrue(handled)
+        self.assertIn("not another slash command", reply)
+        self.assertIn("/new", reply)
+        runner._handle_reset_command.assert_not_awaited()
+
+    async def test_fresh_turn_uses_reset_epoch_when_current(self):
         runner = _make_runner()
         event = _make_event("/fresh hello")
         key = build_session_key(event.source)
@@ -118,16 +131,39 @@ class FreshCommandTest(unittest.IsolatedAsyncioTestCase):
         runner._hm_dispatch_quick_and_plugin_commands = AsyncMock(return_value=(False, None, "fresh"))
         runner._run_in_executor_with_context = _run_in_executor
         runner._hm_skill_slash_rewrite = MagicMock(return_value=None)
-        runner._route_stop_epoch = MagicMock(return_value=3)
+        runner._route_stop_epoch = MagicMock(return_value=2)
         runner._admit_command_turn = AsyncMock(return_value=(True, "ok"))
 
         handled, reply = await runner._hm_dispatch_idle_commands(event, event.source, key)
 
         self.assertEqual((handled, reply), (True, "ok"))
-        # Only the entry-time read happens; the later epoch must not be adopted, so a
-        # /stop after the reset still fences this turn out.
-        self.assertEqual(runner._route_stop_epoch.call_count, 1)
+        self.assertEqual(runner._route_stop_epoch.call_count, 2)
         self.assertEqual(runner._admit_command_turn.await_args.args[3], 2)
+
+    async def test_fresh_turn_is_rejected_if_later_stop_fenced_it(self):
+        runner = _make_runner()
+        event = _make_event("/fresh hello")
+        key = build_session_key(event.source)
+
+        async def _canonical(_event, _source, _key, canonical):
+            event.text = "hello"
+            event._fresh_reset = True
+            event._fresh_stop_epoch = 2
+            return False, None
+
+        runner._hm_resolve_command = AsyncMock(return_value=(False, None, "fresh", "fresh"))
+        runner._hm_dispatch_canonical_command = _canonical
+        runner._hm_dispatch_quick_and_plugin_commands = AsyncMock(return_value=(False, None, "fresh"))
+        runner._run_in_executor_with_context = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+        runner._hm_skill_slash_rewrite = MagicMock(return_value=None)
+        runner._route_stop_epoch = MagicMock(side_effect=[1, 3])  # entry then later /stop
+        runner._admit_command_turn = AsyncMock()
+
+        handled, reply = await runner._hm_dispatch_idle_commands(event, event.source, key)
+
+        self.assertTrue(handled)
+        self.assertIn("safely", reply)
+        runner._admit_command_turn.assert_not_awaited()
 
     async def test_fresh_without_stamped_epoch_is_rejected(self):
         runner = _make_runner()

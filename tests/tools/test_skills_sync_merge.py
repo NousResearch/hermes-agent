@@ -1,4 +1,5 @@
 """Bundled updates reconcile a real temporary profile, never the live home."""
+import json
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,92 @@ def test_nonoverlapping_edits_merge_and_next_update_uses_upstream_base(profile):
     (source / "SKILL.md").write_bytes(upstream.replace(b"third", b"new third"))
     assert ss.sync_skills(quiet=True)["updated"] == ["example"]
     assert (local / "SKILL.md").read_bytes() == upstream.replace(b"first", b"my first").replace(b"third", b"new third")
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("conflict", [False, True])
+def test_reconciliation_preserves_executable_helpers(profile, conflict):
+    _home, source, local = profile
+    helper = source / "run.sh"
+    helper.write_bytes(b"#!/bin/sh\nprintf ok\\n\n")
+    helper.chmod(0o755)
+    ss.sync_skills(quiet=True)
+    (local / "SKILL.md").write_bytes(BASE.replace(b"first", b"mine"))
+    upstream = BASE.replace(b"first", b"theirs") if conflict else BASE.replace(b"fifth", b"theirs")
+    (source / "SKILL.md").write_bytes(upstream)
+    result = ss.sync_skills(quiet=True)
+    if conflict:
+        assert result["user_modified"] == ["example"]
+        assert merge.resolve_skill("example", "merged")
+    else:
+        assert result["updated"] == ["example"]
+    assert (local / "run.sh").stat().st_mode & 0o111 == 0o111
+    assert (local / "run.sh").read_bytes() == helper.read_bytes()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_local_chmod_counts_as_an_edit_on_upstream_update(profile):
+    _home, source, local = profile
+    helper = source / "run.sh"
+    helper.write_bytes(b"#!/bin/sh\n")
+    helper.chmod(0o644)
+    ss.sync_skills(quiet=True)
+    (local / helper.name).chmod(0o744)
+    (source / "SKILL.md").write_bytes(BASE.replace(b"first", b"latest"))
+
+    assert ss.sync_skills(quiet=True)["updated"] == ["example"]
+    assert (local / helper.name).stat().st_mode & 0o111 == 0o100
+
+
+def test_restore_archives_pending_review_and_allows_next_update(profile):
+    from tools.skills_sync_bundled_ops import reset_bundled_skill
+
+    home, source, local = profile
+    ours = BASE.replace(b"first", b"mine")
+    (local / "SKILL.md").write_bytes(ours)
+    (source / "SKILL.md").write_bytes(BASE.replace(b"first", b"theirs"))
+    ss.sync_skills(quiet=True)
+    pending = merge.state_dir(home, "example") / "pending"
+    assert pending.exists()
+
+    assert reset_bundled_skill("example", restore=True)["ok"]
+    assert not pending.exists()
+    (archived,) = pending.parent.glob("superseded-*")
+    assert (archived / "local" / "SKILL.md").read_bytes() == ours
+    next_bundle = BASE.replace(b"first", b"latest")
+    (source / "SKILL.md").write_bytes(next_bundle)
+    assert ss.sync_skills(quiet=True)["updated"] == ["example"]
+    assert (local / "SKILL.md").read_bytes() == next_bundle
+
+
+@pytest.mark.parametrize("bad_base", ["{broken", '{"origin": "broken", "files": []}'])
+def test_invalid_baseline_only_blocks_its_own_skill(profile, caplog, bad_base):
+    home, source, local = profile
+    other = source.with_name("other")
+    other.mkdir()
+    other_base = BASE.replace(b"name: example", b"name: other")
+    (other / "SKILL.md").write_bytes(other_base)
+    ss.sync_skills(quiet=True)
+    base = merge.state_dir(home, "example") / "base.json"
+    base.write_text(bad_base, encoding="utf-8")
+    ours = BASE.replace(b"first", b"mine")
+    (local / "SKILL.md").write_bytes(ours)
+    (source / "SKILL.md").write_bytes(BASE.replace(b"fifth", b"theirs"))
+    next_other = other_base.replace(b"first", b"updated")
+    (other / "SKILL.md").write_bytes(next_other)
+
+    result = ss.sync_skills(quiet=True)
+    assert result["user_modified"] == ["example"]
+    assert result["updated"] == ["other"]
+    assert (local.with_name("other") / "SKILL.md").read_bytes() == next_other
+    assert "Cannot read bundled skill baseline for example" in caplog.text
+    assert (local / "SKILL.md").read_bytes() == ours
+    assert base.read_text(encoding="utf-8") == bad_base
+    pending = base.parent / "pending" / "pending.json"
+    assert json.loads(pending.read_text())["conflicts"] == ["unknown-base"]
+    assert merge.resolve_skill("example", "local")
+    (archived,) = base.parent.glob("invalid-base-*.json")
+    assert archived.read_text(encoding="utf-8") == bad_base
 
 
 def test_file_additions_deletions_and_one_sided_binary_updates(profile):

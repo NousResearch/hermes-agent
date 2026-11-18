@@ -30,7 +30,7 @@ from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
 from utils import atomic_write_text
-from tools.skills_sync_merge import safe_destination, save_base, state_dir, try_merge
+from tools.skills_sync_merge import load_base, read_tree, safe_destination, save_base, state_dir, try_merge
 
 logger = logging.getLogger(__name__)
 
@@ -372,7 +372,10 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
         st.manifest[skill_name] = bundled_hash
         st.skipped += 1
         return
-    if not _matches_origin_hash(dest, origin_hash, user_hash):
+    pristine = _matches_origin_hash(dest, origin_hash, user_hash)
+    if pristine and (base := load_base(_hermes_home(), skill_name, origin_hash)) is not None:
+        pristine = read_tree(dest) == base  # content hashes alone cannot see local chmods
+    if not pristine:
         if not try_merge(_hermes_home(), skill_name, origin_hash, skill_src, dest):
             st.user_modified.append(skill_name)
             st.say(f"  ~ {skill_name} (user-modified, skipping)")

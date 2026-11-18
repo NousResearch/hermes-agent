@@ -1106,7 +1106,7 @@ Refreshing archives the previous review as `superseded-*`. Acceptance archives t
 
 A hash alone cannot reconstruct missing historical files. If the currently bundled package exactly matches a recorded origin hash, Hermes can recover that upstream base safely, even if your local copy is customized. An exact pristine local copy can also update directly. Otherwise an old manifest (including name-only entries) requires explicit reconciliation through `resolve`; Hermes never guesses that customized local content is an upstream base. With an unknown base, compare `local/` and `upstream/` and build `merged/` yourself, or explicitly choose either side.
 
-`hermes skills list-modified` and `hermes skills diff <name>` still inspect customizations. `hermes skills reset <name>` clears tracking without deleting your active files, but is not a substitute for resolving a pending review. `reset <name> --restore --yes` replaces local content with bundled content; back up customizations before using it.
+`hermes skills list-modified` and `hermes skills diff <name>` still inspect customizations. `hermes skills reset <name>` clears tracking without deleting your active files, but is not a substitute for resolving a pending review. `reset <name> --restore --yes` replaces local content with bundled content and archives any pending review after the restore; back up customizations before using it.
 
 :::note Profiles
 Each profile owns its manifest, snapshots, and pending reviews. Use `hermes -p coder skills resolve <name>` to review that profile only. Resolution is a terminal CLI command, not a chat slash command.

@@ -199,6 +199,24 @@ def test_an_address_that_matches_no_backend_blocks(home, capsys):
     assert code == engine.EXIT_BLOCKED and out["plan"]["blockers"]
 
 
+def test_an_explicit_address_needs_a_backend_even_if_the_inventory_is_empty(home, capsys, monkeypatch):
+    host = FakeHost(home)
+    monkeypatch.setattr(host, "backends", list)
+    assert _plan(host, capsys)[0] == engine.EXIT_OK
+    code, out = _plan(host, capsys, address="127.0.0.1:9999")
+    assert code == engine.EXIT_BLOCKED and out["plan"]["blockers"]
+
+
+def test_mixed_supervisors_require_a_unique_selection(home, capsys, monkeypatch):
+    host = FakeHost(home, host="127.0.0.1")
+    items = host.backends() + FakeHost(home, host="127.0.0.2", supervisor="container").backends()
+    monkeypatch.setattr(host, "backends", lambda: items)
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"] == []
+    assert _plan(host, capsys, address="127.0.0.1:9119")[0] == engine.EXIT_OK
+    assert _plan(host, capsys, address="127.0.0.2:9119")[0] == engine.EXIT_UNSUPPORTED
+
+
 @pytest.mark.parametrize(("supervisor", "scope"), [("nix-systemd", "system"), ("nix-launchd", "gui/501"), ("s6", None),
                                                    ("container", None), ("systemd", "system")])
 def test_unsupported_supervisors_exit_6_and_change_nothing(home, supervisor, scope, capsys):

@@ -410,9 +410,14 @@ def _select(plan: BackendPlan, items: list[BackendItem], address, host) -> None:
         want = (_canonical(address[0]), address[1])
         found = [_address_text(_address_of(i, host)) for i in mine]
         mine = [i for i in mine if (a := _address_of(i, host)) is not None and _key(a) == want]
-        if found and not mine:
+        if not mine:
             plan.blockers.append(f"No old backend of this home listens on {format_address(*address)}; "
-                                 f"found: {', '.join(found)}.")
+                                 f"found: {', '.join(found) or 'none'}.")
+    if len(mine) > 1:
+        where = ", ".join(_address_text(_address_of(i, host)) for i in mine)
+        hint = "Pick one with --address HOST:PORT." if address is None else "The supplied address is not unique."
+        plan.blockers.append(f"More than one old backend serves this home ({where}). {hint}")
+        return
     for item in mine:
         kind = _supervisor_kind(item, host)
         if kind in _UNSUPPORTED:
@@ -577,11 +582,7 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
     _select(plan, host.backends(), address, host)
     if plan.unsupported or not plan.candidates:
         return plan
-    if len(plan.candidates) > 1:
-        where = ", ".join(_address_text(_address_of(i, host)) for i in plan.candidates)
-        plan.blockers.append(f"More than one old backend serves this home ({where}). Pick one with "
-                             f"--address HOST:PORT (and --keep-webapp-address if the Webapp is already elsewhere).")
-        return plan
+
     plan.item = plan.candidates[0]
     plan.rec, env = _record(plan.item, host)
     plan.old_argv = _argv_of(plan.item, host)

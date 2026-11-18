@@ -1,5 +1,8 @@
 {
   "interval_s": 120,
+  "interval_header": "Report-Interval",
+  "interval_min_s": 60,
+  "interval_max_s": 600,
   "jitter": 0.1,
   "quick_retry_s": 5,
   "retry_after_max_s": 600,
@@ -31,6 +34,65 @@
       },
       "outcome": "stored",
       "then": "next_interval"
+    },
+    {
+      "name": "stored with a report interval",
+      "status": 204,
+      "headers": {
+        "Report-Interval": "300"
+      },
+      "outcome": "stored",
+      "then": "told_interval",
+      "wait_s": 300
+    },
+    {
+      "name": "report interval below the minimum",
+      "status": 204,
+      "headers": {
+        "Report-Interval": "10"
+      },
+      "outcome": "stored",
+      "then": "told_interval",
+      "wait_s": 60
+    },
+    {
+      "name": "report interval above the maximum",
+      "status": 204,
+      "headers": {
+        "Report-Interval": "86400"
+      },
+      "outcome": "stored",
+      "then": "told_interval",
+      "wait_s": 600
+    },
+    {
+      "name": "report interval that is not a number of seconds",
+      "status": 204,
+      "headers": {
+        "Report-Interval": "5m"
+      },
+      "outcome": "stored",
+      "then": "next_interval"
+    },
+    {
+      "name": "report interval of zero",
+      "status": 204,
+      "headers": {
+        "Report-Interval": "0"
+      },
+      "outcome": "stored",
+      "then": "next_interval"
+    },
+    {
+      "name": "report interval on a throttled reply",
+      "status": 429,
+      "headers": {
+        "Retry-After": "45",
+        "Report-Interval": "300"
+      },
+      "outcome": "throttled",
+      "then": "wait",
+      "wait_s": 45
     },
     {
       "name": "throttled",

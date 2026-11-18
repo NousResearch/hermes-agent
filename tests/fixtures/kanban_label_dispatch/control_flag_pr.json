@@ -1,0 +1,11 @@
+{
+  "source_type": "pull_request",
+  "repo": "kiddhu/aion-governance",
+  "number": 505,
+  "title": "Blocked route must produce failure packet",
+  "body": "Needs more information before dispatch.",
+  "labels": ["gm2:dispatch-007", "gm2:needs-info"],
+  "project_id": "aion-kanban",
+  "priority": "P1",
+  "formal_record": "https://github.com/kiddhu/aion-governance/pull/505"
+}

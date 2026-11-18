@@ -1,0 +1,11 @@
+{
+  "source_type": "issue",
+  "repo": "kiddhu/aion-governance",
+  "number": 501,
+  "title": "Implement bounded GM2 label router",
+  "body": "Build only the dry-run preview path. Do not write back to GitHub.",
+  "labels": ["gm2:dispatch-007", "gm2:fix"],
+  "project_id": "aion-kanban",
+  "priority": "P1",
+  "formal_record": "https://github.com/kiddhu/aion-governance/issues/501"
+}

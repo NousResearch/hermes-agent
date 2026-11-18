@@ -1,0 +1,11 @@
+{
+  "source_type": "pull_request",
+  "repo": "kiddhu/aion-governance",
+  "number": 502,
+  "title": "Audit dry-run dispatch packet",
+  "body": "Verify actor packet fields and dry-run boundaries.",
+  "labels": ["gm2:dispatch-audit", "gm2:verify"],
+  "project_id": "aion-kanban",
+  "priority": "P1",
+  "formal_record": "https://github.com/kiddhu/aion-governance/pull/502"
+}

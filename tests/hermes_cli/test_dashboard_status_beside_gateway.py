@@ -13,7 +13,9 @@ child, not ``exec``), which is the process the old scan listed. The scan is mach
 home), so assertions name PIDs rather than counting lines.
 """
 import contextlib
+import os
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -162,3 +164,41 @@ def test_a_backend_on_another_address_of_the_port_does_not_hide_the_gateway_the_
     assert _lists_at(out, backend_pid, gateway.port), out
     assert f"PID {pid} " not in out, out
     assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out
+
+
+def test_status_names_the_gateway_at_the_address_its_probe_connected_to(tmp_path):
+    """``--host ip6-localhost`` resolves to ::1, where the gateway's Webapp listens. The gateway is
+    asked about the peer the probe connected to (::1), not the spelling of ``--host``."""
+    import socket as _socket
+    try:
+        if not any(info[4][0] == "::1" for info in _socket.getaddrinfo("ip6-localhost", 1, type=_socket.SOCK_STREAM)):
+            pytest.skip("ip6-localhost does not resolve to ::1 here")
+    except OSError:
+        pytest.skip("no ip6-localhost on this host")
+    with live_gateway(tmp_path, webapp_host="::1") as gateway:
+        pid, code, out = _status(gateway.env, "--host", "ip6-localhost", "--port", str(gateway.port))
+    assert code == 0, out
+    assert f"PID {pid} " not in out, out
+    assert any(line.startswith("The Hermes gateway") for line in out.splitlines()), out
+
+
+def test_a_process_with_no_listener_is_still_listed_but_does_not_hide_the_gateway(tmp_path):
+    """A live process whose command line reads ``hermes serve --port P`` but holds no listener (stuck, or
+    still starting) is listed as before; the gateway that really answered on P is named too."""
+    stand_in = tmp_path / "bin"
+    stand_in.mkdir()
+    script = stand_in / "hermes"
+    script.write_text("#!/bin/sh\nsleep 120 &\nwait\n", encoding="utf-8")
+    script.chmod(0o755)
+    with live_gateway(tmp_path) as gateway:
+        stuck = subprocess.Popen([str(script), "serve", "--port", str(gateway.port)], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            pid, code, out = _status(gateway.env, "--port", str(gateway.port))
+        finally:
+            os.killpg(stuck.pid, signal.SIGTERM)
+            stuck.wait(timeout=10)
+    assert code == 0, out
+    assert f"PID {pid} " not in out, out
+    assert any(line.startswith(f"    PID {stuck.pid} [serve]: ") for line in out.splitlines()), out
+    assert any(line.startswith("The Hermes gateway") for line in out.splitlines()), out

@@ -595,12 +595,12 @@ def _report_dashboard_status() -> int:
     # The installed `hermes` runs this CLI under a launcher whose argv is this same `dashboard --status`
     # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
     # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
-    # listener itself. The only address this home's gateway is asked about is the concrete one the
-    # probe reached for such a launcher, unless a listed backend's own probe reached that same address.
+    # listener itself. The only address this home's gateway is asked about is the peer the probe
+    # connected to for such a launcher, unless a listed backend proven to listen on that port answered
+    # at that same peer (a listed process the OS shows with no listener there is listed, not credited).
     ancestors: set[int] | None = None
     unclaimed: list[tuple[str, int]] = []
-    held: set[tuple[str, int]] = set()
-    live: list[tuple[int, str, str]] = []
+    candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
@@ -609,18 +609,20 @@ def _report_dashboard_status() -> int:
         if pid in binds:
             ledger_host, port = binds[pid]
             host = ledger_host or host
-        if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
+        if port <= 0 or not _pid_exists(pid) or not (peer := _dashboard_listening(host, port)):
             continue
         if ancestors is None:
             ancestors = _caller_ancestor_pids()
         if pid in ancestors and _process_listens_on(pid, port) is False:
-            unclaimed.append((_dashboard_probe_host(host), port))
+            unclaimed.append((peer, port))
             continue
-        live.append((pid, command, mode))
-        held.add((_dashboard_probe_host(host), port))
+        candidates.append((pid, command, mode, (peer, port)))
+    live = [(pid, command, mode) for pid, command, mode, _ in candidates]
     gateway_note = None
     if unclaimed:
         from hermes_cli.web_server_port_holder import gateway_webapp_summary
+        held = {address for pid, _, _, address in candidates
+                if address in unclaimed and _process_listens_on(pid, address[1]) is not False}
         asked = [peer for peer in dict.fromkeys(unclaimed) if peer not in held]
         gateway_note = next(filter(None, (gateway_webapp_summary(*peer) for peer in asked)), None)
 
@@ -638,14 +640,15 @@ def _report_dashboard_status() -> int:
     return len(live)
 
 
-def _dashboard_listening(host: str, port: int) -> bool:
-    """True when something accepts TCP connections at host:port (even a 401 proves a dashboard is up)."""
+def _dashboard_listening(host: str, port: int) -> str | None:
+    """The numeric address that accepted a TCP connection at host:port (even a 401 proves a dashboard
+    is up), or None when nothing answered."""
     import socket
     try:
-        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5):
-            return True
+        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5) as client:
+            return client.getpeername()[0]
     except OSError:
-        return False
+        return None
 
 
 def _cancel(message: str = "  Cancelled.") -> NoReturn:

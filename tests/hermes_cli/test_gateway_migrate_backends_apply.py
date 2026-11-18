@@ -878,3 +878,48 @@ def test_a_profile_served_by_the_default_gateway_is_not_planned(tmp_path, monkey
     assert code == engine.EXIT_BLOCKED
     assert any("served by the default profile's gateway" in b for b in out["plan"]["blockers"])
     assert all(entry["steps"] == [] for entry in out["plan"]["unsupported"]) and out["plan"]["steps"] == []
+
+
+# --- review round 2: no-service steps come from the selected target, and never beside a blocker
+
+
+def _no_service_host(home, monkeypatch, **kw):
+    host = FakeHost(home, host="127.0.0.1", **kw)
+    monkeypatch.setattr(host, "gateway_state", lambda: {"kind": None, "installed": False, "enabled": False,
+                                                        "active": False, "running_pid": None, "unit": None})
+    return host
+
+
+def test_no_service_steps_keep_the_kept_webapp_address(home, capsys, monkeypatch):
+    """--keep-webapp-address keeps the Webapp on 9200: no step may set webapp.port 9119 (the old address)."""
+    (home / "config.yaml").write_text("model:\n  default: fake-model\nwebapp:\n  enabled: true\n"
+                                      "  host: 127.0.0.1\n  port: 9200\n", encoding="utf-8")
+
+    code, out = _plan(_no_service_host(home, monkeypatch), capsys, keep_webapp_address=True)
+
+    (entry,) = out["plan"]["unsupported"]
+    assert code == engine.EXIT_UNSUPPORTED and entry["steps"]
+    assert not any("webapp.port" in s or "webapp.host" in s for s in entry["steps"]), entry["steps"]
+
+
+def test_no_service_prints_no_steps_while_a_blocker_remains(home, capsys, monkeypatch):
+    host = _no_service_host(home, monkeypatch)
+    host.turns = 1
+
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_BLOCKED and all(e["steps"] == [] for e in out["plan"]["unsupported"])
+
+    engine.cmd_apply(host, _args(dry_run=True))
+    text = capsys.readouterr().out
+    assert "running" in text and "gateway run" not in text and "webapp.port" not in text
+
+
+def test_a_blocked_automatic_plan_lists_no_steps(home, capsys):
+    host = FakeHost(home, host="127.0.0.1")
+    host.turns = 1
+
+    code, out = _plan(host, capsys)
+    assert code == engine.EXIT_BLOCKED and out["plan"]["steps"] == [] and out["steps"] == []
+
+    engine.cmd_apply(host, _args(dry_run=True))
+    assert "Steps:" not in capsys.readouterr().out

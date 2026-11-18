@@ -1,0 +1,18 @@
+name: hermes-superagent
+repo: https://github.com/AirKyzzZ/hermes-superagent
+sha: "83544d7c0ef58587567ffa59de1d573df68dc85a"
+title: Hermes Superagent
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+description: "A resident router that dispatches and never executes, isolated workers that report only to it, team-written trigger rules, and an external watchdog that checks real progress and goal drift, plus an item ledger that keeps every task, issue and Claude Code session your sources show until it's confirmed closed. Disclosure — spawns long-running worker processes from the argv you configure, runs the outbound send, heartbeat and connector commands you configure, which read sources into its ledger, including a read-only session probe sent through the host command you configure, and, only when relaunch is turned on, types one short nudge into a stopped Claude Code session's terminal, stops or restarts its own workers, and spends tokens on the profile's model during ticks and when it writes a worker brief; on a profile set to router it drops every chat message whose sender is not on its allow list, and a webhook event from an allow-listed author starts a worker directly; the send and heartbeat commands run with the full Hermes environment. Writes its database and worker directories under the configured home, and its optional Claude Code hook logs session events to ~/.superagent/sessions. Its hooks stay inert until a profile sets a role."
+platforms: [linux, macos]
+maintainer: AirKyzzZ
+tier: community
+category: automation
+docs_url: https://github.com/AirKyzzZ/hermes-superagent#readme
+image: https://raw.githubusercontent.com/AirKyzzZ/hermes-superagent/83544d7c0ef58587567ffa59de1d573df68dc85a/assets/cover.png
+capabilities:
+  provides_tools: [superagent_dispatch, superagent_forward, superagent_cancel, superagent_status, superagent_report, superagent_tick, superagent_digest]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_gateway_dispatch, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

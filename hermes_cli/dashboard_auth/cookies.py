@@ -31,6 +31,8 @@ from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import Response
 
+from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
 SESSION_AT_COOKIE = "hermes_session_at"
 SESSION_RT_COOKIE = "hermes_session_rt"
 SESSION_PROVIDER_COOKIE = "hermes_session_provider"
@@ -167,7 +169,14 @@ def clear_pkce_cookie(response: Response, *, use_https: bool, prefix: str = "", 
 
 
 def _read_with_fallback(request: Request, bare_name: str) -> Optional[str]:
-    """Try every prefix variant (the reading request may not match the setting request's shape)."""
+    """Over HTTPS read only the name the setter writes for this request shape (``__Host-``, or
+    ``__Secure-`` behind a proxy prefix): any other variant there can only have been planted, e.g.
+    by a sibling subdomain setting ``Domain=<parent>`` — ``__Secure-`` does not forbid that, so
+    behind a proxy prefix the Domain-plantability is inherent to the only prefix ``Path`` allows.
+    Plain HTTP tries every variant (the reading request may not match the setting one's shape)."""
+    if detect_https(request):
+        return request.cookies.get(
+            _resolved_name(bare_name, use_https=True, prefix=prefix_from_request(request)))
     return next((v for v in (request.cookies.get(f"{p}{bare_name}") for p in _NAME_VARIANTS)
                  if v is not None), None)
 

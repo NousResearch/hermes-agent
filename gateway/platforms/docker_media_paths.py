@@ -7,9 +7,13 @@ gone, and scanning every ``*_ws_*`` directory would serve another session's file
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _WORKSPACE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
@@ -158,3 +162,23 @@ def _default_docker_workspace_host_roots(
         if root not in roots:
             roots.append(root)
     return roots
+
+
+async def hand_back_unreadable_media(paths: list[str]) -> None:
+    """Validated MEDIA files a root Docker sandbox restricted (``chmod 600``) are unreadable to the
+    gateway while the container lives (teardown hands files back only on removal): give each one
+    to the host user through the container itself; the sandbox keeps ``no-new-privileges``. Docker
+    CLI calls block, so they run off the event loop (``to_thread`` carries the profile scope)."""
+    from gateway.platforms.base import _docker_env_active
+    if not (unreadable := [p for p in paths if not os.access(p, os.R_OK)]) or not _docker_env_active():
+        return
+    await asyncio.to_thread(_hand_back_files, unreadable)
+
+
+def _hand_back_files(paths: list[str]) -> None:
+    from tools.environments.docker import find_docker
+    from tools.environments.docker_ownership import hand_back_media_file
+    docker_exe = find_docker()
+    for path in paths if docker_exe else []:
+        if hand_back_media_file(docker_exe, path):
+            logger.info("Handed Docker sandbox MEDIA file %s back to the gateway user", Path(path).name)

@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
@@ -31,7 +31,8 @@ from hermes_constants import (
 )
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +162,8 @@ _OS_CREDENTIAL_STORES = (*HOME_CREDENTIAL_DIRS, ".envrc")
 # keeps recovery copies of them. Never shipped in a profile export, and user-owned (never
 # overwritten) on a distribution install. Add a store here when a writer or loader starts using one.
 PROFILE_CREDENTIAL_PATHS = frozenset({
-    "auth.json", ".env", "auth/google_oauth.json",
-    ".op.env",                      # 1Password service-account token (env_loader)
+    "auth.json", "auth/google_oauth.json",
+    *HOME_ENV_FILES,                # .env + the 1Password service-account token (env_loader)
     "npmrc",                        # npm registry auth (source_build)
     ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
     "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
@@ -173,12 +174,10 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "mem0.json",                    # Mem0 api_key (self-hosted server key) next to its settings
     "webhook_subscriptions.json",   # per-route HMAC secrets
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
-    "mcp-tokens",                   # MCP OAuth tokens
-    "vault",                        # vault.key + vault.json.enc
+    *CREDENTIAL_STORE_DIRS,         # MCP OAuth tokens, vault, pairing, messaging sessions (both layouts)
     "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
-    "pairing", "platforms/pairing", "feishu_comment_pairing.json",
-    "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
+    "feishu_comment_pairing.json",
     *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
@@ -680,6 +679,8 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Only ``{"hermes-bots": {...}}``: other plugins' ui_meta (group-chat logs, images) stays off rosters.
+    ui_meta: dict = field(default_factory=dict)
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -872,29 +873,27 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
-    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name, bot_title,
+    ui_meta, previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
-        ui_meta = data.get("ui_meta")
-        bot_title = ""
-        if isinstance(ui_meta, dict):
-            hermes_bots = ui_meta.get("hermes-bots")
-            if isinstance(hermes_bots, dict):
-                bot_title = str(hermes_bots.get("title") or "").strip()
+        ui_meta = data.get("ui_meta") if isinstance(data.get("ui_meta"), dict) else {}
+        bots = ui_meta.get("hermes-bots") if isinstance(ui_meta.get("hermes-bots"), dict) else {}
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
-            "bot_title": bot_title,
+            "bot_title": str(bots.get("title") or "").strip(),
+            "ui_meta": json_safe_dumps({"hermes-bots": bots} if bots else {}),
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 
-    # A copy per caller (list included): the cached value is shared, and a caller that mutates
-    # its result must not poison the next reader.
+    # A copy per caller (list and ui_meta included): the cached value is shared, and a caller that
+    # mutates its result must not poison the next reader.
     meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
     meta["previous_names"] = list(meta["previous_names"])
+    meta["ui_meta"] = json.loads(meta["ui_meta"])
     return meta
 
 
@@ -1161,15 +1160,15 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
 _CLONE_MATERIALIZE = (".env", "config.yaml", "auth.json", "SOUL.md")
 
 
-def _materialize_symlinked_files(profile_dir: Path) -> list[str]:
-    """Replace symlinked root files the clone will edit with private copies of their targets (a
-    dangling link is dropped). Returns the relative names materialized."""
+def _materialize_symlinked_files(source_dir: Path, profile_dir: Path) -> list[str]:
+    """Replace symlinked root files the clone will edit with private copies of their targets, resolved in
+    the source (a relative link names a path from there; a dangling one is dropped). Returns the names."""
     done: list[str] = []
     for name in _CLONE_MATERIALIZE:
         path = profile_dir / name
         if not path.is_symlink():
             continue
-        target = Path(os.path.realpath(path))
+        target = Path(os.path.realpath(source_dir / name))
         path.unlink()
         if target.is_file():
             shutil.copy2(target, path)
@@ -1221,13 +1220,13 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional[dict]:
-    """--clone-all: full copytree minus infrastructure/history, then strip runtime files
-    and cloned single-use OAuth grants."""
+    """--clone-all: full copytree minus infrastructure/history, then strip runtime files and single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    materialized = _materialize_symlinked_files(profile_dir)
-    if materialized:
+    if materialized := _materialize_symlinked_files(source_dir, profile_dir):
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
                     canon, materialized, source_dir)
+    with contextlib.suppress(OSError):  # copytree keeps a loose source mode; owner-only like --clone
+        os.chmod(str(profile_dir / ".env"), 0o600)
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -1456,36 +1455,35 @@ def _live_default_multiplexer() -> bool:
         return False
 
 
-def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
+def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Optional[list] = None) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
     module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials."""
-    project_root = Path(__file__).parent.parent.resolve()
+    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials.
+    ``problems`` also collects the failure lines (a gateway's quiet create hands them to its client)."""
+    def report(*lines: str) -> None:
+        (problems if problems is not None else []).extend(lines)
+        if not quiet:
+            print(*lines, sep="\n")
+
     try:
         result = subprocess.run(
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
+            cwd=project_root_str(),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
             check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
-        if not quiet:
-            print(f"⚠ Skill seeding returned exit code {result.returncode}")
-            if result.stderr.strip():
-                print(f"  {result.stderr.strip()[:200]}")
-        return None
+        stderr = result.stderr.strip()
+        report(f"⚠ Skill seeding returned exit code {result.returncode}", *([f"  {stderr[:200]}"] if stderr else []))
     except subprocess.TimeoutExpired:
-        if not quiet:
-            print("⚠ Skill seeding timed out (60s)")
-        return None
+        report("⚠ Skill seeding timed out (60s)")
     except Exception as e:
-        if not quiet:
-            print(f"⚠ Skill seeding failed: {e}")
-        return None
+        report(f"⚠ Skill seeding failed: {e}")
+    return None
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
@@ -1758,8 +1756,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
     with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
+        from persistence_assembly import close_stores_under
+        _closed = close_stores_under(profile_dir)
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
@@ -2187,14 +2185,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
-        # Remove foreign runtime state before publishing, including file-shaped roots.
-        # A failed removal must abort import rather than install a stale PM selection.
-        for child in final_source.iterdir():
-            if child.name in PM_RUNTIME_ROOT_DIRS:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        from hermes_cli.profiles_initialization import prepare_imported_tree
+        prepare_imported_tree(final_source)
         shutil.move(str(final_source), str(profile_dir))
     clear_named_profile_deleted(profile_dir)
     return profile_dir

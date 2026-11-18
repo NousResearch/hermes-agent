@@ -15,6 +15,8 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.display import redact_tool_args_for_display
+from agent.redact import redact_sensitive_text
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -133,22 +135,22 @@ def _coerce_usage_int(value: Any) -> int:
 
 
 def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict]) -> None:
-    """Enqueue per-call accounting for the SessionDB background writer. ``counts`` is built
+    """Enqueue per-call accounting for the session store's usage writer. ``counts`` is built
     lazily inside the guarded try so a stub agent without a session DB is never touched."""
     if not (agent._session_db and agent.session_id):
         return
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _agent_session_source
-        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
+        from agent.turn_usage import _queue_usage
+        _queue_usage(agent, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
 def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    + cache-write input; a turn with no usage still counts as one API call.
     ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
     the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
     estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
@@ -171,11 +173,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
     # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
     # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
+    # ``cacheWriteInputTokens`` (codex-rs TokenUsageBreakdown, from Responses
+    # ``input_tokens_details.cache_write_tokens``) is inside ``inputTokens`` too; older servers omit it (0).
     cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    cache_write_tokens = _coerce_usage_int(usage.get("cacheWriteInputTokens"))
     canonical_usage = CanonicalUsage(
-        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens),
+        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens - cache_write_tokens),
         output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
+        cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
     )
     prompt_tokens = canonical_usage.prompt_tokens
@@ -208,9 +213,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
     cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    # The app-server builds its own requests (cache options included), so Hermes cannot know the
+    # window: an explicit unknown keeps an older window from outliving this cache activity.
+    from agent.prompt_cache_clock import record_unobserved_cache_response
+    from agent.turn_usage import _cache_clock_column
+    clock = _cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
-        counts=lambda: billing(**token_counts, **cost_fields,
+        counts=lambda: billing(**token_counts, **cost_fields, **clock,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
     )
     return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}
@@ -323,20 +333,33 @@ def _codex_item_to_args(item: dict) -> dict:
     return {"query": item.get("query") or ""} if item_type == "webSearch" else {}
 
 
-def _codex_item_to_preview(item: dict) -> Any:
-    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None)."""
+def _codex_item_to_preview(item: dict, args: dict | None = None) -> Any:
+    """Short preview for the tool.started bubble; None when nothing useful (UI tolerates None).
+
+    ``args`` overrides the item's raw arguments (the display-redacted copy)."""
     item_type = item.get("type") or ""
     if item_type in _PREVIEW_FIELDS:
-        return (item.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
+        source = args if args is not None else item
+        return (source.get(_PREVIEW_FIELDS[item_type]) or "")[:120] or None
     if item_type == "fileChange":
         paths = [c.get("path") for c in _item_changes(item) if c.get("path")]
         return (", ".join(paths[:3]) + (f", +{len(paths) - 3} more" if len(paths) > 3 else "")) if paths else None
     if item_type in _MCP_LIKE_ITEM_TYPES:
-        args = item.get("arguments") or {}
+        args = args if args is not None else item.get("arguments") or {}
         if isinstance(args, dict) and args:
             with suppress(TypeError, ValueError):
                 return json.dumps(args, ensure_ascii=False)[:120]
     return None
+
+
+def _codex_display_args(name: str, args: dict) -> dict:
+    """Display-safe copy of a codex item's args for progress previews and tool cards.
+
+    Native ``exec_command`` text gets the same forced secret redaction as the terminal tool's display
+    path; Hermes-tools MCP items carry the bare Hermes tool name, so the shared display redactor applies."""
+    if name == "exec_command" and isinstance(args.get("command"), str):
+        return {**args, "command": redact_sensitive_text(args["command"], force=True)}
+    return redact_tool_args_for_display(name, args) or args
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
@@ -391,11 +414,12 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         args = _codex_item_to_args(item)
         if item_id:
             started[item_id] = (name, args, time.monotonic())
+        shown = _codex_display_args(name, args)
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.started for %s", name,
-                 args=("tool.started", name, _codex_item_to_preview(item), args))
+                 args=("tool.started", name, _codex_item_to_preview(item, shown), shown))
         # Stable-ID tool card (TUI/desktop) fires alongside the progress bubble.
         agent_cb("tool_start_callback", "tool_start_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args))
+                 args=(_stable_call_id(item, name), name, shown))
 
     def _fire_tool_completed(item: dict) -> None:
         name = _codex_item_to_tool_name(item)
@@ -411,7 +435,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                  kwargs={"duration": duration, "is_error": is_error, "result": result})
         args = prior[1] if prior is not None else _codex_item_to_args(item)
         agent_cb("tool_complete_callback", "tool_complete_callback raised for %s", name,
-                 args=(_stable_call_id(item, name), name, args, result))
+                 args=(_stable_call_id(item, name), name, _codex_display_args(name, args), result))
 
     def _fire_delta(params: dict, attr: str) -> None:
         text = _delta_text(params)
@@ -511,7 +535,10 @@ def _stored_codex_thread_id(agent) -> str | None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return None
-    thread_id = db.get_session_model_config_value(session_id, _CODEX_THREAD_ID_KEY)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    getter = store.sessions.get_model_config_value if store is not None else db.get_session_model_config_value
+    thread_id = getter(session_id, _CODEX_THREAD_ID_KEY)
     return thread_id if isinstance(thread_id, str) and thread_id else None
 
 
@@ -520,7 +547,10 @@ def _store_codex_thread_id(agent, thread_id: str | None) -> None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return
-    _call_guarded(db.patch_session_model_config, "codex thread id could not be stored on the session row",
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = store.sessions.patch_model_config if store is not None else db.patch_session_model_config
+    _call_guarded(patcher, "codex thread id could not be stored on the session row",
                   args=(session_id, {_CODEX_THREAD_ID_KEY: thread_id}))
 
 

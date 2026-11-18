@@ -1,0 +1,23 @@
+name: ultimate-dashboard
+repo: https://github.com/Yazeed-A-H/Ultimate-Dashboard
+sha: f83dd7a142ccf95f1d0dd6e3188908c9161eb2db
+subdir: plugin
+description: "A customizable dashboard page for Hermes Desktop and the Webapp, with 16 cards: approvals you can answer, running sessions, scheduled jobs with a 7-day timeline, job results, plan usage, spend, tool activity, health, services, machine stats, logs, agent memory, skills, files made, Workers and live tasks, plus Quick launch shortcuts. Arrange cards into views, save templates, and the layout syncs between Desktop and the Webapp. English and Arabic (RTL); follows the Hermes theme. Disclosure — no telemetry and no third-party requests; the page talks only to your Hermes gateway. Runs one command through cli.exec, `hermes usage --provider <slug> --json`, which asks each signed-in provider for plan usage. Its backend opens state.db read-only (session titles, token and cost columns, tool names and outcomes, MEDIA file paths; no message text), and reads the size of memories/MEMORY.md and USER.md (never the text), the dates in skills/.usage.json, the newest file in cron/output/<job id>/, Hermes' Worker transcripts in cache/delegation/live/ (goals, tool names and one-line command previews; never result text), and machine stats via psutil including the hostname. Stores the layout in plugin-data/ultimate-dashboard/state.json. Answers an approval only when you click, with once or deny, never always. Anyone signed in to your dashboard can see what the cards show."
+maintainer: Yazeed-A-H
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.5.0"
+title: Ultimate Dashboard
+image: https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/dashboard.png
+  - https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/system.png
+  - https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/edit-layout.png
+  - https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/add-card.png
+  - https://raw.githubusercontent.com/Yazeed-A-H/Ultimate-Dashboard/f83dd7a142ccf95f1d0dd6e3188908c9161eb2db/docs/screenshots/settings.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

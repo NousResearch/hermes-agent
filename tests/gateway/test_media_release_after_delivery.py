@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import session_ingress, session_results, session_settlement_recovery as recovery
+from gateway.session_authority import admission_row
 from gateway.session_runtime_workers import mutation_tasks
-from hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
 
@@ -39,7 +39,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
 
     async def send(adapter, event, key, response):
-        assert get_session_admission(db, admission_id=event.message_id)['status'] == 'terminal'
+        assert admission_row(db.admissions.get(admission_id=event.message_id))['status'] == 'terminal'
         order.append('send')
         if path == 'send_failure':
             raise OSError('transport unavailable')
@@ -77,7 +77,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
         try:
             if path == 'resolved':
                 await asyncio.wait_for(drain, 5)
-                row = get_session_admission(db, admission_id=receipt.admission_id)
+                row = admission_row(db.admissions.get(admission_id=receipt.admission_id))
                 assert row['status'] == 'unknown' and not releases
                 operation = asyncio.create_task(authority.resolve_unknown_as_owner(
                     REF, receipt.admission_id, row['generation']))
@@ -132,7 +132,7 @@ async def test_resolution_racing_recovery_releases_once(tmp_path, monkeypatch, c
         drain = asyncio.create_task(authority._drain(REF))
         try:
             await async_wait_until(entered.is_set, timeout=5, what='recovery stamp')
-            row = get_session_admission(db, admission_id=receipt.admission_id)
+            row = admission_row(db.admissions.get(admission_id=receipt.admission_id))
             if not captured:
                 authority.pending_results.pop(receipt.admission_id)
             await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
@@ -180,14 +180,14 @@ async def test_resolution_the_drain_owned_is_collected_when_its_recovery_fails(t
         drain = asyncio.create_task(authority._drain(REF))
         try:
             await async_wait_until(entered.is_set, timeout=5, what='recovery stamp')
-            row = get_session_admission(db, admission_id=receipt.admission_id)
+            row = admission_row(db.admissions.get(admission_id=receipt.admission_id))
             await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
             monkeypatch.setattr(session_results, 'admission_result', read_once_fails)
         finally:
             resume.set()
             await asyncio.gather(drain, return_exceptions=True)
             await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='recovery cleanup')
-        assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        assert admission_row(db.admissions.get(admission_id=receipt.admission_id))['status'] == 'terminal'
         assert released == [receipt.admission_id], 'a resolved turn keeps its cleanup when the drain fails'
 
 
@@ -215,7 +215,7 @@ async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkey
     with db:
         receipt = await _submit(authority, 'photo')
         await asyncio.wait_for(authority._drain(REF), 5)
-        row = get_session_admission(db, admission_id=receipt.admission_id)
+        row = admission_row(db.admissions.get(admission_id=receipt.admission_id))
         assert row['status'] == 'unknown'
         if not captured:
             authority.pending_results.pop(receipt.admission_id, None)  # discarded: no captured answer

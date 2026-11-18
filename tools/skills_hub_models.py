@@ -75,7 +75,7 @@ def _memo_json(key: str, compute: Callable[[], Any], valid: Callable[[Any], bool
 
 
 def _get_json(url: str, *, timeout: int = 20, **kwargs) -> Optional[Any]:
-    """Plain (unguarded) GET + JSON decode; None on non-200 or transport/decode error."""
+    """Policy-checked GET + JSON decode; None on non-200 or transport/decode error."""
     try:
         resp = hub()._skills_hub_http_get(url, timeout=timeout, **kwargs)
         return resp.json() if resp.status_code == 200 else None
@@ -84,7 +84,7 @@ def _get_json(url: str, *, timeout: int = 20, **kwargs) -> Optional[Any]:
 
 
 def _get_text(url: str, *, timeout: int = 20, **kwargs) -> Optional[str]:
-    """Plain (unguarded) GET; body text on 200, None on any other status or transport error."""
+    """Policy-checked GET; body text on 200, None on any other status or transport error."""
     try:
         resp = hub()._skills_hub_http_get(url, timeout=timeout, **kwargs)
     except httpx.HTTPError:

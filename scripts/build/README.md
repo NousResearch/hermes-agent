@@ -146,6 +146,7 @@ can mutate it, and before unrelated build/signing failures can discard it.
 node scripts/build/tui.mjs --source /work/source --out /work/products/tui
 node scripts/build/web.mjs --source /work/source \
   --icons /work/products/icons --out /work/products/web
+node scripts/build/webapp.mjs --source /work/source --out /work/products/webapp
 node scripts/build/desktop.mjs --source /work/source \
   --icons /work/products/icons --stamp /work/install-stamp.json \
   --native-deps /work/native-deps --out /work/products/desktop
@@ -155,6 +156,7 @@ node scripts/build/desktop.mjs --source /work/source \
 |---|---|---|---|
 | `tui.mjs` | `--source`, `--out` | None | `dist/entry.js`, gateway/clipboard Python helpers in `dist/scripts/`, and `package.json` with `type: module` |
 | `web.mjs` | `--source`, `--out`, `--icons` | None | `index.html`, Vite assets, and public assets |
+| `webapp.mjs` | `--source`, `--out` | None | The browser-hosted Desktop renderer: `index.html`, Vite assets and `renderer-manifest.json`. The CLI compiles in the source's own installed `apps/desktop` dependencies; source installs use `apps/desktop/scripts/build-webapp.mjs`, which prepares a private workspace |
 | `desktop.mjs` | `--source`, `--out`, `--icons`, `--stamp`, `--native-deps` | `--typecheck`, `--platform` | Renderer assets, `electron-main.mjs`, `electron-preload.js`, and native `node_modules` |
 
 Each output is the product directory itself. The desktop output is a `dist`
@@ -390,7 +392,7 @@ All supplied filesystem input paths must be absolute and exist. `repo` and
 | `tools` | No | Prepared runtime tool directory. The manifest defaults to `tools` if omitted |
 | `command_dir` | For `references` | Directory of prepared commands declared by the project |
 | `resources` | No | Resource-name to directory mapping |
-| `frontends` | No | `tui` and/or `web` product paths |
+| `frontends` | No | `tui`, `web` and/or `webapp` product paths |
 | `ref` | No | Source identity copied to the completion manifest |
 | `stamp` | No | Prepared install stamp copied to `OUT/repo/install-stamp.json` |
 | `features` | No | Prepared feature inventory copied to `OUT/enabled-features.json` |
@@ -430,9 +432,10 @@ runs the target interpreter and therefore needs a runnable native environment.
 A target label alone does not prove ABI compatibility.
 
 For copied frontends, the assembler places TUI files at
-`OUT/repo/hermes_cli/tui_dist/` and web files at
-`OUT/repo/hermes_cli/web_dist/`. Reference placement links TUI at `OUT/ui-tui`
-and web at `OUT/repo/web_dist` and records their environment bindings.
+`OUT/repo/hermes_cli/tui_dist/`, web files at `OUT/repo/hermes_cli/web_dist/`
+and Webapp files at `OUT/repo/apps/desktop/dist-webapp/`. Reference placement
+links TUI at `OUT/ui-tui`, web at `OUT/repo/web_dist` and the Webapp at
+`OUT/repo/webapp_dist`, and records their environment bindings.
 
 After structural assembly, `manifest.json` records `schema`, `target`, `repo`,
 `venv`, `store`, `launchers`, and `runtime`, plus `ref` when supplied. Its

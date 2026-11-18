@@ -42,7 +42,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
     """Run the MoA reference models and append their aggregated context to the last user
     message (as a trailing text part on multimodal turns). Fail-open."""
     try:
-        from agent.message_content import flatten_message_text as _flatten_mt
+        from session_rules.turns import flatten_message_text as _flatten_mt
         from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
         _moa_context = aggregate_moa_context(
@@ -218,12 +218,13 @@ def assemble_api_request(
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only.
             cache_ttl=effective_cache_ttl(
-                agent._cache_ttl, provider=agent.provider, model=agent.model
+                agent._cache_ttl, provider=agent.provider, model=agent.model, base_url=getattr(agent, "base_url", "") or ""
             ),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=(
                 _static_system_prefix if isinstance(_static_system_prefix, str) else None
             ),
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
             # LiteLLM-style envelope routes forward part-level markers into
             # tool_result.content[] → non-retryable 400.

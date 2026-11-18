@@ -1,0 +1,26 @@
+name: skill-stats
+repo: https://github.com/minhng92/skill-stats
+sha: "4e412bcdc10f833ee11a0425e673695e55fd3472"
+title: Skill Stats
+description: >-
+  Skill Stats shows which skills you actually use in Hermes Agent, when, and how much. Type /skill-stats in any chat to see that session's skills ranked by loads with a % share, or run `hermes skill-stats` in the terminal for all-time totals; switch the window from 1 day to 90, page through the rows, group them by category, and answer questions like "which skills did I lean on this week?" or "is this skill still worth keeping?" Point the command at another chat by title or short id (for example -s stageshow-bentora) to compare sessions, or add `global` from a chat to see everything combined. In `hermes --tui` the same numbers open as an interactive modal: browse skills with the arrow keys, open a skill's chart, flip between bars and a cumulative line, and set the period with keys 1 to 6. The web Dashboard gains a Skill Stats tab where you pin the skills you monitor so they stay on top of the table, page 10 to 100 rows, and drill into per-skill charts. Nothing to configure: install it and the counting starts on the next session. Disclosure — no network calls, no telemetry, no shell commands and no credentials; the plugin writes only its own stats files under $HERMES_HOME/skill-stats/ (plus one copy of its TUI widget file into $HERMES_HOME/tui-widgets/ at startup so the modal works) and reads Hermes' session registry read-only to resolve a session title or short id, never message content.
+maintainer: minhng92
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/minhng92/skill-stats/blob/4e412bcdc10f833ee11a0425e673695e55fd3472/README.md
+readme: true
+image: https://raw.githubusercontent.com/minhng92/skill-stats/4e412bcdc10f833ee11a0425e673695e55fd3472/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/minhng92/skill-stats/4e412bcdc10f833ee11a0425e673695e55fd3472/assets/skill-usage-overall.jpg
+  - https://raw.githubusercontent.com/minhng92/skill-stats/4e412bcdc10f833ee11a0425e673695e55fd3472/assets/introduction.gif
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -312,6 +312,71 @@ documented ABCs instead of internals. The full old-to-new map is the
 [`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
 from the last commit that shipped the layer.
 
+### `hermes_state` deprecated: use the storage interface
+
+Session storage sits behind a storage interface: typed contracts in `persistence/` and one entry point, `persistence_assembly`. The `SessionDB` class and the `hermes_state_*` modules are removed. For outside plugins, `hermes_state` and `hermes_state_registry` stay as temporary compatibility modules under the [deprecation policy](#deprecation-policy) above. They forward the names in the table below to the storage interface and hold no SQL or database connection of their own.
+
+- The first use of a name from either module warns once per process, naming the replacement and the removal release.
+- The modules are supported through v0.24, v0.25 and v0.26 and removed no earlier than v0.27.0.
+- Names not in the table are not carried: the old class's mixins and the SQLite backend's own helpers have no public replacement, and `hermes plugins validate` reports an import of one.
+
+| `hermes_state` name | Replacement |
+|---|---|
+| `SessionDB()`, `SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`, `open_persistence(profile_scope(home=path.parent))`; release the handle with `close()` or a `with` block. An agent given a `SessionDB` as `session_db` borrows the handle it holds when the agent is built, so keep that `SessionDB` open for the agent's life: its `close()` releases the handle, and its reopen after `close()` gives the agent no new one |
+| `SessionDB(read_only=True)` | `with open_persistence_reader(profile_scope().profile_dir) as store:` (never creates, migrates or repairs the store) |
+| `AsyncSessionDB(db)` | `store.aio`: the same repositories, awaitable, each call run off the event loop |
+| `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |
+| `create_session`, `end_session`, `reopen_session` | `store.sessions.create(NewSession(...))`, `store.sessions.end`, `store.sessions.reopen` |
+| `append_message` | `store.messages.append(session_id, NewMessage(...))` |
+| `hermes_state_registry.acquire(db_path=None)`, `release(db)`, `release_or_close(db)` | `open_persistence(profile_scope())` and the handle's `close()`; the stand-in's `acquire` opens a `SessionDB` of its own for each caller and both releases close it |
+| `get_messages` | `store.messages.read_transcript(session_id)`; `as_wire_row()` gives the old dict |
+| `list_gateway_sessions(platform=None, active_only=True)` | `store.sessions.list_gateway_sessions(platform=..., active_only=...)`; `{**e.session.as_session_row(), "last_active": e.last_active}` gives each old dict |
+| `get_messages_as_conversation` | `store.messages.read_conversation(session_id)`; `as_openai_message()` gives each old dict |
+| `get_session` | `store.sessions.get(session_id)`; `as_session_row()` gives the old dict |
+| `list_sessions_rich`, `session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`, `store.sessions.count_sessions()` |
+| `set_session_title`, `resolve_session_by_title`, `get_next_title_in_lineage` | `store.sessions.set_title`, `store.sessions.resolve_by_title`, `store.sessions.next_title_in_lineage` |
+| `resolve_session_id` | `store.sessions.resolve_id`: the exact id, else the one id the prefix matches |
+| `search_messages` | `store.search.search_messages`, which returns `SearchHit` records |
+| `export_session`, `export_all`, `prune_sessions` | `store.maintenance.export_session`, `store.maintenance.export_all`, `store.maintenance.prune_sessions` |
+| `delete_session`, `clear_messages` | `store.sessions.delete`, `store.messages.replace_transcript(session_id, [], ReplaceMode.DESTRUCTIVE)` |
+| `get_meta`, `set_meta`, `list_meta_prefix` | `store.state_meta.get`, `store.state_meta.set`, `store.state_meta.list_prefix` |
+| `StateDbCorruptError`, `StateDbReplacedError` | `persistence.StoreQuarantined`, `persistence.StoreReplaced` |
+| `SessionCompressionInProgressError`, `DeletedWalGenerationError` | `persistence.CompressionInProgress`, `persistence.DeletedWalGeneration` |
+| `SessionResumeTooLargeError`, `SessionExportTooLargeError` | `persistence.conversation.messages.ResumeTooLarge`, `persistence.ExportTooLarge` |
+| `classify_persistence_error`, `is_sqlite_lock_error`, `is_malformed_db_error` | the same names in `storage_errors` |
+| `apply_wal_with_fallback`, `apply_database_pragmas` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `storage_state`, `storage_corrupt_reason` | `persistence_assembly.storage_health(profile_scope()).storage_state()` |
+| `get_hermes_home`, `mkdir_under_hermes_home` | the same names in `hermes_constants` |
+| `format_session_db_unavailable`, `get_last_init_error` | the same names in `storage_user_copy` |
+| `resolved_max_resume_messages`, `resolved_max_export_messages` | the same names in `storage_limits` |
+| `preflight_db_writability`, `read_only_db_uri` | the same names in `sqlite_support`, for a plugin's own SQLite file |
+| `holder_pid_checkable`, `make_user_dir` | `process_identity.holder_pid_checkable`, `hermes_dir_acl.make_user_dir` |
+| `WriterMutexTimeout`, `maintain_after_commit`, `write_site`, `writer_mutex_until`, `note_read_pool_exhausted` | none: the SQLite backend's own writer and read-pool helpers, carried unchanged for the stand-in's life; a store's verbs do their own writes and reads |
+| `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
+| `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
+
+`NewSession` and `SessionQuery`/`SessionWindow` come from `persistence.conversation.sessions`; `NewMessage` and `ReplaceMode` from `persistence.conversation.messages`. A dashboard route that listed sessions migrates like this:
+
+```python
+# Before
+from hermes_state import SessionDB
+
+db = SessionDB(read_only=True)
+try:
+    rows = db.list_sessions_rich(limit=50)
+finally:
+    db.close()
+
+# After
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence_reader, profile_scope
+
+with open_persistence_reader(profile_scope().profile_dir) as store:
+    rows = [entry.as_list_row() for entry in store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50))]
+```
+
+[Session Storage](../session-storage.md#common-operations) shows the repositories in use.
+
 ## What you're building
 
 A **calculator** plugin with two tools:
@@ -409,6 +474,8 @@ Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
 `llm.task_override`, `llm.side_question` (ask the session's own agent after
 a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`llm.session_fork` (run a bounded background copy of the session's agent, see
+[Plugin LLM Access](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)),
 `gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
@@ -889,6 +956,8 @@ def unit_convert(args: dict, **kwargs) -> str:
 4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `conversation_id`,
    `user_task`, `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
    works; `**kwargs` is how you opt into the full, additively growing context.
+   Inside a plugin's [session fork](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session)
+   the handler also receives `turn_origin="plugin_fork:<plugin id>"`; live-turn calls carry none.
 5. **Key per-conversation state on `conversation_id`:** `session_id` names the current transcript
    segment, and a rotating compression (`compression.in_place: false`) replaces it mid-conversation.
    `conversation_id` is the id of the conversation's first session and does not change. `/new` and
@@ -1178,6 +1247,22 @@ One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
 
+### Redact secrets before storing or sending text
+
+Text your plugin saves or uploads (a transcript, a diff, a log) can carry API keys
+the user pasted. Run it through `ctx.redact_text()` first instead of importing
+Hermes internals:
+
+```python
+safe = ctx.redact_text(transcript, force=True)  # force: this text leaves the machine
+```
+
+It uses the same scrubber as Hermes's own output, at its strongest setting:
+prefixed keys become a sentinel such as `«redacted:sk-…»` with no key characters
+left, and assignments like `API_KEY=…` are masked. Patterns registered with
+`ctx.register_redaction_patterns()` apply too. Without `force`, a user who set
+`security.redact_secrets: false` gets the text back unchanged.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
@@ -1254,6 +1339,88 @@ def open_skill(name):
 
 Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
 returns the on-disk catalog only.
+
+### Check file paths and read YAML with Hermes's own helpers
+
+A plugin that reads or writes a path the model chose (an attachment, an export target, a file to
+summarise) should refuse the same paths Hermes's own file tools refuse: credential stores, the
+skills-hub cache, project `.env` files, device and `/proc` process files, and anything outside
+`HERMES_WRITE_SAFE_ROOT`. Call these
+instead of keeping your own denylist:
+
+| Import | What it gives you |
+|---|---|
+| `agent.file_safety.get_read_block_error(path)` | An error string if Hermes's file tools would refuse to read `path`, else `None`. Pass an absolute path. |
+| `agent.file_safety.raise_if_read_blocked(path)` | The same check, raising `ValueError` on a block. |
+| `agent.file_safety.get_write_denied_error(path)` | An error string if Hermes's file tools would refuse to write `path`, else `None`. |
+| `agent.file_safety.is_write_denied(path)` | `True` when that write would be refused. |
+| `hermes_yaml.safe_load(text)` / `hermes_yaml.safe_dump(data)` | The YAML reader and writer Hermes uses for its own config. Hermes does not ship PyYAML, so `import yaml` fails unless your plugin declares it. |
+
+```python
+from agent.file_safety import get_read_block_error
+from hermes_yaml import safe_load
+
+def load_recipe(path):
+    if err := get_read_block_error(path):
+        return err
+    with open(path, encoding="utf-8") as fh:
+        return safe_load(fh)
+```
+
+Import the names themselves (`from hermes_yaml import safe_load`), as above: `hermes plugins
+validate` accepts those spellings and reports a bare `import agent.file_safety` as a private import.
+To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
+parsing `config.yaml` yourself.
+
+### Send a credentialed HTTP request without leaking it on redirect
+
+Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header
+still attached. `hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)` opens a
+`urllib.request.Request` the way Hermes's own provider calls do: credential headers are dropped when
+a redirect leaves the original origin, and the process's installed opener (proxy, TLS trust) is kept.
+
+```python
+import urllib.request
+
+from hermes_cli.urllib_security import open_credentialed_url
+
+def fetch_models(base_url, api_key):
+    request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+    with open_credentialed_url(request, timeout=10) as response:
+        return response.read()
+```
+
+### Read a Retry-After header the way Hermes does
+
+A rate-limited API (HTTP 429 or 503) often says how long to wait in a `Retry-After` header, as a
+number of seconds or as an HTTP date. `agent.retry_utils.parse_retry_after_seconds(value)` turns
+either form into seconds. Pass the header value or the whole headers mapping; with a mapping it
+tries `Retry-After` and then `retry-after`. It returns a float clamped at `0.0`, or `None` when the
+header is absent or cannot be parsed, so the caller picks its own fallback wait.
+
+```python
+import time
+
+from agent.retry_utils import parse_retry_after_seconds
+
+def wait_before_retry(response, fallback=5.0):
+    seconds = parse_retry_after_seconds(response.headers)
+    time.sleep(fallback if seconds is None else seconds)
+```
+
+### Send the Hermes User-Agent header
+
+`hermes_cli.version_info.hermes_user_agent(product)` returns `<product>/<Hermes version>`, for
+example `Hermes-Agent/0.23.1`, for the `User-Agent` header of a request your plugin sends. Pass the
+product name the service knows your integration by; the default is `hermes-cli`. Call it where the
+request is built, not at module level: on a source checkout it reads the version from git.
+
+```python
+from hermes_cli.version_info import hermes_user_agent
+
+def request_headers(api_key):
+    return {"Authorization": f"Bearer {api_key}", "User-Agent": hermes_user_agent("Hermes-Agent")}
+```
 
 ### Ship a language pack
 
@@ -1538,7 +1705,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
 | [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str, side_question_token: str \| None, review_signals: dict` | ignored |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
@@ -1590,7 +1757,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_session_end` | `agent/turn_finalizer.py` `finalize_turn`; interrupted exits: `hermes_cli/cli_shutdown.py` `_invoke_interrupted_session_end`, `tui_gateway/session_lifecycle.py` `_finalize_session` |
 | `on_session_finalize` | `hermes_cli/lifecycle.py` `finalize_session`, called from `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`, `hermes_cli/cli_shutdown.py` `_notify_session_finalize`, `tui_gateway/session_lifecycle.py` `_notify_session_boundary` and `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._finalize_session_off_loop` |
 | `on_session_reset` | `hermes_cli/cli_session_mixin.py` `CLISessionMixin._notify_session_boundary`; `tui_gateway/session_registry.py` `_start_session_services`; `gateway/slash_commands_session.py` `GatewaySessionCommandsMixin._handle_reset_command`; `gateway/run_shutdown_session_end.py` `GatewaySessionEndMixin._reset_session_off_loop` |
-| `on_session_delete` | `hermes_state_common.py` `emit_session_deleted` |
+| `on_session_delete` | `session_retention.py` `emit_session_deleted` |
 | `on_session_open` | `gateway/session_open.py` `_Open._deliver` |
 | `on_skill_lifecycle` | `tools/skill_usage.py` `_emit_skill_lifecycle` |
 | `subagent_start` | `tools/delegate_tool.py` `_build_child_agent` |
@@ -2080,6 +2247,57 @@ authorization (the right profile, the owner of a local session, a superseded con
 Beyond that, any client the gateway authenticated can call any plugin method with any params. Hermes does
 not check callers per method (`SECURITY.md` §2.6, rule 4): treat a plugin method like a plugin tool, validate
 its params, and never expose through it more than the plugin's own data and actions.
+
+### Follow the user's self-learning cadence (`review_signals`)
+
+After every successful turn, `post_llm_call` carries `review_signals`: the counters behind Hermes' own background memory/skill review (`skills.creation_nudge_interval`, `memory.nudge_interval`) and whether that review is due and enabled this turn. A plugin with after-turn work of its own (judging the skills a turn touched, say) can run on the same cadence the user already tuned instead of counting tool calls itself:
+
+```python
+def register(ctx):
+    def on_post_llm_call(review_signals=None, **kwargs):
+        if not review_signals or not review_signals["background_review_enabled"]:
+            return  # cron run, subagent, or the user turned background review off
+        if review_signals["skill_review_due"]:
+            ...  # the same turn Hermes reviews skills on
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The hook fires before Hermes decides, and the due flags are the values that decision uses. Keys and semantics: [`post_llm_call`](../../user-guide/features/hooks.md#review_signals). To do that work the way Hermes' own review does (a background copy of the session's agent with a narrow tool list), pair the signal with [`ctx.fork_session`](../plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session).
+
+### Run a job when Hermes is idle (`ctx.register_idle_task`)
+
+Experimental: the signature may change in a later release ([details](../plugin-llm-access.md#idle-tasks-ctxregister_idle_task)).
+
+Some work has no turn to hang off: re-scoring your plugin's data once a day, suggesting a cleanup, compacting a cache. `ctx.register_idle_task` runs it on the same scheduler as the skill [curator](../../user-guide/features/curator.md), from the same places (gateway housekeeping for every served profile, CLI/TUI startup, the `hermes serve` maintenance tick):
+
+```python
+def register(ctx):
+    def suggest(run):
+        # run.name, run.idle_for_seconds, run.last_run_at (ISO or None), run.run_count
+        candidates = ctx.state.get("candidates", [])
+        if not candidates:
+            return None
+        result = ctx.llm.complete(
+            messages=[{"role": "user", "content": f"Rank these for promotion: {candidates}"}],
+            task="suggest",  # a task this plugin registered with ctx.register_auxiliary_task
+        )
+        ctx.state.set("ranking", result.text)
+        return f"ranked {len(candidates)} skills"  # optional summary, shown by `hermes plugins idle-tasks`
+
+    ctx.register_idle_task("suggest", suggest, interval_hours=24, min_idle_hours=2)
+```
+
+`register_idle_task(name, fn, *, interval_hours, min_idle_hours=2, first_run="defer")` returns a `PluginRegistration` (dispose it to stop polling). A task runs when:
+
+- the host has been idle `min_idle_hours` (gateway housekeeping and CLI startup count as fully idle, `hermes serve` measures chat inactivity);
+- `interval_hours` (floored to 1) have passed since its last run. The first poll records "now" and waits one interval, like the curator, so an install or update never runs the job straight away; `first_run="immediate"` runs it on the first idle poll instead;
+- it is not paused (`hermes plugins idle-tasks <plugin> --pause <task>`);
+- no other run of it is in flight, in this process or another one.
+
+`fn` runs on its own thread, in the profile that registered it, and the host does not wait for it: the poll returns at once, and no second run of the task starts while one is in flight. Keep a run short and safe to repeat: when the gateway stops, a run still going records nothing and runs again later ([shutdown contract](../plugin-llm-access.md#idle-tasks-ctxregister_idle_task)). An exception is logged and recorded as `last_status: error` and never reaches the host. State lives in the plugin's data dir, `<data dir>/idle-tasks/<name>.json` (`last_run_at`, `run_count`, `paused`, `last_summary`, `last_status`, `last_error`), so each profile schedules its own copy.
+
+No capability gates this: the scheduler only calls your own function. Anything privileged that function does goes through its own gate (model calls through the [`ctx.llm` trust gate](../plugin-llm-access.md#trust-gate), and so on).
 
 ### Send raw CDP commands to the agent's browser
 

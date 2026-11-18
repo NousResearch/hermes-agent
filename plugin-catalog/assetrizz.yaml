@@ -1,0 +1,29 @@
+name: assetrizz
+title: Assetrizz
+repo: https://github.com/mojomast/assetrizz-hermes
+sha: "e710b89c276b210969bebd67db4f1c855541586a"
+subdir: ""
+description: "Assetrizz for Hermes: search 14,641 original 2D game assets and have the agent compose them into rendered scenes, with a live preview pane. assetrizz_search runs full-text search over slugs, tags, descriptions, styles and categories across 23 style packs (for example pixel_32 and cozy_cartoon). assetrizz_scene creates a canvas, tiles floors and walls, places, moves, scales, flips and layers props and characters, renders a PNG, and saves or loads scene JSON. Its op=compose builds a whole scene from one compact spec using four gameplay templates (topdown_farming, topdown_shooter, dungeon_crawler, side_platformer) and returns layer lint for collisions, HUD/playfield overlap and off-canvas items. Skill id assetrizz:assetrizz-composer. On Hermes Desktop 0.23 or newer, a dark Assetrizz pane live-previews the current scene through ctx.rest, browses assets and installs or removes a local library (deletion needs confirmation). The two tools also run without the pane. It is for game jams, prototypes, level mockups and pitch art that need consistent tiles and sprites quickly. To start, run hermes plugins install assetrizz and hermes plugins enable assetrizz, then ask: \"Search assetrizz for pixel_32 grass and dirt path tiles, then compose a 640×320 meadow with a path, a couple of trees, a ranger and a hare. Render a PNG.\" Search works at once from the bundled catalog; the first search builds a lean SQLite + FTS5 index in the plugin data directory. Renders come back as file paths. No keys are needed. Disclosure — in the default on_demand mode the plugin downloads individual PNGs from raw.githubusercontent.com/mojomast/assetrizz at the pinned v0.1.0 tag (SHA-256-verified against the bundled catalog) and caches them under the plugin data directory; the Desktop pane and CLI can download whole style packs (up to about 1.65 GB) to a local folder and delete that folder or the cache after confirmation; rendered scenes are written to the plugin data directory or the user's configured export directory."
+maintainer: mojomast
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mojomast/assetrizz-hermes#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/mojomast/assetrizz-hermes/e710b89c276b210969bebd67db4f1c855541586a/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/assetrizz-hermes/e710b89c276b210969bebd67db4f1c855541586a/docs/example-scene.png
+readme: true
+platforms: []
+known_issues:
+  - >-
+    The Desktop compose pane has not yet been proven on a live Hermes
+    Desktop host; the two tools and the mocked pane API tests still run
+    without it.
+capabilities:
+  provides_tools:
+    - assetrizz_search
+    - assetrizz_scene
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

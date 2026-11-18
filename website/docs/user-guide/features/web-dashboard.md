@@ -481,9 +481,9 @@ The dry run prints what moving this home's old `hermes dashboard` / `hermes serv
 gateway's Webapp would do. The command itself changes nothing: no file, unit, plist, config, `.env` or
 process. It reads `GET /api/health` and, when sign-in is required, `GET /api/auth/providers` for
 interactive sign-in choices. A failed provider-list read leaves those choices unknown. A backend from Hermes before v2026.7.30 has no `/api/health`: the dry run then
-stops and says to restart that backend with the updated hermes, then run the dry run again. The move
-itself is not available in this version; `--apply`
-without `--dry-run` exits 2.
+stops and says to restart that backend with the updated hermes, then run the dry run again. Without
+`--dry-run`, `--apply` makes the move (see
+[Moving a dashboard backend to the gateway](#moving-a-dashboard-backend-to-the-gateway)).
 
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
 take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address

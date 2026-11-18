@@ -18,7 +18,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get_json  # noqa: E402
+from _http import get_json
 
 WP_OPENSEARCH = "https://en.wikipedia.org/w/api.php"
 WP_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
@@ -71,7 +71,7 @@ def _wp_summary(title: str) -> dict:
     url = f"{WP_SUMMARY}{urllib.parse.quote(title.replace(' ', '_'))}"
     try:
         return get_json(url)  # type: ignore[return-value]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"Wikipedia summary lookup for {title!r} failed: {e}", file=sys.stderr)
         return {}
 
@@ -102,7 +102,7 @@ def _wd_lookup_by_qid(qid: str) -> dict:
     url = f"{WD_ACTION}?{urllib.parse.urlencode(params)}"
     try:
         data = get_json(url)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"Wikidata wbgetentities for {qid} failed: {e}", file=sys.stderr)
         return {}
     if not isinstance(data, dict):
@@ -150,7 +150,7 @@ def _wd_lookup_by_qid(qid: str) -> dict:
         url = f"{WD_ACTION}?{urllib.parse.urlencode(params)}"
         try:
             data = get_json(url)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"Wikidata label batch failed: {e}", file=sys.stderr)
             continue
         if not isinstance(data, dict):
@@ -188,7 +188,7 @@ def _wd_qid_for_title(title: str) -> str:
     url = f"{WP_OPENSEARCH}?{urllib.parse.urlencode(params)}"
     try:
         data = get_json(url)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
     if not isinstance(data, dict):
         return ""

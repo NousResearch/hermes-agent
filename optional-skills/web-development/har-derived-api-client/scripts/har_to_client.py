@@ -26,8 +26,8 @@ BORING_HEADERS = {
     "user-agent", "pragma", "cache-control", "priority", "te",
     "upgrade-insecure-requests", "cookie",
 }
-ID_SEG = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,})$", re.I)
-STATIC_EXT = re.compile(r"\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|mp4|map)$", re.I)
+ID_SEG = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,})$", re.IGNORECASE)
+STATIC_EXT = re.compile(r"\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|mp4|map)$", re.IGNORECASE)
 
 
 def path_template(path: str) -> str:

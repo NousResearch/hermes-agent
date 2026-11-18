@@ -42,7 +42,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: ARG002 — quiet
+    def log_message(self, *args):
         pass
 
 
@@ -132,11 +132,8 @@ def main() -> int:
         return 0
     finally:
         SUPERVISOR_REGISTRY.stop_all()
-        try:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
-            cleanup_all_browsers()
-        except Exception:
-            pass
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        cleanup_all_browsers()
         srv.shutdown()
 
 

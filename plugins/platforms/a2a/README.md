@@ -57,6 +57,12 @@ via `tasks/get`.
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
   widen unless you configure a token *and* set `A2A_HOST`.
+  Without a token it also refuses browser-originated POSTs (`Origin`,
+  cross-site `Sec-Fetch-Site`, a missing or non-JSON `Content-Type`).
+- **No token ⇒ loopback `Host` only.** Every route refuses a `Host` that is
+  not a loopback name (`localhost`, `127.x.x.x`, `[::1]`) or the
+  `A2A_PUBLIC_URL` host, so a DNS-rebound page cannot reach it. Only set
+  `A2A_PUBLIC_URL` to a name you control.
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.
@@ -79,7 +85,7 @@ via `tasks/get`.
 | `A2A_PORT` | `9900` | Inbound port. |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card. |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies). |
-| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. |
+| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities. Required for a non-loopback bind (with a token set) unless `A2A_ALLOW_ALL_USERS=true`; otherwise dispatch is refused. |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |

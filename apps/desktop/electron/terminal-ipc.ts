@@ -10,10 +10,17 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import nodePty from 'node-pty'
 
-import { resolveTerminalConnectionForSender } from './connection-apply'
+import { resolveTerminalConnection, resolveTerminalConnectionForSender } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
+import {
+  requestedTerminalGateway,
+  type SshTerminalTarget,
+  type TerminalGatewayOwner,
+  type TerminalGatewayTarget
+} from './terminal-gateway-target'
 import { createTerminalOutputGate } from './terminal-output-gate'
+import { applyWindowsMsysBashEnvDefaults } from './windows-msys-bash-env'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
@@ -21,8 +28,15 @@ export interface TerminalIpcDeps {
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
   activeSshTerminalTarget: (webContentsId: number) => unknown
+  /** The ssh client to spawn for remote terminals (resolveSshBinary). */
+  sshBinary: () => string
   ensureBackend: (webContentsId: number) => Promise<unknown>
-  getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
+  getSshConnectionState: (scope: string) => undefined | { registryConnectionId?: null | string; remotePlatform?: string }
+  /** The host of the gateway a tab was opened on. A tab owns its gateway: the
+   *  window-backend route (which a Sessions pick never re-points) only serves
+   *  tabs that recorded none. */
+  gatewayTarget: (owner: TerminalGatewayOwner) => TerminalGatewayTarget
+  ensureGatewayBackend: (owner: TerminalGatewayOwner) => Promise<unknown>
 }
 
 export interface TerminalIpcApi {
@@ -51,8 +65,11 @@ export function registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
+  sshBinary,
   ensureBackend,
-  getSshConnectionState
+  getSshConnectionState,
+  gatewayTarget,
+  ensureGatewayBackend
 }: TerminalIpcDeps): TerminalIpcApi {
   const terminalSessions = new Map()
 
@@ -154,10 +171,12 @@ export function registerTerminalIpc({
   function terminalShellEnv() {
     const env = { ...process.env }
 
-    // Electron is commonly launched through `npm run dev`; do not leak npm's
-    // managed prefix into a user's interactive shell (nvm/proto warn loudly).
+    // Electron is commonly launched through `pnpm run dev`; do not leak the
+    // package manager's settings into a user's interactive shell (nvm/proto warn
+    // loudly, and the user's own pnpm would inherit them). Package managers inject
+    // lowercase names: a user's own NPM_CONFIG_REGISTRY stays.
     for (const key of Object.keys(env)) {
-      if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
+      if (key.startsWith('npm_config_') || key.startsWith('npm_package_') || key.startsWith('pnpm_config_')) {
         delete env[key]
       }
     }
@@ -181,7 +200,7 @@ export function registerTerminalIpc({
     // which marks the agent *backend* and gates cron/gateway behavior.
     env.HERMES_DESKTOP_TERMINAL = '1'
 
-    return env
+    return applyWindowsMsysBashEnvDefaults(env, isWindows)
   }
 
   function terminalChannel(id, suffix) {
@@ -251,18 +270,35 @@ export function registerTerminalIpc({
     return true
   }
 
-  // SSH teardown: close every pane whose PTY rode the disconnected tunnel.
+  // SSH teardown: end every pane whose PTY rode the disconnected tunnel.
+  // The tab survives as disconnected: Enter re-resolves its gateway, so an
+  // edited gateway reconnects and a removed one says so.
   function disposeTerminalSessionsForSshScope(scope: string) {
     for (const [id, info] of [...terminalSessions.entries()]) {
-      if (info.sshScope === scope) {
-        disposeTerminalSession(id)
+      if (info.sshScope !== scope) {
+        continue
+      }
+
+      info.outputGate.exit({ code: null, signal: 'disconnected' })
+
+      // An attached tab got the exit and the flush already disposed the
+      // session. An unattached one keeps its entry (as a normal exit does) so
+      // the late attach still delivers `disconnected` and arms Enter; only the
+      // shell stops now.
+      if (terminalSessions.has(id)) {
+        try {
+          info.pty.kill()
+        } catch {
+          // Already gone.
+        }
       }
     }
   }
 
   // App shutdown: kill every open PTY before environment teardown.
   function disposeAllTerminalSessions() {
-    for (const id of [...terminalSessions.keys()]) {
+    for (const [id, info] of [...terminalSessions.entries()]) {
+      info.outputGate.silence()
       disposeTerminalSession(id)
     }
   }
@@ -299,6 +335,37 @@ export function registerTerminalIpc({
     }
   }
 
+  // The tab's recorded gateway decides the host; only a tab that recorded none
+  // follows the window-backend route.
+  async function resolveStartTarget(
+    owner: null | TerminalGatewayOwner,
+    webContentsId: number
+  ): Promise<{ sshTarget: null | SshTerminalTarget } | { unavailable: 'missing' | 'no-shell' }> {
+    if (!owner) {
+      return { sshTarget: await resolveTerminalConnectionForSender(webContentsId, activeSshTerminalTarget, ensureBackend) }
+    }
+
+    const target = await resolveTerminalConnection(
+      () => gatewayTarget(owner),
+      () => ensureGatewayBackend(owner)
+    )
+
+    if (target === 'missing' || target === 'no-shell') {
+      return { unavailable: target }
+    }
+
+    return { sshTarget: target === 'local' ? null : target }
+  }
+
+  // Where the shell runs, so a tab that recorded no gateway adopts this one.
+  function spawnedOn(owner: null | TerminalGatewayOwner, sshTarget: null | SshTerminalTarget): null | string {
+    if (owner) {
+      return owner.connectionId
+    }
+
+    return sshTarget ? getSshConnectionState(sshTarget.scope)?.registryConnectionId || null : 'local'
+  }
+
   ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
     ensureNodePtySpawnHelper()
 
@@ -308,8 +375,16 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
+    const owner = requestedTerminalGateway(payload)
+    const resolved = await resolveStartTarget(owner, event.sender.id)
 
+    // Removed gateway, or one with no shell transport: report it instead of
+    // spawning a local shell the tab would label with the remote's name.
+    if ('unavailable' in resolved) {
+      return { connectionId: owner?.connectionId ?? null, cwd: null, id: '', shell: '', unavailable: resolved.unavailable }
+    }
+
+    const { sshTarget } = resolved
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null
 
@@ -320,9 +395,7 @@ export function registerTerminalIpc({
 
     const ptyProcess = remote
       ? nodePty.spawn(
-          process.platform === 'win32'
-            ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
-            : 'ssh',
+          sshBinary(),
           buildInteractiveSshArgs(sshTarget.ssh, String(payload?.cwd || '').trim(), undefined, remoteCommand),
           { cols, cwd: app.getPath('home'), env: terminalShellEnv(), name: 'xterm-256color', rows }
         )
@@ -337,7 +410,7 @@ export function registerTerminalIpc({
     }
 
     const outputGate = createTerminalOutputGate({
-      onExitFlushed: () => terminalSessions.delete(id),
+      onExitFlushed: () => disposeTerminalSession(id),
       sendData: data => send('data', data),
       sendExit: payload => send('exit', payload)
     })
@@ -352,10 +425,21 @@ export function registerTerminalIpc({
     ptyProcess.onData(data => outputGate.data(data))
     ptyProcess.onExit(({ exitCode, signal }) => {
       outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
+
+      // The child is gone but node-pty keeps the /dev/ptmx master fd open
+      // until kill() runs; release it here instead of waiting for the tab to
+      // close (or the renderer to attach), or repeated `exit`s exhaust macOS
+      // PTYs (#128942). The map entry stays until the gate flushes the
+      // buffered exit, so a late attach still receives it.
+      try {
+        ptyProcess.kill()
+      } catch {
+        // Already reaped.
+      }
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 
-    return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
+    return { connectionId: spawnedOn(owner, sshTarget), cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
   })
 
   ipcMain.handle('hermes:terminal:attach', (event, id) => {

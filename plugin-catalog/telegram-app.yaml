@@ -1,0 +1,26 @@
+name: telegram-app
+repo: https://github.com/aimanmalib/hermes-telegram-miniapp
+sha: 0fd15e2a6b6468fb938789c43c05e17df0c90735
+subdir: plugin
+title: Telegram Mini App
+description: "Phone control panel for Hermes inside Telegram: live status and usage, sessions and their messages, agent cron jobs (create, edit, pause, run now, stop, catch-up per job), logs, skills and memory, a send-to-Telegram box and error alerts, opened from your bot's menu button. Login is Telegram initData (HMAC-SHA256 with Ed25519 fallback, freshness window) checked by a token-only dashboard-auth provider on one token route, against a plugin-owned admin list (TELEGRAM_OWNER_ID plus the plugin setting admins) that refuses everyone until set; being allowed to chat with the bot never grants login. Alerts and the send box reach admins only. Built by Muhammad Aiman (aimanmalib) at Sasa Teguh. Disclosure — a verified login returns the dashboard session token, which authorises the whole dashboard API; because Hermes asks every token provider on every token route, valid initData also passes the token gate of /api/gateway/drain when HERMES_DASHBOARD_DRAIN_SECRET is set (a route the session token cannot reach); the plugin's principals carry the scope telegram-app and its login route demands it once Hermes has per-route scopes (#146551), which also closes drain to initData; loopback dashboard mode only, with the phone app (web/ in the repo) served by your own reverse proxy that forwards only /api/plugins/telegram-app/*. Calls api.telegram.org with TELEGRAM_BOT_TOKEN (read through Hermes's secret route) for the send box and alerts. Runs one background alert thread in the dashboard process (polls errors.log and cron state every 30 s; the plugin setting alerts_enabled: false turns it off) and stores its settings under $HERMES_HOME/state/telegram-app. Reads Hermes sessions, cron jobs, logs, skills and memories; writes only agent cron jobs (no script, no_agent or workdir). No telemetry, no self-update."
+maintainer: aimanmalib
+image: https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/brand/catalog-banner.png
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aimanmalib/hermes-telegram-miniapp#readme
+version: "0.6.1"
+screenshots:
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/status-light.png
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/sessions-light.png
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/cron-light.png
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/logs-light.png
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/brain-light.png
+  - https://raw.githubusercontent.com/aimanmalib/hermes-telegram-miniapp/0fd15e2a6b6468fb938789c43c05e17df0c90735/docs/screenshots/send-light.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TELEGRAM_BOT_TOKEN

@@ -3,13 +3,16 @@
 import contextlib
 import io
 import json
+import re
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
 
 from acp_adapter import session as acp_session
 from acp_adapter.session import SessionManager, SessionState
-from hermes_state import SessionDB
+from persistence.conversation.sessions import NewSession
+from tests.fixtures.storage_read import session_row
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _mock_agent():
@@ -381,20 +384,20 @@ class TestListAndCleanup:
         manager.save_session(state.session_id)
 
         db = manager._get_db()
-        messages = db.get_messages_as_conversation(state.session_id)
+        messages = db.messages.read_conversation(state.session_id)
         assert len(messages) == 1
-        assert messages[0]["role"] == "user"
-        assert messages[0]["content"] == "original"
-        assert isinstance(messages[0].get("timestamp"), (int, float))
+        assert messages[0].role == "user"
+        assert messages[0].content == "original"
+        assert isinstance(messages[0].timestamp, (int, float))
 
 
 # ---------------------------------------------------------------------------
-# persistence — sessions survive process restarts (via SessionDB)
+# persistence — sessions survive process restarts (via the session store)
 # ---------------------------------------------------------------------------
 
 
 class TestPersistence:
-    """Verify that sessions are persisted to SessionDB and can be restored."""
+    """Verify that sessions are persisted to the session store and can be restored."""
 
     def test_first_persist_keeps_provider_snapshot(self, tmp_path):
         """The FIRST row written for an ACP session carries provider/base_url/api_mode,
@@ -403,13 +406,13 @@ class TestPersistence:
             model="test-model", provider="anthropic",
             base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
         )
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         manager = SessionManager(agent_factory=lambda: agent, db=db)
         state = manager.create_session(cwd="/work")
         state.history.append({"role": "user", "content": "hello"})
         manager.save_session(state.session_id)
 
-        mc = json.loads(db.get_session(state.session_id)["model_config"])
+        mc = json.loads(session_row(db, state.session_id)["model_config"])
         assert mc == {"cwd": "/work", "provider": "anthropic",
                       "base_url": "https://anthropic.example/v1", "api_mode": "anthropic_messages"}
 
@@ -430,21 +433,90 @@ class TestPersistence:
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()
         # Manually create a CLI session in the DB.
-        db.create_session(session_id="cli-session-123", source="cli", model="test")
+        db.sessions.create(NewSession(session_id="cli-session-123", source="cli", model="test"))
         # Should not be found via ACP SessionManager.
         assert manager.get_session("cli-session-123") is None
 
+    def test_end_all_sessions_stamps_ended_and_unlocks_prune(self, tmp_path):
+        """#118216: the adapter's stdio shutdown is the ACP session end. Without the
+        ended_at writer, source='acp' rows are invisible to prune/archive forever (the
+        maintenance filter only ever selects ended sessions) and the desktop sidebar
+        accumulates one auto-titled row per editor wake."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = storage_handle(tmp_path)
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        ended_earlier = manager.create_session(cwd="/work")
+        live_one = manager.create_session(cwd="/work")
+        live_two = manager.create_session(cwd="/work")
+        for state in (ended_earlier, live_one, live_two):
+            state.history.append({"role": "user", "content": "hello"})
+            manager.save_session(state.session_id)
+        # A row already ended by an earlier boundary keeps its first end_reason
+        # (end_session is first-writer-wins).
+        db.sessions.end(ended_earlier.session_id, "compression")
+
+        # Before the shutdown writer, only the already-ended row is a prune
+        # candidate — the two live acp rows are invisible to maintenance.
+        assert {row.session_id for row in db.maintenance.list_prune_candidates(source="acp", older_than_days=0)} == {
+            ended_earlier.session_id}
+
+        ended = manager.end_all_sessions()
+
+        assert ended == 3
+        rows = {sid: session_row(db, sid) for sid in
+                (ended_earlier.session_id, live_one.session_id, live_two.session_id)}
+        assert all(row is not None for row in rows.values())
+        assert rows[ended_earlier.session_id]["end_reason"] == "compression"
+        for sid in (live_one.session_id, live_two.session_id):
+            assert rows[sid]["ended_at"] is not None
+            assert rows[sid]["end_reason"] == "acp_disconnect"
+        candidates = db.maintenance.list_prune_candidates(source="acp", older_than_days=0)
+        assert {row.session_id for row in candidates} == {
+            ended_earlier.session_id, live_one.session_id, live_two.session_id}
+
+    def test_restore_reopens_a_session_ended_by_previous_process(self, tmp_path):
+        """#118216: an ACP row stamped ended at a previous adapter's shutdown is
+        reopened when a later process resumes it — the same contract as the TUI
+        gateway's cold resume."""
+        agent = SimpleNamespace(model="test-model", provider=None, base_url=None, api_mode=None)
+        db = storage_handle(tmp_path)
+        first = SessionManager(agent_factory=lambda: agent, db=db)
+        state = first.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        first.save_session(state.session_id)
+        first.end_all_sessions()
+        assert session_row(db, state.session_id)["ended_at"] is not None
+
+        second = SessionManager(agent_factory=lambda: agent, db=db)
+        restored = second.get_session(state.session_id)
+
+        assert restored is not None
+        row = session_row(db, state.session_id)
+        assert row is not None
+        assert row["ended_at"] is None
+        assert row["end_reason"] is None
+
+    def test_end_all_sessions_without_db_is_a_noop(self):
+        """Teardown must never raise; a DB-unavailable process just ends nothing."""
+        manager = SessionManager(
+            agent_factory=_mock_agent,
+            db=None,
+        )
+        manager._db_instance = None
+        with patch.object(manager, "_get_db", return_value=None):
+            assert manager.end_all_sessions() == 0
+
     def test_sessions_searchable_via_fts(self, manager):
-        """ACP sessions stored in SessionDB are searchable via FTS5."""
+        """ACP sessions stored in the session store are searchable via FTS5."""
         state = manager.create_session()
         state.history.append({"role": "user", "content": "how do I configure nginx"})
         state.history.append({"role": "assistant", "content": "Here is the nginx config..."})
         manager.save_session(state.session_id)
 
         db = manager._get_db()
-        results = db.search_messages("nginx")
+        results = db.search.search_messages("nginx")
         assert len(results) > 0
-        session_ids = {r["session_id"] for r in results}
+        session_ids = {r.session_id for r in results}
         assert state.session_id in session_ids
 
 
@@ -474,6 +546,10 @@ class TestPersistence:
         # Load-time durability stamp (#92231): rows materialized from the DB
         # are marked persisted so a later flush can't re-append them.
         assert msg.pop("_db_persisted", None) is True
+        # The durable per-message id rides on every restored row, like the timestamp.
+        assert re.fullmatch(r"[0-9a-f]{32}", msg.pop("message_uid", ""))
+        # Repair bookkeeping (underscore-prefixed, stripped before the wire) rides restored rows too.
+        assert isinstance(msg.pop("_db_row_snapshot", None), str)
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",
@@ -510,7 +586,7 @@ class TestPersistence:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        db = SessionDB(tmp_path / "state.db")
+        db = storage_handle(tmp_path)
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             manager = SessionManager(db=db)

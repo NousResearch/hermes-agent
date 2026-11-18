@@ -1,6 +1,6 @@
 name: custodian
 repo: https://github.com/indigokarasu/hermes-custodian-plugin
-sha: 4474a8d15a37b5343dfa2928eb804b8dad63e765
+sha: d5b4ebfd2353a29380a51c8bcba84d4682cf4c91
 version: "3.0.1"
 description: "Autonomous operations monitor for a Hermes install: scans gateway logs, cron jobs, skill journals and agent data directories, classifies findings against a 27-fingerprint registry, auto-repairs Tier 1 problems, escalates the rest, and keeps an append-only issue ledger. Ships /custodian (status, scan, issues, repair, verify, schedule, confidence, init, escalation-runner), four scan/health tools and a grid dashboard. Disclosure — reads gateway logs, cron job state and per-skill journal files under HERMES_HOME to build its findings, and writes repair actions and an issues ledger back there; it performs no network I/O and holds no credentials. Disclosure — /custodian init registers 3 recurring agent cron jobs (deep scan 4×/day, cron-health 4×/day, escalation runner every 30 min on weekdays)."
 maintainer: indigokarasu

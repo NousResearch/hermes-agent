@@ -2,7 +2,10 @@
 
 Login is a credential form (``supports_password`` + ``complete_password_login``); cookies,
 verify, refresh, ws-tickets and logout are the shared framework. Sessions are stateless
-HMAC-signed tokens (no IDP, no database); passwords use stdlib scrypt and login always hashes
+HMAC-signed tokens (no IDP, no database) whose key is derived from the signing secret AND the
+configured credential, so changing the username or password ends every session; logout records
+the login's session id in ``dashboard_auth/basic-revoked-sessions.json`` under the Hermes home,
+which every renewal of that login carries, so a copied token of it stops working too. Passwords use stdlib scrypt and login always hashes
 even for an unknown username (no username-enumeration timing oracle). Config: ``dashboard.
 basic_auth.{username,password_hash|password,secret,session_ttl_seconds}`` or the
 ``HERMES_DASHBOARD_BASIC_AUTH_*`` env vars (env wins when non-empty; see ``_settings``).
@@ -17,12 +20,16 @@ import json
 import logging
 import os
 import secrets
+import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.dashboard_auth import DashboardAuthProvider, InvalidCredentialsError, RefreshExpiredError, Session
+from hermes_constants import get_hermes_home
 from plugins.dashboard_auth._shared import (
     NonInteractiveMixin, SkipRegistration, load_config_section, register_provider, resolve_env_or_cfg)
+from utils import atomic_json_write, read_json_or_empty
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-basic"
@@ -42,6 +49,8 @@ _SCRYPT_SALT_BYTES = 16
 # HMAC-SHA256 digest is appended to signed tokens as a fixed-length suffix
 # (no separator — binary HMAC bytes can't be confused with a delimiter).
 _SIG_LEN = hashlib.sha256().digest_size
+
+_REVOKED_PATH = Path("dashboard_auth") / "basic-revoked-sessions.json"
 
 LAST_SKIP_REASON: str = ""
 
@@ -117,12 +126,20 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     name = "basic"
     display_name = "Username & Password"
     supports_password = True
+    # Used refresh tokens stay valid (stateless, no reuse detection), so the gate's replay cache
+    # would only let a cached rotation outlive a logout: every replay goes to the sid check.
+    refresh_reuse_detection = False
     _NOT_INTERACTIVE = "BasicAuthProvider is password-only; use complete_password_login."
     _NO_START_LOGIN = (
         "BasicAuthProvider is password-only; there is no OAuth redirect flow. "
         "The login page POSTs to /auth/password-login instead.")
 
-    def __init__(self, *, username: str, password_hash: str, secret: bytes, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, *, username: str, password_hash: str, secret: bytes, ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+                 credential_id: str = "") -> None:
+        """*credential_id* is a restart-stable form of the credential (the configured plaintext when
+        ``password_hash`` was hashed in-memory with a random salt); it defaults to ``password_hash``.
+        Tokens are signed with a key derived from it, so a changed username or password ends every
+        session even when ``secret`` stays the same."""
         if not username:
             raise ValueError("username must be non-empty")
         if not password_hash:
@@ -131,8 +148,11 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             raise ValueError("secret must be at least 16 bytes")
         self._username = username
         self._password_hash = password_hash
-        self._secret = secret
+        binding = b"\0".join((b"hermes-dashboard-basic-session", username.encode(), (credential_id or password_hash).encode()))
+        self._secret = hmac.new(secret, binding, hashlib.sha256).digest()
         self._ttl = max(60, int(ttl_seconds))
+        self._revoked_path = get_hermes_home() / _REVOKED_PATH
+        self._revoked: dict[str, int] = {}
 
     # ---- password login ----------------------------------------------------
 
@@ -150,7 +170,7 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
         payload = _unsign(access_token, self._secret, "access")
-        if payload is None:
+        if payload is None or self._is_revoked(payload):
             return None
         return self._session(str(payload.get("sub", "")), int(payload["exp"]), access_token, "")
 
@@ -158,23 +178,64 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
         payload = _unsign(refresh_token, self._secret, "refresh")
-        if payload is None:
+        if payload is None or self._is_revoked(payload):
             raise RefreshExpiredError("refresh token expired or invalid")
-        return self._mint_session(str(payload.get("sub", self._username)))
+        return self._mint_session(str(payload.get("sub", self._username)), str(payload["sid"]))
 
     def revoke_session(self, *, refresh_token: str) -> None:
-        # Stateless tokens — nothing to revoke server-side; the session expires within its TTL. Must not raise.
-        return None
+        # Ends this login and every token renewed from it (they share its ``sid``); other logins
+        # stay. Must not raise: a failed write still revokes in this process.
+        self._revoke(_unsign(refresh_token, self._secret, "refresh") if refresh_token else None)
+
+    def revoke_access_session(self, *, access_token: str) -> None:
+        # With ``session_ttl_seconds`` above the refresh TTL, the access token is all a late logout has.
+        self._revoke(_unsign(access_token, self._secret, "access") if access_token else None)
 
     # ---- internals ---------------------------------------------------------
 
-    def _mint_session(self, user_id: str) -> Session:
+    def _revoke(self, payload: Optional[dict]) -> None:
+        if payload is None or not payload.get("sid"):
+            return
+        now = int(time.time())
+        self._load_revoked()
+        # Any token of this login was minted before now, so none outlives now + its longest TTL
+        # (``session_ttl_seconds`` may exceed the refresh TTL).
+        self._revoked = {sid: exp for sid, exp in self._revoked.items() if exp > now}
+        self._revoked[str(payload["sid"])] = now + max(self._ttl, _REFRESH_TTL_SECONDS)
+        try:
+            atomic_json_write(self._revoked_path, self._revoked, mode=0o600)
+        except OSError as exc:
+            logger.warning("dashboard-auth-basic: could not persist the revoked session (%s); "
+                           "it stays revoked until this process exits", exc)
+
+    def _load_revoked(self) -> None:
+        """Merge the revocation file (another process sharing the secret, or this one before a
+        restart, may have written it). Read every time: a replacement can keep the old mtime on a
+        coarse-timestamp filesystem, and skipping it would also let this process's next write drop
+        that revocation. The file only holds unexpired logouts, so the read is small."""
+        stored = read_json_or_empty(self._revoked_path)
+        self._revoked.update({str(k): v for k, v in stored.items() if isinstance(v, int)})
+
+    def _is_revoked(self, payload: dict) -> bool:
+        sid = payload.get("sid")
+        if not sid:
+            return True
+        self._load_revoked()
+        return self._revoked.get(str(sid), 0) > int(time.time())
+
+    def _mint_session(self, user_id: str, sid: str = "") -> Session:
+        # ``jti`` gives every session its own tokens, even two minted in one second: a listener that
+        # drops a session's tokens (the Webapp's sign-out) must not get them back from a later login.
+        # ``sid`` names the login and survives renewals, so logout can revoke the whole chain.
         now = int(time.time())
         exp = now + self._ttl
+        jti = secrets.token_urlsafe(16)
+        sid = sid or secrets.token_urlsafe(16)
+        claims = {"sub": user_id, "jti": jti, "sid": sid}
         return self._session(
             user_id, exp,
-            _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({**claims, "kind": "access", "exp": exp}, self._secret),
+            _sign({**claims, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(
@@ -188,10 +249,22 @@ def _load_config_basic_auth_section() -> dict:
     return load_config_section(logger, _TAG, "dashboard", "basic_auth")
 
 
+# Shell syntax that was written to .env/config without being run, e.g. a
+# ``$(openssl rand -base64 32)`` line inside a quoted heredoc, or the command (or a doc
+# placeholder naming it) pasted in place of its output. Base64 and hex never contain
+# these (nor a space), and everyone who copied the same line would share the same key.
+_UNEXPANDED_SHELL_MARKERS = ("$(", "`", "openssl rand")
+
+# The error above only reaches the log files, not the console of ``hermes serve`` /
+# ``hermes dashboard``; one stderr line per process makes it visible there too.
+_shell_text_secret_reported = False
+
+
 def _resolve_secret(cfg_section: dict) -> bytes:
     """Resolve the token-signing secret (base64, hex, or raw text). When unset, generates
     a random per-process secret (sessions then don't survive a restart or span multiple
-    workers — logged at INFO)."""
+    workers — logged at INFO). A value holding unexpanded shell text is never used as the
+    key: it is logged as an error and replaced by a random per-process secret."""
     raw = resolve_env_or_cfg("HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section.get("secret"))
     if not raw:
         logger.info(
@@ -199,6 +272,22 @@ def _resolve_secret(cfg_section: dict) -> bytes:
             "per-process signing key. Sessions will not survive a restart or span "
             "multiple workers. Set dashboard.basic_auth.secret (or "
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable sessions.")
+        return secrets.token_bytes(32)
+    if any(marker in raw for marker in _UNEXPANDED_SHELL_MARKERS):
+        logger.error(
+            "dashboard-auth-basic: the configured signing secret contains unexpanded shell "
+            "text (such as '$(openssl rand -base64 32)') instead of a random value, so it "
+            "is ignored and a random per-process signing key is used. Set "
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET (or dashboard.basic_auth.secret) to the "
+            "output of 'openssl rand -base64 32' to keep sessions across restarts.")
+        global _shell_text_secret_reported
+        if not _shell_text_secret_reported:
+            _shell_text_secret_reported = True
+            print(
+                "hermes: dashboard login: HERMES_DASHBOARD_BASIC_AUTH_SECRET (or "
+                "dashboard.basic_auth.secret) holds shell text instead of a random value; "
+                "using a per-process key, so sessions end on restart. Replace it with the "
+                "output of: openssl rand -base64 32", file=sys.stderr, flush=True)
         return secrets.token_bytes(32)
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
@@ -237,6 +326,9 @@ def _settings() -> dict:
     # operators can rotate without editing config; a config password_hash wins over a
     # config-only plaintext password (preferred at-rest form).
     plaintext_from_env = os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "").strip()
+    # The in-memory hash of a plaintext password is salted afresh each start; the plaintext is
+    # the stable form that binds sessions to the credential (see BasicAuthProvider.__init__).
+    credential_id = plaintext_from_env or (plaintext if not password_hash else "")
     if plaintext_from_env:
         password_hash = hash_password(plaintext_from_env)
         logger.info("dashboard-auth-basic: hashed env-supplied password in-memory (overrides any config password_hash).")
@@ -250,7 +342,8 @@ def _settings() -> dict:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
-    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section), "ttl_seconds": ttl}
+    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section), "ttl_seconds": ttl,
+            "credential_id": credential_id}
 
 
 def register(ctx) -> None:
@@ -261,26 +354,3 @@ def register(ctx) -> None:
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, BasicAuthProvider, _settings)
     if kwargs is not None:
         logger.info("dashboard-auth-basic: registered password provider (username=%s)", kwargs["username"])
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LoginStart': ('hermes_cli.dashboard_auth', 'LoginStart'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

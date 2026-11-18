@@ -25,9 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core.cli_tmux._classic import require_tmux
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 WORDS = {1: 60, 2: 260, 3: 130}
@@ -39,12 +38,13 @@ def _reply(turn: int) -> str:
 
 
 def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Path) -> None:
+    require_tmux()
     sock = f"hermes-e2e-{uuid.uuid4().hex[:8]}"
     home = tmp_path / "home"
     (tmp_path / "work").mkdir()
 
     def tmux(*args: str) -> str:
-        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+        return subprocess.run(["tmux", "-L", sock, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False).stdout
 
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
@@ -100,7 +100,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
         write_hermes_home(home / ".hermes", llm.base_url)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TMUX"))}
         env.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"), PYTHONPATH=str(REPO_ROOT),
-                   TERM="xterm-256color", PYTHONFAULTHANDLER="1")
+                   TERM="xterm-256color", HERMES_STATE_DB_GUARD_BYPASS="1", PYTHONFAULTHANDLER="1")
         argv = [sys.executable, "-m", "hermes_cli.main", "chat", "--cli", "--yolo"]
         subprocess.run(["tmux", "-L", sock, "-f", os.devnull, "new-session", "-d", "-s", "p", "-x", "120",
                         "-y", "24", "-c", str(tmp_path / "work"), *argv], env=env, check=True, timeout=30)
@@ -111,8 +111,9 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
             # The welcome line is printed before the input loop exists. Keys typed then land in the
             # still-cooked tty: the kernel echoes them (a plain transcript row) and hands the app
             # text + Enter in one read, which it takes for a pasted newline — the question sits
-            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode.
-            wait_for("\u2624 fake-model \u2502", timeout=120)
+            # unsent in a two-line draft. The status bar is painted by the running app, in raw mode;
+            # its separator after the model differs by layout (glyph `·`, classic `│`), so match the name.
+            wait_for("\u2624 fake-model", timeout=120)
             time.sleep(2.0)
 
             ask(1)
@@ -145,6 +146,12 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     expected = {f"t{t}w{i:03d}" for t, n in WORDS.items() for i in range(n)}
     assert sorted(w for w in expected if words[w] != 1) == [], final
     assert [final.count(f"zq{t}q") for t in WORDS] == [1, 1, 1], final
-    assert sum(1 for line in final.split("\n") if line.lstrip().startswith("❯")) == 1, final
-    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", final, flags=re.M)]
+    # One composer row. The glyph layout also prints each sent message as a `❯ question` row.
+    sent = {f"question zq{t}q please" for t in WORDS}
+    assert sum(1 for line in final.split("\n")
+               if line.lstrip().startswith("❯") and line.strip()[1:].strip() not in sent) == 1, final
+    # Resizes touch only the transcript, so blank runs are judged from the first question on (the
+    # glyph layout's startup spacing under the welcome banner is printed before any resize).
+    turns = final[final.index("\u276f question zq1q"):]
+    blank_runs = [len(run) for run in re.findall(r"(?:^[ \t]*\n)+", turns, flags=re.MULTILINE)]
     assert max(blank_runs, default=0) <= 2, final  # the reply panel's own spacing, nothing more

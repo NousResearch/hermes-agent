@@ -1,0 +1,23 @@
+export const jaUpdateChannel = {
+  title: 'アップデートチャンネル',
+  description:
+    '安定版は公開済みのリリースのみをインストールします。すべてのコミットは main ブランチの変更に追従します。',
+  stable: '安定版リリース',
+  main: 'すべてのコミット',
+  stableConfirmTitle: '安定版リリースに切り替えますか？',
+  stableConfirmBody:
+    'Hermes は最新の公開リリースに移動します。現在のコードより古い場合があります。新しいコードが書き込んだデータは正しく読めない可能性があるため、先にバックアップしてください。',
+  stableConfirm: '安定版に切り替え',
+  failed: 'アップデートチャンネルを変更できませんでした',
+  detailsLabel: 'チャンネル',
+  branch: (b: string) => `ブランチ: ${b}`,
+  change: '変更',
+  latestRelease: (v: string) => `最新の安定版リリース（${v}）を使用しています。`,
+  rollbackTitle: (v: string) => `安定版リリース ${v} に戻す`,
+  rollbackBody: (v: string) =>
+    `このビルドは安定版リリース ${v} より新しいです。インストールすると Hermes はそのリリースに戻ります。`,
+  heldBody: (v: string) =>
+    `このビルドは安定版 ${v} より新しく、セッションはすでに ${v} では開けないゲートウェイ ランタイムを使っています。新しい安定版が出るまで、Hermes はこのビルドのままです。`,
+  rollbackAction: (v: string) => `${v} に戻す`,
+  allChanges: 'すべての変更を見る'
+}

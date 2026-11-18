@@ -59,8 +59,8 @@ class RemovalResult:
     ``load_pool`` skips the source; only ``manual`` entries legitimately use False.
     """
 
-    cleaned: List[str] = field(default_factory=list)
-    hints: List[str] = field(default_factory=list)
+    cleaned: list[str] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
     suppress: bool = True
 
 
@@ -88,8 +88,29 @@ class RemovalStep:
 
 
 def find_removal_step(provider: str, source: str) -> Optional[RemovalStep]:
-    """First matching RemovalStep, or None (``manual``: nothing external to clean)."""
-    return next((step for step in _REGISTRY if step.matches(provider, source)), None)
+    """The provider profile's own step when it claims *source*, else the first matching registry
+    step, or None (``manual``: nothing external to clean)."""
+    return _profile_removal_step(provider, source) or next(
+        (step for step in _REGISTRY if step.matches(provider, source)), None)
+
+
+def _profile_removal_step(provider: str, source: str) -> Optional[RemovalStep]:
+    """``ProviderProfile.remove_credential_source``: a provider seeding one token under several
+    sources suppresses every variant, or the duplicates resurrect the entry."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    claimed = profile.remove_credential_source(source) if profile else None
+    if claimed is None:
+        return None
+    sources, hints = claimed
+
+    def remove_fn(provider: str, removed) -> RemovalResult:
+        from hermes_cli.auth import suppress_credential_source
+        for variant in sources:
+            suppress_credential_source(provider, variant)
+        return RemovalResult(hints=list(hints))
+
+    return RemovalStep(provider=provider, source_id=source, remove_fn=remove_fn)
 
 
 def _remove_env_source(provider: str, removed) -> RemovalResult:
@@ -196,22 +217,6 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     return result
 
 
-def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
-    """The same Copilot token is seeded as gh_cli AND env:<VAR> rows, so suppress
-    every variant or the duplicates resurrect the entry. gh CLI and shell state
-    are left untouched."""
-    from hermes_cli.auth import suppress_credential_source
-
-    suppress_credential_source(provider, "gh_cli")
-    for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
-        suppress_credential_source(provider, f"env:{env_var}")
-    return RemovalResult(hints=[
-        "Suppressed all copilot token sources (gh_cli + env vars) — they will not be re-seeded.",
-        "Note: Your gh CLI / shell environment is unchanged.",
-        "Run `hermes auth add copilot` to re-enable if needed.",
-    ])
-
-
 def _suppress_only(*hints: str) -> Callable[..., RemovalResult]:
     """remove_fn for sources whose backing file/config belongs to another tool
     (Claude Code, Qwen CLI, config.yaml): never delete it, just suppress and
@@ -221,16 +226,9 @@ def _suppress_only(*hints: str) -> Callable[..., RemovalResult]:
     return remove_fn
 
 
-# ORDER MATTERS — ``find_removal_step`` returns the first match. Provider-
-# specific steps precede the generic ``env:*`` step so copilot's ``env:GH_TOKEN``
-# takes the copilot path (no .env edits) rather than the generic env-var removal.
-_REGISTRY: List[RemovalStep] = [
-    RemovalStep(
-        provider="copilot", source_id="gh_cli",
-        match_fn=lambda src: src == "gh_cli" or src.startswith("env:"),
-        remove_fn=_remove_copilot_gh,
-        description="gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
-    ),
+# ORDER MATTERS — ``find_removal_step`` returns the first match (after a provider profile's own
+# ``remove_credential_source`` claim, so a profile's ``env:*`` rows skip the generic .env removal).
+_REGISTRY: list[RemovalStep] = [
     RemovalStep(
         provider="*", source_id="env:",
         match_fn=lambda src: src.startswith("env:"),
@@ -292,14 +290,3 @@ _REGISTRY: List[RemovalStep] = [
         description="Custom provider config.yaml api_key field",
     ),
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def register(step: RemovalStep) -> RemovalStep:
-    _REGISTRY.append(step)
-    return step
-# ---- END PLUGIN-COMPAT ----

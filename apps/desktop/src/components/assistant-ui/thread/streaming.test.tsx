@@ -9,7 +9,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $onboardingPhase } from '@/store/onboarding-phase'
+import { $onboardingSession } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { $activeSessionId } from '@/store/session'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 
@@ -435,6 +438,9 @@ describe('assistant-ui streaming renderer', () => {
     resizeObservers.clear()
     $reasoningCollapsedByDefault.set(false)
     setShowReasoningFromConfig(undefined)
+    $activeSessionId.set(null)
+    $onboardingSession.set(null)
+    $onboardingPhase.set('idle')
   })
 
   it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
@@ -696,6 +702,26 @@ describe('assistant-ui streaming renderer', () => {
 
     expect(thinkingToggle.getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+  })
+
+  it('keeps streaming reasoning collapsed in the onboarding chat', () => {
+    $activeSessionId.set('onboarding-chat')
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'onboarding-chat',
+      storedId: 'stored-onboarding'
+    })
+    $onboardingPhase.set('shown')
+
+    const { container } = render(<RunningReasoningHarness />)
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('renders reasoning text without a leading token space', () => {

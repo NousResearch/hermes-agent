@@ -2,7 +2,7 @@
 
 A loop stops when the agent ends a wakeup reply with ``LOOP_COMPLETE`` on its own line, when
 ``--times N`` ticks have fired, when the ``--until`` judge rules the condition met, or when the
-``loops.max_ticks`` backstop pauses it. State lives in SessionDB ``state_meta`` (same contract as
+``loops.max_ticks`` backstop pauses it. State lives in the session store's ``state_meta`` (same contract as
 ``hermes_cli/goals.py``); CLI, gateway, and TUI all drive it through :class:`LoopManager`.
 """
 
@@ -81,14 +81,14 @@ def parse_interval_token(token: str) -> Optional[int]:
     return total if total > 0 else None
 
 
-def parse_loop_args(text: str) -> Dict[str, Any]:
+def parse_loop_args(text: str) -> dict[str, Any]:
     """Parse ``/loop [interval] <prompt> [--times N] [--until ...]``.
 
     Returns ``{"interval_seconds": int|None, "prompt", "times", "until", "error"}``;
     ``interval_seconds`` None means self-paced, ``error`` is set for unusable input.
     """
     raw = (text or "").strip()
-    result: Dict[str, Any] = {"interval_seconds": None, "prompt": "", "times": 0, "until": "", "error": None}
+    result: dict[str, Any] = {"interval_seconds": None, "prompt": "", "times": 0, "until": "", "error": None}
     if not raw:
         return {**result, "error": "empty"}
 
@@ -137,7 +137,7 @@ def format_interval(seconds: float) -> str:
     return "".join(parts)
 
 
-def _loops_config() -> Dict[str, Any]:
+def _loops_config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
 
@@ -196,16 +196,16 @@ class LoopState:
     last_stop_reason: Optional[str] = None
     # Gateway routing (platform / chat_id / chat_type / thread_id) captured at creation so the
     # idle watcher can inject ticks into the right chat. Empty for CLI/TUI (own schedulers).
-    route: Dict[str, str] = field(default_factory=dict)
+    route: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "LoopState":
+    def from_json(cls, raw: str) -> LoopState:
         data = json.loads(raw)
         route = data.get("route")
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "prompt": data.get("prompt", ""),
             "status": data.get("status", "active"),
             "mode": data.get("mode", "interval"),
@@ -241,8 +241,8 @@ def _meta_key(session_id: str) -> str:
 
 
 def _get_session_db() -> Optional[Any]:
-    """The goals module's cached SessionDB, so goals/loops/heartbeats share one connection and
-    its off-loop bootstrap (a cold cache on the loop thread never runs ``SessionDB()`` inline).
+    """The goals module's cached store handle, so goals/loops/heartbeats share one handle and
+    its off-loop bootstrap (a cold cache on the loop thread never opens the store inline).
 
     The previous copy here did, which froze the loop for the init duration and dropped the first ``loop:*``
     write (the /goal bug class, #88965).
@@ -250,13 +250,13 @@ def _get_session_db() -> Optional[Any]:
     try:
         from hermes_cli.goals import _get_session_db as _goals_db
     except Exception as exc:  # pragma: no cover
-        logger.debug("LoopManager: SessionDB bootstrap failed (%s)", exc)
+        logger.debug("LoopManager: store bootstrap failed (%s)", exc)
         return None
     return _goals_db()
 
 
 def _db_op(label: str, fn, default=None):
-    """Run one SessionDB call; any error is logged at debug and yields ``default``."""
+    """Run one store call; any error is logged at debug and yields ``default``."""
     try:
         return fn()
     except Exception as exc:
@@ -279,12 +279,12 @@ def load_loop(session_id: str) -> Optional[LoopState]:
     db = _get_session_db() if session_id else None
     if db is None:
         return None
-    raw = _db_op("get_meta", lambda: db.get_meta(_meta_key(session_id)))
+    raw = _db_op("get_meta", lambda: db.state_meta.get(_meta_key(session_id)))
     return _parse_state(raw, session_id) if raw else None
 
 
 def save_loop(session_id: str, state: LoopState) -> None:
-    """Persist a loop to SessionDB. No-op if DB unavailable."""
+    """Persist a loop to the session store. No-op if the store is unavailable."""
     if not session_id:
         return
     db = _get_session_db()
@@ -293,7 +293,7 @@ def save_loop(session_id: str, state: LoopState) -> None:
 
         _warn_dropped_write("LoopManager", "loop", session_id)
         return
-    _db_op("set_meta", lambda: db.set_meta(_meta_key(session_id), state.to_json()))
+    _db_op("set_meta", lambda: db.state_meta.set(_meta_key(session_id), state.to_json()))
 
 
 def clear_loop(session_id: str) -> None:
@@ -304,7 +304,7 @@ def clear_loop(session_id: str) -> None:
         save_loop(session_id, state)
 
 
-def list_active_loops() -> List[Tuple[str, LoopState]]:
+def list_active_loops() -> list[tuple[str, LoopState]]:
     """``[(session_id, LoopState), ...]`` for every ACTIVE loop; ``[]`` on any DB error.
 
     Used by the gateway's idle wakeup watcher, which scans for due loops on a coarse tick.
@@ -312,10 +312,10 @@ def list_active_loops() -> List[Tuple[str, LoopState]]:
     db = _get_session_db()
     if db is None:
         return []
-    out: List[Tuple[str, LoopState]] = []
-    for key, raw in _db_op("list_meta_prefix", lambda: db.list_meta_prefix(_META_PREFIX), []):
-        session_id = key[len(_META_PREFIX):]
-        state = _parse_state(raw) if session_id and raw else None
+    out: list[tuple[str, LoopState]] = []
+    for entry in _db_op("list_meta_prefix", lambda: db.state_meta.list_prefix(_META_PREFIX), ()):
+        session_id = entry.key[len(_META_PREFIX):]
+        state = _parse_state(entry.value) if session_id and entry.value else None
         if state is not None and state.status == "active":
             out.append((session_id, state))
     return out
@@ -325,8 +325,8 @@ def store_has_active_loop(db: Any) -> bool:
     """True when *db* holds an ACTIVE ``loop:*`` row — or a row that cannot be parsed (unknown, so the
     caller keeps its full scan). Unlike :func:`list_active_loops` this takes the store explicitly and
     propagates read errors, so an idle gate can tell "empty" from "unavailable"."""
-    for key, raw in db.list_meta_prefix(_META_PREFIX):
-        state = _parse_state(raw, key[len(_META_PREFIX):]) if raw else None
+    for entry in db.state_meta.list_prefix(_META_PREFIX):
+        state = _parse_state(entry.value, entry.key[len(_META_PREFIX):]) if entry.value else None
         if state is None or state.status == "active":
             return True
     return False
@@ -444,7 +444,7 @@ class LoopManager:
         interval_seconds: Optional[int] = None,
         times: int = 0,
         until: str = "",
-        route: Optional[Dict[str, str]] = None,
+        route: Optional[dict[str, str]] = None,
     ) -> LoopState:
         """Start a new loop (replaces any existing one for the session)."""
         prompt = (prompt or "").strip()
@@ -535,7 +535,7 @@ class LoopManager:
         s.ticks_fired = max(0, s.ticks_fired - 1)
         self._save()
 
-    def _stop(self, status: str, reason: str, message: str) -> Dict[str, Any]:
+    def _stop(self, status: str, reason: str, message: str) -> dict[str, Any]:
         """Persist a terminal (``done``) or recoverable (``paused``) stop and build the result."""
         s = self._state
         s.status = status
@@ -546,7 +546,7 @@ class LoopManager:
         self._save()
         return {"status": status, "stopped": True, "reason": reason, "message": message}
 
-    def complete_tick(self, last_response: str) -> Dict[str, Any]:
+    def complete_tick(self, last_response: str) -> dict[str, Any]:
         """Evaluate the finished wakeup turn and schedule what's next.
 
         Returns ``{"status": "active|done|paused", "stopped": bool, "reason": str, "message": str}``;
@@ -638,12 +638,12 @@ LOOP_HELP = (
 )
 
 
-def _pause_output(mgr: "LoopManager") -> str:
+def _pause_output(mgr: LoopManager) -> str:
     state = mgr.pause(reason="user-paused")
     return "No loop set." if state is None else f"⏸ Loop paused: {state.prompt}\nUse /loop resume to continue."
 
 
-def _resume_output(mgr: "LoopManager") -> str:
+def _resume_output(mgr: LoopManager) -> str:
     state = mgr.resume()
     return "No loop to resume." if state is None else f"▶ Loop resumed ({state.cadence_label()}): {state.prompt}"
 
@@ -659,11 +659,11 @@ _CONTROL_COMMANDS = {
 
 
 def dispatch_loop_command(
-    mgr: "LoopManager",
+    mgr: LoopManager,
     args: str,
     *,
-    route: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    route: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
     """Surface-agnostic handler for ``/loop <args>`` → ``{"output": str, "created": bool}``.
 
     ``output`` is printed/sent verbatim by each surface. ``route`` is stored on new loops so the
@@ -717,9 +717,22 @@ def dispatch_loop_command(
 
 
 __all__ = [
-    "LoopState", "LoopManager", "parse_loop_args", "parse_interval_token", "format_interval",
-    "response_signals_complete", "goal_blocks_loop_tick", "load_loop", "save_loop", "clear_loop",
-    "list_active_loops", "migrate_loop_to_session", "dispatch_loop_command", "LOOP_COMPLETE_MARKER",
-    "WAKEUP_PROMPT_TEMPLATE", "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE", "DEFAULT_MIN_INTERVAL_SECONDS",
     "DEFAULT_MAX_TICKS",
+    "DEFAULT_MIN_INTERVAL_SECONDS",
+    "LOOP_COMPLETE_MARKER",
+    "WAKEUP_PROMPT_TEMPLATE",
+    "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE",
+    "LoopManager",
+    "LoopState",
+    "clear_loop",
+    "dispatch_loop_command",
+    "format_interval",
+    "goal_blocks_loop_tick",
+    "list_active_loops",
+    "load_loop",
+    "migrate_loop_to_session",
+    "parse_interval_token",
+    "parse_loop_args",
+    "response_signals_complete",
+    "save_loop",
 ]

@@ -289,3 +289,14 @@ class TestElisionNoticeWiring:
         assert content.index(notice) < content.index("</untrusted_tool_result>")
         # Exactly one notice.
         assert content.count(notice) == 1
+
+    def test_notice_reaches_an_image_bearing_mcp_result(self):
+        """An MCP result that also carries a screenshot is a part list; its elided text still gets the notice,
+        inside the wrapped text part, and the image part is untouched."""
+        from agent.tool_dispatch_helpers import _UPSTREAM_ELISION_NOTICE, make_tool_result_message
+        img = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        msg = make_tool_result_message(
+            "mcp_srv_snap", [{"type": "text", "text": self._elided()}, {"type": "text", "text": "notes"}, img], "call_2")
+        text = msg["content"][0]["text"]
+        assert text.index(_UPSTREAM_ELISION_NOTICE.strip()) < text.index("</untrusted_tool_result>")
+        assert _UPSTREAM_ELISION_NOTICE.strip() not in msg["content"][1]["text"] and msg["content"][2] == img

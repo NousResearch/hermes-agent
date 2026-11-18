@@ -201,6 +201,8 @@ def test_returned_error_result_carries_error_surface(emits, turn_env):
         # report the model that actually failed, not the composer's current.
         "provider": "openrouter",
         "model": "test/model",
+        # Every layer names the provider by its display label for the card copy.
+        "provider_label": "OpenRouter",
     }
 
     snapshot = server._inflight_snapshot(session)

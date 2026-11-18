@@ -26,6 +26,7 @@ MAX_DIFF_CHARS = 4000
 MAX_OUTPUT_CHARS = 8000
 URL_TIMEOUT_SECONDS = 30
 MAX_URL_BYTES = 262_144  # 256 KiB
+MAX_URL_REDIRECTS = 5
 
 _SNAPSHOT_FILENAME = "monitor_last_output.txt"
 
@@ -86,16 +87,44 @@ def _write_last_output(job_id: str, output: str) -> None:
 
 
 def _fetch_monitor_url(url: str) -> tuple[bool, str]:
-    """Bounded GET of a monitor URL. Returns (ok, body-or-error)."""
-    import urllib.request
+    """Bounded GET of a monitor URL. Returns (ok, body-or-error).
 
-    if not str(url).lower().startswith(("http://", "https://")):
+    The URL can come from the agent's own cronjob tool call and the body is fed back into the
+    agent's prompt, so every hop (initial URL and each redirect target) passes the shared SSRF
+    policy, and the connection itself goes through the connect-time-guarded client.
+    """
+    from urllib.parse import urljoin
+
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+    current_url = str(url)
+    if not current_url.lower().startswith(("http://", "https://")):
         return False, f"monitor_url must be http(s): {url!r}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
-        with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
-            body = resp.read(MAX_URL_BYTES + 1)
-        return True, body[:MAX_URL_BYTES].decode("utf-8", errors="replace")
+        with create_ssrf_safe_client(timeout=URL_TIMEOUT_SECONDS, follow_redirects=False,
+                                     headers={"User-Agent": "hermes-cron-monitor",
+                                              "Accept-Encoding": "identity"}) as client:
+            for _ in range(MAX_URL_REDIRECTS + 1):
+                if not is_safe_url(current_url):
+                    return False, ("monitor_url blocked: private/internal or unsafe destination "
+                                   "(intranet monitors need security.allow_private_urls: true)")
+                with client.stream("GET", current_url) as resp:
+                    if resp.is_redirect:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return False, "monitor_url redirect without a Location header"
+                        current_url = urljoin(current_url, location)
+                        continue
+                    resp.raise_for_status()
+                    body = bytearray()
+                    # Raw bytes, as urllib read them: decoding happens before this cap sees a
+                    # chunk, and one read of a hostile br/gzip body inflates to GBs.
+                    for chunk in resp.iter_raw():
+                        body += chunk
+                        if len(body) > MAX_URL_BYTES:
+                            break
+                return True, bytes(body[:MAX_URL_BYTES]).decode("utf-8", errors="replace")
+        return False, f"monitor_url exceeded {MAX_URL_REDIRECTS} redirects"
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"
 
@@ -111,7 +140,8 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         # Same containment + interpreter rules as the existing `script` field.
         from cron.scheduler_script import _run_job_script
 
-        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None)
+        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None,
+                               interpreter=job.get("interpreter"))
     monitor_url = _field(job, "monitor_url")
     if monitor_url:
         return _fetch_monitor_url(monitor_url)

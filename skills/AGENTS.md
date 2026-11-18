@@ -25,16 +25,16 @@ stored under `skills.config.<key>`, prompted during setup, injected at load). To
 
 Every new or modernised skill — bundled, optional, or contributed — meets all of these before merge:
 
-1. **`description` ≤ 60 chars, one sentence, ends with a period.** This 60-char hardline for
-   shipped/contributed skills is intentionally tighter than `SKILL_PROMPT_DESC_LIMIT` (currently 240,
-   see `agent/skill_utils.py`), which is only the system-prompt truncation/new-skill-creation ceiling —
-   the two are separate, intentional limits, not drift. Long descriptions bloat listings and dilute
-   attention when many skills load. State the capability, not the implementation; no marketing words
-   ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
-   Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
+1. **`description` ≤ 60 chars, one sentence, ends with a period.** This hardline for
+   bundled and contributed skills is intentionally tighter than `SKILL_PROMPT_DESC_LIMIT`
+   (240), the runtime index and new-skill-creation ceiling for user-installed skills.
+   Long descriptions bloat listings and dilute attention when many skills load. State the
+   capability, not the implementation; no marketing words ("powerful", "comprehensive",
+   "seamless", "advanced"); don't repeat the name or category name (the index already
+   prints the category above the skill).
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
-   `browser_navigate`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
+   `browser_exec`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
    `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.

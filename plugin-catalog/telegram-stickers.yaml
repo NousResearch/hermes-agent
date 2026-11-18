@@ -1,0 +1,26 @@
+name: telegram-stickers
+title: Telegram Stickers
+repo: https://github.com/churnast/hermes-telegram-stickers
+sha: 210ce860a06ed24b87f34d9c418f544d2afde4f0
+description: >-
+  Lets your agent answer in Telegram with a sticker, the way a person reacts to a joke or good news: four default packs made by Telegram out of the box, then packs you list or send the bot in a direct chat; picked by emoji or by meaning, sent as a reply in the current chat and forum topic, paced per chat, with a per-chat off switch the agent cannot undo. Pace and packs can be set in words in your direct chat. Disclosure: calls only the Telegram Bot API (api.telegram.org or the configured api_base) with the gateway's TELEGRAM_BOT_TOKEN, read through Hermes' secret scope: getStickerSet for the packs in use (during the first-run setup also from a short background thread, only for a sender Hermes answers, at most 32 at once), sendSticker, and getFile plus one download per sticker for /stickers describe, which the owner starts and which sends each sticker image to the vision model configured in Hermes. A native Telegram handler sees stickers sent to the bot in direct chats (not in groups), skips forwarded ones and keeps pack name, sticker kind and sender id in memory for up to an hour; everyone the bot answers in a direct chat can add packs, up to max_learned_packs in all (default 100, 0 for no limit; learn_packs: false turns learning off). A pre_llm_call hook appends fixed text to the user message of Telegram turns: a sticker hint of about 540 characters, a settings note of about 310 characters when the message mentions stickers, or a setup paragraph during the first-run setup. Writes catalog.json, descriptions.json and state.json under plugin-data/telegram-stickers/ and reads Hermes' sticker_cache.json. No middleware: the sticker tools run through Hermes like any tool. Uses Hermes functions outside the plugin API (tools.vision_tools.vision_analyze_tool, gateway.session_context.get_session_env) and reads the call stack to tell the local CLI or TUI from other callers of /stickers. No shell commands, telemetry or self-update. Anyone the bot answers in a direct chat counts as the owner: they can change pacing, packs, banned stickers and per-chat on/off; the off switch the agent cannot undo holds in groups only.
+maintainer: churnast
+tier: community
+category: tools
+requires_hermes: ">=0.20.6"
+docs_url: https://github.com/churnast/hermes-telegram-stickers#readme
+version: "1.2.0"
+image: https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/210ce860a06ed24b87f34d9c418f544d2afde4f0/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/210ce860a06ed24b87f34d9c418f544d2afde4f0/docs/screenshots/03-paced-like-a-person.png
+  - https://raw.githubusercontent.com/churnast/hermes-telegram-stickers/210ce860a06ed24b87f34d9c418f544d2afde4f0/docs/screenshots/05-owner-commands.png
+platforms: [linux, macos, windows]
+known_issues:
+  - "Needs plugins.isolation: in_process (the default). Under plugins.isolation: host it cannot see the current chat, so it sends no stickers, learns no packs and adds no hint."
+  - "Every person the bot answers in a direct chat adds packs (up to max_learned_packs, default 100), which the agent then uses in every chat. Keep the gateway allowlist to yourself, or set learn_packs: false."
+  - "Before Hermes 0.21.5, /stickers in Telegram only shows the status and reloads packs; the owner's other /stickers commands work in the Hermes CLI on the server."
+  - "Where tool progress is on, Hermes posts its progress line (such as telegram_sticker_send...) before a sticker; display.platforms.telegram.tool_progress: off hides every tool's lines in Telegram."
+capabilities:
+  provides_tools: [telegram_sticker_find, telegram_sticker_send, telegram_sticker_mute, telegram_sticker_settings]
+  provides_hooks: [pre_llm_call]
+  requires_env: [TELEGRAM_BOT_TOKEN]

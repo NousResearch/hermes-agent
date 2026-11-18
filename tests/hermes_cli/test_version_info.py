@@ -1,10 +1,14 @@
 import json
+import os
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from hermes_cli.version_info import (
     VersionInfo,
     _derived_version,
+    _git_version_info,
     _reset_version_info_cache,
     _resolve_stamp_file,
     _stamp_version_info,
@@ -29,6 +33,31 @@ def test_display_version_names_the_distance_without_the_commit():
     ahead = VersionInfo("0.21.5", "0.21.5+1913.gf83a9e9", 1913, "f83a9e9" + "0" * 33, "main", "git")
     assert ahead.display_version == "0.21.5+1913"
     assert VersionInfo("0.21.5", "0.21.5", 0, None, None, "git").display_version == "0.21.5"
+
+
+def test_display_version_keeps_tagless_stamp_identity(tmp_path, monkeypatch):
+    stamp = {
+        "commit": "a" * 40,
+        "baseVersion": "unknown",
+        "displayVersion": "git.aaaaaaa",
+        "source": "git",
+        "payload": "bootstrap",
+        "updateMechanism": "self",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+
+    info = get_version_info()
+
+    assert info.base_version == "unknown"
+    assert info.display_version == stamp["displayVersion"]
+    assert info.commit == stamp["commit"]
+
+
+def test_display_version_keeps_unknown_when_no_identity():
+    info = VersionInfo("unknown", "unknown", None, None, None, "unknown")
+    assert info.display_version == "unknown"
 
 
 def test_stamp_version_info_reads_nix_stamp(tmp_path, monkeypatch):
@@ -249,3 +278,25 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
     assert read(unstamped)[0] == "0.0.0"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the blocking untracked scan uses a FIFO")
+def test_a_timed_out_status_probe_never_strands_index_lock(tmp_path):
+    """The update opens its receipt with this probe; killed by its 3 s timeout while refreshing
+    the index, it used to leave .git/index.lock for the same run's merge to die on (#132089)."""
+    def git(*args):
+        subprocess.run(["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+                       cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    git("add", "a.txt")
+    git("commit", "-qm", "a")
+    (tmp_path / "junk").mkdir()
+    os.mkfifo(tmp_path / "junk" / ".gitignore")  # the untracked scan blocks reading it
+    (tmp_path / "junk" / "x").touch()
+    (tmp_path / "a.txt").touch()  # stat-dirty: a locking status would refresh the index
+
+    _git_version_info(tmp_path, include_untracked=True)
+
+    assert not (tmp_path / ".git" / "index.lock").exists()

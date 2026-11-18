@@ -67,7 +67,8 @@ def load(paths: list[Path]) -> tuple[list[dict], list[dict]]:
                 except ValueError:
                     pass
                 break
-    return micro, batch
+    # The attempt log also records blocked, skipped and refused attempts; only committed ones are compactions.
+    return micro, [b for b in batch if b.get("commit_status") == "committed"]
 
 
 def pct(values: list[float]) -> tuple[float, float, float] | None:

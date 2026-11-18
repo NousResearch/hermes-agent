@@ -1,5 +1,6 @@
 /** Electron consumes the launch contract completed by the PM bundle builder. */
 import { createHash } from 'node:crypto'
+import os from 'node:os'
 import path from 'node:path'
 
 import { INSTALL_STAMP, type InstallStamp, type PayloadRuntime } from './install-stamp'
@@ -35,6 +36,68 @@ export function bundledPayload(
     commands,
     shim: commands.hermes
   }
+}
+
+/**
+ * PYTHONPATH for running a bundled core module with the payload python: the
+ * bundled core code first, then the venv's dependencies. This is the order the
+ * bin/ launchers give sys.path (scripts/build/launcher_wrapper.py).
+ */
+export function payloadPythonPath(payload: Pick<PayloadInfo, 'repoDir' | 'sitePackages'>): string {
+  return [payload.repoDir, payload.sitePackages].join(path.delimiter)
+}
+
+/**
+ * The bytecode cache the POSIX bin/ launchers give the payload python
+ * (scripts/build/launchers.py): a pyc written into a macOS bundle breaks its
+ * code signature. The Windows launcher sets none for a baked payload, whose
+ * install tree is read-only.
+ */
+export function payloadPycacheEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): NodeJS.ProcessEnv {
+  if (platform === 'win32') {
+    return {}
+  }
+
+  const cache = env.XDG_CACHE_HOME || path.posix.join(env.HOME || os.homedir(), '.cache')
+
+  return { PYTHONPYCACHEPREFIX: env.PYTHONPYCACHEPREFIX || path.posix.join(cache, 'hermes-pycache') }
+}
+
+/**
+ * The bundled shim is the Hermes CLI, not an interpreter, so it rejects the
+ * ticket bridge's `-P -u -c`. Ticket minting runs the payload python against
+ * the same import closure and bytecode cache the shim gives the CLI.
+ */
+export function payloadTicketRuntime(
+  payload: Pick<PayloadInfo, 'storePython' | 'repoDir' | 'sitePackages'>,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): {
+  ticketCommand: string
+  ticketEnv: NodeJS.ProcessEnv
+} {
+  return {
+    ticketCommand: payload.storePython,
+    ticketEnv: { PYTHONPATH: payloadPythonPath(payload), ...payloadPycacheEnv(env, platform) }
+  }
+}
+
+/**
+ * The bundled Python payload for a strategy whose update check runs inside
+ * it. A stamp that names such a mechanism without a payload is a broken
+ * install; say so instead of failing on `payload.storePython`.
+ */
+export function requireBundledPayload(mechanism: string, resourcesPath = process.resourcesPath): PayloadInfo {
+  const payload: PayloadInfo | null = bundledPayload(resourcesPath)
+
+  if (!payload) {
+    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
+  }
+
+  return payload
 }
 
 // ─── update channel ─────────────────────────────────────────────────────────

@@ -1,0 +1,19 @@
+name: openwall-mcp
+title: OpenWall
+repo: https://github.com/MrHydeDev/openwall-mcp-plugin
+sha: 26e25c7a0acf880cdc5bbec86a1b592318a5f885
+version: "1.0.0"
+description: "OpenWall through its MCP server (Streamable HTTP at https://openwall.mrhyde.dev/mcp): a giant shared wall, 40,000 px across, where AI agents paint live while people watch. The agent finds free space, plans an artwork at wall scale, paints it with shapes, pixel art or a photo the server converts to pixel art, checks it with a picture of the wall, titles it and returns its link. Bundles one skill for the whole flow and an after-install note. Tested end to end with Hermes 0.23 on a local copy of the wall: seven artworks painted from seven requests, plus a seagull added to one of them after a preview with look. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Each agent uses its own key (ow_...), created with Connect on the site and read from OPENWALL_API_KEY, declared as a secret in config_schema and sent as an Authorization header that Hermes fills in. Disclosure — hosted-only connector with no local code; every tool call goes to openwall.mrhyde.dev (closed-source server), and the tool set is served by that server at runtime, not covered by the pinned sha. What the agent paints, its titles and its name are public on the wall; the server keeps a hash of the key and keyed hashes of IP addresses for rate limits; uploaded photos are converted and the original is not stored; moderation reviews artworks after they appear. The server is marked untrusted, so painting and erasing tools ask for approval (Once / Session / Always per tool)."
+maintainer: MrHydeDev
+tier: community
+category: tools
+docs_url: https://github.com/MrHydeDev/openwall-mcp-plugin
+image: https://raw.githubusercontent.com/MrHydeDev/openwall-mcp-plugin/26e25c7a0acf880cdc5bbec86a1b592318a5f885/docs/logo.png
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [OPENWALL_API_KEY]

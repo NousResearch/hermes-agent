@@ -18,6 +18,7 @@ error, never a silent fallback onto the agent level.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +27,18 @@ from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretLevelRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
     write_failure,
 )
+
+
+def _home_key(path: str | Path) -> str:
+    """The canonical key of a profile home. A relative one is the directory it names now:
+    :func:`hermes_constants.hermes_home_key` remembers its answer per input path, and a
+    relative input names another directory once the cwd moves (or a symlink on it is
+    retargeted), so it is resolved afresh here and never handed to the remembering helper."""
+    from hermes_constants import hermes_home_key
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return os.path.normcase(str(expanded.resolve(strict=False)))
+    return hermes_home_key(path)
 
 
 class LocalSecretStore(SecretStore):
@@ -55,18 +68,17 @@ class LocalSecretStore(SecretStore):
     """
 
     def __init__(self, home: str | Path) -> None:
-        from hermes_constants import hermes_home_key
         self.home = Path(home)
-        self._home_key = hermes_home_key(self.home)
+        self._home_key = _home_key(self.home)
 
     def _pin(self, *, administering: bool = False) -> None:
-        from hermes_constants import get_hermes_home, hermes_home_key
+        from hermes_constants import get_hermes_home
         scope = current_scope()
         if scope is not None and scope.tenant != LOCAL_TENANT:
             raise SecretPinRefused(f"a local secret store serves tenant {LOCAL_TENANT!r} only")
         agent = scope.agent if scope is not None else get_hermes_home()
         # Both sides canonical and absolute: a relative agent is the directory it names now.
-        if hermes_home_key(agent) != self._home_key:
+        if _home_key(agent) != self._home_key:
             raise SecretPinRefused("the bound agent is not this secret store's profile")
         if administering and scope is not None and not scope.can_administer:
             # No scope bound is the local person's own call, administering, as every local

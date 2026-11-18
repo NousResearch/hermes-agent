@@ -22,8 +22,8 @@ from hermes_conformance.secrets import Backend, SecretPinningConformance
 from hermes_conformance.secrets.suite import (
     NEW_NAME, SEED_PROVIDER, WRITE_FAILURES, _plaintext_forms, assert_no_frame_holds,
 )
-from hermes_scope import LOCAL_OWNER, Group, Principal, Scope
-from hermes_secret_port import SecretAdminRefused, SecretWriteFailed
+from hermes_scope import LOCAL_OWNER, Group, Principal, Scope, push_state
+from hermes_secret_port import SecretAdminRefused, SecretPinRefused, SecretWriteFailed
 from hermes_secret_port_local import LocalSecretStoreProvider
 
 #: The key the managed-key hook pins, as an administrator would (the managed ``.env`` defines
@@ -593,3 +593,32 @@ def test_the_prepare_failure_point_fails_the_write_before_the_serialization(tmp_
                     else:
                         store.set_auth("probe", {"token": "secret"})
         assert calls == [], "the prepare failure point broke the write after the serialization"
+
+
+def test_a_relative_bound_agent_is_the_directory_it_names_after_the_cwd_moves(tmp_path, monkeypatch):
+    backend, homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    relative = Scope("local", ".", Principal("member"), owner=LOCAL_OWNER, can_administer=False)
+    monkeypatch.chdir(homes["a"])
+    with push_state(scope=relative):
+        assert store.get("ANTHROPIC_API_KEY") is None  # "." is this store's profile here
+    monkeypatch.chdir(homes["b"])
+    with push_state(scope=relative):
+        with pytest.raises(SecretPinRefused):  # and another profile once the cwd moves
+            store.get("ANTHROPIC_API_KEY")
+
+
+def test_a_relative_bound_agent_follows_a_retargeted_symlink(tmp_path, monkeypatch):
+    backend, homes, _provider = local_backend(tmp_path, monkeypatch)
+    store = backend.open("a")
+    link = tmp_path / "link"
+    link.symlink_to(homes["a"])
+    relative = Scope("local", "link", Principal("member"), owner=LOCAL_OWNER, can_administer=False)
+    monkeypatch.chdir(tmp_path)
+    with push_state(scope=relative):
+        assert store.get("ANTHROPIC_API_KEY") is None  # "link" names this store's profile now
+    link.unlink()
+    link.symlink_to(homes["b"])
+    with push_state(scope=relative):
+        with pytest.raises(SecretPinRefused):  # and another profile once it is retargeted
+            store.get("ANTHROPIC_API_KEY")

@@ -69,6 +69,7 @@ class BackendPlan:
     new_port: Optional[int] = None
     keep_webapp: bool = False
     no_service: bool = False
+    powershell: bool = False  # Windows: commands in messages are typed in PowerShell
     carry: dict[str, str] = field(default_factory=dict)  # VALUES: never printed; only the names are shown
     old_argv: list[str] = field(default_factory=list)  # the exact argv (in memory only; ``rec`` has it redacted)
     generate_secret: bool = False
@@ -203,16 +204,71 @@ def _address_text(address: Optional[tuple[str, int]]) -> str:
     return format_address(*address) if address else "an address that could not be read"
 
 
-def hermes_command(home: Optional[str]) -> str:
-    """How to type ``hermes`` for *home*: ``hermes -p NAME`` for a profile, ``hermes -p default`` for the
-    default home, ``HERMES_HOME=PATH hermes`` for any other home (every printed step targets this home)."""
+# PowerShell reads these as single quotes too, so each is doubled inside a single-quoted string.
+_PS_SINGLE_QUOTES = ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+
+
+def pin_hermes_home(root, command: str, *, powershell: bool = False) -> str:
+    """*command* (``hermes …``) run with ``HERMES_HOME`` set to *root*, quoted for a POSIX shell
+    (``HERMES_HOME='…' hermes …``) or PowerShell (``$env:HERMES_HOME='…'; hermes …``). A relative *root*
+    is made absolute against this process's cwd first: a fresh shell starts somewhere else."""
+    import ntpath
+    import posixpath
+    flavour = ntpath if powershell else posixpath  # the shell the line is printed for
+    root = str(root)
+    if not flavour.isabs(root):
+        root = flavour.normpath(flavour.join(os.getcwd(), root))
+    if not powershell:
+        return f"HERMES_HOME={shlex.quote(root)} {command}"
+    for mark in _PS_SINGLE_QUOTES:
+        root = root.replace(mark, mark * 2)
+    return f"$env:HERMES_HOME='{root}'; {command}"
+
+
+def hermes_command(home: Optional[str], *, powershell: bool = False) -> str:
+    """How to type ``hermes`` for *home* in a fresh shell, so every printed step targets this home.
+
+    - A profile of the standard root: ``hermes -p NAME``; also ``-p default``, since a bare ``hermes``
+      would follow a sticky ``hermes profile use`` choice.
+    - A profile of any other root (``HERMES_HOME=/srv/team-hermes``, or a root nested inside the standard
+      one such as ``~/.hermes/team``): ``-p`` resolves against the root the shell's own ``HERMES_HOME``
+      names (``profiles.resolve_profile_env``), so that root is pinned too: ``HERMES_HOME=ROOT hermes -p
+      NAME`` (:func:`pin_hermes_home`).
+    - A home that is no profile: ``HERMES_HOME=HOME hermes``.
+    *powershell* quotes the pin for PowerShell."""
     from hermes_constants import profile_name_for_home
     if not home:
         return "hermes -p default"
     name = profile_name_for_home(home)
-    if name:  # also `-p default`: a bare `hermes` would follow a sticky `hermes profile use` choice
-        return f"hermes -p {name}"
-    return f"HERMES_HOME={shlex.quote(str(home))} hermes"
+    root = _profile_root(home, name)
+    if not name or root is None:
+        return pin_hermes_home(home, "hermes", powershell=powershell)
+    command = f"hermes -p {name}"
+    return command if _is_standard_root(root) else pin_hermes_home(root, command, powershell=powershell)
+
+
+def _profile_root(home: str, name: Optional[str]) -> Optional[str]:
+    """The root ``-p NAME`` resolves *home* under: the home itself for ``default``, else the parent of its
+    ``profiles/NAME`` directory (never a broader root it happens to sit inside). None when the path has no
+    such shape."""
+    from pathlib import Path
+    if name == "default":
+        return home
+    for candidate in (Path(home), Path(home).resolve(strict=False)):
+        if candidate.name == name and candidate.parent.name == "profiles":
+            return str(candidate.parent.parent)
+    return None
+
+
+def _is_standard_root(root) -> bool:
+    """Whether *root* is exactly the root a fresh shell's ``hermes`` (no HERMES_HOME) uses: resolved-path
+    equality, never "inside it"."""
+    from pathlib import Path
+    from hermes_constants import _get_platform_default_hermes_home
+
+    def resolved(path) -> str:
+        return os.path.normcase(str(Path(path).resolve(strict=False)))
+    return resolved(root) == resolved(_get_platform_default_hermes_home())
 
 
 _SECRET_NAME = re.compile(r"pass(word|wd)?|secret|token|api[-_]?key|credential", re.IGNORECASE)
@@ -644,7 +700,8 @@ def _gateway(plan: BackendPlan, host) -> None:
     if gs["running_pid"] and not gs["active"]:
         plan.blockers.append(
             f"A gateway for this home runs outside its service (pid {gs['running_pid']}). Stop it "
-            f"({hermes_command(plan.home)} gateway stop) so the migration can run it as a service, then re-run.")
+            f"({hermes_command(plan.home, powershell=plan.powershell)} gateway stop) so the migration can run it "
+            f"as a service, then re-run.")
     if reason := host.gateway_preflight():
         plan.blockers.append(f"The gateway's user service cannot be driven from this shell: {reason}")
 
@@ -720,12 +777,14 @@ def _owner_problem(host) -> Optional[str]:
     if kind == "unknown":
         return (f"Cannot tell which gateway serves profile {name}: it has no gateway service of its own and no "
                 f"running gateway serves it. Identify which gateway serves this profile "
-                f"({hermes_command(str(host.home))} gateway status), then re-run. Nothing changed.")
+                f"({hermes_command(str(host.home), powershell=host.os_family() == 'win32')} gateway status), then "
+                f"re-run. Nothing changed.")
     return None
 
 
 def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) -> BackendPlan:
     plan = BackendPlan(home=str(host.home))
+    plan.powershell = host.os_family() == "win32"
     if problem := host.config_problem():
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
@@ -766,11 +825,13 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
 def _gateway_line(plan: BackendPlan) -> str:
     gs = plan.gateway
     if not gs.get("installed") and gs.get("kind") == "launchd":
-        return f"not installed → install the launchd agent ({hermes_command(plan.home)} gateway install; it starts at login)"
+        hermes = hermes_command(plan.home, powershell=plan.powershell)
+        return f"not installed → install the launchd agent ({hermes} gateway install; it starts at login)"
     if not gs.get("installed"):
         linger = {True: "lingering is on", False: "lingering is off; install tries to enable it",
                   None: "lingering unknown"}[plan.linger]
-        return f"not installed → install the user service ({hermes_command(plan.home)} gateway install; {linger})"
+        hermes = hermes_command(plan.home, powershell=plan.powershell)
+        return f"not installed → install the user service ({hermes} gateway install; {linger})"
     state = "running" if gs.get("active") else "installed, stopped"
     return f"{state} ({gs.get('unit') or gs.get('kind')}) → {'restart' if gs.get('active') else 'start'} it"
 

@@ -246,13 +246,13 @@ def supervisor(pid: int, argv: list[str]) -> tuple[str, Optional[str], Optional[
 
 
 def _hermes_command(home: Optional[str]) -> tuple[list[str], str]:
-    """``(lines to run first, how to type hermes)`` for *home* in PowerShell and Command Prompt."""
-    from hermes_constants import profile_name_for_home
-    name = profile_name_for_home(home) if home else "default"
-    if name:  # also `-p default`: a bare `hermes` would follow a sticky `hermes profile use` choice
-        return [], f"hermes -p {name}"
-    return [f'# in this window first: $env:HERMES_HOME = "{home}" (PowerShell) or set HERMES_HOME={home} '
-            "(Command Prompt)"], "hermes"
+    """``(lines to run first, how to type hermes)`` for *home*. A home outside the standard root pins
+    ``HERMES_HOME`` on every line, quoted for PowerShell (``$env:HERMES_HOME='…'; hermes -p NAME``)."""
+    from hermes_cli.gateway_migrate_backends_plan import hermes_command
+    hermes = hermes_command(home, powershell=True)
+    if hermes.startswith("$env:"):
+        return ["# these lines set HERMES_HOME for this Hermes root: run them in PowerShell, not Command Prompt"], hermes
+    return [], hermes
 
 
 def manual_steps(old_host: Optional[str], old_port: Optional[int], item, *, env_keys=(), home: Optional[str] = None,

@@ -14,8 +14,16 @@ import pytest
 
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli import gateway_migrate_backends_windows as gw
+from hermes_cli import gateway_migrate_backends_plan as plan_mod
 from hermes_cli.gateway_migrate_backends import BackendItem
 from tests.hermes_cli.test_gateway_migrate_backends_apply import _PASSWORD, FakeHost, _args, _files
+
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
 
 _PY = r"C:\Users\u\AppData\Local\hermes\tools\python-3.14.9-win32-x64\python.exe"
 _EXE = r"C:\Users\u\AppData\Local\hermes\bin\hermes.exe"
@@ -155,8 +163,9 @@ def test_steps_never_use_posix_only_syntax_and_name_env_keys_without_values(tmp_
                                 home=str(tmp_path))
         joined = "\n".join(steps)
         assert "&&" not in joined and "chmod" not in joined and "sudo" not in joined
-        assert steps[0].startswith("# in this window first: $env:HERMES_HOME")  # a home that is no profile
-        assert steps[-len(_TAIL):] == [s.replace(_H, "hermes") for s in _TAIL]
+        assert steps[0].startswith("# these lines set HERMES_HOME")  # a home that is no profile: pinned per line
+        pinned = plan_mod.pin_hermes_home(str(tmp_path), "hermes", powershell=True)
+        assert steps[-len(_TAIL):] == [s.replace(_H, pinned) for s in _TAIL]
         assert f"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD from the old backend's environment into {tmp_path / '.env'}" \
             in joined
     steps = gw.manual_steps("127.0.0.1", 9120, _item(supervisor="startup-folder", unit_path=str(entry), pid=42))

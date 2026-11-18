@@ -17,6 +17,13 @@ from hermes_cli.gateway_migrate_backends import BackendItem
 from hermes_cli.gateway_migrate_backends_plan import manual_steps
 from tests.hermes_cli.test_gateway_migrate_backends_apply import _BACKEND_PID, _PASSWORD, FakeHost, _args, _files
 
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
+
 _LABEL = "local.hermes-dashboard"
 _DOMAIN = "gui/501"
 

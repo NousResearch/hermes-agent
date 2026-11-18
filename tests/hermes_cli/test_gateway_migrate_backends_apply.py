@@ -21,6 +21,13 @@ from hermes_cli.gateway_migrate_backends import BackendItem
 from hermes_cli.gateway_migrate_backends_host import SystemHost
 from hermes_cli.gateway_migrate_backends_plan import WEBAPP_STATUS_WAIT
 
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
+
 _PASSWORD = "pw-never-printed-7d1c"
 _SECRET = "secret-never-printed-91aa"
 _BACKEND_PID = 4242

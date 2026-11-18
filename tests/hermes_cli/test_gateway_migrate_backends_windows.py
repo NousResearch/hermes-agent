@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -249,3 +250,29 @@ def test_a_task_of_another_install_with_the_same_arguments_is_not_named():
     # A task that names a bare `hermes` cannot be tied to an install: it is not named either.
     assert gw.tasks_running(_dump(_task(r"\Bare", "hermes", "dashboard --no-open --host 0.0.0.0 --port 9119")),
                             _BACKEND) == []
+
+
+def test_a_backend_found_without_wmic_gets_its_profile_home_from_its_exact_argv(tmp_path, monkeypatch):
+    """The no-wmic scan reads exact args with psutil, but the shared home resolver re-read argv with the
+    dashboard reader, which has no Windows implementation: `hermes -p work serve` under a root-pinned
+    environment resolved to the root, not profiles/work."""
+    from hermes_cli import dashboard_procs, main_dashboard
+    from hermes_cli import gateway_migrate_backends as gmb
+    root = tmp_path / "hermes"
+    (root / "profiles" / "work").mkdir(parents=True)
+    exact = [_EXE, "-p", "work", "serve", "--port", "9119"]
+    monkeypatch.setattr(gmb, "os_family", lambda: "win32")
+    monkeypatch.setattr(gw, "wmic_missing", lambda: True)
+    monkeypatch.setattr(gw, "argv_of", lambda pid: list(exact))
+    monkeypatch.setattr(gw, "supervisor", lambda pid, argv: ("manual", None, None))
+    monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid", lambda pid: None)
+    monkeypatch.setattr(main_dashboard, "_systemd_owner_for_pid", lambda pid: None)
+    monkeypatch.setattr(gmb, "_s6_slot", lambda pid: None)
+    monkeypatch.setattr(gmb, "_container_cgroup", lambda pid: False)
+    monkeypatch.setattr(gmb, "_in_container", lambda: False)
+    monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {"HERMES_HOME": str(root)})
+
+    item = gmb._classify_running(4242, " ".join(exact), launchd_jobs=None, plists={}, ssh_pids=set(),
+                                 desktop_pids=set(), seen_units=set())
+
+    assert Path(item.hermes_home) == root / "profiles" / "work"

@@ -329,6 +329,7 @@ def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> lis
         return merged
     from model_tools import _DYNAMIC_SCHEMA_REWRITERS
     from tools.registry import registry
+    from tools.schema_sanitizer import sanitize_tool_schemas
     available = {_def_name(t) for t in merged}
 
     def _current(tool):
@@ -336,9 +337,10 @@ def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> lis
         rewrite = _DYNAMIC_SCHEMA_REWRITERS.get(name)
         if rewrite is None or name in fresh:
             return fresh.get(name, tool)
-        entry = registry.get_entry(name)
-        rebuilt = rewrite({"type": "function", "function": {**entry.schema, "name": entry.name}}, available) if entry else None
-        return rebuilt or tool  # None only for a gated tool, which _drop_gated_carried_tools already removed
+        entry = registry.definition_for(name)  # the build's steps short of check_fn: overrides, rewrite, sanitize
+        rebuilt = rewrite(entry, available) if entry else None
+        # None only for a gated tool, which _drop_gated_carried_tools already removed
+        return sanitize_tool_schemas([rebuilt])[0] if rebuilt else tool
 
     return [_current(t) for t in merged]
 

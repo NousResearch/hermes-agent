@@ -61,6 +61,22 @@ def test_a_carried_survivor_is_rewritten_against_the_final_tool_names():
     assert not named
 
 
+def test_a_carried_survivor_keeps_its_runtime_schema_fields():
+    # delegate_task's runtime overrides (dynamic_schema_overrides: limits, backend task params) still apply when
+    # it is carried rather than built here; only the dropped sibling leaves its description.
+    pinned, kept = ["terminal", "delegation", "clarify"], ["terminal", "delegation"]
+    pin = _pin(pinned)
+    built = _by_name(_agent(kept).tools)["delegate_task"]["function"]
+    resumed = _agent(kept)
+    resumed.tools = [t for t in resumed.tools if t["function"]["name"] != "delegate_task"]
+
+    mcp_tool_agent.restore_agent_tool_prefix(resumed, pin)
+
+    restored = _by_name(resumed.tools)["delegate_task"]["function"]
+    assert restored["parameters"] == built["parameters"]
+    assert "clarify" not in restored["description"]
+
+
 def test_a_resume_with_the_same_toolsets_sends_the_pinned_bytes():
     pin = _pin(PINNED)
     for tool in pin["tools"]:  # bytes this process would not derive: the pin must still win

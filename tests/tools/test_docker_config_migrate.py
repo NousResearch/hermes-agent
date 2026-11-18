@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -262,3 +264,101 @@ def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path:
     # config.yaml is untouched by the second boot, and no new backup is made.
     assert config_path.read_bytes() == config_after_first
     assert sorted((tmp_path / "backups" / "config").glob("config.yaml.pre-docker-migrate.*")) == first_boot_backups
+
+
+def test_docker_config_migrate_skips_unwritable_config_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A read-only config.yaml (``:ro`` file bind, Kubernetes ConfigMap/secret subPath mount)
+    must skip the boot migration with an actionable warning — not run the ladder into a
+    per-step EROFS failure each plus a ``Config version: X → Y`` line although nothing was
+    persisted and the gateway keeps booting the stale schema."""
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original = yaml.safe_dump({"_config_version": 33, "gateway": {"provider": "telegram"}})
+    config_path.write_text(original, encoding="utf-8")
+    env_path.write_text("TELEGRAM_BOT_TOKEN=test-token\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module, "read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (33, 53))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _must_not_run(*, interactive: bool, quiet: bool) -> None:
+        raise AssertionError("migrate_config must not run when config.yaml is read-only")
+
+    monkeypatch.setattr(module, "migrate_config", _must_not_run)
+
+    real_open = os.open
+
+    def _fake_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == str(config_path) and flags == os.O_RDWR:
+            raise OSError(errno.EROFS, "Read-only file system", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", _fake_open)
+
+    assert module.main() == 0
+    err = capsys.readouterr().err
+    assert "skipping migration 33 -> 53" in err
+    assert "not writable" in err and "read-only file system" in err
+    assert "HERMES_SKIP_CONFIG_MIGRATION=1" in err
+    assert config_path.read_text(encoding="utf-8") == original
+    # No pre-migration snapshot: nothing was attempted, nothing needs rolling back.
+    # (A real stamp read may still write a `.good` backup via the config-load machinery;
+    # only the `pre-docker-migrate` snapshots are this script's doing.)
+    assert list((tmp_path / "backups").rglob("*.pre-docker-migrate.*")) == []
+
+
+def test_docker_config_migrate_restore_failure_does_not_mask_migration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When the rollback itself fails (the read-only mount breaks the restore copy too), the
+    original migration error must still propagate — not the restore's EROFS."""
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(yaml.safe_dump({"_config_version": 33}), encoding="utf-8")
+    env_path.write_text("TELEGRAM_BOT_TOKEN=test-token\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module, "read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (33, 53))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    # Seed identical backups with the real copy: main()'s backup pass then reuses them
+    # without copying, so only the rollback below hits the failing copy.
+    assert len(module._backup_existing((config_path, env_path))) == 2
+
+    real_copy2 = shutil.copy2
+
+    def _fake_copy2(src, dst, *args, **kwargs):
+        if str(dst) in (str(config_path), str(env_path)):
+            raise OSError(errno.EROFS, "Read-only file system", str(dst))
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(module.shutil, "copy2", _fake_copy2)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+    assert "could not restore" in capsys.readouterr().err
+
+
+def test_docker_config_migrate_write_probe_allows_missing_and_writable_files(
+    tmp_path: Path,
+) -> None:
+    """The writability probe blocks only files that exist but cannot be opened for writing;
+    a missing config (fresh volume, the migration creates it) and a writable file pass."""
+    module = _load_script_module()
+    assert module._write_blocker(tmp_path / "config.yaml") is None
+    writable = tmp_path / "writable.yaml"
+    writable.write_text("x: 1\n", encoding="utf-8")
+    assert module._write_blocker(writable) is None

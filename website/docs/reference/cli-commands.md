@@ -1997,7 +1997,7 @@ Launch the web dashboard to manage configuration, API keys, and sessions. For a 
 | `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where pnpm isn't available. Pre-build with `cd web && pnpm run build`. |
 | `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. It lists only that profile. Routing/ops convenience, **not** a security boundary: profiles under one OS user can read each other; isolate tenants with separate OS users or containers. |
 | `--stop` | — | Stop the running `hermes dashboard` / `hermes serve` backend **of this Hermes home** and exit (`-p <profile>` / `HERMES_HOME` select which; backends of other profiles, other installs on the machine, and the shell you typed the command into are never touched — a backend whose owner cannot be read is left alone). SIGTERM, a 10s grace, then SIGKILL; a hosted Chat TUI that outlives its backend is stopped too (it would otherwise keep the deleted `state.db-wal` open and block the next start). Messaging-gateway bots started from the dashboard are not touched. |
-| `--status` | — | List running `hermes dashboard` processes and exit. |
+| `--status` | — | List running `hermes dashboard` / `hermes serve` processes and exit (always exit code 0). The `hermes` launcher it runs under is not listed, even when the port it names (`--port`, default `9119`) is held; when this profile's gateway serves the Webapp on that port, a line names the gateway and the Webapp's address. |
 
 ### `hermes dashboard register`
 

@@ -380,6 +380,19 @@ _WRAPPER_HEAD_COMMANDS = frozenset({
 })
 
 
+def _process_listens_on(pid: int, port: int) -> bool | None:
+    """Whether *pid* itself holds a TCP listener on *port*; None when the OS will not say."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        connections = psutil.Process(pid).net_connections(kind="inet")
+    except (psutil.Error, OSError):  # gone, access denied, or the OS has no per-process table
+        return None
+    return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port for c in connections)
+
+
 def _caller_ancestor_pids() -> set[int]:
     """PIDs of THIS process's ancestors (self excluded), best-effort; empty on any failure.
 

@@ -40,3 +40,29 @@ def test_aux_cost_survives_config_reload_failure(monkeypatch):
     }
     assert len(rows) == 1
     assert rows[0]["estimated_cost_usd"] == 0.125
+
+
+def test_aux_cost_survives_an_unavailable_config_backend(monkeypatch):
+    """The config backend's outage is a SystemExit subtype; the optional pricing-key lookup must not
+    let it abort a successful auxiliary call or drop the row."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    def unavailable_config():
+        raise ConfigBackendUnavailable("remote config unavailable")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", unavailable_config)
+    calls = []
+    monkeypatch.setattr(usage_pricing, "estimate_usage_cost",
+                        lambda model, usage, **kw: calls.append(kw) or SimpleNamespace(amount_usd=0.125))
+    rows = []
+    db = SimpleNamespace(record_auxiliary_usage=lambda *args, **kwargs: rows.append(kwargs))
+    token = aux_accounting.set_accounting_context(db, "session-1")
+    try:
+        response = SimpleNamespace(model="local-model", usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3))
+        aux_accounting.record_aux_usage(response, "title_generation", provider="custom",
+                                        base_url="http://127.0.0.1:47970/v1")
+    finally:
+        aux_accounting.reset_accounting_context(token)
+
+    assert [c["api_key"] for c in calls] == [None]
+    assert [r["estimated_cost_usd"] for r in rows] == [0.125]

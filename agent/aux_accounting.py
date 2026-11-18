@@ -81,6 +81,7 @@ def record_aux_usage(
             # A keyed main endpoint's /models (its pricing source) answers 401 without the key. A live
             # credential source owns its endpoint's authentication: no saved key is sent beside it.
             # A failed config reload must not discard an otherwise available cost estimate.
+            from hermes_cli.config_backend import ConfigBackendUnavailable
             api_key = None
             try:
                 from agent.auxiliary_client import _runtime_main_value
@@ -88,7 +89,7 @@ def record_aux_usage(
                 from hermes_cli.runtime_provider_custom import model_block_key_for
                 api_key = None if callable(_runtime_main_value("api_key")) else (
                     model_block_key_for(load_config().get("model"), base_url or "") or None)
-            except Exception:
+            except (Exception, ConfigBackendUnavailable):  # the backend's outage is a SystemExit
                 logger.debug("Aux pricing credential lookup failed; estimating without a key", exc_info=True)
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url, api_key=api_key)
             if cost.amount_usd is not None:

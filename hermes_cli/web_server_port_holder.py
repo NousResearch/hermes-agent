@@ -59,8 +59,10 @@ def _live_endpoint(target: Path):
 
     Read-only, unlike ``discover_gateway_endpoint``: when no control socket answers, that call judges
     (and narrows the mode of) ``gateway.lock``; this one only connects. A named profile without a
-    socket of its own is asked of the default multiplexer, as discovery does. An overlay home or an
-    owner that is starting, draining or refusing is None.
+    socket of its own is asked of the default multiplexer, as discovery does. Only a ``ready`` owner
+    counts: one in its restart wait still hands out an endpoint (so a client can finish a parked
+    turn) but is going away, and an overlay home or an owner that is starting, draining or refusing
+    is None too.
     """
     from hermes_cli.gateway_runtime import _canonical_home, _endpoint
     from hermes_cli.gateway_runtime_discovery import DiscoveryError, query_identify
@@ -75,7 +77,8 @@ def _live_endpoint(target: Path):
             continue
         except (OSError, ValueError, TypeError, DiscoveryError):
             return None
-        return _endpoint(payload, home, control_home=None if control_home == home else control_home).endpoint
+        owner = _endpoint(payload, home, control_home=None if control_home == home else control_home)
+        return owner.endpoint if owner.state == "ready" else None
     return None
 
 

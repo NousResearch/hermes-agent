@@ -201,6 +201,28 @@ export function tokenImportOrder(indexCss: string): string[] {
   return [...indexCss.matchAll(/@import\s+['"]\.\/([\w-]+)\.css['"]/g)].map(match => match[1])
 }
 
+export interface TokenFamily {
+  /** The token file's stem: `raw` for raw.css. */
+  file: string
+  /** What the file's leading comment says it is for. */
+  about: string
+  tokens: DesignToken[]
+}
+
+/** Every token file but the index, in cascade order (index.css's imports, then any file it does not
+ *  import, by name), each with its tokens. `sources` maps a file's stem to its text. */
+export function tokenFamilies(sources: Readonly<Record<string, string>>): TokenFamily[] {
+  const imported = tokenImportOrder(sources.index ?? '')
+
+  const rest = Object.keys(sources)
+    .filter(file => file !== 'index' && !imported.includes(file))
+    .sort()
+
+  return [...imported, ...rest]
+    .filter(file => sources[file] !== undefined)
+    .map(file => ({ file, about: leadingComment(sources[file]), tokens: parseTokenCss(sources[file]) }))
+}
+
 /** A file's leading comment: what the file says it is for. */
 export function leadingComment(css: string): string {
   const match = /^\s*\/\*([\s\S]*?)\*\//.exec(css)

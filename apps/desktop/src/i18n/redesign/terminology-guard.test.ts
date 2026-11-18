@@ -14,6 +14,7 @@ import { useNewSessionCopy } from '@/app/chat/sidebar/simplified-new-session-cop
 import { discoveryCopy } from '@/app/discovery/discovery-copy'
 import { firstTimeCopy } from '@/app/discovery/first-time-copy'
 import { usePageFrameCopy } from '@/app/overlays/page-frame-copy'
+import { designSystemCopy } from '@/app/redesign/design-system/design-system-copy'
 import { routinesCopy } from '@/app/routines/routines-copy'
 import { appearanceAdvancedCopy } from '@/app/settings/appearance-advanced-copy'
 import { appearanceOverviewCopy } from '@/app/settings/appearance-overview-copy'
@@ -187,6 +188,7 @@ function redesignCopyModules(): Record<string, unknown> {
     appearanceAdvanced: appearanceAdvancedCopy('en'),
     appearanceOverview: appearanceOverviewCopy('en'),
     capabilitiesPage: hook(useCapabilitiesPageDescription),
+    designSystem: designSystemCopy('en'),
     discovery: discoveryCopy('en'),
     firstTime: firstTimeCopy('en'),
     hiddenAgent: hook(useHiddenAgentCopy),

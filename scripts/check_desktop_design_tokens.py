@@ -69,6 +69,7 @@ PAGE_STAGE_CONTRACT = "app/redesign/portal-pages.css"
 # TSX. Which branch emits a class is not visible from the CSS, so the set is named, not derived.
 _REDESIGN_ONLY = (
     re.compile(r"^app/redesign/[^/]+\.css$"),
+    re.compile(r"^app/redesign/design-system/[^/]+\.css$"),
     re.compile(r"^app/chat/sidebar/portal/[^/]+\.css$"),
     re.compile(r"^components/assistant-ui/thread/redesign\.css$"),
     re.compile(r"^app/agent-settings/[^/]+\.css$"),

@@ -2379,10 +2379,9 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
-          from scripts.releases.job_groups import gating_jobs
           from scripts.releases.stable import require_success
           needs = json.loads(os.environ['RELEASE_NEEDS'])
-          require_success(needs, gating_jobs(needs))
+          require_success(needs, list(needs))
           PY
 
   commit-builds-summary:

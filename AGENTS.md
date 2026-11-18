@@ -102,7 +102,7 @@ measured startup cost or import hazard it names; no behaviour; `tools/connectors
 per variant and a name → variant table (`tools/environments/`, its table still in
 `terminal_tool_backends.py`). Tool folders register from `tool.py`; tests mirror folders.
 
-- **Find code by topic:** `grep -rn "def name" <dir>/<stem>/ <dir>/<stem>_*.py`, not the facade.
+- **Find code by topic:** `search_files` for `def name` in `<stem>/` and `<stem>_*.py`, not the facade.
 - **Imports go at module top:** topic modules import one another, never the facade; a cycle means
   a shared name belongs in a lower module. Patch where the name is looked up.
 - **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
@@ -113,7 +113,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
   dispatch by table, not `if name ==` ladders; collaborators are objects, not mixins; no module
   constant kept only for tests to patch.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
-  fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
+  fixing its docs in the same PR (search `website/docs`, `skills/`, every `AGENTS.md`).
 
 ## Rules that apply everywhere
 

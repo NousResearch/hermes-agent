@@ -8,7 +8,7 @@ import pytest
 
 import persistence_assembly
 from persistence import IsolationUnsupported
-from tests.hosted_persistence.test_provider_discovery import add_bundled, plugin_module, plugin_source
+from tests.persistence.hosted.test_provider_discovery import add_bundled, plugin_module, plugin_source
 
 
 def configure_current_home(provider: str) -> None:

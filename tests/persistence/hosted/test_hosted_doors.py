@@ -12,8 +12,8 @@ import pytest
 import persistence_assembly as pa
 from persistence import ScopePinRefused, SessionId
 from persistence.conversation.sessions import NewSession
-from tests.hosted_persistence.test_provider_discovery import add_bundled, configured_home, plugin_source
-from tests.hosted_persistence.test_turn_store_resolved_once import hosted
+from tests.persistence.hosted.test_provider_discovery import add_bundled, configured_home, plugin_source
+from tests.persistence.hosted.test_turn_store_resolved_once import hosted
 
 
 @pytest.mark.parametrize("configured", ["''", "'   '", "", "3", "[sqlite]", "{name: sqlite}", "true"])

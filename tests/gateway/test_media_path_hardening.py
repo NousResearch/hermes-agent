@@ -127,6 +127,27 @@ def test_real_home_credentials_stay_denied_when_home_is_the_profile_home(tmp_pat
         assert base.validate_media_delivery_path(artifact) == str(Path(artifact).resolve())
 
 
+@pytest.mark.parametrize("strict", [False, True])
+def test_webhook_store_and_sidecars_are_not_deliverable(tmp_path, monkeypatch, strict):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    _rehomed_profile(tmp_path, monkeypatch, strict=strict)
+    root = tmp_path / "hermes-home"
+    active = tmp_path / "active-profile"
+    profile = root / "profiles" / "work"
+    homes = (root, active, profile)
+    token = set_hermes_home_override(active)
+    try:
+        for home in homes:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                path = _fixture(home / f"webhook_coalescing.db{suffix}")
+                assert base.validate_media_delivery_path(path) is None, path
+            artifact = _fixture(home / "report.pdf")
+            assert base.validate_media_delivery_path(artifact) == str(Path(artifact).resolve())
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_escaped_control_letter_needs_a_boundary_after_it():
     """``\n`` / ``\r`` / ``\t`` ends a path only when a boundary follows the letter; otherwise
     it is a separator starting a directory (``\notes``), and the tag is not cut at ``a.png``."""

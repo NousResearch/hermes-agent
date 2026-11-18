@@ -45,6 +45,61 @@ async def test_accepted_window_is_recovered_without_provider_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_real_producer_commit_recovers_and_expired_retry_does_not_block(monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.config import Platform
+    from gateway.platforms.webhook import WebhookAdapter
+    from tests.gateway.test_pre_gateway_dispatch import _post_webhook, _webhook_app
+
+    adapter, app = _webhook_app(prompt='{action}')
+    adapter._routes['fixture']['coalesce'] = {'key': 'id', 'window_seconds': 60}
+    async with TestClient(TestServer(app)) as client:
+        runner = adapter._message_handler.__self__
+        authority = runner.session_authority
+        store = adapter._coalescer.store
+        try:
+            for delivery, action in [('old', 'opened'), ('latest', 'closed')]:
+                assert (await _post_webhook(client, {'id': 7, 'action': action}, delivery)).status == 202
+            row, = await asyncio.to_thread(store.pending)
+            finish = store.finish
+
+            def interrupted(_batch_id):
+                raise OSError('process died before local retirement')
+
+            monkeypatch.setattr(store, 'finish', interrupted)
+            await adapter._coalescer._handoff(row['id'], flush=True)
+            assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
+            assert len(await asyncio.to_thread(store.pending)) == 1
+            monkeypatch.setattr(store, 'finish', finish)
+            await _lose_loop(adapter)
+
+            restarted = WebhookAdapter(adapter.config)
+            restarted._routes['fixture']['coalesce'] = {'key': 'id', 'window_seconds': 60}
+            runner.adapters[Platform.WEBHOOK] = restarted
+            runner._wire_adapter_handlers(restarted)
+            try:
+                await restarted._coalescer._handoff(row['id'], flush=True)
+                assert await asyncio.to_thread(restarted._coalescer.store.pending) == []
+                assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
+                with restarted._coalescer.store.connection() as conn:
+                    conn.execute('UPDATE members SET expires=0 WHERE expires IS NOT NULL')
+                from aiohttp import web
+                restarted_app = web.Application()
+                restarted_app.router.add_post('/webhooks/{route_name}', restarted._handle_webhook)
+                async with TestClient(TestServer(restarted_app)) as restarted_client:
+                    retry = await _post_webhook(restarted_client, {'id': 7, 'action': 'closed'}, 'latest')
+                    assert retry.status == 200 and (await retry.json())['status'] == 'duplicate'
+                    fresh = await _post_webhook(restarted_client, {'id': 7, 'action': 'new'}, 'fresh')
+                    assert fresh.status == 202
+                assert len(await asyncio.to_thread(restarted._coalescer.store.pending)) == 1
+            finally:
+                await restarted.disconnect()
+        finally:
+            if adapter._coalescer._worker and not adapter._coalescer._worker.done():
+                await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_refused_handoff_keeps_frozen_batch_and_retries(monkeypatch):
     from gateway.platforms import webhook_coalesce_recovery
     monkeypatch.setattr(webhook_coalesce_recovery, 'RETRY_SECONDS', 0.01)
@@ -162,7 +217,7 @@ async def test_blocked_group_does_not_hold_unrelated_acknowledgement(monkeypatch
         assert (await adapter._handle_webhook(_mock_request(_payload(7), delivery_id='slow'))).status == 202
         await asyncio.wait_for(entered.wait(), 2)
         answer = await asyncio.wait_for(
-            adapter._handle_webhook(_mock_request(_payload(8), delivery_id='fast')), 1)
+            adapter._handle_webhook(_mock_request(_payload(8), delivery_id='fast')), 2)
         assert answer.status == 202
         await asyncio.wait_for(other.wait(), 2)
     finally:

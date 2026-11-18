@@ -780,19 +780,10 @@ class WebhookAdapter(BasePlatformAdapter):
                                route_name: str, profile, event_type: str) -> Optional[str]:
         """Record delivery info and admit the run through the durable producer (shared by the immediate
         and coalesced paths). ``"accepted"`` / ``"duplicate"``, or None when admission failed."""
-        # (profile, route, delivery_id) in the session key → concurrent webhooks get independent runs.
-        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
-        session_chat_id = identity.session_chat_id
-        # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
-        # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        from gateway.platforms.webhook_delivery import delivery_info
-        self._delivery_info[session_chat_id] = delivery_info(self, route_config, profile, payload, route_name)
-        self._delivery_info_created[session_chat_id] = now
-        self._delivery_info_order.append((now, session_chat_id))
-        self._prune_delivery_info(now)
-        source = self._admission_source(route_name, profile, delivery_id)
-        event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
+        from gateway.platforms.webhook_delivery import producer_event
+        event = producer_event(self, payload, prompt, delivery_id, now,
+            route_config=route_config, route_name=route_name, profile=profile)
+        session_chat_id = event.source.chat_id
         from gateway.platforms.webhook_ingress import admit_producer
         try:
             receipt = await admit_producer(self, event)

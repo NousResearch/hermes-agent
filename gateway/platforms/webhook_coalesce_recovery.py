@@ -47,6 +47,28 @@ class DurableWebhookCoalescer:
             destination = snapshot_destination(self.adapter, delivery_info(self.adapter, route, profile, payload, route_name))
             return binding_from(self.adapter, authority, store_id, digest, destination)
 
+    async def producer_seen(self, bound, route_name, profile, delivery_id, payload, prompt):
+        from gateway.platforms.webhook_delivery import producer_event
+        from gateway.platforms.webhook_ingress import producer_scope, _prepared, _committed, _release_preparation
+
+        event = producer_event(self.adapter, payload, prompt, delivery_id, time.time(),
+            route_config=self.adapter._routes[route_name], route_name=route_name, profile=profile)
+        async with producer_scope(self.adapter, event) as authority:
+            if authority is not bound.authority:
+                raise ValueError('Webhook authority changed')
+            token = expected_binding.set(bound)
+            try:
+                prepared, principal = await _prepared(authority, event)
+                try:
+                    rows = await drain_thread(_committed, authority, principal, delivery_id)
+                    if len(rows) > 1:
+                        raise ValueError('Ambiguous webhook producer receipt')
+                    return bool(rows)
+                finally:
+                    await drain_task(asyncio.create_task(_release_preparation(authority, prepared)))
+            finally:
+                expected_binding.reset(token)
+
     async def start(self, *, recover=True):
         self._closed = False
         if recover:
@@ -65,6 +87,14 @@ class DurableWebhookCoalescer:
         if (self._closed or (bound.route, bound.connector,
                 self.adapter._admission_source(route_name, profile, delivery_id).profile) != revision):
             return 'unavailable'
+        seen = await self.producer_seen(bound, route_name, profile, delivery_id, payload, prompt)
+        self.adapter._reload_dynamic_routes()
+        route = self.adapter._routes.get(route_name)
+        if (self._closed or route is None
+                or ingress_revision(self.adapter, route_name, route, profile, delivery_id) != revision):
+            return 'unavailable'
+        if seen:
+            return 'duplicate'
         work = dict(payload=payload, prompt=prompt, event_type=event_type, delivery_id=delivery_id,
                     profile=profile, route_name=route_name, binding=bound.to_wire())
         member = identity.session_chat_id

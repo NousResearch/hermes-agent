@@ -14,6 +14,25 @@ from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('seen', [False, True])
+async def test_receipt_lookup_revalidates_authority_before_accept(monkeypatch, seen):
+    adapter = _make_adapter(routes={'pr': _coalesce_route()})
+    _capture_admissions(adapter, monkeypatch)
+
+    async def producer_seen(*args):
+        adapter._global_secret = 'replaced-authority'
+        return seen
+
+    monkeypatch.setattr(adapter._coalescer, 'producer_seen', producer_seen)
+    try:
+        answer = await adapter._handle_webhook(_mock_request(_payload(7), delivery_id='changed'))
+        assert answer.status == 503
+        assert not adapter._coalescer.store.path.exists()
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_unresolved_key_retry_reaches_ordinary_verifier(monkeypatch):
     adapter = _make_adapter(routes={'pr': _coalesce_route(key='missing')})
     prompts = []

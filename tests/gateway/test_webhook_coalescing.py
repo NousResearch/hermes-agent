@@ -44,6 +44,11 @@ def _capture_admissions(adapter, monkeypatch):
             return Binding(profile or 'default', 'fixture-store', revision[0], revision[1], {})
 
         monkeypatch.setattr(adapter._coalescer, 'binding', binding)
+
+        async def producer_seen(*args):
+            return False
+
+        monkeypatch.setattr(adapter._coalescer, 'producer_seen', producer_seen)
     return admitted
 
 

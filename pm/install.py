@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,6 +70,94 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
+# --- Memoized path state ---------------------------------------------------
+# Composing the store's PATH dirs (and the sealed payload's copy substitution) is on
+# the terminal's critical path: every command asks for it before bash.exe is even
+# spawned, and answering costs a lock.json parse, a facts.json parse and a stat per
+# package per store root — hundreds of milliseconds on a machine with a slow filter
+# driver. The answer is therefore remembered, keyed by the process state it was built
+# from: the resolver functions (tests replace them; so does code around `pm`), the
+# roots the environment names, and the package catalogue. Files it was built from are
+# re-checked once per `_memo_ttl`, and anything that changes installed state in this
+# process (`activate`, an install) drops it outright, so a fresh or removed tool is
+# served on the next command while a steady one costs no syscall at all.
+_memo_ttl = 1.0
+_memo: dict[str, tuple[tuple, object, tuple[tuple[str, object], ...], float]] = {}
+
+
+def _home() -> str:
+    try:
+        return str(Path.home())
+    except (RuntimeError, OSError):  # pragma: no cover - an unset HOME on a POSIX daemon
+        return ""
+
+
+def _witness(path) -> tuple[str, object]:
+    """What the memo remembers of a file it depends on: its spelling and identity.
+
+    ``None`` for the identity records an absent file, so one that appears later reads as
+    a change instead of a match."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return str(path), None
+    return str(path), (info.st_mtime_ns, info.st_size)
+
+
+def _state_key() -> tuple:
+    """The process state a memoized store-path answer depends on.
+
+    Every entry is compared, never inspected: function identities (a replaced resolver
+    must invalidate the answer), the environment that resolves the roots, the home a
+    sandbox moves, and the catalogue's current packages with the attributes the walk
+    reads."""
+    from pm import registry
+
+    return (
+        paths.repo_root, paths.store_root, paths.writable_store_root,
+        paths.facts_path, paths.lockfile_path,
+        _lockfile, _facts, _installed_location, get_package, walk, current_target,
+        _home(), os.environ.get("HERMES_RUNTIME_DIR"), os.environ.get("HERMES_HOME"),
+        os.environ.get("HOME"), os.environ.get("USERPROFILE"),
+        os.environ.get("HERMES_INSTALL_ROOT"),
+        tuple(sorted((name, id(package), package.deps, package.internal,
+                      bool(getattr(package, "on_path", True)))
+                     for name, package in registry._packages.items())),
+    )
+
+
+def _memo_lookup(name: str, key: tuple):
+    """The cached value for *name*, or ``None`` when *key* or the files behind it moved."""
+    entry = _memo.get(name)
+    if entry is None:
+        return None
+    stored_key, value, witnesses, stamp = entry
+    if stored_key != key:
+        return None
+    now = time.monotonic()
+    if now - stamp < _memo_ttl:
+        return value
+    # The window elapsed: re-check the files the answer was built from, then extend it.
+    # Only this check resets the window — refreshing it on every hit would let a steady
+    # stream of commands (the terminal's own) defer it forever.
+    if any(_witness(path) != observed for path, observed in witnesses):
+        return None
+    _memo[name] = (stored_key, value, witnesses, now)
+    return value
+
+
+def _memo_store(name: str, key: tuple, value, witnesses: tuple = ()) -> None:
+    _memo[name] = (key, value, tuple(witnesses), time.monotonic())
+
+
+def _forget_memo() -> None:
+    """Drop every memoized answer: installed state it was built from changed."""
+    _memo.clear()
+    from pm import shell
+
+    shell.forget_bash()
+
+
 def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
     """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
@@ -87,14 +176,20 @@ def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+                        roots: tuple[Path, ...] | None = None, heal: bool = True,
+                        shipped: Path | None = None):
     """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
-    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
-    search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch).
+
+    ``shipped`` is the shipped store a caller that walks every package already resolved
+    (``_store_path_dirs``): resolving it is a walk of stat calls into the bundle's ancestors,
+    not a constant."""
+    shipped = paths.store_root() if shipped is None else shipped
+    search_roots = dict.fromkeys(roots if roots is not None else (shipped, paths.writable_store_root()))
     fallback = None
     for root in search_roots:
         store = Store(root)
-        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        facts = _facts() if root == shipped else Facts(root / "facts.json")
         # Every row may hold the exact pin, but only the selected (first) row may be the outdated
         # fallback, never an older pin another install keeps; a later root's fallback still
         # replaces it, as before.
@@ -216,8 +311,18 @@ def is_installed(name: str) -> bool:
 
 def sealed() -> bool:
     """Sealed = bundled LAYOUT only: the store sits beside the bundle
-    manifest and is read-only as shipped."""
-    return (paths.store_root().parent / "manifest.json").is_file()
+    manifest and is read-only as shipped.
+
+    Asked by every path composition (``pm.user_facing.applies``), which resolves the store
+    root first; the verdict is memoized against that root and the manifest's identity."""
+    key = ("sealed", *_state_key())
+    cached = _memo_lookup("sealed", key)
+    if cached is not None:
+        return cached
+    manifest = paths.store_root().parent / "manifest.json"
+    bundled = manifest.is_file()
+    _memo_store("sealed", key, bundled, (_witness(manifest),))
+    return bundled
 
 
 def _refuse_lazy(name: str, what: str) -> InstallError:
@@ -511,6 +616,9 @@ def _install(
                 _refresh_recorded_env(package, selected_facts, store, entry, previous, target,
                                       select=(facts.get(package.name) or {}).get("entry") != entry_name)
             _remove_downloads(store, artifacts)
+            # The store may have gained tools earlier in this operation: path composition
+            # memoized before it would keep serving the old answer.
+            _forget_memo()
             return entry
         if not artifacts:
             raise InstallError(
@@ -552,6 +660,8 @@ def _install(
                 raise InstallError(package.name, f"install failed: {e}") from e
 
         _log_repair(package, previous, version, artifacts)
+        # A published entry changes what the store contributes to PATH.
+        _forget_memo()
     return entry
 
 
@@ -1117,7 +1227,7 @@ def _dependents_first(names: list[str]) -> list[str]:
     return order
 
 
-def _store_path_dirs() -> list[str]:
+def _compose_store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
     packages, each package ahead of its dependencies (``_dependents_first``),
     deduped. Includes optional packages that are
@@ -1126,13 +1236,16 @@ def _store_path_dirs() -> list[str]:
     not fully installed contributes nothing: store npm over a missing store
     node would run the user's node, a partial toolchain. Never installs."""
 
+    shipped = paths.store_root()
     lockfile = _lockfile()
     target = current_target()
+    roots = (shipped, paths.writable_store_root())
     locations: dict[str, object] = {}
 
     def located(package):
         if package.name not in locations:
-            locations[package.name] = _installed_location(package, lockfile, target)
+            locations[package.name] = _installed_location(package, lockfile, target,
+                                                          roots=roots, shipped=shipped)
         return locations[package.name]
 
     dirs: list[str] = []
@@ -1163,6 +1276,20 @@ def _store_path_dirs() -> list[str]:
     return dirs
 
 
+def _store_path_dirs() -> list[str]:
+    """``_compose_store_path_dirs``, memoized: the terminal asks for it before every
+    command (``pm.user_facing.user_facing_path``), and composing it parses the lock and
+    the installed state and stats every package in the store twice."""
+    cached = _memo_lookup("store_path_dirs", _state_key())
+    if cached is not None:
+        return list(cached)
+    dirs = tuple(_compose_store_path_dirs())
+    _memo_store("store_path_dirs", _state_key(), dirs,
+                (_witness(paths.facts_path()), _witness(paths.lockfile_path()),
+                 *(_witness(directory) for directory in dirs)))
+    return list(dirs)
+
+
 def activate(*, allow_incomplete: bool = False) -> list[str]:
     """Make the installed store usable: put its tool dirs at the FRONT of
     os.environ['PATH'] so reactive `shutil.which('git'|'node'|'ffmpeg'|...)`
@@ -1187,6 +1314,9 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     # The venv verdict is discarded here, and computing it imports application
     # config readers (ruamel) that the bare update interpreter does not carry.
     problems = check(include_venv=not allow_incomplete)
+    # The verdict above re-read every package, so anything memoized before it is older
+    # news: PATH composition must serve what this startup just observed (#116818).
+    _forget_memo()
     path = os.environ.get("PATH", "")
     first = store_first_path(path)
     if first != path:

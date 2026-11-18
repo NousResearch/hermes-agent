@@ -315,16 +315,29 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 
 def _skills_prompt(agent: Any) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
-    categories to names-only — never hidden, every name stays visible."""
+    categories to names-only — never hidden, every name stays visible.  A delegated
+    ``subagent`` gets the same demotion unconditionally: it is a leaf worker, the index
+    is the biggest block in a prompt it will never read as prose, and every name stays
+    loadable through ``skill_view`` (``HERMES_SUBAGENT_FULL_SKILLS=1`` opts back out)."""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
     avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
+    _compact_cats: frozenset[str] = frozenset()
     try:
         from agent.coding_context import coding_compact_skill_categories
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
-        _compact_cats = frozenset()
+        pass
+    if (not _compact_cats and getattr(agent, "platform", None) == "subagent"
+            and not is_truthy_value(os.environ.get("HERMES_SUBAGENT_FULL_SKILLS"))):
+        # The posture's own deny-list, not `compact_skill_categories()`: that stays gated
+        # on focus so an interactive session's `auto` index keeps full entries.
+        try:
+            from agent.coding_context import CODING_PROFILE
+            _compact_cats = frozenset(CODING_PROFILE.compact_skill_categories)
+        except Exception:
+            pass
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
 

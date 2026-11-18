@@ -32,6 +32,37 @@ _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "HERMES_RPC_|HERMES_KERNEL_DIR)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Shell functions a login profile defines for INTERACTIVE use that a non-interactive agent command
+# never calls. Git for Windows' ``/etc/profile.d/git-prompt.sh`` + ``git-completion.bash`` add ~85
+# tab-completion helpers named ``_git*``, ``__git*`` and ``___git*``; capturing them made every
+# ``hermes-snap-*.sh`` 75 KB / 2,333 lines (88% completion code), and every command then sourced all
+# of it. Stated as bash regexes so the capture loop needs no ``awk``/``grep`` process per snapshot
+# (each external spawn costs tens of ms on Windows Git Bash): ``_x`` single-underscore helpers as
+# before, plus the git completion namespace. Any other function — including a user's own — is kept.
+_SNAPSHOT_FUNCTION_EXCLUDED_REGEXES = (r"^_[^_]", r"^_+git")
+
+
+def _capture_functions_script() -> str:
+    """Shell snippet that collects the names of the functions to preserve in the snapshot.
+
+    ``declare -F`` prints one ``declare -f <name>`` line per function, so the name is the last
+    word (POSIX mode prints the bare name — the same expansion takes it). Names matching
+    ``_SNAPSHOT_FUNCTION_EXCLUDED_REGEXES`` are dropped; the empty-name skip keeps a blank line
+    from producing a bare ``declare -f``, which would dump ALL functions (see
+    ``_snapshot_bootstrap_script``). ``[[ =~ ]]`` is a builtin, and the herestring keeps the loop
+    in the current shell so ``__hermes_fns`` survives it.
+    """
+    pattern = " || ".join(f"[[ $__hermes_fn =~ {rx} ]]" for rx in _SNAPSHOT_FUNCTION_EXCLUDED_REGEXES)
+    return (
+        '__hermes_fns=""\n'
+        "while IFS= read -r __hermes_decl; do\n"
+        "  __hermes_fn=${__hermes_decl##* }\n"
+        '  [ -n "$__hermes_fn" ] || continue\n'
+        f"  if {pattern}; then continue; fi\n"
+        '  __hermes_fns="$__hermes_fns $__hermes_fn"\n'
+        'done <<< "$(declare -F)"')
+
+
 # mktemp template suffix + the shell variable holding the allocated temp path.
 _SNAP_TMP_SUFFIX = ".tmp.XXXXXXXXXX"
 _SNAP_TMP = '"$__hermes_snap_tmp"'
@@ -102,13 +133,16 @@ def _cwd_marker_printf(marker: str) -> str:
 
 def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[str] = ()) -> str:
     """Shell snippet dumping ``export -p`` to *tmp_path* minus the per-session bridged vars (see
-    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and *excluded_names*. The vars are ``unset`` in a subshell
-    BEFORE ``export -p``: a line-based ``grep -vE`` is unsafe because bash 3.2 prints a value
+    ``_SNAPSHOT_EXCLUDED_ENV_REGEX``) and *excluded_names*. The vars are ``unset`` BEFORE
+    ``export -p``: a line-based ``grep -vE`` is unsafe because bash 3.2 prints a value
     containing a newline as a multi-line ``declare -x`` block, so smuggled continuation lines would
-    survive into the snapshot and execute on the next ``source``. ``|| true`` keeps the success
-    contract. The dump is a brace group with the redirection on the group: *tmp_path* is usually a
-    shell-variable expansion, and a redirect on a pipeline segment would expand it inside that
-    segment's subshell, inconsistently with the parent that expands the follow-up ``mv``.
+    survive into the snapshot and execute on the next ``source``. The ``unset`` runs in the calling
+    shell rather than a ``( … )`` subshell — a subshell is a fork, ~26 ms per command on Windows Git
+    Bash, and the caller exits right after the dump, so nothing can observe the unset vars. The
+    ``|| true`` on it keeps the success contract (a readonly var fails ``unset`` without ``set -e``
+    killing the dump). The dump is a brace group with the redirection on the group: *tmp_path* is
+    usually a shell-variable expansion, and a redirect on a pipeline segment would expand it inside
+    that segment's subshell, inconsistently with the parent that expands the follow-up ``mv``.
 
     ``curl … | bash #`` smuggled into a Matrix room/display name via ``HERMES_SESSION_CHAT_NAME``) land in
     the snapshot and execute on the next ``source`` (issue #71296). Unsetting first means ``export -p``
@@ -120,7 +154,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     safe_names = {name for name in excluded_names if isinstance(name, str) and name}
     extra_unset = "".join(f" {shlex.quote(name)}" for name in sorted(safe_names))
     return (
-        "{ ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
+        "{ unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers re-exported
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
@@ -133,8 +167,8 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # leaked token in the snapshot would re-export into every later command
         # on the backend and outlive the private dir it protects.
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
-        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
-        "export -p; ) || true; } "
+        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null || true; "
+        "export -p; } "
         f"> {tmp_path}")
 
 
@@ -147,13 +181,15 @@ def _snapshot_bootstrap_script(
     bash 3.2 lacks ``$BASHPID``, so only ``mktemp`` is portable). Functions are filtered by NAME via
     ``declare -F`` (a line-based ``declare -f | grep -v`` strips the header and leaves an orphaned
     body that breaks every sourced command); the non-empty guard matters because bare ``declare -f``
-    dumps ALL functions. The trailing ``cd`` restores the configured cwd after profile scripts (e.g.
-    ``cd ~``) so ``pwd -P`` reports terminal.cwd, not the profile's directory."""
+    dumps ALL functions. The name filter is ``_capture_functions_script``: builtins only (no
+    ``awk``/``grep`` spawn per snapshot) and it drops the interactive git completion helpers that
+    used to make this file 75 KB. The trailing ``cd`` restores the configured cwd after profile
+    scripts (e.g. ``cd ~``) so ``pwd -P`` reports terminal.cwd, not the profile's directory."""
     return (
         "umask 077\n"
         f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) || exit 1\n"
         f"{_export_dump_excluding_session_vars(_SNAP_TMP, excluded_names)}\n"
-        "__hermes_fns=$(declare -F | awk '{print $3}' | grep -vE '^_[^_]') || true\n"
+        f"{_capture_functions_script()}\n"
         f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {_SNAP_TMP} 2>/dev/null || true\n"
         f"alias -p >> {_SNAP_TMP}\n"
         f"echo 'shopt -s expand_aliases' >> {_SNAP_TMP}\n"
@@ -169,15 +205,21 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
     """Shell lines that save profile-scoped passthrough vars before the snapshot is sourced
     and restore (or unset) them afterwards — a shared snapshot may hold the previous
     profile's value. Values stay in environment memory and never enter the command string."""
-    save: list[str] = []
-    restore: list[str] = []
-    for name in names:
-        marker = f"_HERMES_RUNTIME_PASSTHROUGH_{name}"
-        present, value = f"{marker}_PRESENT", f"{marker}_VALUE"
-        save += [f"{present}=${{{name}+x}}", f"{value}=${{{name}-}}"]
-        restore += [
-            f'if [ "${present}" = x ]; then export {name}="${value}"; else unset {name}; fi',
-            f"unset {present} {value}"]
+    valid = [n for n in names if isinstance(n, str) and _SHELL_ENV_NAME_RE.fullmatch(n)]
+    if not valid:
+        return [], []
+    joined = " ".join(valid)
+    save = [
+        f"for __hermes_pt in {joined}; do "
+        'eval "_HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_PRESENT=\\${${__hermes_pt}+x} '
+        '_HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_VALUE=\\${${__hermes_pt}-}"; done; unset __hermes_pt']
+    restore = [
+        f"for __hermes_pt in {joined}; do "
+        'eval "if [ \\"\\${_HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_PRESENT}\\" = x ]; then '
+        'export ${__hermes_pt}=\\"\\${_HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_VALUE}\\"; '
+        'else unset ${__hermes_pt}; fi; '
+        'unset _HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_PRESENT '
+        '_HERMES_RUNTIME_PASSTHROUGH_${__hermes_pt}_VALUE"; done; unset __hermes_pt']
     return save, restore
 
 

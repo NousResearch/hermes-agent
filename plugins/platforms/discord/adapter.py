@@ -2327,7 +2327,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 logger.warning("[%s] Could not refresh Discord application info", self.name, exc_info=True)
                 fresh = None
             if client is not self._client:
-                return  # replaced mid-refresh; the new client's READY runs its own sync
+                return  # replaced mid-refresh; syncing is left to the new client's own initialization
             self._app_info = fresh or self._app_info
             app_info = self._app_info or getattr(client, "application", None)
             scopes = app_command_scopes(app_info)

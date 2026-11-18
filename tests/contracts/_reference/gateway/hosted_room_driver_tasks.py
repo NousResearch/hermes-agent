@@ -367,6 +367,8 @@ class DriverTaskMixin:
         changes = {"status": "cancelled", "result_json": None, "cancel_generation": expected_cancel_generation + 1,
                    "cancel_id": cancel_id, "terminal_at": now, "updated_at": now}
         return self._transition(placement, identity, now=now, changes=changes, fence=fence,
+                                replay=lambda row: _cancel_replay(cancel_id)(row) if _generations_match(
+                                    row, "cancelled", expected_execution_generation, expected_cancel_generation + 1) else None,
                                 stale="deferred cancellation belongs to a replaced attempt")
 
     def begin_task_cancel(self, identity: HostedTaskIdentity, *, placement: HostedPlacement, cancel_id: str, expected_cancel_generation: int, now: float | None = None) -> Mapping[str, JsonValue]:

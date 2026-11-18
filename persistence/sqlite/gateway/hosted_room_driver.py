@@ -723,6 +723,8 @@ class SQLiteHostedRoomDriverRepository:
             placement, identity, now=now, sql=_task_update(_CANCEL_SET, f"status='deferred' AND {_GENERATION_FENCE}"),
             set_params=(expected_cancel_generation + 1, cancel_id, now, now),
             fence_params=(expected_execution_generation, expected_cancel_generation),
+            replay=lambda row: _cancel_replay(cancel_id)(row) if _generations_match(
+                row, "cancelled", expected_execution_generation, expected_cancel_generation + 1) else None,
             stale="deferred cancellation belongs to a replaced attempt")
 
     # Cancels a queued or deferred task; running work goes through ``begin_task_cancel``.

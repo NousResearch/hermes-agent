@@ -239,3 +239,13 @@ def test_wmic_missing_follows_the_path_through_the_shared_resolver(tmp_path, mon
         gw.wmic_missing.cache_clear()
         assert gw.wmic_missing() is missing
     gw.wmic_missing.cache_clear()
+
+
+def test_a_task_of_another_install_with_the_same_arguments_is_not_named():
+    """InstallB's task runs the same arguments, but stopping it leaves InstallA's backend starting at sign-in."""
+    other = r"C:\InstallB\hermes\bin\hermes.exe"
+    xml = _dump(_task(r"\Hermes Dashboard", other, "dashboard --no-open --host 0.0.0.0 --port 9119"))
+    assert gw.tasks_running(xml, _BACKEND) == []
+    # A task that names a bare `hermes` cannot be tied to an install: it is not named either.
+    assert gw.tasks_running(_dump(_task(r"\Bare", "hermes", "dashboard --no-open --host 0.0.0.0 --port 9119")),
+                            _BACKEND) == []

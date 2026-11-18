@@ -19,6 +19,35 @@
   inset-inline-end: var(--portal-workspace-inset-end);
 }
 
+/* The open bar rests quiet and comes up when the pointer reaches the window's end corner, when the
+   keyboard is in it, or while one of its menus is open. Its reach covers the floor around it, up to the frame,
+   so the corner wakes it, not just a chip. A touch screen has no pointer to wake it: it stays full. */
+@media (hover: hover) {
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open] {
+    opacity: var(--portal-status-bar-rest-opacity);
+  }
+
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open]::before {
+    position: absolute;
+    z-index: -1;
+    inset: calc(var(--portal-status-bar-floor) + var(--portal-status-bar-height) - var(--portal-status-bar-open-inset))
+      calc(-1 * var(--portal-workspace-inset-end)) calc(-1 * var(--portal-status-bar-floor));
+    content: '';
+  }
+
+  :root[data-shell='portal']
+    [data-slot='portal-status-bar'][data-open]:is(:hover, :focus-within, :has([data-state='open'])) {
+    opacity: 1;
+  }
+}
+
+/* Hover enters instantly; only the return to rest eases. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] [data-slot='portal-status-bar'][data-open]:not(:hover, :focus-within) {
+    transition: opacity var(--portal-motion-slow) var(--portal-ease);
+  }
+}
+
 /* The developer rail stands between the frame and the window's end: the bar ends with the frame. */
 :root[data-shell='portal']:has([data-slot='layout-cover'] + [data-slot='developer-rail'])
   [data-slot='portal-status-bar'] {

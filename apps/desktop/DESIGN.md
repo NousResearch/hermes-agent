@@ -502,6 +502,8 @@ timer, context, cache hit rate, tokens per second, focus timer, approvals) and w
 gap grows from 15px to 40px; collapsed, the toggle floats in the frame's end corner and the bar's
 items join the rest of the classic bar's as rows in the rail's System popover. It is open by default
 with developer chrome only: Simple rests it collapsed, and its toggle there opens it for the session.
+Open, it rests at half ink and comes to full when the pointer reaches the floor around it, the
+keyboard is in it or one of its menus is open (a touch screen keeps it full).
 A phone has neither bar nor toggle. It lives in `app/redesign/portal-status-bar.*` and
 `store/portal-status-bar.ts`.
 
@@ -827,7 +829,8 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-workspace-inset-start` | `0.3125rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
-| `--portal-status-bar-height` | `1.25rem` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. |
+| `--portal-status-bar-rest-opacity` | `0.5` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. Open, it rests at half ink so the floor stays quiet, and comes to full under the pointer or the keyboard. |
+| `--portal-status-bar-height` | `1.25rem` | ″ |  |
 | `--portal-status-bar-gap` | `0.5625rem` | ″ |  |
 | `--portal-status-bar-floor` | `0.75rem` | ″ |  |
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |

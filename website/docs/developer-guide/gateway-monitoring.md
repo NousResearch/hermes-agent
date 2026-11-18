@@ -315,11 +315,19 @@ and one more just before it suspends its own machine under scale-to-zero
 - **One sender per machine.** Only the default profile's gateway reports, and it
   holds a machine-local lock while it does, so a host that runs one gateway per
   profile sends one stream of reports.
+- **Interval.** Two minutes with 10% jitter, unless the receiver sets another.
+  A stored reply may carry `Report-Interval: <seconds>`, a positive whole
+  number; the gateway then reports at that interval, kept within 1 and 10
+  minutes, with the same jitter. A stored reply without a valid one sets the
+  interval back to two minutes, and the header on any other reply is ignored.
+  The interval is held in memory only, never in a file, `config.yaml` or the
+  environment: every gateway process starts at two minutes and sends its first
+  report at once.
 - **Replies.** `2xx` is stored. `429`/`503` wait for `Retry-After`, at most 10
   minutes. `401`/`403` back off 2, 4, 8, 16, 32 and then 60 minutes until a
   report is stored again. A network error or another `5xx` gets one retry a few
-  seconds later. The reply body is never read, so a receiver cannot steer the
-  gateway.
+  seconds later. The reply body is never read: a receiver can set the interval
+  and ask for a wait, and cannot steer the gateway in any other way.
 
 What a report carries, and nothing else:
 

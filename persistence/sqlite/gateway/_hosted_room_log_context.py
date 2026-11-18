@@ -34,7 +34,22 @@ def discussion_events(conn, *, room_id, discussion_event_id, kinds):
     ]
 
 
-def _message_page(conn, *, room_id, through_seq, thread_id, after_seq):
+def thread_prefix(conn, room_id, thread_id, after, end, published_through):
+    while after < end:
+        after, messages = _message_page(
+            conn,
+            room_id=room_id,
+            through_seq=end,
+            thread_id=thread_id,
+            after_seq=after,
+            published_through=published_through,
+        )
+        yield from messages
+
+
+def _message_page(
+    conn, *, room_id, through_seq, thread_id, after_seq, published_through=None
+):
     rows = conn.execute(
         f"""SELECT {_EVENT_COLUMNS} FROM hosted_room_events
             WHERE room_id=? AND seq>? AND seq<=? ORDER BY seq LIMIT 64""",
@@ -65,7 +80,7 @@ def _message_page(conn, *, room_id, through_seq, thread_id, after_seq):
                     room_id,
                     payload.get("task_id"),
                     event["seq"] + 1,
-                    through_seq,
+                    through_seq if published_through is None else published_through,
                     event["event_id"],
                     payload.get("member_id"),
                     thread_id,

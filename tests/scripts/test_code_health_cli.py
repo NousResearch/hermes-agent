@@ -33,7 +33,7 @@ _GUARD_SCRIPTS = (
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py", "scripts/ci/check_line_endings.py",
     "scripts/check_desktop_design_tokens.py",
     "scripts/ci/check_dockerfile_downloads.py", "scripts/check_tool_discovery.py",
-    "scripts/check_packaged_imports.py",
+    "scripts/check_packaged_imports.py", "scripts/ci/check_backend_imports.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py",
             "tools/__init__.py", "tools/registry.py", "hermes_constants.py", *_GUARD_SCRIPTS)

@@ -302,11 +302,6 @@ export type BotsMessages = {
   }
   /** Skills hub + MCP setup surfaces embedded in the bot editor. */
   tools: {
-    installHint: (name: string) => string
-    installed: (name: string) => string
-    installFailed: (name: string) => string
-    searchHint: string
-    resizeHint: string
     addServerFailed: string
     noTarget: string
     setKeyFailed: (name: string) => string
@@ -322,9 +317,7 @@ export type BotsMessages = {
     setupFailed: string
     signIn: string
     setUp: string
-    skillsHub: string
     filterSkills: string
-    searchHub: string
     noMcpServers: string
   }
 

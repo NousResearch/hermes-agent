@@ -308,7 +308,7 @@ export function isCompressionBusyError(error: unknown): boolean {
 }
 
 /** prompt.submit refused because this principal's submission id on this session is ALREADY admitted
- *  with another payload (hermes_state_runtime.ADMITTED_REQUEST_CONFLICT): the send was delivered.
+ *  with another payload (persistence.authority.vocabulary.ADMITTED_REQUEST_CONFLICT): the send was delivered.
  *  Every other `admission_conflict` (route, binding, lineage) names no such field and stays an error. */
 export function isAdmittedSubmissionConflict(error: unknown): boolean {
   const data =

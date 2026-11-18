@@ -19,7 +19,7 @@ export interface AutoArchiveConfig {
 
 // Opt-in retention: soft-hide chats untouched for N days. The policy itself
 // (last-activity sweep, pin exemption) lives in the backend
-// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
+// (sessions.auto_archive in config.yaml + session_retention.run_auto_archive); this
 // only edits the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
 // Null until the config is read: the control stays unmounted if it cannot be.

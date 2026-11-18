@@ -88,11 +88,11 @@ describe('remote HTML previews', () => {
 
     const document = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa(html)}`)
 
-    expect(document).toContain(`default-src 'none'`)
-    expect(document).toContain(`form-action 'none'`)
-    expect(document).toContain('<a>remote</a>')
-    expect(document).not.toContain('refresh')
-    expect(document).not.toContain('https://example.test')
+    expect(document.html).toContain(`default-src 'none'`)
+    expect(document.html).toContain(`form-action 'none'`)
+    expect(document.html).toContain('<a>remote</a>')
+    expect(document.html).not.toContain('refresh')
+    expect(document.html).not.toContain('https://example.test')
   })
 
   it('strips scripts from remote HTML', () => {
@@ -101,10 +101,24 @@ describe('remote HTML previews', () => {
 
     const document = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa(html)}`)
 
-    expect(document).toContain('<p>safe</p>')
-    expect(document).not.toContain('<script')
-    expect(document).not.toContain('SCRIPT-RAN')
-    expect(document).not.toContain('TEMPLATE-SCRIPT')
+    expect(document.html).toContain('<p>safe</p>')
+    expect(document.html).not.toContain('<script')
+    expect(document.html).not.toContain('SCRIPT-RAN')
+    expect(document.html).not.toContain('TEMPLATE-SCRIPT')
+  })
+
+  it('reports whether remote HTML had scripts stripped', () => {
+    const withScripts = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa('<script>run()</script><p>x</p>')}`)
+    expect(withScripts.html).toContain('<p>x</p>')
+    expect(withScripts.scriptsStripped).toBe(true)
+
+    const withoutScripts = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa('<p>x</p>')}`)
+    expect(withoutScripts.html).toContain('<p>x</p>')
+    expect(withoutScripts.scriptsStripped).toBe(false)
+
+    const invalid = remoteHtmlPreviewDocument('data:text/html;base64,not-base64!!')
+    expect(invalid.html).toBeNull()
+    expect(invalid.scriptsStripped).toBe(false)
   })
 
   it('does not create scripts when sanitized HTML is reparsed', () => {
@@ -112,7 +126,7 @@ describe('remote HTML previews', () => {
 
     const sanitized = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa(html)}`)
 
-    expect(sanitized).not.toContain('<script')
+    expect(sanitized.html).not.toContain('<script')
     expect(new DOMParser().parseFromString(sanitized ?? '', 'text/html').querySelector('script')).toBeNull()
   })
 
@@ -120,7 +134,7 @@ describe('remote HTML previews', () => {
     const html = '<p>café 😀</p>'
     const payload = btoa(String.fromCharCode(...new TextEncoder().encode(html)))
 
-    expect(remoteHtmlPreviewDocument(`data:text/html;base64,${payload}`)).toContain(html)
+    expect(remoteHtmlPreviewDocument(`data:text/html;base64,${payload}`).html).toContain(html)
   })
 
   it('stages remote HTML before opening it in the system browser', async () => {

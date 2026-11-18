@@ -157,11 +157,19 @@ export function validatedRemoteHtmlDataUrl(value: string): string | null {
   }
 }
 
-export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
+export interface RemoteHtmlPreview {
+  /** Sanitized document HTML, or `null` when the data URL failed validation. */
+  html: string | null
+  /** True when the source HTML carried `<script>` elements that DOMPurify
+   *  stripped for the remote sandbox — charts and tabs built from them won't run. */
+  scriptsStripped: boolean
+}
+
+export function remoteHtmlPreviewDocument(dataUrl: string): RemoteHtmlPreview {
   const validated = validatedRemoteHtmlDataUrl(dataUrl)
 
   if (!validated) {
-    return null
+    return { html: null, scriptsStripped: false }
   }
 
   const csp = `default-src 'none'; base-uri 'none'; form-action 'none'; img-src data:; media-src data:; font-src data:; style-src 'unsafe-inline'`
@@ -169,6 +177,10 @@ export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
   const html = new TextDecoder().decode(
     Uint8Array.from(atob(validated.slice(validated.indexOf(',') + 1)), char => char.charCodeAt(0))
   )
+
+  // Report stripped scripts before DOMPurify removes them, so the preview pane
+  // can warn that interactive parts of a remote HTML page won't run.
+  const scriptsStripped = /<script\b/i.test(html)
 
   const document = new DOMParser().parseFromString(
     DOMPurify.sanitize(html, {
@@ -196,7 +208,7 @@ export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
   policy.content = csp
   document.head.prepend(policy)
 
-  return `<!doctype html>${document.documentElement.outerHTML}`
+  return { html: `<!doctype html>${document.documentElement.outerHTML}`, scriptsStripped }
 }
 
 export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise<void> {

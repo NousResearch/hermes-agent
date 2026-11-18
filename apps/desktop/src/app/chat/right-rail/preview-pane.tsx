@@ -397,10 +397,13 @@ export function PreviewPane({
   const usesBrowserIframe = webSurface === 'iframe'
   const usesWebview = webSurface === 'webview'
 
-  const remoteHtmlDocument = useMemo(
+  const remoteHtmlPreview = useMemo(
     () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
     [isRemoteHtml, target.dataUrl]
   )
+
+  const remoteHtmlDocument = remoteHtmlPreview?.html ?? null
+  const remoteHtmlScriptsStripped = Boolean(remoteHtmlPreview?.scriptsStripped)
 
   const currentLabel = compactUrl(currentUrl)
 
@@ -1538,6 +1541,23 @@ export function PreviewPane({
             )}
             ref={hostRef}
           />
+          {isRemoteHtml && remoteHtmlScriptsStripped && (
+            <div className="absolute top-0 inset-x-0 z-20 px-2 py-1 text-[0.6875rem] leading-relaxed text-muted-foreground/70 bg-background/80 border-b border-border/60">
+              Scripts are disabled in remote previews — charts and interactive elements on this page won't run here.{' '}
+              <span
+                className="pointer-events-auto underline underline-offset-4 hover:text-foreground cursor-pointer"
+                onClick={event => {
+                  event.preventDefault()
+                  void openPreviewTargetInBrowser(target).catch(error =>
+                    notifyError(error, t.preview.unavailable)
+                  )
+                }}
+              >
+                Open in your browser
+              </span>
+              .
+            </div>
+          )}
           {isRemoteHtml && (
             <PreviewDocumentFrame
               className="absolute inset-0 size-full border-0 bg-white"

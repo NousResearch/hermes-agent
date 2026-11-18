@@ -35,7 +35,7 @@ Don't use for: one-off status questions (answer directly), price/availability th
 
 - At least one source connector the dashboard will read from: email/calendar via `himalaya` or `google-workspace`, websites via `web_extract` or `browser_exec`, local files via `read_file`. If none is configured, renegotiate the sources in step 1 before writing any artifact.
 - `cronjob` for the recurring tick.
-- Optional: the `desktop_preview` tool (Hermes desktop app sessions). When it is in the toolset, dashboards render in the in-app preview pane; otherwise the user is given the file path.
+- Optional: the `desktop_preview` tool (Hermes desktop app sessions). Local Desktop only — when it is in the toolset **and the backend is local**, dashboards render live in the in-app preview pane. On a remote backend (Webapp served by the gateway, or Desktop pointed at a remote gateway) the pane strips `<script>` tags, so dashboards are shown inline with `::preview{file="..."}` instead; otherwise the user is given the file path.
 
 ## Procedure — Setup (foreground, once)
 
@@ -87,7 +87,8 @@ If the diff contains material changes or new needs-attention items, deliver a sh
 
 ### 8. Render where the user can see it
 
-- Desktop/GUI session (`desktop_preview` is in the toolset): `desktop_preview(action="open", url=<absolute path to index.html>, label=<dashboard purpose>)` so the page renders live in the preview pane beside the chat; re-open after each re-render so the pane shows the new state.
+- Local Desktop/GUI session (`desktop_preview` is in the toolset **and the backend is local**): `desktop_preview(action="open", url=<absolute path to index.html>, label=<dashboard purpose>)` so the page renders live in the preview pane beside the chat; re-open after each re-render so the pane shows the new state.
+- Remote backend (Webapp served by the gateway, or Desktop pointed at a remote gateway): `desktop_preview` strips `<script>` tags in the right-rail pane, so an agent-built dashboard's charts and tabs render as a static shell there. Instead, show the dashboard inline in the reply with `::preview{file="<absolute path to index.html>"}` — it reads the file over the authenticated `/api/fs` bridge with `allow-scripts`, so inline JS runs on remote backends too — and also report the absolute path of `index.html`.
 - Any other session (CLI, messenger, cron tick without a GUI): report the absolute path of `index.html` and offer to open it where the platform allows.
 
 Done when the user has either seen the rendered page or been told exactly where it lives.
@@ -101,6 +102,7 @@ Done when the user has either seen the rendered page or been told exactly where 
 - Tracking the wrong grain (per-thread when the user thinks per-application).
 - Hardcoding the Hermes home path — resolve it from the running install (the directory holding `config.yaml`) and write absolute paths into cron prompts.
 - Calling `desktop_preview` outside a desktop session — it is only in the toolset for GUI sessions; fall back to the path.
+- On a remote backend, `desktop_preview` strips `<script>` tags, so an interactive dashboard renders as a static shell in the right-rail pane — show it inline with `::preview{file="..."}` instead.
 
 ## Verification
 

@@ -97,11 +97,12 @@ def _finalize_codex_models(model_ids: list[str]) -> list[str]:
     return _add_context_variants(_add_forward_compat_models(model_ids))
 
 
-def _drop_undiscovered_models(model_ids: list[str]) -> list[str]:
-    """Only the live account catalog may advertise these plan-gated models."""
+def codex_model_requires_account_discovery(model: str) -> bool:
+    """Whether a Codex model is only advertised after account discovery."""
     from agent.reasoning_effort import GPT62_MODEL_IDS, is_astra_model
+    from hermes_cli.model_normalize import normalize_model_for_provider
 
-    return [model for model in model_ids if model not in GPT62_MODEL_IDS and not is_astra_model(model)]
+    return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
 
 
 def codex_catalog_credential_identity() -> str:
@@ -226,6 +227,5 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
     from hermes_cli.models_catalog_static import CuratedFallbackModels
 
     default_model = _read_default_model(codex_home)
-    return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_models(_dedupe([
-        *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS]))))
+    hints = [*([default_model] if default_model else []), *_read_cache_models(codex_home), *DEFAULT_CODEX_MODELS]
+    return CuratedFallbackModels(_finalize_codex_models([m for m in hints if not codex_model_requires_account_discovery(m)]))

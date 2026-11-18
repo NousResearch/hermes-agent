@@ -1988,8 +1988,10 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
-    """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
+    slug = _normalized_cache_slug(provider)
+    return codex_model_requires_account_discovery(model) if slug == "openai-codex" else (
+        slug in {"openai", "openai-api"} and is_astra_model(model))
 
 
 def cached_provider_model_ids(
@@ -1998,10 +2000,8 @@ def cached_provider_model_ids(
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
     result. Always returns a list.
 
-    ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
-    A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
-    cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
-    (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
+    ``non_blocking`` never waits for a provider probe (#114215). Only fresh verified rows can
+    advertise account-gated models; stale rows may be served while a daemon refreshes them."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -2014,15 +2014,14 @@ def cached_provider_model_ids(
 
     if not force_refresh:
         tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
-        if tier is not None:
+        if tier is not None and entry is not None:
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
-            return _chat_catalog_rows(list(entry["models"]))
+            verified = tier == "fresh" and not entry.get("fallback")
+            return _chat_catalog_rows([m for m in entry["models"] if verified or not _model_requires_account_discovery(normalized, m)])
 
     if non_blocking and not force_refresh:
-        # Read path: never touch the network in the caller's thread. A same-credentials row past the
-        # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
-        # warms the next open; a cold row returns [] and the caller falls back to its curated list.
+        # Serve same-credential hints past the SWR window while the daemon warms the next open.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
             return _chat_catalog_rows([

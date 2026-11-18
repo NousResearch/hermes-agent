@@ -6,6 +6,7 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { registry } from '@/contrib/registry'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { _resetUserSessionOpenForTests, noteUserSessionOpen } from '@/store/session-open-intent'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
@@ -299,5 +300,51 @@ describe('narrow overlay of a stacked zone', () => {
     expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe(
       '260px'
     )
+  })
+})
+
+// The drawer is the only way to reach the session list on a narrow viewport,
+// so it must get out of the way once a chat is chosen — including the case the
+// review called out: the chosen chat is already on screen (a tile, or main), so
+// $activeSessionId never changes even though the person did open a session.
+describe('narrow overlay and an explicit session open', () => {
+  beforeEach(() => {
+    _resetUserSessionOpenForTests()
+  })
+
+  it('dismisses the drawer when the person opens a chat', () => {
+    asNativeDesktop()
+    const { queryByTestId } = render(<NarrowOverlays />)
+
+    revealPane('sessions')
+    expect(queryByTestId('sessions-body')).toBeTruthy()
+
+    act(() => noteUserSessionOpen())
+
+    expect(queryByTestId('sessions-body')).toBeNull()
+  })
+
+  it('dismisses it even when the chosen chat is already on screen', () => {
+    asNativeDesktop()
+    const { queryByTestId } = render(<NarrowOverlays />)
+
+    // Nothing writes $activeSessionId in this test: the drawer must close on
+    // the open intent alone, not on the id changing underneath it.
+    revealPane('sessions')
+    act(() => noteUserSessionOpen())
+
+    expect(queryByTestId('sessions-body')).toBeNull()
+  })
+
+  it('still opens normally after a dismissal', () => {
+    asNativeDesktop()
+    const { queryByTestId } = render(<NarrowOverlays />)
+
+    revealPane('sessions')
+    act(() => noteUserSessionOpen())
+    expect(queryByTestId('sessions-body')).toBeNull()
+
+    revealPane('sessions')
+    expect(queryByTestId('sessions-body')).toBeTruthy()
   })
 })

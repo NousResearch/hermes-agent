@@ -20,6 +20,7 @@ import { hostHas } from '@/lib/host-capabilities'
 import { cn } from '@/lib/utils'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
+import { $userSessionOpenRevision, LAUNCH_USER_SESSION_OPEN } from '@/store/session-open-intent'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -59,6 +60,21 @@ export function NarrowOverlays() {
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  // A chat opened from this drawer is an explicit open intent: dismiss the
+  // overlay so the transcript it revealed is actually visible. Keyed on the
+  // intent revision, NOT on $activeSessionId — choosing a chat that is already
+  // on screen (a tile, or main) moves focus without changing the active id,
+  // and the drawer has to close in that case too.
+  const userSessionOpen = useStore($userSessionOpenRevision)
+
+  useEffect(() => {
+    if (userSessionOpen === LAUNCH_USER_SESSION_OPEN) {
+      return
+    }
+
+    setReveal(null)
+  }, [userSessionOpen])
 
   // The revealed overlay spans the full viewport height (inset-y-0 below), so
   // its tab strip starts at the top edge — under the native window controls

@@ -53,9 +53,26 @@ def _message_page(conn, *, room_id, through_seq, thread_id, after_seq):
                 """SELECT 1 FROM hosted_room_policy_publications AS publication
                 CROSS JOIN hosted_room_events AS receipt
                   ON receipt.room_id=publication.room_id AND receipt.seq=publication.seq
+                JOIN hosted_room_events AS source
+                  ON source.room_id=receipt.room_id AND source.event_id=json_extract(receipt.payload_json, '$.discussion_event_id')
                 WHERE publication.room_id=? AND publication.task_id=? AND publication.kind='turn.settled'
-                  AND publication.seq<=? AND json_extract(receipt.payload_json, '$.message_event_id')=?""",
-                (room_id, payload.get("task_id"), through_seq, event["event_id"]),
+                  AND publication.seq BETWEEN ? AND ? AND json_extract(receipt.payload_json, '$.message_event_id')=?
+                  AND json_extract(receipt.payload_json, '$.member_id')=?
+                  AND json_extract(receipt.payload_json, '$.thread_id')=?
+                  AND source.event_id=? AND source.kind='message.user' AND source.seq<?
+                  AND json_extract(source.payload_json, '$.thread_id')=?""",
+                (
+                    room_id,
+                    payload.get("task_id"),
+                    event["seq"] + 1,
+                    through_seq,
+                    event["event_id"],
+                    payload.get("member_id"),
+                    thread_id,
+                    payload.get("discussion_event_id"),
+                    event["seq"],
+                    thread_id,
+                ),
             ).fetchone()
             if committed is None:
                 continue

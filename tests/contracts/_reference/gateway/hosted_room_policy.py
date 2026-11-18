@@ -244,9 +244,22 @@ def _latest_user_message(tables: HostedTables, room_id: str, thread_id: str) -> 
 
 def _read_messages(tables, room_id, through_seq, *, thread_id, watermark):
     events = [event_from_row(row) for row in room_events(tables, room_id) if watermark < row["seq"] <= through_seq]
-    settled = {(e["payload"].get("task_id"), e["payload"].get("message_event_id")) for e in events if e["kind"] == "turn.settled"}
-    return [e for e in events if e["payload"].get("thread_id") == thread_id and (
-            e["kind"] == "message.user" or (e["kind"] == "message.member" and (e["payload"].get("task_id"), e["event_id"]) in settled))]
+    settled = {e["payload"].get("message_event_id"): e for e in events if e["kind"] == "turn.settled"}
+    messages = []
+    for event in events:
+        payload = event["payload"]
+        if payload.get("thread_id") != thread_id:
+            continue
+        if event["kind"] == "message.user":
+            messages.append(event)
+        elif event["kind"] == "message.member" and (receipt := settled.get(event["event_id"])):
+            source = find_event(tables, room_id, payload.get("discussion_event_id"))
+            if (source and source["kind"] == "message.user" and source["seq"] < event["seq"] < receipt["seq"]
+                    and json.loads(source["payload_json"]).get("thread_id") == thread_id
+                    and all(payload.get(key) == receipt["payload"].get(key)
+                            for key in ("thread_id", "member_id", "task_id", "discussion_event_id"))):
+                messages.append(event)
+    return messages
 
 
 class InMemoryHostedRoomPolicyRepository:

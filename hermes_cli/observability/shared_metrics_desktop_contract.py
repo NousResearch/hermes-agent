@@ -37,6 +37,11 @@ DESKTOP_IA_ACTIONS = {
     "pin": ('pinned_request', 'agent_request', 'search_request', 'pinned', 'unpinned', 'failed'),
     "new_session": ('sidebar', 'command', 'agent_row', 'picker_opened', 'picker_on_new', 'specific', 'default', 'dismissed'),
     "gateway": ('popover_open', 'popover_connecting', 'popover_offline', 'system', 'logs', 'reconnect', 'offline_agent'),
+    "splash": ('rename_shown', 'rename_reopened', 'rename_dismissed_nav', 'rename_dismissed_button',
+               'rename_dismissed_escape'),
+    "splash_row": ('rename_chats', 'rename_agents', 'rename_library', 'rename_routines', 'rename_machines',
+                   'rename_notifications'),
+    "alias_search": ('sessions', 'profiles', 'artifacts', 'cron', 'gateways'),
 }
 DESKTOP_IA_AREAS = (
     "chat", "profiles", "capabilities", "artifacts", "cron", "settings", "command-center", "plugin", "other",

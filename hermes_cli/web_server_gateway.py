@@ -300,6 +300,7 @@ _ACTION_LOG_FILES: dict[str, str] = {
     "gateway-start": "gateway-start.log",
     "gateway-stop": "gateway-stop.log",
     "gateway-migrate": "gateway-migrate.log",
+    "gateway-migrate-backends": "gateway-migrate-backends.log",
     "hermes-update": "hermes-update.log",
     **{name: f"action-{name}.log" for name in (
         "doctor", "security-audit", "backup", "import", "checkpoints-prune", "skills-install",

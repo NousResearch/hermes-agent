@@ -450,6 +450,32 @@ jobs:
             exit 1
           }
 
+  ux-blockers:
+    name: Confirmed UX blockers permit this candidate
+    needs: admit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Evaluate exact candidate against the live UX ledger
+        run: python3 -m scripts.ux_blockers gate --candidate "$RELEASE_COMMIT" --output ux-gate.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ux-release-decision
+          path: ux-gate.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   acceptance:
     name: All release acceptance checks pass
     if: always()
@@ -458,7 +484,7 @@ jobs:
             candidates-win32-x64, candidates-win32-bundle, candidates-termux,
             candidate-manifest, transitions-darwin-arm64,
             transitions-win32, windows-packaged, macos-packaged-arm64,
-            bootstrap-version]
+            bootstrap-version, ux-blockers]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -467,7 +493,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-win32 windows-packaged macos-packaged-arm64 bootstrap-version
+      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-win32 windows-packaged macos-packaged-arm64 bootstrap-version ux-blockers
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
@@ -540,6 +566,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:

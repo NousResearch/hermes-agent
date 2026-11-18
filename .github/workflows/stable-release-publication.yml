@@ -24,6 +24,8 @@ concurrency:
 permissions:
   contents: write
   actions: write
+  issues: read
+  pull-requests: read
 
 jobs:
   reconcile:

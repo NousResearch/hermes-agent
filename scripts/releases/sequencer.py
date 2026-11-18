@@ -371,13 +371,15 @@ def channel_head(desktop_head: str | None, records: list[dict],
     return max(versions, key=_key, default=None)
 
 
-def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
+def _reconcile_store(env: dict, records: list[dict], read_archive, check_ux) -> None:
     from scripts.releases import store
 
     # Channels are already durable; Store recovery must not depend on advancing them again.
     for record in sorted(records, key=lambda row: _key(row["version"]), reverse=True):
         if record["state"] != "published" or "windows-store" not in record["lanes"]:
             continue
+        # UX holds are mandatory, unlike advisory Store upload errors below.
+        check_ux(record)
         log(f"Reconciling the Microsoft Store submission for {record['tag']}")
         try:
             raw = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
@@ -397,9 +399,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
               read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
     from scripts.releases import channel_releases, docker, stable
+    from scripts.ux_blockers.service import require_candidate
 
     repository = env["GITHUB_REPOSITORY"]
     run = logged_run(run)
+    def check_ux(record):
+        log(f"Checking confirmed UX blockers against {record['commit']}")
+        return require_candidate(repository, record["commit"], run=run)
     requested = env.get("REQUESTED_VERSION") or None
     log(f"Stable sequencer: repository={repository} requested={requested or '(none)'}")
     # The archive copy is the only authority for the candidate manifest digest;
@@ -437,6 +443,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
             # Recovery for a publish that died after the receipt tag: the tag
             # exists and the release is still a draft, so the retarget and the
             # publication rerun. A public release can never be repaired.
+            check_ux(record)
             with group(f"Repair {record['version']}: retarget release {record['release_id']} "
                        f"onto {record['tag']} and publish it"):
                 stable.edit_draft_release(repository, record["release_id"], record["tag"],
@@ -485,6 +492,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     for number, step in enumerate(steps, start=1):
         if "flip" in step:
             record = by_version[step["flip"]]
+            check_ux(record)
             with group(f"[{number}/{len(steps)}] Publish {record['version']}: write {record['tag']}, "
                        f"retarget release {record['release_id']} from {record['claim_tag']}, make it public"):
                 # discover() ran before the receipt tag existed, so the record has no
@@ -496,6 +504,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
             notice(f"{record['tag']} is public", title="Stable sequencer")
         else:
             record = by_version[step["advance"]]
+            check_ux(record)
             with group(f"[{number}/{len(steps)}] Advance channels to {record['version']}"):
                 advance_head(record)
             notice(f"Stable channels advanced to {record['version']}", title="Stable sequencer")
@@ -514,7 +523,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
         if reached != expected:
             raise ValueError("Stable protected head did not reach the planned version")
     if production:
-        _reconcile_store(env, list(final.values()), read_archive)
+        _reconcile_store(env, list(final.values()), read_archive, check_ux)
     log("Stable sequencer finished: " + (", ".join(
         f"{kind} {version}" for step in steps for kind, version in step.items()) or "nothing to do"))
     return steps

@@ -36,6 +36,57 @@ app open during a CLI update, then verify that a normal Desktop quit and
 relaunch can complete the update and that an existing conversation still gets
 a reply. This extends the install/update suite's existing macOS CLI leg.
 
+## Automated UX triage and promotion gate
+
+The [UX blocker system](https://github.com/NousResearch/hermes-agent/issues/157333)
+uses GitHub issues as its ledger. The bug form's optional surface, journey,
+progress and recovery fields produce a deterministic **proposal**. Supported
+blocked journeys with external/manual recovery receive `impact:ux-release-blocker`
+(proposed UX P0). Clear recovery in the same surface receives
+`impact:ux-friction` (UX P1). Missing or contradictory evidence remains unknown.
+`ux:needs-review` distinguishes proposals from maintainer-confirmed blockers.
+Existing engineering P0–P3 labels are preserved.
+
+`UX blocker triage` runs on issue changes, issue comments, fixing-PR events,
+and a six-hour reconciliation. It maintains one bot assessment with GitHub's
+closing-PR relationships and their current states. PR prose and cross-references
+alone do not establish a fix. Older reports can receive a maintainer assessment
+without rewriting the reporter's evidence. See the [operator guide](https://github.com/NousResearch/hermes-agent/blob/main/.github/ux-blockers/README.md)
+for command syntax, the first-wave audit and adoption steps.
+
+A human with current repository write, maintain or admin permission confirms a
+supported-path failure with an evidence URL and exact candidate SHA. The bot
+retains the `ux:confirmed` index and an acknowledgement of the source command.
+This index includes **closed issues**. Editing report fields, closing an issue,
+merging a PR, or deleting an acknowledged confirmation cannot silently remove a
+hold. Reporters and bots cannot confirm or waive a blocker. Changes to maintainer
+commands require a fresh command; bot acknowledgements are audit records.
+
+The release owner records one candidate-specific disposition with an evidence
+URL and reason. `fixed` also requires a linked merged fix contained in that
+candidate. `recovered` requires a supported user-visible recovery. `unaffected`
+records why the released lanes exclude the affected path. `exception` records
+the explicit release-owner decision and supported recovery. The command's reason
+must explain the recovery/containment; the automation checks authority and
+identity, while the maintainer judges the evidence. UX P1 does not automatically
+hold a release. Duplicate confirmed reports follow a confirmed canonical issue;
+missing or cyclic canonical links hold promotion.
+
+The non-optional `ux-blockers` acceptance job evaluates the admitted commit. The
+publication sequencer re-reads live dispositions immediately before publishing a
+draft, repairing interrupted publication, advancing stable channels, and committing
+a Microsoft Store submission. API, pagination and authority failures stop these
+actions. Removing test lanes does not disable this gate. Evidence for an older
+candidate does not clear a newer candidate; each new candidate requires an
+applicable disposition after the latest confirmation.
+
+This uses the built-in Actions token, Python standard library and existing
+release controller. No classifier service, provider token, independent backlog,
+or live production agent test is needed for triage. Workflow code always comes
+from the trusted default branch and never executes a fork's code with write
+permissions. The regression tests use isolated GitHub API fixtures. Actual
+product recovery still needs evidence appropriate to the affected journey.
+
 ## Order
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and

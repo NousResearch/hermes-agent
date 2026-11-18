@@ -1,0 +1,1324 @@
+{
+  "schema_version": 1,
+  "dataset_version": "hermes-first-wave-refresh-v1",
+  "repository": "NousResearch/hermes-agent",
+  "claim_class": "advisory",
+  "scope": "bounded refresh of prior 19 selected clusters",
+  "captured_at_utc": "2026-11-18T11:24:21.487625+00:00",
+  "metadata_captured_at_utc": "2026-11-18T11:23:28.312531+00:00",
+  "historical_audit": {
+    "captured_at_utc": "2026-11-18T10:19:10.779092+00:00",
+    "window_start_utc": "2026-09-30T17:00:00Z",
+    "window_end_utc": "2026-11-18T10:19:10.779092+00:00",
+    "method": "12 title terms each queried independently for created issues and merged PRs; Sep30 UTC slack handles Bangkok boundary; first100 most-recently-updated hits per query. Regex mechanical screen then selected full-body/cross-reference checks. Not a census.",
+    "source_artifacts": [
+      {
+        "name": "hermes-ux-first-wave.csv",
+        "sha256": "47e42f294e7a4e3878f5be5d8221503625b579be963689ee8e39416d2b7e2276"
+      },
+      {
+        "name": "first-wave-screen-v2.json",
+        "sha256": "65a1f91905eb6d96ba44e4bd464b3fd25a18bf96bf84a939097812d8ca96aaf2"
+      }
+    ]
+  },
+  "policy_source_url": "https://github.com/NousResearch/hermes-agent/issues/157333",
+  "counts": {
+    "selected_deduplicated_clusters": 19,
+    "historical_new_open_report_evidenced_clusters": 9,
+    "historical_pre_window_open_carry_in_clusters": 1,
+    "historical_total_open_report_evidenced_clusters": 10,
+    "historical_qualifying_merged_clusters": 7,
+    "historical_qualifying_merged_prs": 8,
+    "historical_excluded_merged_candidates": 2,
+    "current_selected_open_issue_records": 16,
+    "current_selected_closed_issue_records": 5,
+    "current_historically_open_clusters_with_all_reports_open": 10,
+    "current_open_report_issue_records_in_historically_open_clusters": 14,
+    "current_audited_fix_prs_open": 6,
+    "current_audited_fix_prs_merged": 10,
+    "current_qualifying_fix_prs_still_merged": 8,
+    "additional_same_cluster_open_fix_candidates": 1,
+    "independently_executed_current_rc_paths_in_this_refresh": 0,
+    "confirmed_current_release_blockers": null
+  },
+  "changes_from_prior_snapshot": [
+    {
+      "kind": "no_count_delta",
+      "detail": "The 10 historical open-report clusters, 7 qualifying merged clusters/8 product PRs, and 2 excluded merged candidates retain their prior states."
+    },
+    {
+      "kind": "additional_same_scope_fix_link",
+      "cluster_id": "O3",
+      "issue_number": 149520,
+      "pr_number": 152895,
+      "detail": "Open update-lock salvage candidate surfaced by bounded timeline and confirmed to reference the selected issue; no merged-fix credit added."
+    },
+    {
+      "kind": "lifecycle_not_resolution",
+      "detail": "Issues #139532 and #147387 remain open while their prior audited fix PRs are merged. Neither is added to the 10 wholly unresolved report clusters."
+    },
+    {
+      "kind": "cross_reference_not_fix",
+      "detail": "Cross-references are kept separate: process PR #157340, prior related changes, unrelated plugin-catalog PR #151272, and additional proposals do not inflate incident/fix counts."
+    }
+  ],
+  "limitations": [
+    "This is a refresh of the prior selected sample, not an exhaustive issue or PR census.",
+    "Public issue and PR lifecycle metadata was refreshed; prior qualitative incident/recovery classifications were retained. Issue bodies/comments were not re-audited for new behavioral evidence.",
+    "Cross-reference timelines were bounded to the latest 50 selected event types per issue; none reported a previous page. A cross-reference does not establish a fix.",
+    "No native test, current release-candidate reproduction, release containment check, live provider inference, or customer session was executed.",
+    "Historical report-evidenced UX P0 qualification is separate from current release-blocker status; open lifecycle is not current failure proof and merge is not current native recovery proof.",
+    "Prior excluded candidates M3 and M8 remain recovery-ambiguous and excluded from the qualifying historical lower bound."
+  ],
+  "clusters": [
+    {
+      "id": "O1",
+      "title": "Windows fixture-copy failure in install/update",
+      "journey": "install_update",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Source installation or dependency-sync repeatedly fails on bundled conformance fixtures; updater may exit 0 and leave Desktop build owed/gateway stopped.",
+      "reported_recovery": "Installer reporter recovered only by enabling OS long paths as administrator and rebooting; updater reporter says ordinary retry fails. #151274 is corroborating MSIX/plugin evidence, not a separate core-flow count.",
+      "evidence_limit": "Some root-cause uncertainty remains: #156983 cannot reproduce its failure with isolated copy; group as one fixture-copy family to avoid inflation.",
+      "issues": [
+        {
+          "number": 150277,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/150277",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-06T20:47:23Z",
+          "updated_at_utc": "2026-11-07T17:22:35Z",
+          "closed_at_utc": null
+        },
+        {
+          "number": 151274,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/151274",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-08T11:47:04Z",
+          "updated_at_utc": "2026-11-13T16:10:41Z",
+          "closed_at_utc": null
+        },
+        {
+          "number": 156983,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/156983",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-17T14:29:24Z",
+          "updated_at_utc": "2026-11-17T14:42:33Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [],
+      "related_pull_requests": [
+        {
+          "number": 157340,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/157340",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "process_test_coverage_not_product_fix",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            156983
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/150277",
+        "https://github.com/NousResearch/hermes-agent/issues/151274",
+        "https://github.com/NousResearch/hermes-agent/issues/156983"
+      ]
+    },
+    {
+      "id": "O2",
+      "title": "Windows Desktop update never relaunches",
+      "journey": "update",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "In-app Update reaches Code updated, then waits indefinitely; no result marker or Desktop relaunch.",
+      "reported_recovery": "Reported verified recipe kills processes, reruns CLI update with --no-gateway-restart, starts the scheduled task, and removes a stale pending marker.",
+      "evidence_limit": "Open fix #156237; no current native proof inspected.",
+      "issues": [
+        {
+          "number": 156217,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/156217",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-15T18:33:37Z",
+          "updated_at_utc": "2026-11-15T19:17:23Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 156237,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/156237",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": false,
+          "created_at_utc": "2026-11-15T19:53:33Z",
+          "updated_at_utc": "2026-11-16T09:53:03Z",
+          "merged_at_utc": null,
+          "head_sha": "8cdd6f253bf0534a709449128423bed36bfca645",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 157340,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/157340",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "process_test_coverage_not_product_fix",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            156217
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/156217",
+        "https://github.com/NousResearch/hermes-agent/pull/156237"
+      ]
+    },
+    {
+      "id": "O3",
+      "title": "Interrupted Windows update destroys recoverability",
+      "journey": "update",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Updater/gateway wait on one another; interruption leaves an empty venv and Desktop boot loop.",
+      "reported_recovery": "Reporter recovered through manual environment rebuilding and marker cleanup.",
+      "evidence_limit": "Distinct from O2: incomplete environment after interruption, rather than final hand-off watchdog failure; exact shared ancestry is unproven.",
+      "issues": [
+        {
+          "number": 149520,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/149520",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-05T14:03:11Z",
+          "updated_at_utc": "2026-11-10T20:40:03Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [],
+      "related_pull_requests": [
+        {
+          "number": 127021,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/127021",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            149520
+          ]
+        },
+        {
+          "number": 152895,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/152895",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "same_cluster_product_fix_candidate",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            149520
+          ],
+          "evidence": "PR title and body reference selected issue #149520; remains open; implementation effectiveness unverified"
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/149520"
+      ]
+    },
+    {
+      "id": "O4",
+      "title": "Windows reboot strands Telegram",
+      "journey": "messaging_first_reply",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "A pre-reboot scoped lock is treated as live; the new gateway parks Telegram and inbound messages get no answer.",
+      "reported_recovery": "Deleting the lock manually and then restarting gateway restored binding; restart alone did not help.",
+      "evidence_limit": "Reproduced report on v0.23.1; no current candidate run.",
+      "issues": [
+        {
+          "number": 157025,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/157025",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-17T16:45:17Z",
+          "updated_at_utc": "2026-11-17T16:48:07Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [],
+      "related_pull_requests": [
+        {
+          "number": 157340,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/157340",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "process_test_coverage_not_product_fix",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            157025
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/157025"
+      ]
+    },
+    {
+      "id": "O5",
+      "title": "Non-ASCII Windows profile blocks first install",
+      "journey": "install",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Hermes-Setup always fails the first System prerequisites stage: UTF-8 git path is decoded as OEM text.",
+      "reported_recovery": "Only forced UTF-8 script execution or an ASCII-only LOCALAPPDATA path recovers; ordinary retries repeat failure.",
+      "evidence_limit": "One cluster; open fix #148568. This differs from merged incomplete-Git fix #145592: these reports confirm the extracted helper exists.",
+      "issues": [
+        {
+          "number": 151581,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/151581",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-09T01:16:46Z",
+          "updated_at_utc": "2026-11-09T18:36:35Z",
+          "closed_at_utc": null
+        },
+        {
+          "number": 151600,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/151600",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-09T01:59:56Z",
+          "updated_at_utc": "2026-11-09T15:29:43Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 148568,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/148568",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": false,
+          "created_at_utc": "2026-11-03T16:57:10Z",
+          "updated_at_utc": "2026-11-10T04:04:31Z",
+          "merged_at_utc": null,
+          "head_sha": "d22356739e2ac36f7dde87087f6d191383415cf0",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/151581",
+        "https://github.com/NousResearch/hermes-agent/issues/151600",
+        "https://github.com/NousResearch/hermes-agent/pull/148568"
+      ]
+    },
+    {
+      "id": "O6",
+      "title": "Slow version probe treats healthy Desktop install as absent",
+      "journey": "desktop_launch",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Desktop boot times out a 15-second hermes --version probe, falls into setup and may quit; real install/gateway remain healthy.",
+      "reported_recovery": "Later manual relaunch can work; blobless-clone reporter used git fetch or disabled passive update checks. No Desktop Retry repairs the failed path.",
+      "evidence_limit": "P0 basis is Linux #155862: manual git fetch or config change is required. Earlier macOS #148498 is corroboration only because a later normal relaunch sometimes recovered; do not impose a macOS hold from that report alone. One false-absence probe family; open #150540.",
+      "issues": [
+        {
+          "number": 148498,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/148498",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-03T13:43:05Z",
+          "updated_at_utc": "2026-11-12T01:25:17Z",
+          "closed_at_utc": null
+        },
+        {
+          "number": 155862,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/155862",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-14T21:34:15Z",
+          "updated_at_utc": "2026-11-17T12:07:47Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 150540,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/150540",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": false,
+          "created_at_utc": "2026-11-07T06:44:14Z",
+          "updated_at_utc": "2026-11-18T07:59:06Z",
+          "merged_at_utc": null,
+          "head_sha": "78fb6f4560658ffef49d1db77c6bd74f1c063c9d",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/148498",
+        "https://github.com/NousResearch/hermes-agent/issues/155862",
+        "https://github.com/NousResearch/hermes-agent/pull/150540"
+      ]
+    },
+    {
+      "id": "O7",
+      "title": "Smart App Control update leaves gateway down",
+      "journey": "update_messaging",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Windows update rewires launchers to a blocked Python 3.14 interpreter despite dependency failure; Desktop falls into setup and messaging stops.",
+      "reported_recovery": "Reporter manually repointed launch scripts/interpreter; normal follow-up could reapply the broken runtime.",
+      "evidence_limit": "Conditional supported Windows security-policy path; no policy bypass is proposed.",
+      "issues": [
+        {
+          "number": 148950,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/148950",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-04T15:01:40Z",
+          "updated_at_utc": "2026-11-14T15:26:17Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/148950"
+      ]
+    },
+    {
+      "id": "O8",
+      "title": "Subagent route corrupts returning Desktop Bot Chat",
+      "journey": "conversation_resume",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "After async delegation, persisted routing points the parent Bot Chat at a subagent; every resume/delivery returns admission_conflict.",
+      "reported_recovery": "Gateway restart does not help; reporter repaired the route by hand.",
+      "evidence_limit": "Open fix #155020; observed once, not intentionally reproduced.",
+      "issues": [
+        {
+          "number": 154994,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/154994",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-13T11:27:51Z",
+          "updated_at_utc": "2026-11-18T01:03:39Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 155020,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/155020",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": false,
+          "created_at_utc": "2026-11-13T12:19:11Z",
+          "updated_at_utc": "2026-11-18T01:48:56Z",
+          "merged_at_utc": null,
+          "head_sha": "71e3c41084d61c5ce399ee811b680a1d1066767f",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/154994",
+        "https://github.com/NousResearch/hermes-agent/pull/155020"
+      ]
+    },
+    {
+      "id": "O9",
+      "title": "Windows logon task reports success without gateway",
+      "journey": "messaging_startup",
+      "historical_disposition": "open_report_evidenced",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "PM Python-3.14 scheduled-task autostart returns success but starts no gateway; messaging remains unavailable after logon.",
+      "reported_recovery": "Only a manually added console-owning Startup-folder script works in the report.",
+      "evidence_limit": "Open fix #136397; distinct from O4 because no gateway launches, rather than a launched gateway refusing Telegram.",
+      "issues": [
+        {
+          "number": 136390,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/136390",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-10-11T01:46:56Z",
+          "updated_at_utc": "2026-10-17T07:44:53Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 136397,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/136397",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": true,
+          "created_at_utc": "2026-10-11T02:25:42Z",
+          "updated_at_utc": "2026-10-17T07:44:50Z",
+          "merged_at_utc": null,
+          "head_sha": "951390f136952c566f7c0f8ba06e049f6733e3ae",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/136390",
+        "https://github.com/NousResearch/hermes-agent/pull/136397"
+      ]
+    },
+    {
+      "id": "C1",
+      "title": "Source Desktop update",
+      "journey": "source_desktop_update",
+      "historical_disposition": "pre_window_carry_in",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "prior_native_stable_reproduction",
+      "reported_user_flow": "CLI update succeeds but running/installed source Desktop remains stale; About says latest stable and offers only Get the installer.",
+      "reported_recovery": "Fully quit Desktop, rerun hermes update in Terminal, reopen; installed commit matched runtime and warning cleared.",
+      "evidence_limit": "Prior native stable reproduction on v0.23.1 to v0.23.2 at 2026-11-18T09:22:09Z; no new native run. Product fix #128465 remains open. #157340 is process/test coverage.",
+      "issues": [
+        {
+          "number": 123737,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/123737",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-09-26T08:34:39Z",
+          "updated_at_utc": "2026-11-18T10:55:55Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 128465,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/128465",
+          "relation": "prior_audited_product_fix",
+          "state": "open",
+          "is_draft": false,
+          "created_at_utc": "2026-09-29T20:59:59Z",
+          "updated_at_utc": "2026-11-18T09:24:29Z",
+          "merged_at_utc": null,
+          "head_sha": "4506f9e8f0bdfdb4401a03b071933dab2f4f4c16",
+          "merge_commit_sha": null,
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 123758,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/123758",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            123737
+          ]
+        },
+        {
+          "number": 124811,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/124811",
+          "state": "merged",
+          "merged_at_utc": "2026-09-27T07:42:44Z",
+          "merge_commit_sha": "7b4211eee28011c122623a33c627fbacaa991565",
+          "relation": "prior_merged_related_change_not_resolution_of_carry_in",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            123737
+          ]
+        },
+        {
+          "number": 157340,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/157340",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "process_test_coverage_not_product_fix",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            123737
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/123737",
+        "https://github.com/NousResearch/hermes-agent/issues/123737#issuecomment-6974336662",
+        "https://github.com/NousResearch/hermes-agent/pull/128465"
+      ],
+      "prior_native_reproduction_url": "https://github.com/NousResearch/hermes-agent/issues/123737#issuecomment-6974336662"
+    },
+    {
+      "id": "M1",
+      "title": "Profile OAuth false success",
+      "journey": "profile_auth",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "First profile auth add says Added but discards the credential or loses it on next load.",
+      "reported_recovery": "Repeated add/re-login did not persist; fix stores the independent profile grant and checks readback.",
+      "evidence_limit": "Origins #103694 (Sep 5), #120177 (Sep 23), #125501 (Sep 27) are pre-window; counted by Oct 7 merged fix.",
+      "issues": [
+        {
+          "number": 103694,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/103694",
+          "state": "closed",
+          "state_reason": "completed",
+          "created_at_utc": "2026-09-05T14:16:05Z",
+          "updated_at_utc": "2026-10-07T14:00:45Z",
+          "closed_at_utc": "2026-10-07T13:59:14Z"
+        },
+        {
+          "number": 120177,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/120177",
+          "state": "closed",
+          "state_reason": "completed",
+          "created_at_utc": "2026-09-23T12:15:33Z",
+          "updated_at_utc": "2026-10-07T14:00:46Z",
+          "closed_at_utc": "2026-10-07T13:59:15Z"
+        },
+        {
+          "number": 125501,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/125501",
+          "state": "closed",
+          "state_reason": "completed",
+          "created_at_utc": "2026-09-27T17:09:49Z",
+          "updated_at_utc": "2026-10-07T14:00:48Z",
+          "closed_at_utc": "2026-10-07T13:59:16Z"
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 134574,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/134574",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-07T13:34:39Z",
+          "updated_at_utc": "2026-10-07T13:59:35Z",
+          "merged_at_utc": "2026-10-07T13:59:12Z",
+          "head_sha": "d31947634012ef6295136be12e2a4b21d6ba3ce9",
+          "merge_commit_sha": "bf23bccef38f4a8b061ca54cfbda13d9d1e9720c",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 101827,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/101827",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            103694
+          ]
+        },
+        {
+          "number": 103707,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/103707",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            103694
+          ]
+        },
+        {
+          "number": 103712,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/103712",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            103694
+          ]
+        },
+        {
+          "number": 104048,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/104048",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            103694
+          ]
+        },
+        {
+          "number": 120210,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/120210",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            120177
+          ]
+        },
+        {
+          "number": 125512,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/125512",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            125501
+          ]
+        },
+        {
+          "number": 126551,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/126551",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            103694,
+            120177,
+            125501
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_closed",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/103694",
+        "https://github.com/NousResearch/hermes-agent/issues/120177",
+        "https://github.com/NousResearch/hermes-agent/issues/125501",
+        "https://github.com/NousResearch/hermes-agent/pull/134574"
+      ]
+    },
+    {
+      "id": "M2",
+      "title": "Valid Anthropic Console key sent as OAuth",
+      "journey": "provider_first_reply",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Valid Console API keys produce credit-balance errors and credential quarantine, blocking provider first reply.",
+      "reported_recovery": "Re-entering the same valid key cannot change misclassification; fix selects x-api-key.",
+      "evidence_limit": "PR reports red/green tests and wire probe; live paid inference not independently rerun.",
+      "issues": [
+        {
+          "number": 133856,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/133856",
+          "state": "closed",
+          "state_reason": "completed",
+          "created_at_utc": "2026-10-06T13:08:14Z",
+          "updated_at_utc": "2026-10-12T11:25:39Z",
+          "closed_at_utc": "2026-10-12T11:25:39Z"
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 137140,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/137140",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-12T11:17:21Z",
+          "updated_at_utc": "2026-10-12T13:50:18Z",
+          "merged_at_utc": "2026-10-12T11:25:37Z",
+          "head_sha": "1df8f90552f201fc872c508b442a4aa8721a6940",
+          "merge_commit_sha": "82ef40ab2956505b6c2a8d8957c94874abdbed3c",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 133874,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/133874",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 133875,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/133875",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 135172,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/135172",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 135359,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/135359",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 135453,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/135453",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 135734,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/135734",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 136142,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/136142",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        },
+        {
+          "number": 137392,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/137392",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            133856
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_closed",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/133856",
+        "https://github.com/NousResearch/hermes-agent/pull/137140"
+      ]
+    },
+    {
+      "id": "M3",
+      "title": "Installed CLI disappears in new login shell",
+      "journey": "install_shell_discovery",
+      "historical_disposition": "merged_candidate_excluded",
+      "historical_ux_p0_qualifying": null,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Installer says complete, but hermes is not found in new login-bash terminals when .bash_login shadows .profile.",
+      "reported_recovery": "Fix writes the guarded PATH line to the startup file Bash actually reads; prior normal reopen repeated failure.",
+      "evidence_limit": "No public issue for this exact residual case; PR is the incident/evidence source.",
+      "issues": [],
+      "audited_fix_pull_requests": [
+        {
+          "number": 131809,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/131809",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-02T22:47:54Z",
+          "updated_at_utc": "2026-10-02T23:56:00Z",
+          "merged_at_utc": "2026-10-02T23:55:58Z",
+          "head_sha": "cac9ff7e06b9c800d5b5ecbabbd5c6be61e7d33f",
+          "merge_commit_sha": "71d120be6bf7e5455b40ff186df7857a3f65b409",
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "no_issue_reference",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/pull/131809"
+      ]
+    },
+    {
+      "id": "M4",
+      "title": "CLI provider re-login advice cannot work",
+      "journey": "provider_auth_recovery",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "External-process provider auth failure tells user to run auth add even though provider ships no auth_handler.",
+      "reported_recovery": "Suggested command fails; fix points to hermes model, which invokes vendor CLI login.",
+      "evidence_limit": "Older source PR #121401 (Sep 24) closed unmerged; merged salvage is Nov 9. No end-user login was rerun here.",
+      "issues": [],
+      "audited_fix_pull_requests": [
+        {
+          "number": 151957,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/151957",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-11-09T13:29:40Z",
+          "updated_at_utc": "2026-11-09T20:32:03Z",
+          "merged_at_utc": "2026-11-09T20:31:59Z",
+          "head_sha": "54106fb79001e2871f3e0c9a24a0d3d65212941b",
+          "merge_commit_sha": "c88a8bd1dc74926be19c373c000a519169fd6ad1",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "no_issue_reference",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/pull/151957"
+      ]
+    },
+    {
+      "id": "M5",
+      "title": "Windows install caches incomplete Git forever",
+      "journey": "install",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Short file lock leaves a partial Git; every installer retry reuses it and cannot download HTTPS.",
+      "reported_recovery": "Fix detects broken cached helper and re-extracts atomically; native Windows PR proof shows HTTPS probe exit 128 before and 0 after.",
+      "evidence_limit": "Different mechanism from O5 non-ASCII decoding.",
+      "issues": [],
+      "audited_fix_pull_requests": [
+        {
+          "number": 145592,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/145592",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-27T15:37:50Z",
+          "updated_at_utc": "2026-11-03T04:41:17Z",
+          "merged_at_utc": "2026-11-03T04:41:17Z",
+          "head_sha": "9b347d183643e6cfc48308ae5c33662b27d15f8a",
+          "merge_commit_sha": "114b5cd63390069a0ddf3a0cf41b4b99fc5e5dd6",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "no_issue_reference",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/pull/145592"
+      ]
+    },
+    {
+      "id": "M6",
+      "title": "Packaged macOS update downloads but never installs",
+      "journey": "packaged_desktop_update",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "ShipIt aborts on read-only baked pycs, exhausts three attempts and returns to old app.",
+      "reported_recovery": "Fix makes update payload pycs owner-writable; repeated normal updates otherwise repeat the abort.",
+      "evidence_limit": "Merged verified; PR explicitly says a real ShipIt install was not verified. Not the source-install carry-in #123737.",
+      "issues": [
+        {
+          "number": 138659,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/138659",
+          "state": "closed",
+          "state_reason": "completed",
+          "created_at_utc": "2026-10-14T22:38:20Z",
+          "updated_at_utc": "2026-11-03T02:37:52Z",
+          "closed_at_utc": "2026-11-03T02:25:14Z"
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 148192,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/148192",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-11-02T23:15:06Z",
+          "updated_at_utc": "2026-11-03T02:21:05Z",
+          "merged_at_utc": "2026-11-03T02:21:02Z",
+          "head_sha": "22c7561a727ef256d98aee751b18364c4b6f389c",
+          "merge_commit_sha": "cabaf053b5b42885a9b11827925473748e54b090",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 138708,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/138708",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            138659
+          ]
+        },
+        {
+          "number": 141696,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/141696",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            138659
+          ]
+        },
+        {
+          "number": 148244,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/148244",
+          "state": "merged",
+          "merged_at_utc": "2026-11-03T03:13:51Z",
+          "merge_commit_sha": "15762fc8894c95e06da34e3de0668b28d5c8b79c",
+          "relation": "related_bundle_guard_not_an_additional_incident",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            138659
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_closed",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/138659",
+        "https://github.com/NousResearch/hermes-agent/pull/148192"
+      ]
+    },
+    {
+      "id": "M7",
+      "title": "Remote Desktop cannot create any new chat",
+      "journey": "remote_new_chat",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Public-ticket remote Desktop sends legacy-shaped requests to canonical session authority; every new chat fails invalid_params.",
+      "reported_recovery": "Fix negotiates authority wire from gateway.ready. Normal retry cannot change protocol.",
+      "evidence_limit": "PR includes real remote confirmation on v0.22.6 and client regressions; not a current release smoke.",
+      "issues": [],
+      "audited_fix_pull_requests": [
+        {
+          "number": 148219,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/148219",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-11-03T00:24:32Z",
+          "updated_at_utc": "2026-11-03T21:12:19Z",
+          "merged_at_utc": "2026-11-03T21:12:19Z",
+          "head_sha": "260ab4e63c0a96eb57197ba552ee2d78e57d582f",
+          "merge_commit_sha": "7bc10408da77780689f546147a2ec7b9bc9621f3",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [],
+      "current_issue_lifecycle": "no_issue_reference",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/pull/148219"
+      ]
+    },
+    {
+      "id": "M8",
+      "title": "Gated remote Desktop rejects correct token on REST",
+      "journey": "remote_history",
+      "historical_disposition": "merged_candidate_excluded",
+      "historical_ux_p0_qualifying": null,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Desktop session-token connection has repeated 401s for history/roster despite correct deployment token; returning history is unavailable.",
+      "reported_recovery": "Fix accepts the Desktop header via the session-token provider; re-entering a correct token did not change gate behavior.",
+      "evidence_limit": "#147387 remains open but #148797/#149587/#149623 are merged. Chat WS already worked on main per this fix: scope is REST/history, not a proven total chat outage.",
+      "issues": [
+        {
+          "number": 147387,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/147387",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-11-01T01:34:33Z",
+          "updated_at_utc": "2026-11-10T16:50:07Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 149623,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/149623",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-11-05T17:41:23Z",
+          "updated_at_utc": "2026-11-06T18:11:25Z",
+          "merged_at_utc": "2026-11-06T00:56:14Z",
+          "head_sha": "2174d5ea52870fcec071661fc21e50f0bd363dd0",
+          "merge_commit_sha": "9242ce464b4a84fb8b7a81df18400099d2a1a790",
+          "qualifying_merged_fix_credit": false
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 148797,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/148797",
+          "state": "merged",
+          "merged_at_utc": "2026-11-05T22:47:40Z",
+          "merge_commit_sha": "2692c6cbea96eb3089334170fbe8b44cf63250c6",
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            147387
+          ]
+        },
+        {
+          "number": 149587,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/149587",
+          "state": "merged",
+          "merged_at_utc": "2026-11-05T23:26:08Z",
+          "merge_commit_sha": "01888fc2069f4248e8895ba0e0fff41c79317a06",
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            147387
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/147387",
+        "https://github.com/NousResearch/hermes-agent/pull/149623"
+      ]
+    },
+    {
+      "id": "M9",
+      "title": "Lost turn silently pauses returning conversation",
+      "journey": "conversation_resume",
+      "historical_disposition": "merged_qualifying",
+      "historical_ux_p0_qualifying": true,
+      "historical_evidence_basis": "public_report_and_prior_audit",
+      "reported_user_flow": "Gateway restart fences a turn unknown; queued follow-up waits forever, and relaunch elsewhere hides the recovery card.",
+      "reported_recovery": "Automation is settled as interrupted; every supported surface gains discard; Desktop reconnect/relaunch surfaces Needs your input and Discard runs queued send exactly once.",
+      "evidence_limit": "One cluster, two merged PRs. #139532 is open, but is not counted as wholly unresolved after these fixes. Current messaging/multiplex native proof remains limited.",
+      "issues": [
+        {
+          "number": 139532,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/139532",
+          "state": "open",
+          "state_reason": null,
+          "created_at_utc": "2026-10-16T01:12:08Z",
+          "updated_at_utc": "2026-11-15T03:37:39Z",
+          "closed_at_utc": null
+        }
+      ],
+      "audited_fix_pull_requests": [
+        {
+          "number": 141357,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/141357",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-19T02:55:06Z",
+          "updated_at_utc": "2026-10-19T11:49:33Z",
+          "merged_at_utc": "2026-10-19T08:15:49Z",
+          "head_sha": "9c232b902c7411bfe0cc1e48cd141da8081a06be",
+          "merge_commit_sha": "eea83bb603c397396acaf6cc453cf3012a8524aa",
+          "qualifying_merged_fix_credit": true
+        },
+        {
+          "number": 145078,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/145078",
+          "relation": "prior_audited_product_fix",
+          "state": "merged",
+          "is_draft": false,
+          "created_at_utc": "2026-10-26T13:29:31Z",
+          "updated_at_utc": "2026-10-27T19:14:38Z",
+          "merged_at_utc": "2026-10-27T19:14:35Z",
+          "head_sha": "5f9f081eabf452a9c243488c7f43c15ed9a06f54",
+          "merge_commit_sha": "46ccd722cb64cd2e0b5d6c30c01c7b3e25c0eb45",
+          "qualifying_merged_fix_credit": true
+        }
+      ],
+      "related_pull_requests": [
+        {
+          "number": 139541,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/139541",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        },
+        {
+          "number": 140175,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/140175",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        },
+        {
+          "number": 140523,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/140523",
+          "state": "closed",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        },
+        {
+          "number": 144521,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/144521",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        },
+        {
+          "number": 146094,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/146094",
+          "state": "open",
+          "merged_at_utc": null,
+          "merge_commit_sha": null,
+          "relation": "timeline_cross_reference_only",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        },
+        {
+          "number": 151272,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/151272",
+          "state": "merged",
+          "merged_at_utc": "2026-11-10T10:49:59Z",
+          "merge_commit_sha": "ffb33652145547b8ca02d736bd9065e3d3f20996",
+          "relation": "plugin_catalog_change_not_credited_as_fix",
+          "qualifying_fix_credit": false,
+          "referenced_by_issue_numbers": [
+            139532
+          ]
+        }
+      ],
+      "current_issue_lifecycle": "all_open",
+      "current_candidate_reproduced": false,
+      "current_release_blocker_assessment": "not_assessed",
+      "source_urls": [
+        "https://github.com/NousResearch/hermes-agent/issues/139532",
+        "https://github.com/NousResearch/hermes-agent/pull/141357",
+        "https://github.com/NousResearch/hermes-agent/pull/145078"
+      ]
+    }
+  ]
+}

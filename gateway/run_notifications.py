@@ -1892,7 +1892,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             last_output_len = current_output_len
             if session.exited:
                 # Agent-notify: inject a synthetic message unless the agent already has the
-                # receipt (wait/log consumed it, or an exited poll() retired the notice).
+                # receipt (wait/log consumed it, or an acked poll() consumed it — #94455).
                 if agent_notify and not process_registry.is_completion_notice_retired(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
                     synth_text = format_process_notification(completion_evt)

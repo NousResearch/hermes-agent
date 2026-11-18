@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 
 
 class ProcessCompletionNoticeMixin:
-    """Completion-notice dedup gates for ProcessRegistry (consumed via wait/log, retired by
-    an exited poll(), or superseded by a re-run twin). See ProcessRegistry."""
+    """Completion-notice dedup gates for ProcessRegistry (consumed via wait/log or an
+    acked poll(), retired explicitly, or superseded by a re-run twin). See ProcessRegistry."""
 
     def _superseded_by(self, session: ProcessSession) -> Optional[str]:
         """Id of the newest twin — same session_key + command, later started_at — so a
@@ -40,8 +40,8 @@ class ProcessCompletionNoticeMixin:
 
     def is_completion_notice_retired(self, session_id: str) -> bool:
         """Watcher gate: the completion notice is redundant because the agent already
-        holds the receipt — consumed via wait/log, or observed inline via an exited
-        poll(). Delivery is at-most-once: an unread completion still delivers once."""
+        holds the receipt — consumed via wait/log or an acked poll(), or explicitly
+        retired. Delivery is at-most-once: an unread completion still delivers once."""
         return session_id in self._completion_consumed or session_id in self._notice_retired
 
 
@@ -52,9 +52,10 @@ class ProcessCompletionNoticeMixin:
 
 
     def _drain_should_skip(self, session_id: str, *, skip_poll_observed: bool = True) -> bool:
-        """Skip a completion the agent already has — consumed via wait/log or retired
-        by an exited poll() (``is_completion_notice_retired``). A poll of a *running*
-        session retires nothing, so a later exit still delivers the watcher's turn.
+        """Skip a completion the agent already has — consumed via wait/log or an acked
+        poll(), or explicitly retired (``is_completion_notice_retired``). A poll of a
+        *running* session retires nothing, so a later exit still delivers the watcher's
+        turn; a bare exited poll stays a read-only status check (#10156).
 
         ``skip_poll_observed`` additionally drops exits merely observed via poll()
         (``_poll_observed``) for the CLI's same-turn dedup (#8228); gateway/tui watchers

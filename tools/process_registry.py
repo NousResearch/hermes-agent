@@ -706,12 +706,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
-        # Sessions whose exit receipt was handed to the agent inline by poll() (the result
-        # carried the exit fields), or explicitly retired. The pending completion notice
-        # is redundant — re-injecting it forced a no-op acknowledgement turn after the
-        # work was already reconciled. Watchers gate on ``is_completion_notice_retired``,
-        # so this retires the gateway/tui delivery turn too; a poll of a *running* (or
-        # still-finalizing) session is read-only and retires nothing.
+        # Completions whose notice the agent explicitly retired via
+        # retire_completion_notice() (receipt reconciled out-of-band). The pending
+        # completion notice is redundant — re-injecting it forced a no-op
+        # acknowledgement turn after the work was already reconciled. Watchers gate
+        # on ``is_completion_notice_retired``, so this retires the gateway/tui
+        # delivery turn too; a poll of a *running* (or still-finalizing) session is
+        # read-only and retires nothing (#10156).
         self._notice_retired: set = set()
         # Sessions merely *observed* exited via poll(). Kept for the CLI same-turn drain
         # dedup (drain_notifications() skips these to avoid a duplicate [SYSTEM: ...]).
@@ -1996,13 +1997,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             result.update(self._exit_fields(session))
             # Read-only unless acknowledged: _poll_observed is CLI inline dedup only; a plain status check must
             # not suppress the watcher's autonomous turn (#10156), an acknowledged handled result must (#94455).
-            # An exited non-finalizing poll also retires the pending notice: the exit receipt is
-            # now in the agent's tool result, so the watcher must not inject a stale [IMPORTANT:
-            # ...] turn after the work was reconciled inline. A preview taken before the reader's
-            # final drain is partial: still read-only.
+            # The watcher gate is_completion_notice_retired honors the ack here through _completion_consumed,
+            # so an agent that reconciled the receipt inline passes acknowledge=true and the notice is
+            # retired; a bare poll keeps the pending turn. A preview taken before the reader's final drain
+            # is partial: still read-only.
             if not finalizing:
                 self._poll_observed.add(session.id)
-                self.retire_completion_notice(session.id)
                 if acknowledge:
                     self._completion_consumed.add(session.id)
         if session.detached and not session.output_log:

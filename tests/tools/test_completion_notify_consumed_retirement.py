@@ -1,13 +1,16 @@
 """sys-9cloc7: the pending background-process completion notice must be RETIRED once
-the agent holds the receipt (wait/log consumed, or process_manage poll() observed the
-exit inline), and an unread completion must still deliver exactly once.
+the agent holds the receipt (wait/log consumed, or process_manage poll(acknowledge=true)
+reported the exit and the agent handled it inline), and an unread completion must still
+deliver exactly once.
 
 Before this, gateway/tui watchers checked only ``is_completion_consumed``, so a receipt
-reconciled inline via ``process_manage`` poll/status did not retire the notice and the
-still-injected ``[IMPORTANT: ... background processes completed ...]`` forced a no-op
-acknowledgement turn after the work was already reconciled (recurs since 2026-10-03,
-sys-3xmzmk). Retirement is a dedicated registry state (``_notice_retired``), not
-drain-time marker clearing; delivery stays at-most-once.
+reconciled inline via ``process_manage`` did not retire the notice and the still-injected
+``[IMPORTANT: ... background processes completed ...]`` forced a no-op acknowledgement
+turn after the work was already reconciled (recurs since 2026-10-03, sys-3xmzmk).
+Retirement is a dedicated registry state (``_notice_retired``), not drain-time marker
+clearing; delivery stays at-most-once. Upstream #10156/#94455 (merged as f6945b76)
+settled the boundary: a bare poll() is a read-only status check and KEEPS the watcher's
+autonomous turn; ``acknowledge=true`` is the instrument that retires it.
 """
 
 import time
@@ -33,19 +36,26 @@ def _park_exited_completion(registry, session):
     assert registry.completion_queue.qsize() == 1
 
 
-def test_exited_poll_retires_the_notice_and_suppresses_watcher_delivery():
-    """(a) consumed-suppresses: poll() returning the exit fields retires the notice on
-    the watcher path — the watcher-style drain (skip_poll_observed=False, as gateway
-    run_notifications / tui prompt_turn pass) must drop the stale event."""
+def test_acked_poll_retires_the_notice_and_suppresses_watcher_delivery():
+    """(a) acked-poll-consumes-suppresses: poll(acknowledge=true) reporting the exit
+    fields marks the notice retired on the watcher path — the watcher-style drain
+    (skip_poll_observed=False, as gateway run_notifications / tui prompt_turn pass)
+    must drop the stale event. A bare poll stays read-only (#10156)."""
     registry = ProcessRegistry()
-    session = _make_session("proc_poll", exited=True, exit_code=0, output="all passed")
+    session = _make_session("proc_bare", exited=True, exit_code=0, output="all passed")
     _park_exited_completion(registry, session)
+    bare = registry.poll(session.id)  # a bare status check keeps the watcher's turn
+    assert bare["status"] == "exited"
+    assert not registry.is_completion_notice_retired(session.id)
+    first = registry.drain_notifications(skip_poll_observed=False)
+    assert len(first) == 1 and session.id in first[0][1]  # still deliverable (#10156)
 
-    result = registry.poll(session.id)  # the agent reconciles the receipt inline
+    session2 = _make_session("proc_poll", exited=True, exit_code=0, output="all passed")
+    _park_exited_completion(registry, session2)
+    result = registry.poll(session2.id, acknowledge=True)  # receipt handled inline
     assert result["status"] == "exited"
-    assert registry.is_completion_notice_retired(session.id)
-    # Narrow consumed semantics stay untouched (wait/log contract).
-    assert not registry.is_completion_consumed(session.id)
+    assert registry.is_completion_notice_retired(session2.id)
+    assert registry.is_completion_consumed(session2.id)  # the ack is a consumption (#94455)
     # Watcher-style drain: retired completions are never re-injected.
     assert registry.drain_notifications(skip_poll_observed=False) == []
 

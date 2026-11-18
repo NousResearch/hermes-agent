@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from agent.provider_projection import splice_provider_projection
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import has_incomplete_scratchpad
+from agent.transports.responses_cache import responses_cache_hook_fields
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
 )
@@ -108,6 +109,7 @@ def _fire_post_api_request_hook(
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),
                 moa_references=_moa_reference_metrics_for_hook(agent),
+                **responses_cache_hook_fields(response, agent.api_mode),
             )
     except Exception:
         pass

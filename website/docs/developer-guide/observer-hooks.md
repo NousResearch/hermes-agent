@@ -168,6 +168,50 @@ API hooks describe provider attempts inside the agent loop:
 The sanitized `request`, `response`, and `error` fields are the canonical
 observer inputs for new consumers.
 
+#### Observe Responses cache reads without collecting conversation content
+
+An enabled Python plugin can subscribe to `post_api_request` with a narrow
+callback. Request only `responses_cache`, **not** `**kwargs`: the general hook
+also carries the assistant message and request identifiers.
+
+```python
+import json
+import logging
+
+
+def register(ctx):
+    ctx.register_hook("post_api_request", record_cache)
+
+
+def record_cache(responses_cache=None):
+    if responses_cache is not None:
+        logging.getLogger(__name__).info("responses_cache=%s", json.dumps(responses_cache))
+```
+
+On the main-loop streaming Responses path this optional field contains **only
+what the provider reported** on the terminal response:
+
+- `input_tokens` (total input, including cache reads and writes), `cached_tokens`
+  and `cache_write_tokens`. Unlike the normalized `usage` buckets, a missing
+  counter is absent, not synthesized as zero.
+- `request_fields`: any reported `instructions`, `tools` or `input` breakdown
+  under `usage.attribution.request_fields`, with only `input_tokens`,
+  `cached_tokens`, `cache_write_tokens` and `output_tokens`. Unknown field names,
+  per-item records and free text are not forwarded.
+- `prompt_cache_diagnostics`: a recognized `type` and, for `cache_miss`, a
+  recognized `reason`, `cache_missed_tokens` and `comparison_reusable_tokens`
+  when supplied. `unavailable` is neither a hit nor a miss.
+- `input_transformation_count`: length of the provider's `input_transformations`
+  list, not the transformations or item IDs. Zero means the list was empty.
+
+The observer adds no comparison ID, changes no request, and writes no cache
+report by itself. For two **known consecutive, append-only** requests in an
+isolated session, compare **previous `input_tokens` minus current
+`cached_tokens`**. Compare the field breakdown separately; do not count newly
+appended input as old input that missed, or cache writes as reads. These are
+provider accounting figures, not a measurement of physical recomputation or
+a Codex OAuth cache-retention guarantee.
+
 ### Tool Lifecycle
 
 Tool hooks describe individual tool calls:

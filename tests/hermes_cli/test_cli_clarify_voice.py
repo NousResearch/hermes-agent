@@ -440,3 +440,93 @@ def test_no_listener_without_voice_mode():
     cli = _FakeCLI(["a"])
     cli._voice_mode = False
     assert is_live(cli) is False
+
+
+# --- panel painting ---------------------------------------------------------
+# The panel repaints itself every second from `_poll_modal_queue` via `_paint_now`, while voice
+# notices print through `_cprint`, which erases the renderer and redraws at an absolute cursor
+# position. Whichever lands second wins, so a notice near a tick left the panel half-drawn or a row
+# low. A notice must therefore print first and repaint explicitly, and the reject path must be able
+# to repaint at all (it was a `@staticmethod`, so it could not).
+
+
+class _FakeCliModule:
+    """Stands in for the `cli` module: `_clarify_voice_notice` imports print helpers lazily."""
+
+    _DIM = _RST = ""
+
+    def __init__(self, order, sink):
+        self._order, self._sink = order, sink
+
+    def _cprint(self, text):
+        self._order.append("print")
+        self._sink.append(text)
+
+
+def _notice_cli(order):
+    from hermes_cli.cli_voice_mixin import CLIVoiceMixin
+
+    class _FakeVoiceCli(CLIVoiceMixin):
+        def __init__(self):
+            self._paint_now = lambda: order.append("paint")
+
+    return CLIVoiceMixin, _FakeVoiceCli()
+
+
+def test_notice_prints_the_row_before_repainting_the_panel(monkeypatch):
+    import sys
+
+    order, printed = [], []
+    monkeypatch.setitem(sys.modules, "cli", _FakeCliModule(order, printed))
+    mixin, cli = _notice_cli(order)
+
+    mixin._clarify_voice_notice(cli, "Sorry, I didn't catch an option there.")
+
+    assert order == ["print", "paint"], f"panel repainted before the row landed on screen: {order}"
+    assert "didn't catch an option" in printed[0]
+
+
+def test_reject_is_an_instance_method_so_it_can_repaint(monkeypatch):
+    import sys
+
+    order, printed = [], []
+    monkeypatch.setitem(sys.modules, "cli", _FakeCliModule(order, printed))
+    mixin, cli = _notice_cli(order)
+
+    assert not isinstance(mixin.__dict__["_clarify_voice_reject"], staticmethod), \
+        "a staticmethod cannot reach _paint_now, so the panel stays broken after a refusal"
+    mixin._clarify_voice_reject(cli, "no option named that")
+
+    assert order == ["print", "paint"], f"refusal notice did not repaint the panel: {order}"
+
+
+def test_a_refusal_alone_never_prints_without_repainting(monkeypatch):
+    """Guards the original defect directly: a bare `_cprint` with no paint left the panel broken."""
+    import sys
+
+    order, _ = [], []
+    monkeypatch.setitem(sys.modules, "cli", _FakeCliModule(order, _))
+    mixin, cli = _notice_cli(order)
+
+    mixin._clarify_voice_reject(cli, "x")
+    assert order.count("print") == order.count("paint"), \
+        f"a printed row was left without a repaint: {order}"
+
+
+def test_immediate_invalidate_paints_and_the_default_stays_throttled():
+    import types
+
+    from hermes_cli.cli_voice_mixin import CLIVoiceMixin
+
+    painted, invalidated = [], []
+    cli = types.SimpleNamespace(
+        _paint_now=lambda: painted.append(1),
+        _app=types.SimpleNamespace(invalidate=lambda: invalidated.append(1)),
+    )
+
+    CLIVoiceMixin._voice_invalidate(cli, immediate=True)
+    assert painted and not invalidated, "immediate=True did not paint synchronously"
+
+    CLIVoiceMixin._voice_invalidate(cli)
+    assert invalidated and len(painted) == 1, \
+        "the default path must stay on the throttled invalidate (the audio level loop needs it)"

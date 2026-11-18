@@ -63,10 +63,35 @@ def _unlink_quietly(path) -> None:
 class CLIVoiceMixin:
     """Voice mode (recording, STT, TTS, full-duplex barge-in) and wake-word listener handlers for the interactive CLI"""
 
-    def _voice_invalidate(self) -> None:
-        """Repaint the TUI (audio level indicator / status) when the app is live."""
+    def _voice_invalidate(self, *, immediate: bool = False) -> None:
+        """Repaint the TUI (audio level indicator / status) when the app is live.
+
+        ``immediate`` paints synchronously instead of asking for a throttled invalidate. Rows a
+        user must see *now* — the recording banner, the silence notice — need it: a skipped tick
+        leaves the row for the next forced repaint to draw over, and the clarify panel paints
+        unthrottled.
+        """
+        if immediate:
+            paint_now = getattr(self, '_paint_now', None)
+            if paint_now is not None:
+                paint_now()
+                return
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
+
+    def _clarify_voice_notice(self, text: str) -> None:
+        """Print a voice notice, then repaint the clarify panel.
+
+        The panel repaints itself every second from ``_poll_modal_queue`` via ``_paint_now``, while
+        ``_cprint`` erases the renderer, prints, then redraws at an absolute cursor position.
+        Whichever lands second wins, so a notice near a tick left the panel half-drawn. Printing
+        first and repainting explicitly settles the order.
+        """
+        from cli import _DIM, _RST, _cprint
+        _cprint(f"\n{_DIM}{text}{_RST}")
+        paint_now = getattr(self, '_paint_now', None)
+        if paint_now is not None:
+            paint_now()
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
@@ -122,7 +147,7 @@ class CLIVoiceMixin:
                 if not self._voice_recording:
                     return
             _cprint(f"\n{_DIM}{t('cli.voice.silence_autostop')}{_RST}")
-            self._voice_invalidate()
+            self._voice_invalidate(immediate=True)
             self._voice_stop_and_transcribe()
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
@@ -142,6 +167,9 @@ class CLIVoiceMixin:
         else:
             _recording_hint = t("cli.voice.hint_stop", shortcut=_label)
         _cprint(f"\n{_ACCENT}{t('cli.voice.recording')}{_RST} {_DIM}({_recording_hint}){_RST}")
+        # The banner is a row the user must see now: a skipped tick leaves it for the next forced
+        # repaint (the clarify panel paints unthrottled) to draw over.
+        self._voice_invalidate(immediate=True)
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
@@ -847,13 +875,11 @@ class CLIVoiceMixin:
         _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
         self._disable_voice_mode()
 
-    @staticmethod
-    def _clarify_voice_reject(reason) -> None:
+    def _clarify_voice_reject(self, reason) -> None:
         """A transcript that matched no option: say so once and keep the question open. A
         selection-shaped reply means the words were heard but do not name an option; prose means
         nothing matched — the wording stays generic in both cases, and the keyboard still works."""
-        from cli import _DIM, _RST, _cprint
-        _cprint(f"\n{_DIM}{t('cli.clarify.speech_unmatched')}{_RST}")
+        self._clarify_voice_notice(t('cli.clarify.speech_unmatched'))
 
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""

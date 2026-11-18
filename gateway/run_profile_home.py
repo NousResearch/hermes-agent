@@ -4,6 +4,11 @@ import contextlib
 import logging
 from pathlib import Path
 
+from agent.runtime_scope import scope_for_profile
+from agent.secret_scope import _is_process_home, is_multiplex_active
+from hermes_constants import get_hermes_home, hermes_home_key
+from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+
 logger = logging.getLogger("gateway.run")
 
 
@@ -109,6 +114,24 @@ def completion_ledger_home(runner, evt: dict) -> Path | None:
     raise LookupError("Completion ledger owner is not served by this gateway")
 
 
+@contextlib.asynccontextmanager
+async def completion_ledger_scope(home: Path):
+    """Bind the validated home while preserving the launch profile's environment policy."""
+    scope_for_profile(home)  # Refuse hosted callers even when the launch binding below is a no-op.
+    if _is_process_home(home):
+        # Preserve a standalone launch body's ambient/prepared policy; a foreign
+        # caller must still re-enter the launch home rather than borrow its scope.
+        scope = (contextlib.nullcontext()
+                 if not is_multiplex_active() and hermes_home_key(get_hermes_home()) == hermes_home_key(home)
+                 else launch_profile_runtime_scope(home))
+        with scope:
+            yield
+    else:
+        from gateway.run import _async_profile_runtime_scope
+        async with _async_profile_runtime_scope(home):
+            yield
+
+
 def completion_event_scope(runner, evt: dict):
     """Bind the ledger owner before source/session heuristics for legacy events."""
     from gateway.run import _async_profile_runtime_scope
@@ -116,7 +139,7 @@ def completion_event_scope(runner, evt: dict):
     from gateway.run_notifications import _raw_process_event_session_id
     owner = completion_ledger_home(runner, evt)
     if owner is not None:
-        return _async_profile_runtime_scope(owner)
+        return completion_ledger_scope(owner)
     source = runner._build_process_event_source(evt)
     if source is None or not getattr(source, "profile", None):
         raw_sid = _raw_process_event_session_id(evt)

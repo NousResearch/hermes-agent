@@ -120,20 +120,37 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
 
+def _steer_suffix_match(target: str, text: str) -> bool:
+    """Whether extracted *target* delivers buffered *text* as a suffix.
+
+    Only the newline-separated lead-in shape counts: extraction through a
+    legacy-marker fallback can carry a lead-in line the buffered part never
+    had (``"<lead-in line>\\n<steer>"``). A mid-line suffix (``"please check
+    alpha"`` ending with a live ``"alpha"`` steer) is a different steer that
+    merely shares trailing words, so it must not retire the buffered part
+    (#156975).
+    """
+    if not text or not target.endswith(text):
+        return False
+    start = len(target) - len(text)
+    return start == 0 or target[start - 1] == "\n"
+
+
 def consume_buffered_steer(agent, steer_text: str) -> bool:
     """Retire one buffered part whose text matches, because another carrier (the compaction user-turn
     anchor) now delivers that text in the rebuilt context. The part leaves the buffer and a ticketed
     one is stamped consumed, so settlement commits it as delivered and no later drain injects a
     second copy of the same steer. True when a part was taken. Matching is shape-aware: extraction
     through a legacy-marker fallback can carry a lead-in line the buffered part never had, so a
-    part also matches when the extracted text ends with it (the lead-in is dropped, never the steer)."""
+    part also matches when the extracted text ends with it right after a newline (the lead-in is
+    dropped, never the steer). A mid-line suffix is a different steer and never matches (#156975)."""
     if not steer_text:
         return False
     target = steer_text.strip()
     with _ic_lock(agent, "_pending_steer_lock"):
         parts = _steer_parts(agent)
         for _i, (_ticket, _text) in enumerate(parts):
-            if _text == steer_text or _text == target or target.endswith(_text):
+            if _text == steer_text or _steer_suffix_match(target, _text):
                 _set_steer_parts(agent, parts[:_i] + parts[_i + 1:])
                 if _ticket is not None:
                     _steer_fates(agent)[_ticket] = True

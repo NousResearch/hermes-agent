@@ -269,6 +269,40 @@ def test_consume_matches_legacy_marker_shape():
     assert agent.withdraw_steer("adm-1") is False
 
 
+def test_consume_ignores_midline_suffix_match():
+    """#156975: a carrier whose text ends with a DISTINCT live steer's text
+    mid-line must not retire it — only the newline-separated lead-in shape
+    counts as the same steer. The buffered steer stays live: it still drains
+    next, and its ticket stays withdrawable instead of stamped consumed."""
+    from agent.interrupt_control import InterruptControlMixin, consume_buffered_steer
+
+    agent = InterruptControlMixin()
+    agent.steer("alpha", ticket="t-alpha")
+
+    assert consume_buffered_steer(agent, "please check alpha") is False
+    assert agent._drain_pending_steer() == "alpha"
+
+    agent = InterruptControlMixin()
+    agent.steer("alpha", ticket="t-alpha")
+
+    assert consume_buffered_steer(agent, "please check alpha") is False
+    assert agent.withdraw_steer("t-alpha") is True
+
+
+def test_consume_matches_newline_separated_suffix():
+    """Boundary half of #156975: the suffix rule survives, but only when the
+    buffered text starts on its own line — the legacy lead-in shape without
+    the legacy markers."""
+    from agent.interrupt_control import InterruptControlMixin, consume_buffered_steer
+
+    agent = InterruptControlMixin()
+    agent.steer("alpha", ticket="t-alpha")
+
+    assert consume_buffered_steer(agent, "lead-in line\nalpha") is True
+    assert agent._drain_pending_steer() is None
+    assert agent.withdraw_steer("t-alpha") is False
+
+
 def test_merged_anchor_keeps_steer_display_kind():
     """A merged anchor must carry the steer type onto the composite row, or
     alternation repair welds the user's NEXT prompt into the steer text."""

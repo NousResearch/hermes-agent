@@ -385,7 +385,7 @@ class StoppedUnitHost(FakeHost):
     def unit_launcher_env(self, unit, scope):
         return dict(self.environment)
 
-    def default_home(self):
+    def default_home(self, env=None):
         return True
 
 
@@ -953,3 +953,46 @@ def test_a_blocked_automatic_plan_lists_no_steps(home, capsys):
 
     engine.cmd_apply(host, _args(dry_run=True))
     assert "Steps:" not in capsys.readouterr().out
+
+
+# --- review round 2: a unit's home from its own HOME / suffix, and `export` lines refused
+
+
+@pytest.mark.parametrize("line", ["export HERMES_HOME=/srv/team", "export HOME=/srv/svc",
+                                  "  export HERMES_DATA_DIR_SUFFIX=-dev", 'HOME="/srv/svc"'])
+def test_environment_file_lines_systemd_reads_differently_for_the_home_variables(tmp_path, monkeypatch, line):
+    """systemd does not strip `export`: `export HERMES_HOME=...` does not set HERMES_HOME for the unit."""
+    from hermes_cli import gateway_migrate_backends_host as host_mod
+    unit_env = tmp_path / "unit.env"
+    unit_env.write_text(line + "\n", encoding="utf-8")
+    shown = f"Environment=\nEnvironmentFiles={unit_env} (ignore_errors=no)\n"
+    monkeypatch.setattr(host_mod, "_systemctl", lambda scope, args: SimpleNamespace(
+        returncode=0, stdout="" if args == ["show-environment"] else shown, stderr=""))
+
+    _, problem = SystemHost(tmp_path).unit_environment("x.service", "system")
+
+    assert problem and str(unit_env) in problem
+
+
+def test_a_units_default_home_follows_its_own_home_and_suffix():
+    import getpass
+    import pwd
+    account = Path(pwd.getpwnam(getpass.getuser()).pw_dir)
+
+    assert SystemHost(account / ".hermes").default_home({"HOME": "/srv/svc"}) is False
+    assert SystemHost(Path("/srv/svc/.hermes")).default_home({"HOME": "/srv/svc"}) is True
+    assert SystemHost(account / ".hermes-dev").default_home({"HERMES_DATA_DIR_SUFFIX": "-dev"}) is True
+    assert SystemHost(account / ".hermes").default_home({"HERMES_DATA_DIR_SUFFIX": "-dev"}) is False
+    assert SystemHost(account / ".hermes").default_home({"HOME": "relative/dir"}) is None
+
+
+class UnresolvedHomeUnitHost(StoppedUnitHost):
+    def default_home(self, env=None):
+        return None
+
+
+def test_a_unit_whose_default_home_cannot_be_told_blocks(home, capsys):
+    code, out = _plan(UnresolvedHomeUnitHost(home, user="u", environment={"HOME": "relative/dir"}), capsys)
+
+    assert code == engine.EXIT_BLOCKED
+    assert any("sets HOME to something other than a plain absolute path" in b for b in out["plan"]["blockers"])

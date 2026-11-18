@@ -266,7 +266,13 @@ def _for_this_home(item: BackendItem, host, plan: Optional[BackendPlan] = None) 
             return False
         if env.get("HERMES_HOME"):
             return host.same_home(env["HERMES_HOME"])
-        return host.default_home()  # a unit that pins no HERMES_HOME runs its account's default home
+        mine = host.default_home(env)  # a unit that pins no HERMES_HOME runs its own default home
+        if mine is None and plan is not None:
+            plan.blockers.append(f"Cannot tell which Hermes home {item.unit} serves: it sets HOME to something "
+                                 f"other than a plain absolute path. Identify the owner (systemctl cat "
+                                 f"{item.unit}) and move it by hand, or set Environment=HERMES_HOME, then re-run. "
+                                 f"Nothing changed.")
+        return bool(mine)
     if item.this_home is not None:
         return item.this_home
     return not item.running and item.hermes_home is None and host.default_home()

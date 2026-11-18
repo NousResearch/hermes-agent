@@ -488,6 +488,67 @@ class TestDelegatedAwaySelfApproveGate:
             mod._gateway_queues["sk_u"] = [e]
             assert is_session_delegated_away("sk_u") is False
 
+    def test_multi_pending_delegation_keeps_gate_closed_for_the_other_request(self):
+        # Two approvals pending in one session: the delegation map keeps ONE entry
+        # per (admin chat, session), so registering the second REPLACES the first.
+        # Settling the newer one (or the entry ageing out with only it bound) must
+        # not open the gate while the OLDER approval is still pending — it was
+        # delegated away too, so the user must not be able to self-approve it.
+        self._reset()
+        with patch("hermes_cli.config.load_config", return_value=self.CFG):
+            from gateway.approval_delegation import (
+                register_delegation, is_session_delegated_away)
+            import gateway.approval_delegation as ad
+            from tools import approval as mod
+            for rid in ("req-A", "req-B"):
+                register_delegation(admin_platform="feishu", admin_chat_id="oc_admin",
+                                    session_key="sk_u", user_platform="weixin",
+                                    user_chat_id="u1", request_id=rid)
+            assert ad._delegation_map["feishu:oc_admin"]["sk_u"]["request_ids"] == {
+                "req-A", "req-B"}, "the replaced entry must carry both ids forward"
+            ad._delegation_map["feishu:oc_admin"]["sk_u"]["created_at"] = \
+                time.monotonic() - ad._DELEGATION_TTL - 1
+            unlock = threading.Event()
+            class E:
+                result = None
+                data = {"command": "x", "request_id": "req-A"}
+                authority: dict = {}
+                event = unlock
+            mod._gateway_queues["sk_u"] = [E()]
+            assert is_session_delegated_away("sk_u") is True   # A still pending
+            mod._gateway_queues.pop("sk_u", None)
+            assert is_session_delegated_away("sk_u") is False  # both settled
+
+    def test_stale_lookup_does_not_prune_an_entry_whose_approval_is_pending(self):
+        # Any message in the admin's chat runs resolve_delegation(), which used to
+        # delete a TTL-expired entry unconditionally — re-opening the self-approve
+        # gate while the delegated approval was still pending (approvals.timeout >
+        # _DELEGATION_TTL). Expiry must not prune what is still bound to a live queue.
+        self._reset()
+        with patch("hermes_cli.config.load_config", return_value=self.CFG):
+            from gateway.approval_delegation import (
+                register_delegation, resolve_delegation, is_session_delegated_away)
+            import gateway.approval_delegation as ad
+            from tools import approval as mod
+            register_delegation(admin_platform="feishu", admin_chat_id="oc_admin",
+                                session_key="sk_u", user_platform="weixin",
+                                user_chat_id="u1", request_id="req-42")
+            ad._delegation_map["feishu:oc_admin"]["sk_u"]["created_at"] = \
+                time.monotonic() - ad._DELEGATION_TTL - 1
+            unlock = threading.Event()
+            class E:
+                result = None
+                data = {"command": "x", "request_id": "req-42"}
+                authority: dict = {}
+                event = unlock
+            mod._gateway_queues["sk_u"] = [E()]
+            assert resolve_delegation("feishu", "oc_admin") is not None  # still answerable
+            assert is_session_delegated_away("sk_u") is True
+            mod._gateway_queues.pop("sk_u", None)
+            assert is_session_delegated_away("sk_u") is False
+            assert resolve_delegation("feishu", "oc_admin") is None       # now pruned
+            assert not ad._delegation_map.get("feishu:oc_admin")
+
     # ── handler-level regression (the PoC itself) ────────────────────────
 
     SK = "agent:main:weixin:dm:o9user"

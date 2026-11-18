@@ -104,6 +104,7 @@ _TRIGGER_EVERYTHING = {
                  "singularity_image": f"docker://{_LEGACY_IMAGE}", "vercel_runtime": "node24"},
     "security": {"tirith_enabled": True, "tirith_path": "x"},
     "browser": {"backend": "x", "extension_control": True},
+    "fallback_providers": [{"provider": "qwen", "model": "m", "api_key": "qwen-portal-token"}],
 }
 
 

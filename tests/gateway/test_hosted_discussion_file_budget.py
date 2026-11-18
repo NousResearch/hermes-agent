@@ -46,3 +46,11 @@ def test_repeating_file_outputs_pause_for_continue(tmp_path, monkeypatch, member
             assert current.task is not None
             _settle(service, current.task, "@all Another update", [upload(service, f"continued-{n}")])
         assert decision(service, limits).status == "bounded"
+
+
+def test_file_on_current_send_waits_for_continue_once_budget_is_spent(tmp_path, monkeypatch):
+    with roster(tmp_path, monkeypatch, "ab") as service:
+        limits = discussion.DiscussionLimits(max_messages=1)
+        send(service, "start", [upload(service, "file")], text="@all Review")
+        _settle(service, decision(service, limits).task, "Reviewed")
+        assert decision(service, limits).reason == "max_messages"

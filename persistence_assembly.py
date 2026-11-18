@@ -12,11 +12,12 @@ Only this module names a backend package: callers branch on ``capabilities``, ne
 
 ``persistence.provider`` names the provider; ``plugins.persistence`` resolves it by explicit name only (the built-in
 ``sqlite``, a bundled ``plugins/persistence/<name>/`` package or a ``hermes_agent.persistence`` entry point) and an
-unknown, doubly-provided or failing name raises ``ValueError``: nothing falls back to SQLite. ``storage_health``,
-``store_exists`` and ``store_location`` answer from the SQLite file only under the built-in provider: another provider
-gets ``None`` from ``store_location`` and ``CapabilityUnsupported`` from the other two. ``live_stores`` lends, and
-``close_stores_under``/``close_all_stores`` close, the built-in's stores only; another provider's backend releases its
-stores through its handles' ``close``.
+unknown, doubly-provided or failing name raises ``ValueError``, as does a ``provider`` key that is present but names
+nothing (empty, blank or not a string): only an absent key, section or file means SQLite, and nothing falls back to it.
+``storage_health``, ``store_exists`` and ``store_location`` read no configuration: they answer from the SQLite file
+unless the process holds another provider's backend for that store, which gets ``None`` from ``store_location`` and
+``CapabilityUnsupported`` from the other two. ``live_stores`` lends, and ``close_stores_under``/``close_all_stores``
+close, the built-in's stores only; another provider's backend releases its stores through its handles' ``close``.
 
 ``require_hosted_persistence()`` is the hosted boot check: it assembles the provider configured for the current home
 and returns None only when that backend declares ``scope_pinning`` and its ``assert_isolating()`` passes; otherwise,
@@ -26,7 +27,11 @@ Hosted mode (``bound_hosted_scope()`` is not None) binds every store to the boun
 ``profile_scope()`` answers a scope pinned to it (``ProfileScope.pin``), a handle opens and binds only a scope carrying
 exactly that pin, and no door reads or touches a local ``state.db`` for a hosted activity. Outside hosted mode no pinned
 scope opens. All pinned handles of a process share one assembled backend per provider, which serves every pin: one
-connection pool for all tenants instead of one per pin. Only ``close_all_stores`` closes it.
+connection pool for all tenants instead of one per pin. Only ``close_all_stores``, the unbound host's shutdown, closes
+it; a hosted activity calling it raises ``ScopePinRefused``. The backends enforce the pin again at each verb, so a
+repository or ``aio`` view kept from a handle is held to it too: the built-in SQLite refuses every read and write while
+a hosted scope is bound, and a ``scope_pinning`` backend refuses a pinned store's verb while a hosted scope with another
+pin is bound (with none bound, as on a worker thread that did not inherit the activity's context, it serves its pin).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -138,8 +144,9 @@ def bound_hosted_scope() -> Any:
 
 def _bound_pin() -> Optional[StorePin]:
     """The pin of the bound hosted scope, or None outside hosted mode."""
-    hosted = bound_hosted_scope()
-    return None if hosted is None else StorePin(hosted.tenant, hosted.agent)
+    from persistence.core.context import bound_store_pin
+
+    return bound_store_pin()
 
 
 def _require_bound_pin(scope: ProfileScope, *, unbound_ok: bool = False) -> None:
@@ -207,8 +214,10 @@ def store_owner_name(profile_dir: Path) -> Optional[str]:
 
 def _configured_provider(home: Path) -> str:
     """The ``persistence.provider`` name configured for ``home``, unresolved: the process config for the current home,
-    the target's own ``config.yaml`` for another one. An absent section or file means ``sqlite``; so does an
-    unreadable or unparsable foreign config, except in hosted mode, where it raises ``ValueError``."""
+    the target's own ``config.yaml`` for another one. An absent key, section or file means ``sqlite``; so does an
+    unreadable or unparsable foreign config, except in hosted mode, where it raises ``ValueError``. A section that is
+    not a mapping, or a ``provider`` that is present but empty, blank or not a string, names no provider and raises
+    ``ValueError``: an explicit setting is never defaulted."""
     from hermes_constants import get_hermes_home, hermes_home_key
 
     section: Any = None
@@ -231,9 +240,16 @@ def _configured_provider(home: Path) -> str:
             elif loaded is not None and bound_hosted_scope() is not None:
                 raise ValueError(f"cannot read the persistence provider from {config_path}: hosted mode does not "
                                  f"default it") from (loaded if isinstance(loaded, Exception) else None)
-    if isinstance(section, dict) and section.get("provider"):
-        return str(section["provider"])
-    return "sqlite"
+    if section is None:
+        return "sqlite"
+    if not isinstance(section, dict):
+        raise ValueError(f"the persistence section names no provider: {section!r} is not a mapping")
+    if "provider" not in section:
+        return "sqlite"
+    provider = section["provider"]
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError(f"persistence.provider names no provider: {provider!r}; remove the key to use sqlite")
+    return provider
 
 
 def _provider_for_home(home: Path) -> str:
@@ -255,13 +271,16 @@ def _assemble(provider: str, stores: Mapping[str, Path], *, read_only: bool = Fa
     return backend_factory(provider)(stores, read_only=read_only, read_patience_s=read_patience_s)
 
 
-def _sqlite_only(scope: ProfileScope) -> bool:
-    """Whether ``scope``'s configured provider is the built-in SQLite, the only one the file-level helpers answer for.
-    A home not on disk holds no config naming another provider, so it answers True without loading (or creating) any
-    config: the file-level helpers answer for a home that does not exist yet, as they always have."""
-    if not scope.profile_dir.is_dir():
-        return True
-    return _configured_provider(scope.profile_dir) == "sqlite"
+def _held_by_another_provider(scope: ProfileScope) -> bool:
+    """Whether this process holds a backend other than the built-in SQLite for ``scope``'s store: the only case the
+    file-level helpers answer for no file. Reads no configuration, so they answer as they always have otherwise."""
+    with _cache_lock:
+        entry = _shared.get(scope.store_key)
+        backend = None if entry is None else entry[0]
+    if backend is None:
+        return False
+    sqlite = sys.modules.get("persistence.sqlite")  # not imported: the held backend cannot be the built-in
+    return sqlite is None or not isinstance(backend, sqlite.SQLiteBackend)
 
 
 def _state_db(scope: ProfileScope) -> Path:
@@ -402,21 +421,21 @@ def open_profile_repair(scope: ProfileScope, *, read_only: bool) -> ProfileRepai
 
 
 def store_location(scope: ProfileScope) -> Optional[Path]:
-    """The file that holds ``scope``'s store under the configured provider, or ``None`` for a provider without one
-    (any provider but the built-in SQLite). A pinned scope's store is no local file: the bound pin answers ``None``;
-    any scope a hosted activity may not use (another pin, a local scope while hosted, a pin outside hosted mode) raises
-    ``ScopePinRefused``."""
+    """The file that holds ``scope``'s store, or ``None`` while the process holds another provider's backend for it,
+    which keeps no such file; reads no configuration. A pinned scope's store is no local file: the bound pin answers
+    ``None``; any scope a hosted activity may not use (another pin, a local scope while hosted, a pin outside hosted
+    mode) raises ``ScopePinRefused``."""
     _require_bound_pin(scope)
     if scope.pin is not None:
         return None
-    return _state_db(scope) if _sqlite_only(scope) else None
+    return None if _held_by_another_provider(scope) else _state_db(scope)
 
 
 def storage_health(scope: ProfileScope) -> StorageHealth:
     """The health latch and readiness probe of ``scope``'s store, answered without opening it. Both read a local
     ``state.db``: a pinned scope, or any scope while a hosted scope is bound, raises ``ScopePinRefused`` (a hosted
-    store reports its health through its handle's typed errors); a provider other than the built-in SQLite raises
-    ``CapabilityUnsupported`` (its health is its open store's ``health``)."""
+    store reports its health through its handle's typed errors); while the process holds another provider's backend for
+    the store it raises ``CapabilityUnsupported`` (its health is its open store's ``health``). Reads no configuration."""
     from persistence import CapabilityUnsupported
 
     _refuse_hosted("probe a local store's health")
@@ -424,7 +443,7 @@ def storage_health(scope: ProfileScope) -> StorageHealth:
         raise ScopePinRefused("a pinned scope has no local store to probe")
     from persistence.sqlite.services import SQLiteStorageHealth
 
-    if not _sqlite_only(scope):
+    if _held_by_another_provider(scope):
         raise CapabilityUnsupported("storage_health")
 
     return SQLiteStorageHealth(_state_db(scope))
@@ -473,7 +492,10 @@ def close_stores_under(directory: str | Path) -> int:
 
 def close_all_stores() -> int:
     """Close every store this process holds, regardless of references (gateway shutdown); returns how many closed.
-    The backends serving pinned scopes close too; a pinned handle's next first use assembles a fresh one."""
+    The backends serving pinned scopes close too; a pinned handle's next first use assembles a fresh one. It is the
+    unbound host's shutdown: a hosted activity, which may touch no other pin's store and no local one, raises
+    ``ScopePinRefused``."""
+    _refuse_hosted("close every store of the process")
     from persistence.sqlite import _registry
 
     with _cache_lock:
@@ -489,11 +511,13 @@ def close_all_stores() -> int:
 
 def require_hosted_persistence() -> None:
     """The hosted boot check: assemble the configured provider and return only when it declares ``scope_pinning`` and
-    its ``assert_isolating`` passes; raise ``IsolationUnsupported`` otherwise (always for the built-in SQLite)."""
+    its ``assert_isolating`` passes; raise ``IsolationUnsupported`` otherwise (always for the built-in SQLite). It runs
+    the same whether or not a hosted scope is already bound: it probes the process home directly, not through
+    ``profile_scope`` (which names no home in hosted mode)."""
     from hermes_constants import get_hermes_home
     from persistence import IsolationUnsupported
 
-    scope = profile_scope(home=get_hermes_home())
+    scope = ProfileScope(profile_dir=get_hermes_home(), name="default")
     provider = _provider_for_home(scope.profile_dir)
     if provider == "sqlite":
         raise IsolationUnsupported("persistence.provider is the built-in sqlite, a local single-tenant store; hosted "

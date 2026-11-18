@@ -270,16 +270,17 @@ def test_a_config_the_process_cannot_open_is_refused_when_hosted(tmp_path, monke
         pop_state(token)
 
 
-def test_sqlite_only_helpers_refuse_for_a_plugin_provider(tmp_path, bundled_root, entry_points):
+def test_sqlite_only_helpers_refuse_for_a_held_plugin_provider(tmp_path, bundled_root, entry_points):
     from persistence import CapabilityUnsupported
 
     add_bundled(bundled_root, "fakedir", plugin_source())
     scope = persistence_assembly.profile_scope(home=configured_home(tmp_path, "fakedir"))
-    assert persistence_assembly.store_location(scope) is None
-    with pytest.raises(CapabilityUnsupported):
-        persistence_assembly.storage_health(scope)
-    with pytest.raises(CapabilityUnsupported):
-        persistence_assembly.store_exists(scope)
+    with persistence_assembly.open_persistence(scope, eager=True):
+        assert persistence_assembly.store_location(scope) is None
+        with pytest.raises(CapabilityUnsupported):
+            persistence_assembly.storage_health(scope)
+        with pytest.raises(CapabilityUnsupported):
+            persistence_assembly.store_exists(scope)
     sqlite_scope = persistence_assembly.profile_scope(home=configured_home(tmp_path, "sqlite", name="local"))
     assert persistence_assembly.store_location(sqlite_scope) == Path(sqlite_scope.hermes_home_key) / "state.db"
     assert persistence_assembly.store_exists(sqlite_scope) is False

@@ -221,6 +221,9 @@ class InMemoryHostedRoomAttachmentRepository:
             self._store.hosted_rooms.claim_owner(epoch=owner.epoch, room_id=room_id, actor=owner.actor, owner=owner.rule)
         tables = read_tables(self._store, placement)
         scope = dict(room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        room = tables["hosted_rooms"].get(room_id)
+        if owner is not None and authority_epoch is None and room is not None:
+            scope["authority_epoch"] = room["authority_epoch"]
         require_viewer_room(tables, **scope)
 
         def events(snapshot, position):

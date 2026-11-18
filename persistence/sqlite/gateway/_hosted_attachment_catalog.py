@@ -136,11 +136,13 @@ def list_published(
             _claim_owner_locked(
                 conn, owner.epoch, room_id, owner.actor, owner.rule, create=False
             )
-        _require_viewer_room(conn, **scope)
         room = conn.execute(
-            "SELECT next_seq, members_json FROM hosted_rooms WHERE room_id=?",
+            "SELECT next_seq, members_json, authority_epoch FROM hosted_rooms WHERE room_id=?",
             (room_id,),
         ).fetchone()
+        if owner is not None and authority_epoch is None and room is not None:
+            scope["authority_epoch"] = room["authority_epoch"]
+        _require_viewer_room(conn, **scope)
         return catalog.list_published(
             room,
             partial(_file_events, conn, room_id=room_id),

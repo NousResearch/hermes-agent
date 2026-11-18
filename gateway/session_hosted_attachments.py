@@ -91,12 +91,14 @@ def read_download(service, room_id, params, *, owner=None):
 
 def list_files(service, actor, params):
     """``groups.attachment.list``: one page of a room's published file versions."""
-    return read_catalog(service, _authorize(service, actor, params, 'session:read'), params, owner=_owner_claim(service, actor))
+    # Dispatch checked the actor's capability and profile. Check ownership in the catalog transaction.
+    return read_catalog(service, params.get('room_id'), params, owner=_owner_claim(service, actor))
 
 
 def read_catalog(service, room_id, params, *, owner=None):
     """Published file metadata for an authorized viewer on either route."""
-    gateway_id, epoch = service._owned_authority(room_id)
+    from gateway.hosted_rooms import local_authority_gateway_id
+    gateway_id, epoch = (local_authority_gateway_id(), None) if owner else service._owned_authority(room_id)
     with _room_attachments(service) as store:
         return store.list_published(
             owner=owner, room_id=room_id, authority_gateway_id=gateway_id, authority_epoch=epoch,

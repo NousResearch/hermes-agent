@@ -122,6 +122,21 @@ async def test_a_retry_after_is_honoured_up_to_the_cap(clock, case):
     assert [seen.body["seq"] for seen in receiver.requests] == [1, 2]
 
 
+async def test_a_retry_after_too_long_to_read_as_an_integer_waits_the_cap(clock):
+    receiver = Receiver()
+    receiver.reply_with(Reply(429, {"Retry-After": "9" * 5000}))
+    reporter = make_reporter(receiver)
+
+    await reporter.poll()
+    clock.advance(RESPONSES["retry_after_max_s"] - 1)
+    await reporter.poll()
+    assert len(receiver.requests) == 1, "a report went out before the cap was over"
+    clock.advance(1)
+    await reporter.poll()
+
+    assert [seen.body["seq"] for seen in receiver.requests] == [1, 2]
+
+
 @pytest.mark.parametrize("case", _cases("backoff"))
 async def test_a_rejected_credential_backs_off_in_steps_and_a_stored_report_resets_them(clock, case):
     steps = RESPONSES["rejected_backoff_s"]

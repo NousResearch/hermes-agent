@@ -45,14 +45,15 @@ def test_each_reply_in_the_contract_fixture_is_classified(case):
         assert outcome.retry_after_s == float(case["headers"]["Retry-After"])
 
 
-def test_a_retry_after_too_long_to_be_a_wait_is_ignored_and_never_raises():
+def test_a_retry_after_too_long_to_read_as_an_integer_never_raises():
     """``int()`` refuses a digit string past the interpreter's limit, and a header may be that long."""
     receiver = Receiver()
     receiver.reply_with(Reply(429, {"Retry-After": "9" * 5000}))
 
     outcome = post_report(ReportTarget(REPORT_URL, new_credential()), BODY, timeout=7.0, opener=receiver)
 
-    assert (outcome.kind, outcome.status, outcome.retry_after_s) == ("throttled", 429, None)
+    assert (outcome.kind, outcome.status) == ("throttled", 429)
+    assert outcome.retry_after_s > RESPONSES["retry_after_max_s"]
 
 
 @pytest.mark.parametrize(

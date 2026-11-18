@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { stripOsc8 } from './squash-text-nodes.js'
+import { createNode, createTextNode, type DOMElement, type ElementNames } from './dom.js'
+import { squashTextNodesToSegments, stripOsc8 } from './squash-text-nodes.js'
+import type { TextStyles } from './styles.js'
 
 const ESC = '\u001b'
 const BEL = '\u0007'
@@ -50,5 +52,68 @@ describe('stripOsc8', () => {
 
     expect(stripOsc8(nested)).toBe('label')
     expect(performance.now() - started).toBeLessThan(50)
+
+    // Unterminated openers whose payload scan restarts on every splice stay linear too.
+    const unterminated = ESC.repeat(20000) + ']8;'.repeat(20000) + 'x'.repeat(20000)
+    const begun = performance.now()
+
+    expect(stripOsc8(unterminated)).not.toContain(OPEN)
+    expect(performance.now() - begun).toBeLessThan(50)
+  })
+
+  it('drops only the opener when the payload has no terminator before a newline or the end', () => {
+    expect(stripOsc8(`before ${OPEN};\nline2 ${OPEN};x${BEL}y`)).toBe('before ;\nline2 y')
+    expect(stripOsc8(`a ${OPEN};https://x`)).toBe('a ;https://x')
+  })
+})
+
+const text = (value: string) => createTextNode(value) as unknown as DOMElement
+
+const element = (name: ElementNames, children: DOMElement[], textStyles?: TextStyles, href?: string) => {
+  const node = createNode(name)
+
+  node.childNodes = children
+  node.textStyles = textStyles
+
+  if (href) {
+    node.attributes['href'] = href
+  }
+
+  return node
+}
+
+describe('squashTextNodesToSegments', () => {
+  const segmentsOf = (node: DOMElement) =>
+    squashTextNodesToSegments(node).map(({ hyperlink, styles, text }) => ({ hyperlink, styles, text }))
+
+  it('maps the stripped run back to each segment with its own styles', () => {
+    // Joined: "ab" ESC | "]8;;u" BEL "C😀D" | "E" | "f" — the opener spans the first boundary.
+    const run = element('ink-text', [
+      text(`ab${ESC}`),
+      element('ink-virtual-text', [text(`]8;;u${BEL}C😀D`)], { bold: true }),
+      element('ink-virtual-text', [text('E')], { italic: true }),
+      text('f')
+    ])
+
+    expect(segmentsOf(run)).toEqual([
+      { hyperlink: undefined, styles: {}, text: 'ab' },
+      { hyperlink: undefined, styles: { bold: true }, text: 'C😀D' },
+      { hyperlink: undefined, styles: { italic: true }, text: 'E' },
+      { hyperlink: undefined, styles: {}, text: 'f' }
+    ])
+  })
+
+  it('never lets a payload skip run past the text node it started in', () => {
+    const run = element('ink-text', [
+      text(`before ${OPEN};`),
+      element('ink-virtual-text', [text(`${BEL} WARNING`)], { color: 'ansi:red' }),
+      element('ink-link', [text('TRUSTED')], undefined, 'https://docs.example.com/real')
+    ])
+
+    expect(segmentsOf(run)).toEqual([
+      { hyperlink: undefined, styles: {}, text: 'before ;' },
+      { hyperlink: undefined, styles: { color: 'ansi:red' }, text: `${BEL} WARNING` },
+      { hyperlink: 'https://docs.example.com/real', styles: {}, text: 'TRUSTED' }
+    ])
   })
 })

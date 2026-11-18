@@ -28,12 +28,19 @@ const endsWithOpener = (value: string, out: number[]) => {
 
 // Rule: the output never contains the opener. Chars are appended one at a time; the moment
 // the output ends with the opener — whether the sequence was in the input or spliced together
-// by an earlier removal — it is popped and the payload up to its terminator is skipped.
-// Linear in the input, so nested inputs cannot stall a frame. Returns the surviving source
-// indices, ascending, so a joined run can be split back into its segments.
-const keptIndices = (value: string) => {
+// by an earlier removal — it is popped and the payload up to its terminator (BEL, ST, or the
+// ESC that aborts it) is skipped. The skip never crosses a newline or the end of the segment
+// holding the opener's last char: untrusted text must not be able to hide the lines, nodes or
+// trusted <Link> labels after it. Without a terminator in reach only the opener is dropped;
+// the rest has no opener left, so it shows as plain text and cannot form a link.
+// `ends` are the segment end offsets, ascending, the last one value.length. Linear in the
+// input: an unterminated scan is remembered, so openers spliced inside its range skip it.
+// Returns the surviving source indices, ascending, so a run can be split back into segments.
+const keptIndices = (value: string, ends: readonly number[]) => {
   const out: number[] = []
   let i = 0
+  let segment = 0
+  let unterminatedUntil = -1
 
   while (i < value.length) {
     out.push(i++)
@@ -44,14 +51,27 @@ const keptIndices = (value: string) => {
 
     out.length -= OSC8_OPEN.length
 
-    while (i < value.length && value[i] !== '\u0007' && value[i] !== '\u001b') {
-      i++
+    while (ends[segment]! < i) {
+      segment++
     }
 
-    if (value[i] === '\u0007') {
-      i++
-    } else if (value[i] === '\u001b' && value[i + 1] === '\\') {
-      i += 2
+    if (i < unterminatedUntil) {
+      continue
+    }
+
+    const limit = ends[segment]!
+    let j = i
+
+    while (j < limit && value[j] !== '\u0007' && value[j] !== '\u001b' && value[j] !== '\n') {
+      j++
+    }
+
+    if (j === limit || value[j] === '\n') {
+      unterminatedUntil = j
+    } else if (value[j] === '\u0007') {
+      i = j + 1
+    } else {
+      i = j + 1 < limit && value[j + 1] === '\\' ? j + 2 : j
     }
   }
 
@@ -60,7 +80,7 @@ const keptIndices = (value: string) => {
 
 export const stripOsc8 = (value: string) =>
   value.includes(OSC8_OPEN)
-    ? keptIndices(value)
+    ? keptIndices(value, [value.length])
         .map(i => value[i])
         .join('')
     : value
@@ -116,7 +136,13 @@ const stripSegments = (segments: StyledSegment[]) => {
     return segments
   }
 
-  const kept = keptIndices(joined)
+  let offset = 0
+
+  const kept = keptIndices(
+    joined,
+    segments.map(s => (offset += s.text.length))
+  )
+
   const out: StyledSegment[] = []
   let k = 0
   let end = 0
@@ -150,32 +176,14 @@ const stripSegments = (segments: StyledSegment[]) => {
 export const squashTextNodesToSegments = (node: DOMElement, inheritedStyles: TextStyles = {}): StyledSegment[] =>
   stripSegments(collectSegments(node, inheritedStyles, undefined, []))
 
-function joinTextNodes(node: DOMElement): string {
-  let text = ''
-
-  for (const childNode of node.childNodes) {
-    if (childNode === undefined) {
-      continue
-    }
-
-    if (childNode.nodeName === '#text') {
-      text += childNode.nodeValue
-    } else if (
-      childNode.nodeName === 'ink-text' ||
-      childNode.nodeName === 'ink-virtual-text' ||
-      childNode.nodeName === 'ink-link'
-    ) {
-      text += joinTextNodes(childNode)
-    }
-  }
-
-  return text
-}
-
 /**
  * Squash text nodes into a plain string (without styles).
- * Used for text measurement in layout calculations; strips the same joined run as rendering.
+ * Used for text measurement in layout calculations: the same stripped segments as rendering,
+ * so the measured width is the drawn width.
  */
-const squashTextNodes = (node: DOMElement): string => stripOsc8(joinTextNodes(node))
+const squashTextNodes = (node: DOMElement): string =>
+  squashTextNodesToSegments(node)
+    .map(s => s.text)
+    .join('')
 
 export default squashTextNodes

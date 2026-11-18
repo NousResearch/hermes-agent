@@ -76,7 +76,13 @@ engine, same chunking/budget/tier semantics, same log and outcome
 reporting, sync-bridged (a dedicated thread when the caller is inside
 a running event loop; outcome tasks are drained before that loop
 closes so desktop-chat telemetry is not lost). Scope identical:
-desktop/gui frozen source, env-gated, fail-open, hold shows the
+desktop/gui frozen source (resolved from the DB ROW first - `source`,
+plus `created_source` for a `local` re-bound desktop session - then
+the gateway client's adopted snapshot as a fallback; the Desktop
+backend SCREENS when the source cannot be resolved at all - review
+1c-r4: in serve, `agent._session_db` is a gateway client proxy whose
+`_read_ctx` raises, which silently disabled the gate), env-gated,
+fail-open, hold shows the
 notice text as the reply with the tier reasons. Multimodal text
 parts are screened (deduplicated); machine ``TimelineNotification``
 rows are excluded by REAL class (it subclasses str - review 1c-F1)

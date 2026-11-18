@@ -377,28 +377,156 @@ async def authority_gate(authority, subject, session_id, payload, *,
                        "proceed", exc_info=True)
 
 
+def _state_db_path() -> Path:
+    """The default profile state DB at CALL time (runtime HERMES_HOME
+    redirects honoured). Isolated for tests and for the serve path's
+    read-only scope lookup."""
+    from hermes_state import _default_db_path
+    return _default_db_path()
+
+
+def _source_from_store(db, session_id: str) -> str | None:
+    """The session's frozen launch source, resolved WITHOUT a direct
+    store handle when the store is a gateway client proxy (review
+    1c-r4: in the Desktop serve path ``agent._session_db`` is a
+    ``GatewaySessionStore`` client whose ``_read_ctx`` raises
+    ``GatewayClientError`` - the gate then skipped itself silently and
+    the 18 Nov live test went unscreened). The DB ROW is authoritative
+    and read FIRST (module F4 rule); the client's adopted snapshot is a
+    fallback only (review 1c-r5-F2: a stale/poisoned snapshot must not
+    win over the row). Never raises; None means 'cannot tell'."""
+    source = _source_from_db(session_id)
+    if source:
+        return source
+    snapshots = None
+    try:
+        snapshots = getattr(db, "snapshots", None)
+    except Exception:
+        snapshots = None
+    if isinstance(snapshots, dict):
+        snapshot = snapshots.get(session_id)
+        if isinstance(snapshot, dict):
+            found_source = snapshot.get("source")
+            found_created = snapshot.get("created_source")
+            resolved = _resolve_label(found_source, found_created)
+            if resolved:
+                # Review 1c-r6: the snapshot pair goes through the SAME
+                # label rule, so a re-bound local+desktop snapshot
+                # rescues and a machine transport never slips in.
+                return resolved
+            value = snapshot.get("launch_source")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _resolve_label(source, created) -> str | None:
+    """Scope label from (source, created_source): the current transport
+    wins when it is a screened surface; a ``local`` re-bind keeps the
+    created desktop surface (review 1c-r5-F1); machine transports stay
+    out. Never raises."""
+    source = (source or "").strip() if isinstance(source, str) else ""
+    created = (created or "").strip() if isinstance(created, str) else ""
+    if source in _scoped_sources():
+        return source
+    if source == "local" and created in _scoped_sources():
+        return created
+    return source or created or None
+
+
+_SQLITE_LOOKUP_TIMEOUT_S = 0.25  # bound the locked-DB worst case (query ~1.4 ms warm)
+
+
+def _source_from_db(session_id: str) -> str | None:
+    """READ-ONLY state-DB lookup of the session's launch label.
+
+    ``source`` is the current transport; ``created_source`` records the
+    surface the session was created on. A session re-bound to the
+    ``local`` transport keeps ``created_source='desktop'`` (review
+    1c-r5-F1: 47 live archived desktop rows) - those are still desktop
+    viewer sessions and must screen, while machine transports
+    (oneshot/subagent/cli) stay out."""
+    try:
+        import sqlite3
+        path = _state_db_path()
+        if not path.exists():
+            return None
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True,
+                               timeout=_SQLITE_LOOKUP_TIMEOUT_S)
+        try:
+            try:
+                row = conn.execute(
+                    "SELECT source, created_source FROM sessions WHERE id=?",
+                    (session_id,)).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    "SELECT source FROM sessions WHERE id=?",
+                    (session_id,)).fetchone()
+                row = (row[0], None) if row else None
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return _resolve_label(row[0], row[1])
+    except Exception:
+        logger.debug("desktop_screen: read-only source lookup failed",
+                     exc_info=True)
+        return None
+
+
 def session_in_scope(authority, session_id: str) -> bool:
     """True when the session's frozen launch source is a screened
     desktop surface. Never raises (an unreadable source means not in
-    scope: the screen must never wedge a submit). Resolves the DB row
-    FIRST and uses ``launch_sources`` only as a write-through cache
+    scope, except in the Desktop backend - see below). Resolves the DB
+    row FIRST and uses ``launch_sources`` only as a write-through cache
     (review F4: a stale or poisoned cache entry must fail in the
-    SCREENED direction, not silently skip the gate)."""
+    SCREENED direction, not silently skip the gate). Three resolution
+    paths (review 1c-r4): a direct store handle (``_read_ctx``), a
+    gateway client proxy (adopted snapshot / read-only state-DB read),
+    and - only when neither can tell - the Desktop backend process
+    itself, which exists to serve its desktop viewer and must not
+    silently disable the gate on the surface it protects."""
     try:
         session_id = str(session_id or "")
         if not session_id:
             return False
         sources = getattr(authority, "launch_sources", None)
         db = getattr(authority, "db", None)
-        if db is None:
+        source = None
+        if db is not None:
+            try:
+                read_ctx = getattr(db, "_read_ctx", None)
+            except Exception:
+                # A client proxy whose attribute access itself raises
+                # must fall through to the resolver, not abort the
+                # scope check (review 1c-r4 test finding).
+                read_ctx = None
+            if callable(read_ctx):
+                try:
+                    with read_ctx() as conn:
+                        try:
+                            found = conn.execute(
+                                "SELECT source, created_source FROM sessions "
+                                "WHERE id=?", (session_id,)).fetchone()
+                        except Exception:
+                            found = conn.execute(
+                                "SELECT source FROM sessions WHERE id=?",
+                                (session_id,)).fetchone()
+                            found = (found[0], None) if found else None
+                    if found is not None:
+                        created = found[1] if len(found) > 1 else None
+                        source = _resolve_label(found[0], created)
+                except Exception:
+                    source = None
+            if not (isinstance(source, str) and source.strip()):
+                source = _source_from_store(db, session_id)
+        if not (isinstance(source, str) and source.strip()):
+            if _flag("HERMES_DESKTOP").lower() in ("1", "true", "yes", "on"):
+                logger.info("desktop_screen: session source unresolvable "
+                            "in the Desktop backend; screening (process scope)")
+                return True
             return False
-        with db._read_ctx() as conn:
-            found = conn.execute(
-                "SELECT source FROM sessions WHERE id=?",
-                (session_id,)).fetchone()
-        if found is None:
-            return False
-        source = found[0]
+        source = source.strip()
         if isinstance(sources, dict):
             sources[session_id] = source
         return source in _scoped_sources()

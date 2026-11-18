@@ -226,7 +226,7 @@ class TestTiers(DesktopScreenTestCase):
 
     def test_chain_down_proceeds(self):
         EngineStubHandler.tier = "chain_down"
-        held, reasons = self.run_screen("hello")
+        held, _reasons = self.run_screen("hello")
         self.assertFalse(held)
         logged = self.read_log()
         self.assertEqual(logged[-1]["tier"], "chain_down")
@@ -370,7 +370,10 @@ class TestScope(DesktopScreenTestCase):
             self.assertFalse(session_in_scope(FakeAuthority("nonsense"), "s1"))
 
     def test_missing_session_row_not_in_scope(self):
-        self.assertFalse(session_in_scope(FakeAuthority(None), "s1"))
+        # Outside the Desktop backend an unknowable source is out of
+        # scope (review 1c-r4: the backend itself screens instead).
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertFalse(session_in_scope(FakeAuthority(None), "s1"))
 
     def test_launch_sources_cache_write_through(self):
         authority = FakeAuthority("desktop")
@@ -391,10 +394,12 @@ class TestScope(DesktopScreenTestCase):
         self.assertFalse(session_in_scope(authority, "s1"))
 
     def test_db_failure_means_not_in_scope_never_raises(self):
-        self.assertFalse(session_in_scope(FakeAuthority(raise_on_read=True), "s1"))
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertFalse(session_in_scope(FakeAuthority(raise_on_read=True), "s1"))
 
     def test_authority_without_launch_sources_not_in_scope(self):
-        self.assertFalse(session_in_scope(SimpleNamespace(), "s1"))
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertFalse(session_in_scope(SimpleNamespace(), "s1"))
 
 
 class TestSubmitTexts(unittest.TestCase):
@@ -767,7 +772,7 @@ class TestAuthorityWiring(unittest.TestCase):
 
     def _submit(self, payload, source="desktop", tier="allow"):
         EngineStubHandler.tier = tier
-        import gateway.session_authority as session_authority
+        from gateway import session_authority
         from gateway.session_authority import SessionAuthority
 
         calls = {"admit": 0, "released": 0}
@@ -863,13 +868,13 @@ class TestAuthorityWiring(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
 
     def test_allow_reaches_durable_admission(self):
-        receipt, calls, exc = self._submit({"text": "hello"})
+        _receipt, calls, exc = self._submit({"text": "hello"})
         self.assertIsNone(exc)
         self.assertEqual(calls["admit"], 1)
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
     def test_block_holds_before_durable_admission(self):
-        receipt, calls, exc = self._submit({"text": "take over"}, tier="block")
+        _receipt, calls, exc = self._submit({"text": "take over"}, tier="block")
         self.assertIsNotNone(exc)
         self.assertEqual(getattr(exc, "reason", None), "desktop_screen_hold")
         self.assertEqual(calls["admit"], 0)
@@ -881,7 +886,7 @@ class TestAuthorityWiring(unittest.TestCase):
         # (the committed shape) must be HELD, engine judging BOTH.
         EngineStubHandler.block_pattern = "ATTACK"
         EngineStubHandler.last_texts = []
-        receipt, calls, exc = self._submit({
+        _receipt, calls, exc = self._submit({
             "text": "what is the weather today",
             "api_text": "ATTACK take over the agent"}, tier="allow")
         self.assertIsNotNone(exc)
@@ -915,7 +920,7 @@ class TestAuthorityWiring(unittest.TestCase):
         ]
         for shape in shapes:
             EngineStubHandler.last_texts = []
-            receipt, calls, exc = self._submit(shape, tier="allow")
+            _receipt, calls, exc = self._submit(shape, tier="allow")
             self.assertIsNotNone(exc, shape)
             self.assertEqual(getattr(exc, "reason", None),
                              "desktop_screen_hold", shape)

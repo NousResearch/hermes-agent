@@ -145,3 +145,43 @@ def test_cancel_mid_tick_keeps_the_lock_while_the_tick_thread_runs(watcher, monk
         watcher.runner._release_kanban_dispatcher_lock()
 
     assert state == "contended", "a peer could take the lock while the cancelled tick still ran"
+
+
+@pytest.mark.parametrize("park_on_sleep", [1, 2], ids=["startup-delay", "between-ticks"])
+def test_cancel_while_idle_frees_the_lock_for_a_waiting_gateway(watcher, monkeypatch, park_on_sleep):
+    monkeypatch.setattr(_kw._KanbanDispatcher, "tick_once", lambda _self: [])
+    monkeypatch.setattr(_kw, "_resolve_auto_decompose_settings", lambda _load: (False, 0))
+    monkeypatch.setattr(_kw, "_kanban_dispatch_allowed", lambda: True)
+    reaps = []
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch.reap_worker_zombies", lambda: reaps.append(1) or [])
+    parked = asyncio.Event()
+    sleeps = 0
+
+    async def _sleep(_delay):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == park_on_sleep:
+            parked.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    async def scenario():
+        task = asyncio.create_task(watcher.runner._kanban_dispatcher_watcher())
+        await asyncio.wait_for(parked.wait(), timeout=5.0)
+        assert watcher.runner._owns_kanban_dispatcher_lock()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        handle, state = _acquire_singleton_lock(watcher.lock_path)
+        _release_singleton_lock(handle)
+        return state
+
+    try:
+        state = asyncio.run(scenario())
+    finally:
+        watcher.runner._release_kanban_dispatcher_lock()
+
+    # Without this, the parametrized case would pass vacuously if it parked before any tick.
+    assert len(reaps) == park_on_sleep - 1
+    assert state == "held", "a watcher cancelled with no tick running kept the lock"

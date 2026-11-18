@@ -290,6 +290,18 @@ class GatewayKanbanWatchersMixin:
                        "acquired it and is now dispatching.", self._kanban_dispatcher_lock_path)
         return True
 
+    async def _kanban_dispatcher_idle(self, wait) -> None:
+        """Await *wait*; a cancel here releases the dispatcher lock.
+
+        No tick thread runs while the watcher waits, so a waiting gateway can
+        take the lock at once instead of when this process exits.
+        """
+        try:
+            await wait
+        except asyncio.CancelledError:
+            self._release_kanban_dispatcher_lock()
+            raise
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -307,7 +319,7 @@ class GatewayKanbanWatchersMixin:
         interval = settings.interval
 
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
-        await asyncio.sleep(5)
+        await self._kanban_dispatcher_idle(asyncio.sleep(5))
 
         # Health telemetry (mirrors `_cmd_daemon`): warn when the ready queue
         # is non-empty but spawns are 0 for N consecutive ticks — usually a
@@ -322,7 +334,7 @@ class GatewayKanbanWatchersMixin:
             if not self._kanban_dispatch_lock_held():
                 # Another process dispatches: no reaping, reclaims, spawns or
                 # stuck-board telemetry from this one.
-                await self._sleep_between_ticks(interval)
+                await self._kanban_dispatcher_idle(self._sleep_between_ticks(interval))
                 continue
             try:
                 # Reap zombies before per-board work so a board DB failure
@@ -370,6 +382,6 @@ class GatewayKanbanWatchersMixin:
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
 
-            await self._sleep_between_ticks(interval)
+            await self._kanban_dispatcher_idle(self._sleep_between_ticks(interval))
 
         self._release_kanban_dispatcher_lock()

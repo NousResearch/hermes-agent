@@ -8,6 +8,7 @@ Webapp listener, each started after the change; a listener restarted after a cha
 made with the old password.
 """
 import contextlib
+import json
 import os
 import stat
 import subprocess
@@ -233,6 +234,8 @@ def test_a_named_profile_gets_its_own_sign_in(tmp_path):
     assert result.returncode == 0, result.stdout
     assert _verify_password(PASSWORD, _basic_auth(profile)["password_hash"])
     assert _basic_auth(default_root) == {}
+    assert "This is profile 'work''s own sign-in" in result.stdout
+    assert "hermes dashboard password" in result.stdout  # how to set the shared listeners' sign-in
 
 
 def _wait_ready(proc) -> list[str]:
@@ -354,6 +357,26 @@ def test_a_password_the_calling_environment_also_sets_is_named_and_still_wins_wh
         assert _sign_in(base, PASSWORD)[0] == 401
     with _old_backend(env, port) as base:  # without it, the new password
         assert _sign_in(base, PASSWORD) == (200, 200)
+
+
+def test_a_profile_password_never_claims_the_shared_gateway_that_serves_the_profile(tmp_path):
+    """Dashboard sign-in belongs to the listener's launch home: a gateway serving several profiles signs
+    in with its own home's credentials, so a profile's password must not send the user to restart it."""
+    def prepare(home, _env):
+        config = json.loads((home / "config.yaml").read_text())
+        config["gateway"] = {"multiplex_profiles": True}
+        (home / "config.yaml").write_text(json.dumps(config))
+        (home / "profiles" / "work").mkdir(parents=True)
+        write_config(home / "profiles" / "work")
+
+    with live_gateway(tmp_path, prepare=prepare) as gateway:
+        result = gateway.cli("-p", "work", "dashboard", "password", "--username", USER, "--password-stdin",
+                             stdin=PASSWORD + "\n")
+        assert result.returncode == 0, result.stdout
+        assert "restart it to use the new sign-in" not in result.stdout
+        assert f"serves this profile from {gateway.home}" in result.stdout
+        assert _verify_password(PASSWORD, _basic_auth(gateway.home / "profiles" / "work")["password_hash"])
+        assert _basic_auth(gateway.home) == {}
 
 
 def test_the_new_password_signs_in_on_the_gateways_webapp(tmp_path):

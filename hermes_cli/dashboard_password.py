@@ -200,26 +200,46 @@ def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
     return removed, left
 
 
+def _profile_scope_lines(profile_arg: str) -> list[str]:
+    """For a named profile: which listeners read its own sign-in. Dashboard sign-in belongs to a
+    listener's launch home, and ``hermes -p NAME dashboard`` / ``serve`` open the machine dashboard
+    unless ``--isolated``, so a profile's credentials reach only the listeners it launches itself."""
+    if not profile_arg:
+        return []
+    name = profile_arg.split()[-1]
+    return [f"  This is profile '{name}''s own sign-in: hermes -p {name} dashboard --isolated (or serve) and a "
+            "gateway this profile runs by itself use it. hermes -p {0} dashboard without --isolated opens the "
+            "machine dashboard, and a gateway serving several profiles signs in with its own home's "
+            "credentials: set those with hermes dashboard password.".format(name)]
+
+
 def _restart_lines() -> list[str]:
     """Which running listeners must restart to use the new sign-in (they read it when they start)."""
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway import _profile_arg
     from hermes_cli.web_server_port_holder import running_gateway
-    hermes = " ".join(("hermes", _profile_arg())).strip()
-    lines = []
-    if running_gateway() is not None:
-        lines.append(f"  The gateway is running: restart it to use the new sign-in ({hermes} gateway restart).")
+    home = get_hermes_home()
+    lines = _profile_scope_lines(_profile_arg())
+    restart = []
+    gateway = running_gateway()
+    if gateway is not None and Path(gateway.control_home).resolve() != Path(home).resolve():
+        owner = " ".join(("hermes", _profile_arg(str(gateway.control_home)))).strip()
+        lines.append(f"  ⚠ The running gateway serves this profile from {gateway.control_home} and signs in with "
+                     f"that home's credentials, not these: change them with {owner} dashboard password.")
+    elif gateway is not None:
+        hermes = " ".join(("hermes", _profile_arg())).strip()
+        restart.append(f"  The gateway is running: restart it to use the new sign-in ({hermes} gateway restart).")
     try:
         from hermes_cli.main_dashboard import _find_stale_dashboard_pids
-        backends = _find_stale_dashboard_pids(scope_home=str(get_hermes_home()))
+        backends = _find_stale_dashboard_pids(scope_home=str(home))
     except (OSError, subprocess.SubprocessError):
         backends = []  # a failed scan only drops this hint
     if backends:
         pids = ", ".join(str(pid) for pid in backends)
-        lines.append(f"  hermes dashboard / hermes serve is running (PID {pids}): restart it to use the new sign-in.")
-    if not lines:
-        lines.append("  A gateway or hermes dashboard / hermes serve started from now on uses it.")
-    return lines
+        restart.append(f"  hermes dashboard / hermes serve is running (PID {pids}): restart it to use the new sign-in.")
+    if not restart:
+        restart.append("  A gateway or hermes dashboard / hermes serve started from now on uses it.")
+    return lines + restart
 
 
 def cmd_dashboard_password(args) -> int:

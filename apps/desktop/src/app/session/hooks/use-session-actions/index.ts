@@ -40,14 +40,12 @@ import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import { pendingSessionReplay, requestGatewayForAgent, retainGatewayForAgent } from '@/store/gateway'
-import { $gatewaySwitching } from '@/store/gateway-switch'
 import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { adoptDraftPreviewTabs, prunePreviewTabsForSession } from '@/store/preview'
 import {
   $activeGatewayProfile,
-  $gatewaySwapTarget,
   $newChatProfile,
   $profiles,
   type AgentProfileRoute,
@@ -157,8 +155,9 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
-import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
+import { markSessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import { canDismissMissingBookmark, isMissingSessionWithoutTranscript, missingResumeVerdict } from './missing-bookmark'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -210,12 +209,12 @@ import {
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
-  goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
+  probeStoredSession,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -1330,12 +1329,30 @@ export function useSessionActions({
         }
       }
 
-      const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
-      const sessionProfile = storedForProfile?.profile
+      const lookup = await probeStoredSession(storedSessionId, ownerRoute)
 
       if (!isCurrentResume()) {
         return
       }
+
+      // A confirmed 404 can dismiss a cold bookmark with no known owner.
+      if (
+        canDismissMissingBookmark(storedSessionId, lookup.status, {
+          hadWarmRuntime: Boolean(warmAtEntry),
+          initialConnectionId: ambientConnectionId,
+          ownerRoute,
+          routedSessionId: getRoutedStoredSessionId(),
+          wasSelected: resumedSameSelectedSession
+        })
+      ) {
+        announceGoneSessionDraft(storedSessionId)
+        startFreshSessionDraft(true)
+
+        return
+      }
+
+      const storedForProfile = lookup.status === 'found' ? lookup.session : undefined
+      const sessionProfile = storedForProfile?.profile
 
       const { resolvedConnectionId, sessionOwner } = resolveResumeOwner(
         ownerRoute,
@@ -2439,18 +2456,10 @@ export function useSessionActions({
           }
         }
 
-        // The session is genuinely gone (deleted, or a stale id from a wiped /
-        // rotated backend): the resume RPC and the authoritative REST transcript
-        // both 404. There's nothing to recover — silently drop to a fresh draft
-        // instead of toasting an error and hot-looping the bounded retry on a
-        // permanently-dead id. (Booting straight into a no-longer-existent
-        // last-session id is the common trigger.)
-        if (viewMessagesForReconcile().length === 0 && isSessionGoneError(fallbackError)) {
-          // A 404 is only trustworthy from the backend that OWNS the session.
-          // A cross-profile open (Bots pane) races the gateway swap, so both
-          // lookups can land on a backend that never heard of the id (#88540).
-          // Re-resolve before discarding: a row still listed on any profile —
-          // or a swap in flight — means "retry once things settle", not gone.
+        // A session with no recoverable transcript may have been deleted. A 404
+        // during a gateway swap can come from the wrong backend (#88540), so
+        // recheck ownership before returning to a fresh draft.
+        if (isMissingSessionWithoutTranscript(viewMessagesForReconcile().length, fallbackError)) {
           let stillListed = false
 
           try {
@@ -2463,22 +2472,7 @@ export function useSessionActions({
             return
           }
 
-          const verdict = goneSessionVerdict({
-            createdThisRun: sessionCreatedThisRun(storedSessionId),
-            stillListed,
-            switchInFlight:
-              $gatewaySwitching.get() ||
-              Boolean($gatewaySwapTarget.get()) ||
-              // Known owner ≠ active gateway: the 404 came from the wrong
-              // backend. An UNKNOWN owner must not count — it would block the
-              // draft fallback for genuinely dead ids on secondary profiles.
-              Boolean(
-                sessionProfile?.trim() &&
-                normalizeProfileKey(sessionProfile) !== normalizeProfileKey($activeGatewayProfile.get())
-              )
-          })
-
-          if (verdict === 'retry') {
+          if (missingResumeVerdict(storedSessionId, stillListed, sessionProfile) === 'retry') {
             setResumeFailedSessionId(storedSessionId)
 
             return
@@ -2529,6 +2523,7 @@ export function useSessionActions({
       busyRef,
       copy,
       getRouteToken,
+      getRoutedStoredSessionId,
       holdSessionTranscriptView,
       requestGateway,
       resetViewSync,

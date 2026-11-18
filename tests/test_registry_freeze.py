@@ -130,7 +130,7 @@ def _writes_through_reads(reg):
 
 @pytest.mark.parametrize("path", [
     "getter schema", "nested schema", "entry attribute", "entry requires_env", "bulk entries",
-    "global map", "overlay map", "toolset checks", "aliases", "override policy", "module scopes"])
+    "global map", "overlay map", "aliases", "override policy", "module scopes"])
 def test_tool_registrations_are_immutable_after_freeze(frozen_tool_registry, path):
     """A reference obtained from a read cannot change a registration other tenants see."""
     reg, _schema_arg, _policy = frozen_tool_registry

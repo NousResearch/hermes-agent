@@ -48,7 +48,7 @@ _FORWARDED = frozenset(inspect.get_annotations(PersistenceStore)) | {"ready"}
 
 _cache_lock = threading.Lock()
 # hermes_home_key -> [shared backend (None until a handle's first use), open handles]
-_shared: dict[str, list[Any]] = {}
+_shared: dict[str, list[Any]] = {}  # health: allow HX018 -- keyed by hermes_home_key: one backend per profile home, never shared across homes
 
 
 class Persistence:

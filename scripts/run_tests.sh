@@ -245,8 +245,19 @@ cd "$REPO_ROOT"
 # Pre-building the bytecode cache once here (instead of each subprocess
 # compiling on first import) avoids redundant work across ~2000 processes.
 # Uses git to list tracked .py files (skips venv, node_modules, etc).
-echo "▶ pre-compiling bytecode cache"
-"$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+# Outside a git checkout (a `cp -r` copy, an unpacked archive) that list is
+# empty, and compileall given no path compiles every sys.path entry instead:
+# the interpreter's own stdlib included, which can be the managed Python the
+# installed Hermes runs on. Skip it and say why; it is only a speedup.
+_py_files="$(git ls-files '*.py' 2>/dev/null)" || _py_files=""
+if [ -n "$_py_files" ]; then
+  echo "▶ pre-compiling bytecode cache"
+  "$PYTHON" -m compileall -q -j 0 -- $_py_files >/dev/null 2>&1 || true
+else
+  _git_why="$(git ls-files '*.py' 2>&1 >/dev/null | head -n 1)" || true
+  echo "warning: git lists no tracked .py files under $REPO_ROOT${_git_why:+ ($_git_why)} — skipping bytecode pre-compile" >&2
+fi
+unset _py_files _git_why
 
 echo "▶ launching test runner"
 exec env -i \

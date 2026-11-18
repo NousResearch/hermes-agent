@@ -575,7 +575,8 @@ def _migrated_listener_up(host, m: dict) -> Optional[str]:
         return None
     if seen[0] is None:
         return (f"cannot tell whether the gateway still listens on port {port} (something listens there and "
-                f"its identity cannot be read)")
+                f"its identity cannot be read). If you started the old backend again by hand, stop it, then "
+                f"run this command again")
     return f"the gateway still listens on port {port}"
 
 

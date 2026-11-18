@@ -69,7 +69,7 @@ _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/nul
 # (`pip install`, `npm -g`) would write into the account store. An explicit
 # HERMES_RUNTIME_DIR, a custom HERMES_HOME, a home that already holds a store,
 # or an account without a usable store keep today's per-home layout, unless
-# what they name is the account's store (_names_account_store_at_other_pins).
+# what they name is the account's store (_avoid_account_stores).
 # Prints the OS account's home when HOME is faked (it is not that home).
 _account_home() {
   local account
@@ -95,20 +95,60 @@ _account_tool_store() {
 # makes pm resolve that store with no check, and `pm install` then re-stages
 # this checkout's pins over the ones the account's own Hermes runs on: its
 # tools read as not installed and a running browser loses its directory.
-# Such a run provisions the faked home's own store instead.
-# True when this run's `pm install` would write other pins into that store.
-_names_account_store_at_other_pins() {
-  local account store python resolved
-  account="$(_account_home)" || return 1
-  store="$account/.hermes/tools"
-  [ -f "$store/facts.json" ] || return 1
-  python="$(HERMES_RUNTIME_DIR="$store" hermes_bootstrap_python "$REPO_ROOT")" || return 1
-  # pm's own resolver, so every way of naming a store is covered by one answer.
-  resolved="$(PYTHONHOME= "$python" -I -B -c 'import sys
+# Such a run provisions the faked home's own store instead, and is refused when
+# that store is a link into the account's, or when no interpreter can tell
+# which store pm would pick: setup fetches its own Python and would provision
+# whatever that turns out to be.
+# Prints the account's stores: its default home's, and the one
+# HERMES_DATA_DIR_SUFFIX selects (hermes_constants._platform_default_hermes_home).
+_account_stores() {
+  local account suffix
+  account="$(_account_home)" || return 0
+  for suffix in "" ${HERMES_DATA_DIR_SUFFIX:+"$HERMES_DATA_DIR_SUFFIX"}; do
+    if [ -f "$account/.hermes$suffix/tools/facts.json" ]; then
+      printf '%s\n' "$account/.hermes$suffix/tools"
+    fi
+  done
+}
+# Prints the store of the newline-separated STORES that PATH is, by identity.
+_which_store() {
+  local store
+  while IFS= read -r store; do
+    if [ "$1" -ef "$store" ]; then printf '%s\n' "$store"; return 0; fi
+  done <<<"$2"
+  return 1
+}
+# Prints the store this run's `pm install` writes: HERMES_RUNTIME_DIR as pm
+# takes it, else pm's own resolver (stamps, HERMES_HOME, profiles), run by the
+# bootstrap interpreter found beside STORE.
+_pm_store() {
+  local python
+  if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then printf '%s\n' "$HERMES_RUNTIME_DIR"; return 0; fi
+  python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
+  PYTHONHOME= "$python" -I -B -c 'import sys
 sys.path.insert(0, sys.argv[1])
 from pm.environments import store_root
-print(store_root(sys.argv[1]))' "$REPO_ROOT" 2>/dev/null)" || return 1
-  [ "$resolved" -ef "$store" ] && ! _store_has_pins "$store" >/dev/null
+print(store_root(sys.argv[1]))' "$REPO_ROOT" 2>/dev/null
+}
+# Points HERMES_RUNTIME_DIR away from an account store that this run's
+# `pm install` would write other pins into; status 1 when it cannot.
+_avoid_account_stores() {
+  local stores target named fallback
+  stores="$(_account_stores)"
+  [ -n "$stores" ] || return 0
+  if ! target="$(_pm_store "${stores%%$'\n'*}")"; then
+    echo "error: faked HOME: no bootstrap Python, so cannot check whether this run would provision the account's tool store (${stores//$'\n'/, }); set HERMES_RUNTIME_DIR to a store of this home's own" >&2
+    return 1
+  fi
+  named="$(_which_store "$target" "$stores")" || return 0
+  ! _store_has_pins "$named" >/dev/null || return 0
+  fallback="$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools"
+  if _which_store "$fallback" "$stores" >/dev/null; then
+    echo "error: faked HOME: $fallback is the account's tool store $named, which records other pins; set HERMES_RUNTIME_DIR to a store of this home's own" >&2
+    return 1
+  fi
+  export HERMES_RUNTIME_DIR="$fallback"
+  echo "▶ faked HOME: the account's tool store records other pins; provisioning $HERMES_RUNTIME_DIR instead"
 }
 # Read-only check that the store already records this checkout's pins
 # (scripts/tool_store_pins.py says why and what counts); prints the Python minor.
@@ -127,9 +167,8 @@ if _shared="$(_account_tool_store)"; then
     export UV_PYTHON_INSTALL_DIR="$_account/.local/share/uv/python"
   fi
   echo "▶ faked HOME: using the account's tool store $HERMES_RUNTIME_DIR"
-elif _names_account_store_at_other_pins; then
-  export HERMES_RUNTIME_DIR="$HOME/.hermes/tools"
-  echo "▶ faked HOME: the account's tool store records other pins; provisioning $HERMES_RUNTIME_DIR instead"
+else
+  _avoid_account_stores || exit 1
 fi
 unset _account _shared
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then

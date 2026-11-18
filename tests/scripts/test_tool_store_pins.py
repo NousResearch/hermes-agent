@@ -103,11 +103,13 @@ def _snapshot(store: Path) -> list:
     return sorted((p.relative_to(store), p.is_file() and p.read_bytes(), p.stat().st_mode) for p in store.rglob("*"))
 
 
-def _provisioned_store(tmp_path: Path, account: Path, home: Path, naming: dict) -> Path:
-    """The store the real runner aims its setup step at, in a repo-shaped tree holding the real
-    runner, activation library, pin check and pm. Setup is replaced at its process boundary: it
-    records the store pm resolves for this run and stops, so nothing is installed. ``getent``
-    answers with ``account`` as the OS account's home, which makes ``home`` a faked HOME."""
+def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, bootstrap: bool = True):
+    """Run the real runner in a repo-shaped tree holding the real runner, activation library, pin
+    check and pm; return the run and the store its setup step was aimed at (None when setup never
+    ran). Setup is replaced at its process boundary: it records the store pm resolves for this run
+    and stops, so nothing is installed. ``getent`` answers with ``account`` as the OS account's
+    home, which makes ``home`` a faked HOME. ``bootstrap=False`` leaves the checkout without the
+    interpreter the runner could ask pm with."""
     root = tmp_path / "checkout"
     if not root.exists():
         (root / "scripts").mkdir(parents=True)
@@ -115,10 +117,11 @@ def _provisioned_store(tmp_path: Path, account: Path, home: Path, naming: dict) 
             shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
         for name in ("pm", "hermes_constants.py", "hermes_platform"):
             (root / name).symlink_to(ROOT / name)
-        python = _executable(root / ".venv" / "bin" / "python")  # the bootstrap interpreter
-        python.write_text(f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
+        if bootstrap:
+            _executable(root / ".venv" / "bin" / "python").write_text(
+                f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
         (root / "setup-hermes.sh").write_text(
-            f"'{python}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
+            f"'{sys.executable}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
             "from pm.environments import store_root\nprint(store_root(sys.argv[1]), end=\"\")' "
             f"'{root}' > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
         _executable(tmp_path / "bin" / "getent").write_text(
@@ -127,11 +130,25 @@ def _provisioned_store(tmp_path: Path, account: Path, home: Path, naming: dict) 
     (root / "provisioned").unlink(missing_ok=True)
     run = subprocess.run(
         ["bash", str(root / "scripts" / "run_tests.sh"), "tests/nothing.py"], cwd=root,
-        env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}", "HOME": str(home), **naming},
+        env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}", "HOME": str(home),
+             "PYTHONDONTWRITEBYTECODE": "1", **naming},
         capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
     )
-    assert (root / "provisioned").is_file(), run.stdout + run.stderr
-    return Path((root / "provisioned").read_text(encoding="utf-8-sig"))
+    provisioned = root / "provisioned"
+    return run, Path(provisioned.read_text(encoding="utf-8-sig")) if provisioned.is_file() else None
+
+
+def _provisioned_store(tmp_path: Path, account: Path, home: Path, naming: dict) -> Path:
+    run, store = _run_runner(tmp_path, account, home, naming)
+    assert store is not None, run.stdout + run.stderr
+    return store
+
+
+def _store_at_other_pins(store: Path) -> Path:
+    """An account store recording none of this checkout's pins."""
+    store.mkdir(parents=True)
+    (store / "facts.json").write_text('{"packages": {}}', encoding="utf-8")
+    return store
 
 
 @pytest.mark.platforms("posix")
@@ -152,3 +169,62 @@ def test_faked_home_run_naming_the_account_store_never_provisions_other_pins_int
     before = _snapshot(store)
     assert _provisioned_store(tmp_path, account, home, naming) == (home / ".hermes" / "tools").resolve()
     assert _snapshot(store) == before
+
+
+def _naming(named_by: str, store: Path) -> dict:
+    return {"HERMES_RUNTIME_DIR": str(store)} if named_by == "HERMES_RUNTIME_DIR" else {"HERMES_HOME": str(store.parent)}
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("alias", [".hermes", ".hermes/tools"])
+def test_faked_home_whose_own_store_aliases_the_account_store_is_refused(tmp_path, alias):
+    """The faked home's store is where a run naming the account's store is sent instead; when that
+    path is itself a link into the account's store, provisioning it re-stages the account's store."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    link = home / alias
+    link.parent.mkdir(parents=True)
+    link.symlink_to(store if alias.endswith("tools") else store.parent)
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(store)})
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "account's tool store" in run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("named_by", ["HERMES_RUNTIME_DIR", "HERMES_HOME"])
+def test_suffixed_account_store_is_protected_like_the_default_one(tmp_path, named_by):
+    """HERMES_DATA_DIR_SUFFIX selects the account's ~/.hermes<suffix> home (hermes_constants), so
+    its store is the account's store as much as ~/.hermes/tools is."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes-isolated" / "tools")
+    naming = {"HERMES_DATA_DIR_SUFFIX": "-isolated", **_naming(named_by, store)}
+    provisioned = _provisioned_store(tmp_path, account, home, naming)
+    assert not provisioned.exists() or not provisioned.samefile(store)
+    assert provisioned == (home / ".hermes-isolated" / "tools").resolve()
+
+
+@pytest.mark.platforms("posix")
+def test_store_that_cannot_be_checked_without_a_bootstrap_python_is_refused(tmp_path):
+    """With no interpreter to ask pm which store an inherited HERMES_HOME selects, the run must not
+    fall through to setup, which would fetch its own Python and provision that store."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, _naming("HERMES_HOME", store), bootstrap=False)
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "cannot check" in run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_explicit_runtime_dir_is_checked_without_a_bootstrap_python(tmp_path):
+    """pm takes HERMES_RUNTIME_DIR verbatim, so naming the account's store that way is recognised
+    without an interpreter, and the run provisions the faked home's store instead of refusing."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    run, provisioned = _run_runner(tmp_path, account, home, _naming("HERMES_RUNTIME_DIR", store), bootstrap=False)
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr

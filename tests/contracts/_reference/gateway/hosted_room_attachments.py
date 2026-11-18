@@ -36,7 +36,7 @@ from .hosted_room_attachment_steps import (
     require_viewer_room,
 )
 from .hosted_room_rules import clock
-from .hosted_room_tables import HostedTables, find_event, read_tables, room_events, write_tables
+from .hosted_room_tables import HostedTables, find_event, read_tables, write_tables
 
 __all__ = ["InMemoryHostedRoomAttachmentRepository"]
 
@@ -228,7 +228,9 @@ class InMemoryHostedRoomAttachmentRepository:
 
         def events(snapshot, position):
             upper = snapshot if position is None else position["seq"] - int(position["index"] is None)
-            rows = [r for r in reversed(room_events(tables, room_id)) if r["seq"] <= upper][:catalog.EVENT_SCAN_LIMIT + 1]
+            log = tables["hosted_room_events"].get(room_id, {})
+            lower = max(0, upper - catalog.EVENT_SCAN_LIMIT - 1)
+            rows = (log[seq] for seq in range(upper, lower, -1))
             return [dict(r, manifest_json=json.dumps(json.loads(r["payload_json"]).get("attachments"))) for r in rows]
 
         availability = partial(self._availability, tables, blob_files(self._store, placement), room_id)

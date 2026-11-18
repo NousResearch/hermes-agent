@@ -61,6 +61,52 @@ def _override_replaces_content(msg: dict, content: Any, override: Any) -> bool:
     )
 
 
+PERSIST_USER_ANCHOR = "_persist_user_message_anchor"
+
+
+def _turn_ask_texts(msg: dict) -> list[str]:
+    """Every text a live user row can still be holding as THIS turn's ask.
+
+    ``content`` is what turn start staged there. ``_merge_consecutive_users`` folds an earlier unanswered
+    row onto ``MERGED_TURN_PREFIX``, leaving this turn's text either past the prefix or as the prefix itself
+    (when a row appended after it — a todo snapshot — was absorbed), and ``_append_multimodal_context`` only
+    appends parts, so a list row's ask is still its first text part. A row a context engine compacted in
+    place holds none of them: its content leads with a summary.
+    """
+    content = msg.get("content")
+    if isinstance(content, list):
+        return [part["text"] for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)][:1]
+    if not isinstance(content, str):
+        return []
+    texts = [content]
+    prefix = msg.get(MERGED_TURN_PREFIX)
+    if isinstance(prefix, str) and prefix != content:
+        texts.append(prefix)
+        if content.startswith(prefix + "\n\n"):
+            texts.append(content[len(prefix) + 2:])
+    return texts
+
+
+def note_persist_user_anchor(agent, messages: list) -> None:
+    """Freeze the ask the anchored turn row holds now.
+
+    ``_apply_persist_user_message_override`` rewrites a row only while it still holds that ask, so a row a
+    context engine compacted in place over — its head now carries the summary that IS the live context —
+    keeps the summary instead of being flattened back to the bare user input (#157402, #144581)."""
+    idx = getattr(agent, "_persist_user_message_idx", None)
+    msg = messages[idx] if isinstance(idx, int) and 0 <= idx < len(messages) else None
+    texts = _turn_ask_texts(msg) if isinstance(msg, dict) else []
+    agent._persist_user_message_anchor = texts[0] if texts else None
+
+
+def _row_holds_anchored_ask(anchor: Any, msg: dict) -> bool:
+    """May the override rewrite ``msg``? An agent with no anchor (direct callers, a row with no text to
+    fingerprint) keeps the historical behaviour; an anchored one only while the row still holds this turn's
+    ask — a compaction head does not, and rewriting it would erase the summary from the live context."""
+    return anchor is None or anchor in _turn_ask_texts(msg)
+
+
 def _content_with_turn_override(msg: dict, content: Any, override: Any) -> Any:
     """Replace only the absorbed current turn, leaving unanswered history intact. The join matches
     ``_merge_consecutive_users``; a row that no longer holds the prefix takes the plain override."""
@@ -492,17 +538,22 @@ class SessionPersistenceMixin:
 
     def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not
-        leak into transcripts or resumed history."""
+        leak into transcripts or resumed history.
+
+        The row must still be this turn's user row (:func:`_row_holds_anchored_ask`): a context engine that
+        compacted in place during the turn leaves its summary at the anchored index, and that summary is the
+        live context the next request replays."""
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
         platform_id = getattr(self, "_persist_user_message_platform_id", None)
+        anchor = getattr(self, PERSIST_USER_ANCHOR, None)
         if idx is None or (override is None and timestamp is None and platform_id is None):
             return
         msg = messages[idx] if 0 <= idx < len(messages) else None
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
-        if _override_replaces_content(msg, msg.get("content"), override):
+        if _override_replaces_content(msg, msg.get("content"), override) and _row_holds_anchored_ask(anchor, msg):
             msg["content"] = _content_with_turn_override(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp

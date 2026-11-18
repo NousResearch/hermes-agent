@@ -637,6 +637,8 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
+    # The anchor describes the row at an index that no longer is this turn's: re-frozen below.
+    agent._persist_user_message_anchor = None
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -1305,6 +1307,10 @@ def build_turn_context(
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    # Freeze the ask this row holds: the turn-end override must not overwrite a row a context engine
+    # compacted in place over during this turn (its summary is the live context, #157402).
+    from agent.session_persistence import note_persist_user_anchor
+    note_persist_user_anchor(agent, messages)
 
     agent._user_turn_count += 1
     # cache_ttl auto: a person's chat moves from 5m to 1h once this message ends its first pause past 5m.

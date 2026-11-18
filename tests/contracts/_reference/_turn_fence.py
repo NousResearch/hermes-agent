@@ -34,9 +34,15 @@ _AUTHORITY_KEY = "authority"  # the scope-namespace entry ``_authority.authority
 _UNFENCED = frozenset({("coordination", "release_turn_lease"), ("coordination", "release_compression_lock")})
 
 
-def fenced(store: InMemoryStore, attribute: str, name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+def fenced(store: InMemoryStore, attribute: str, name: str, method: Callable[..., Any], *,
+           fence_for: Callable[[str], Optional[TurnFence]] = current_turn_fence,
+           holds: Optional[Callable[[InMemoryStore, TurnFence], bool]] = None,
+           refusing: Optional[Callable[..., Any]] = None) -> Callable[..., Any]:
     """``method`` (verb ``name`` of repository ``attribute`` on ``store``) with the claimed-turn fence; called under
-    the backend lock, inside ``run_verb``."""
+    the backend lock, inside ``run_verb``. ``fence_for``, ``holds`` and ``refusing`` are the fence's three steps (the
+    store's fence, whether it holds, the refused run); the reference passes none, so the defaults below run."""
+    holds = holds or _holds
+    refusing = refusing or _refusing_writes
     if (attribute, name) in _UNFENCED:
         @functools.wraps(method)
         def unfenced(*args: Any, **kwargs: Any) -> Any:
@@ -46,10 +52,10 @@ def fenced(store: InMemoryStore, attribute: str, name: str, method: Callable[...
 
     @functools.wraps(method)
     def call(*args: Any, **kwargs: Any) -> Any:
-        fence = current_turn_fence(store.scope.store_key) if store.backend._depth <= 1 else None
-        if fence is None or _holds(store, fence):
+        fence = fence_for(store.scope.store_key) if store.backend._depth <= 1 else None
+        if fence is None or holds(store, fence):
             return method(*args, **kwargs)
-        return _refusing_writes(store, fence, method, args, kwargs)
+        return refusing(store, fence, method, args, kwargs)
 
     return call
 

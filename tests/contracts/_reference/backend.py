@@ -182,6 +182,12 @@ class InMemoryBackend:
         """As :meth:`open_store_admin`: no physical admin capability."""
         return AdminUnsupported(PHYSICAL_ADMIN, "in_memory")
 
+    def fence_verb(self, store: InMemoryStore, attribute: str, name: str, method: Callable[..., Any]) -> Callable[..., Any]:
+        """Verb ``name`` of repository ``attribute`` on ``store`` with the claimed-turn fence (``_turn_fence.fenced``)."""
+        from ._turn_fence import fenced  # _turn_fence imports this module
+
+        return fenced(store, attribute, name, method)
+
     def assert_isolating(self) -> None:
         """Passes: every store is keyed by ``store_key``, so a verb of a pinned handle reaches only its pin's store."""
         from persistence import IsolationUnsupported
@@ -218,13 +224,11 @@ class InMemoryStore:
                               if scope.pin is None else None)
         self._lock = backend._lock
         self.aio = AwaitableStore(self)
-        from ._turn_fence import fenced  # the claimed-turn fence on every verb (_turn_fence.py)
-
         for attribute, factory in _REPOSITORY_FACTORIES.items():
             repository = factory(self)
             for name, method in inspect.getmembers(repository, inspect.ismethod):
                 if not name.startswith("_"):
-                    setattr(repository, name, _serialized(backend, fenced(self, attribute, name, method)))
+                    setattr(repository, name, _serialized(backend, backend.fence_verb(self, attribute, name, method)))
             setattr(self, attribute, repository)
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:

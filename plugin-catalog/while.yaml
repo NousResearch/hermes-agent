@@ -1,27 +1,28 @@
 name: while
 title: while.sh
 repo: https://github.com/while-sh/while
-sha: 67c766d2133a6102e88f06440cd9b3344add04da
+sha: df092f37b2f66067bc01540f4d8a159cdc7dfa97
 description: >-
-  while.sh puts the tools people build with their AI online, and they choose who uses them: their
-  colleagues, a client or a supplier with a link and a password, or everyone. Its hosted MCP server
-  (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE) covers web services and
-  workers, PostgreSQL databases, caches, S3 storage, scheduled jobs, preview environments and private
-  access, plus logs, metrics, read-only SQL, backups and rollbacks. Portable Agent Plugins v1 package
-  (plugin.json + mcp.json + one skill), configuration only. Disclosure: hosted-only connector with no
-  local code; every call goes to while's MCP server at app.while.sh. Without an account, the AI can
-  put a tool online to try it; MCP tools that need the user's account sign them in through while's
-  OAuth, and then act on that user's organizations with the scopes they consented to. MCP tool results enter
-  the session context and so reach the user's model provider. Write-capable MCP tools: deploy, apply a
-  plan, roll back, set environment variables and secrets, create previews and projects, back up and
-  restore databases, run scheduled jobs, write files to the project's branch, invite members, grant
-  and revoke roles, create API tokens, declare and call external API connections, and send_feedback
-  (sends a report to the while team). A person approves in while.sh before a tool goes public, data is
-  restored or rights are granted, and the AI never sees the credentials for people's other software. Hermes
-  stores and refreshes the OAuth tokens. The MCP tool list comes from while's server at run time, so
-  the pinned commit doesn't cover it. The repository's README also documents an optional install
-  script (curl | sh) for other clients, and examples/ holds sample projects; the plugin runs neither.
-  The bundled mcp.json works without an account; for the MCP tools of an account, enable OAuth with
+  while.sh hosts the tools people build with an AI agent, and they choose who to share them with:
+  their team, a client or a supplier with a link and a password, or everyone. The agent deploys them
+  through while's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and
+  PKCE): web services and workers, PostgreSQL databases, caches, S3 storage, scheduled jobs, preview
+  environments and private access, plus logs, metrics, read-only SQL, backups and rollbacks.
+  Portable Agent Plugins v1 package (plugin.json + mcp.json + one skill), configuration only.
+  Disclosure: hosted-only connector with no local code; every call goes to while's MCP server at
+  app.while.sh. Without an account, the agent can deploy a tool to try it; MCP tools that need the
+  user's account sign them in through while's OAuth, and then act on that user's organizations with
+  the scopes they consented to. MCP tool results enter the session context and so reach the user's
+  model provider. Write-capable MCP tools: deploy, apply a plan, roll back, set environment
+  variables and secrets, create previews and projects, back up and restore databases, run scheduled
+  jobs, write files to the project's branch, invite members, grant and revoke roles, create API
+  tokens, declare and call external API connections, and send_feedback (sends a report to the while
+  team). A person approves in while.sh before a tool goes public, data is restored or rights are
+  granted, and the agent never sees the credentials for people's other software. Hermes stores and
+  refreshes the OAuth tokens. The MCP tool list comes from while's server at run time, so the pinned
+  commit doesn't cover it. The repository's README also documents an optional install script
+  (curl | sh) for other agents, and examples/ holds sample projects; the plugin runs neither. The
+  bundled mcp.json works without an account; for the MCP tools of an account, enable OAuth with
   `hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300`.
 maintainer: Nextmap
 tier: community

@@ -1,6 +1,15 @@
 import type { DOMElement } from './dom.js'
 import type { TextStyles } from './styles.js'
 
+// A raw OSC 8 hyperlink inside a text node (model reasoning, tool output, any untrusted
+// string handed to <Text>) would be tokenized as a real link, so visible text such as
+// "docs.python.org" could open another URL. Links come only from <Link> (ink-link), so
+// every OSC 8 sequence in plain text is dropped, its label kept.
+// eslint-disable-next-line no-control-regex -- matching the escape sequence is the point
+const OSC8_IN_TEXT_RE = /\u001b\]8;[^\u0007\u001b]*(?:\u0007|\u001b\\)?/g
+
+const textOf = (value: string) => (value.includes('\u001b]8;') ? value.replace(OSC8_IN_TEXT_RE, '') : value)
+
 /**
  * A segment of text with its associated styles.
  * Used for structured rendering without ANSI string transforms.
@@ -29,9 +38,11 @@ export function squashTextNodesToSegments(
     }
 
     if (childNode.nodeName === '#text') {
-      if (childNode.nodeValue.length > 0) {
+      const text = textOf(childNode.nodeValue)
+
+      if (text.length > 0) {
         out.push({
-          text: childNode.nodeValue,
+          text,
           styles: mergedStyles,
           hyperlink: inheritedHyperlink
         })
@@ -60,7 +71,7 @@ function squashTextNodes(node: DOMElement): string {
     }
 
     if (childNode.nodeName === '#text') {
-      text += childNode.nodeValue
+      text += textOf(childNode.nodeValue)
     } else if (childNode.nodeName === 'ink-text' || childNode.nodeName === 'ink-virtual-text') {
       text += squashTextNodes(childNode)
     } else if (childNode.nodeName === 'ink-link') {

@@ -779,6 +779,17 @@ def _continuation_scope_decision(ctx, index):
     return AccessDecision(True, "continuation_scope_allowed")
 
 
+def _as_bot_denial(ctx, decision):
+    """Mark a refusal that came from the bot's own capability list, so it can
+    be filed as a request to widen that bot (not the person)."""
+    reason = str(getattr(decision, "reason", "") or "")
+    if reason.startswith("bot_"):
+        return decision
+    profile = str(getattr(ctx, "active_profile", "") or "")
+    detail = str(getattr(decision, "detail", "") or "")
+    return AccessDecision(False, "bot_" + reason, detail=f"{profile}:{detail}" if profile else detail)
+
+
 def _live_tool_scope_decision(ctx):
     from .context import workspace_allowed_for_context
     if not workspace_allowed_for_context(ctx):
@@ -804,7 +815,7 @@ def _tool_allowed_for_validated_scope(ctx, tool_name, registry):
             return AccessDecision(False, "bot_cli_not_selected")
         bounded = decide_tool_access(ceiling, tool_name, registry)
         if not bounded.allowed:
-            return bounded
+            return _as_bot_denial(ctx, bounded)
     return decide_tool_access(ctx.access if ctx is not None else None, tool_name, registry)
 
 
@@ -1602,10 +1613,11 @@ def _tool_arguments_for_single_context(ctx, tool_name, args):
         if tool_name == "skill_view":
             name = str(args.get("name") or "")
             if "*" not in ceiling.grants.skills_load and name not in ceiling.grants.skills_load:
-                return AccessDecision(False, "bot_skill_not_selected", detail=name)
+                return AccessDecision(False, "bot_skill_not_selected",
+                                      detail=f"{getattr(ctx, 'active_profile', '') or ''}:{name}")
         bounded = decide_tool_argument_access(ceiling, tool_name, args, session_id=getattr(ctx, "session_id", ""))
         if not bounded.allowed:
-            return bounded
+            return _as_bot_denial(ctx, bounded)
     decision = decide_tool_argument_access(ctx.access if ctx is not None else None, tool_name, args,
                                           session_id=getattr(ctx, "session_id", ""))
     root = getattr(ctx, "project_workspace", "") if ctx is not None else ""

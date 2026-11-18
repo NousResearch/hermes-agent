@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from agent.runtime_scope import bind_profile_scope
 from gateway.status import acquire_scoped_lock
+from gateway.status_lock_dir import ScopedLockDirUnusable
 from gateway.status_report.payload import ReportKind, build_report, read_status_source
 from gateway.status_report.target import ReportTarget, report_target_from_env
 from gateway.status_report.transport import Outcome, post_report
@@ -67,7 +68,7 @@ class StatusReporter:
         self._rejections = 0
         self._held_off = False  # the receiver rejected the credential or asked for a wait
         self._is_sender = False
-        self._lock_refusal_logged = False
+        self._standing_by_for: Optional[str] = None
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
 
@@ -122,14 +123,25 @@ class StatusReporter:
 
     async def _become_sender(self) -> bool:
         """Take the machine-local sender lock. Every gateway of one machine inherits the same report
-        URL, so the lock decides which of them reports; one that died is replaced on a later poll."""
-        acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
+        URL, so the lock decides which of them reports; one that died is replaced on a later poll,
+        and so is a lock directory that was repaired."""
+        try:
+            acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
+        except ScopedLockDirUnusable:
+            # gateway.status has logged the directory and its repair.
+            self._stand_by(logging.WARNING, "the gateway lock directory is not usable")
+            return False
         if acquired:
             self._is_sender = True
-        elif not self._lock_refusal_logged:
-            self._lock_refusal_logged = True
-            logger.info("status report: another gateway on this machine is the sender; standing by")
+        else:
+            self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired
+
+    def _stand_by(self, level: int, why: str) -> None:
+        """Say why this gateway is not the sender once per reason, not on every poll."""
+        if why != self._standing_by_for:
+            self._standing_by_for = why
+            logger.log(level, "status report: %s; standing by", why)
 
     async def _next_report(self, kind: ReportKind) -> bytes:
         self._seq += 1

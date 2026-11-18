@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -324,6 +325,39 @@ async def test_a_second_sender_cannot_take_the_lock(clock, first_sender, monkeyp
     clock.advance(AFTER_INTERVAL_S)
     await reporter.poll()
     assert receiver.kinds == ["beat"], "the remaining gateway never took over from a dead sender"
+
+
+@pytest.fixture
+def unusable_lock_dir(tmp_path, monkeypatch):
+    """A lock directory this user may not create a lock in, as an elevated install leaves it."""
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir()
+    lock_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    yield lock_dir
+    lock_dir.chmod(stat.S_IRWXU)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
+async def test_an_unusable_lock_directory_stands_the_sender_by_until_it_is_repaired(clock, unusable_lock_dir, caplog):
+    receiver = Receiver()
+    reporter = make_reporter(receiver)
+
+    await reporter.poll()
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+
+    assert receiver.requests == []
+    said = [record for record in caplog.records
+            if record.name.startswith("gateway.status_report") and record.levelno >= logging.WARNING]
+    assert len(said) == 1, [record.getMessage() for record in said]
+
+    unusable_lock_dir.chmod(stat.S_IRWXU)
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat"], "the sender never picked the repaired directory up"
 
 
 async def test_the_lock_is_released_when_the_watcher_stops(clock):

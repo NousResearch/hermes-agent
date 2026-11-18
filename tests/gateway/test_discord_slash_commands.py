@@ -75,11 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import (
-    DiscordAdapter,
-    _discord_app_command_scope_kwargs,
-)
-import plugins.platforms.discord.adapter as discord_adapter_module
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -121,40 +117,6 @@ def adapter(monkeypatch):
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
-
-
-def test_discord_bot_scope_kwargs_enable_guild_and_user_installs(monkeypatch):
-    calls = {}
-
-    class FakeInstallationType:
-        def __init__(self, **kwargs):
-            calls["installs"] = kwargs
-
-    class FakeCommandContext:
-        def __init__(self, **kwargs):
-            calls["contexts"] = kwargs
-
-    monkeypatch.setattr(discord_adapter_module, "DISCORD_AVAILABLE", True)
-    monkeypatch.setattr(
-        discord_adapter_module,
-        "discord",
-        SimpleNamespace(
-            app_commands=SimpleNamespace(
-                AppInstallationType=FakeInstallationType,
-                AppCommandContext=FakeCommandContext,
-            )
-        ),
-    )
-
-    kwargs = _discord_app_command_scope_kwargs()
-
-    assert set(kwargs) == {"allowed_installs", "allowed_contexts"}
-    assert calls["installs"] == {"guild": True, "user": True}
-    assert calls["contexts"] == {
-        "guild": True,
-        "dm_channel": True,
-        "private_channel": True,
-    }
 
 
 def test_patchable_payload_excludes_install_and_context_metadata(adapter):

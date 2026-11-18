@@ -215,11 +215,13 @@ class InMemoryStore:
         self.owner_profile = own_profile_name(Path(scope.hermes_home_key), Path(canonical_home_key(backend.root)))
         self._lock = backend._lock
         self.aio = AwaitableStore(self)
+        from ._turn_fence import fenced  # the claimed-turn fence on every verb (_turn_fence.py)
+
         for attribute, factory in _REPOSITORY_FACTORIES.items():
             repository = factory(self)
             for name, method in inspect.getmembers(repository, inspect.ismethod):
                 if not name.startswith("_"):
-                    setattr(repository, name, _serialized(backend, method))
+                    setattr(repository, name, _serialized(backend, fenced(self, attribute, name, method)))
             setattr(self, attribute, repository)
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:

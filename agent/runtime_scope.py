@@ -19,20 +19,24 @@ from typing import Any, Iterator, Mapping, Optional
 from hermes_scope import (
     LOCAL_OWNER,
     LOCAL_TENANT,
+    OWNER_OPERATION,
     BoundSecrets,
     Fence,
     Scope,
     ScopeSwitchRefused,
     StateToken,
+    TurnMark,
     TurnScope,
     current_scope,
     current_state,
+    current_turn,
     push_state,
+    scope_store,
 )
 
 __all__ = [
     "bind_profile_scope", "bind_state", "bind_terminal_policy", "bind_turn", "claim_fence", "legacy_switch",
-    "scope_for_profile",
+    "outlive_turn", "owner_operation", "scope_for_profile",
 ]
 
 
@@ -174,25 +178,68 @@ def bind_profile_scope(home: str | Path, *, hydrate_secrets: bool = True) -> Ite
         yield scope
 
 
-def claim_fence(row: Mapping[str, Any]) -> Fence:
+def claim_fence(row: Any) -> Fence:
     """The fence of a claimed ``session_admissions`` row: the owner epoch and runtime generation
-    the claim stamped on it."""
-    return Fence(row["owner_epoch"], row["generation"])
+    the claim stamped on it. *row* is the row mapping or the claim's record."""
+    if isinstance(row, Mapping):
+        return Fence(row["owner_epoch"], row["generation"])
+    return Fence(row.owner_epoch, row.generation)
+
+
+def _store_key(store: Any) -> str:
+    """The store key *store* names: a ``persistence.ProfileScope`` (its ``store_key``) or a local
+    profile home (its ``hermes_home_key``)."""
+    key = getattr(store, "store_key", None)
+    if isinstance(key, str):
+        return key
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(store)
 
 
 @contextmanager
-def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
+def bind_turn(session_id: str, turn_id: str, fence: Fence, *, store: Any = None) -> Iterator[Scope | None]:
     """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
     :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and administration
     right; nothing else changes. With no scope bound (a single-profile gateway keeps its ambient
-    scope) this binds nothing."""
+    scope) no scope is bound either.
+
+    Either way the turn's storage provenance is recorded (:class:`~hermes_scope.TurnMark`): *store*
+    names the store that issued the claim (a ``persistence.ProfileScope`` or a local profile home;
+    default: the bound scope's own store, :func:`~hermes_scope.scope_store`), and that store refuses
+    the turn's writes once the fence no longer holds its session's lease
+    (``persistence.core.fences``). Work the body starts (tasks, threads) copies the context and
+    stays the turn's for its lifetime: nothing closes when the body exits."""
     current = current_scope()
-    if current is None:
-        yield None
-        return
-    turn = current.for_turn(session_id, turn_id, fence)
-    with push_state(scope=turn):
+    turn = None if current is None else current.for_turn(session_id, turn_id, fence)
+    key = _store_key(store) if store is not None else scope_store(turn)
+    mark = TurnMark(session_id, turn_id, fence, key)
+    with push_state(turn=mark) if turn is None else push_state(scope=turn, turn=mark):
         yield turn
+
+
+@contextmanager
+def outlive_turn() -> Iterator[None]:
+    """Run the body as work designed to outlive the turn whose context it runs in (an async
+    delegation reports back after the turn): its writes keep only the owner-epoch half of the turn's
+    fence, so another owner taking the profile over still refuses them while the session's next
+    claim does not. Outside a turn it changes nothing."""
+    from dataclasses import replace
+    mark = current_turn()
+    if mark is None or mark.outlives:
+        yield
+        return
+    with push_state(turn=replace(mark, outlives=True)):
+        yield
+
+
+@contextmanager
+def owner_operation() -> Iterator[None]:
+    """Run the body as the owner's own work, not any turn's: claims, settlement, ledger writes and
+    the drains the owner schedules. They keep their own guards (the admission ledger's owner epoch
+    and generation checks); a claimed turn's fence does not apply to them, also when they start from
+    a context a turn copied. A turn bound inside the body is fenced as usual."""
+    with push_state(turn=OWNER_OPERATION):
+        yield
 
 
 def legacy_switch(

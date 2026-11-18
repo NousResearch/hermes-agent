@@ -21,13 +21,23 @@ import type { ConsoleEntry, PreviewConsoleState } from './preview-console-state'
  * The panel only needs the latest log list per paint; intermediate lists are
  * never visible. Store writes themselves are cheap and stay untouched.
  */
-export function useFrameStore<T>(store: { get: () => T; listen: (listener: () => void) => () => void }): T {
+export function useFrameStore<T>(
+  store: { get: () => T; listen: (listener: () => void) => () => void },
+  publishImmediately?: (value: T) => boolean
+): T {
   const [value, setValue] = useState<T>(() => store.get())
   const frame = useRef<number | null>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- a frame id, not an atom mirror
   useEffect(() => {
     const schedule = () => {
+      const next = store.get()
+      if (publishImmediately?.(next)) {
+        setValue(next)
+
+        return
+      }
+
       // A frame is already pending and will read the latest store value when it
       // runs; writing state now would render once per console message again.
       if (frame.current !== null) {
@@ -51,10 +61,12 @@ export function useFrameStore<T>(store: { get: () => T; listen: (listener: () =>
         frame.current = null
       }
     }
-  }, [store])
+  }, [publishImmediately, store])
 
   return value
 }
+
+const isEmptyLogList = (logs: ConsoleEntry[]) => logs.length === 0
 
 const consoleLevelLabel: Record<number, string> = {
   0: 'log',
@@ -192,7 +204,7 @@ export function PreviewConsolePanel({
   const { t } = useI18n()
   const copy = t.preview.console
   const consoleHeight = useStore(consoleState.$height)
-  const logs = useFrameStore(consoleState.$logs)
+  const logs = useFrameStore(consoleState.$logs, isEmptyLogList)
   const selectedLogIds = useStore(consoleState.$selectedLogIds)
   const visibleSelection = useMemo(() => logs.filter(log => selectedLogIds.has(log.id)), [logs, selectedLogIds])
   const sendableLogs = visibleSelection.length > 0 ? visibleSelection : logs

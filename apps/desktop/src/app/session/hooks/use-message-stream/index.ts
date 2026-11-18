@@ -45,6 +45,7 @@ import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $voiceStreamPaintOwners } from '@/store/voice-stream-paint'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -422,7 +423,11 @@ export function useMessageStream({
 
     // Any voice consumer reads the transcript off-screen; never slow its feed.
     const voiceBusy =
-      $autoSpeakReplies.get() || $voicePlayback.get().status !== 'idle' || anySttLeaseActive() || anyTtsLeaseActive()
+      $autoSpeakReplies.get() ||
+      $voicePlayback.get().status !== 'idle' ||
+      $voiceStreamPaintOwners.get() > 0 ||
+      anySttLeaseActive() ||
+      anyTtsLeaseActive()
 
     const adaptiveFloor = streamFlushFloor(lastFlushCostRef.current, hidden, voiceBusy)
 

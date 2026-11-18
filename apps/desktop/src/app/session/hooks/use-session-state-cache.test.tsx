@@ -943,6 +943,31 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 
+  it('keeps a view-only assistant error when the next reply starts streaming', () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+    const first = userMessage('user-a', 'first try')
+    const retry = userMessage('user-b', 'retry')
+    const error = assistantError('assistant-a-error', 'Provider unavailable')
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: [first, retry] }), 'stored-A')
+    })
+    $messages.set([first, error, retry])
+    act(() => {
+      cache.updateSessionState(
+        'thread-A',
+        state => ({ ...state, messages: [...state.messages, assistantText('assistant-b', 'answer')] }),
+        'stored-A',
+        true
+      )
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a-error', 'user-b', 'assistant-b'])
+    expect($messages.get()[1].error).toBe('Provider unavailable')
+  })
+
   it("publishes a queued prompt's started mark, its only change, to the view resume reads", () => {
     $messages.set([])
     let cache!: Cache

@@ -52,6 +52,40 @@ describe('preview console frame coalescing', () => {
     expect(renders - before).toBe(1)
     expect(result.current.map(item => item.id)).toEqual([1, 2, 3, 4, 5])
   })
+
+  it('clears rows and actions immediately without reviving queued appends', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    const consoleState = createPreviewConsoleState()
+    consoleState.append(entry(1))
+    const view = render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <PreviewConsolePanel
+          consoleBodyRef={{ current: null }}
+          consoleShouldStickRef={{ current: false }}
+          consoleState={consoleState}
+          startConsoleResize={() => {}}
+        />
+      </I18nProvider>
+    )
+
+    act(() => consoleState.append(entry(2)))
+    expect(view.getByText('line-1')).toBeTruthy()
+    expect(view.queryByText('line-2')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'Clear' }))
+    expect(view.queryByText('line-1')).toBeNull()
+    expect(view.queryAllByRole('button').every(button => (button as HTMLButtonElement).disabled)).toBe(true)
+
+    act(() => frames.splice(0).forEach(callback => callback(0)))
+    expect(view.queryByText('line-1')).toBeNull()
+    expect(view.queryByText('line-2')).toBeNull()
+
+    act(() => consoleState.append(entry(3)))
+    expect(view.queryByText('line-3')).toBeNull()
+    act(() => frames.splice(0).forEach(callback => callback(0)))
+    expect(view.getByText('line-3')).toBeTruthy()
+  })
 })
 
 describe('preview console scroll following', () => {

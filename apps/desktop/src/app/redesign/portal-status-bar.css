@@ -19,6 +19,18 @@
   inset-inline-end: var(--portal-workspace-inset-end);
 }
 
+/* A notice strip at the window's floor lifts the frame by its height; the bar rides up with the floor
+   so its chips never cover the strip's message or its link, at any width. */
+:root[data-shell='portal']:has([data-slot='butterbar']) [data-slot='portal-status-bar'] {
+  inset-block-end: calc(
+    var(--portal-notice-strip-height) + var(--portal-workspace-inset-bottom) + var(--portal-status-bar-corner)
+  );
+}
+
+:root[data-shell='portal']:has([data-slot='butterbar']) [data-slot='portal-status-bar'][data-open] {
+  inset-block-end: calc(var(--portal-notice-strip-height) + var(--portal-status-bar-floor));
+}
+
 /* The open bar rests quiet and comes up when the pointer reaches the window's end corner, when the
    keyboard is in it, or while one of its menus is open. Its reach covers the floor around it, up to the frame,
    so the corner wakes it, not just a chip. A touch screen has no pointer to wake it: it stays full. */

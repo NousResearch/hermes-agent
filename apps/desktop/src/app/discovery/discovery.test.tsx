@@ -6,6 +6,7 @@ import { $apiRequestScope } from '@/api/client'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
 import { $guidanceLedger } from '@/store/guidance-ledger'
+import { $itemIndex } from '@/store/item-index'
 import { $newVersionReady } from '@/store/new-version'
 import { $traySeen } from '@/store/notification-tray'
 import { $renameSplash } from '@/store/rename-splash'
@@ -48,6 +49,7 @@ beforeEach(() => {
   $guidanceLedger.set({})
   $traySeen.set([])
   $renameSplash.set(null)
+  $itemIndex.set({})
   $newVersionReady.set(false)
   $cronJobs.set([])
   $sessions.set([])
@@ -113,6 +115,27 @@ describe('the rename splash in the shell', () => {
     act(() => $renameSplash.set('reopened'))
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(splash()).toBeNull()
+  })
+
+  it('never shows a Library count while the index is still reading its chats, only once it knows', () => {
+    // The list was checked a moment ago (so no new check starts), but the chats' items are still being
+    // read: the count so far is not the count.
+    const snapshot = { checkedAt: Date.now(), chats: {}, removed: {} }
+    $itemIndex.set({ local: { snapshot, refreshing: true, error: null, failures: [] } })
+    renderShell()
+    act(() => {
+      $sessions.set([chat])
+      $sessionsLoading.set(false)
+    })
+
+    expect(screen.getByRole('button', { name: /Artifacts, now Library/ }).getAttribute('aria-label')).toBe(
+      copy.renameSplash.renamed(copy.classicNames.artifacts, 'Library')
+    )
+
+    act(() => $itemIndex.set({ local: { snapshot, refreshing: false, error: null, failures: [] } }))
+    expect(screen.getByRole('button', { name: /Artifacts, now Library/ }).getAttribute('aria-label')).toBe(
+      `${copy.renameSplash.renamed(copy.classicNames.artifacts, 'Library')} (0)`
+    )
   })
 
   it('shows a row’s line and where it points when that row is hovered or focused', () => {

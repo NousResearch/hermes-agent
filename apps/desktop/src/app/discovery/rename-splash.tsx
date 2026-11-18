@@ -22,8 +22,9 @@ type Count = null | { value: number; more: boolean }
 
 /** What each renamed place holds, as its own page counts it. Chats are the loaded conversations,
  *  hidden and archived ones aside (more may sit past a profile's page: then "25+"); the Library is
- *  the item index its page shows, known once it has been checked. Null hides a count rather than
- *  guessing one. */
+ *  the item index its page shows, known once a check has finished: while one runs, the index marks
+ *  the list checked before it has read the chats' items, so the number so far (0 on a first check)
+ *  is not the count. Null hides a count rather than guessing one. */
 function useRenamedCounts(): Record<RenamedDestination, Count> {
   const sessions = useStore($sessions)
   const truncated = useStore($sessionProfilesTruncated)
@@ -35,7 +36,7 @@ function useRenamedCounts(): Record<RenamedDestination, Count> {
   return {
     chats: { value: chats, more: Object.values(truncated).some(Boolean) },
     agents: { value: agents.length, more: false },
-    library: library.checkedAt === null ? null : { value: library.items.length, more: false },
+    library: library.checkedAt === null || library.refreshing ? null : { value: library.items.length, more: false },
     routines: { value: routines.length, more: false },
     machines: { value: new Set(agents.map(agent => agent.connectionId)).size, more: false }
   }

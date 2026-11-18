@@ -6,9 +6,9 @@ import sys
 import pytest
 
 from scripts.releases import r2
-from scripts.releases.job_groups import DIAGNOSTIC_JOBS
+from scripts.releases.job_groups import DIAGNOSTIC_JOBS, parse_jobs
 from tests.ci.desktop_release_roles import (
-    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, gate, needs_of, selection_gates, tag_summary,
+    CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, evaluate, gate, needs_of, selection_gates, tag_summary,
     termux_builder, updater_publishers,
 )
 from tests.ci.test_commit_build_staging import shell_step
@@ -118,3 +118,21 @@ def test_canary_publication_does_not_wait_for_diagnostic_builds():
     required = ancestors(jobs, canary_publisher(jobs))
     assert {tag_summary(jobs), termux_builder(jobs)} <= required
     assert not DIAGNOSTIC_JOBS.intersection(required)
+
+
+def test_canary_tables_admit_all_release_groups_without_linux():
+    jobs = _workflow()["jobs"]
+    groups = {"darwin-arm64", "win32-x64", "win32-arm64", "win32-bundle", "termux"}
+    for selected in [groups, *(groups - {group} for group in sorted(groups))]:
+        inputs = dict(DOWNLOADABLE_DISPATCHES["tag"], jobs=",".join(sorted(selected)))
+        admission = {k: str(v).lower() for k, v in parse_jobs(inputs["jobs"]).items()}
+        admission.update({"all-jobs": "false", "sha": "a" * 40})
+        outputs = {}
+        for key, expression in jobs["validate"]["outputs"].items():
+            if "steps.admission.outputs." in expression:
+                value = evaluate(expression, inputs, {}, steps={"admission": {"outputs": admission}})
+                outputs[key] = str(value).lower()
+        for job in (jobs["builds-pending"], jobs[tag_summary(jobs)]):
+            needs = admitted(needs_of(job))
+            needs["validate"]["outputs"] = outputs
+            assert gate(job["if"], inputs, needs) is (selected == groups), (job["name"], selected)

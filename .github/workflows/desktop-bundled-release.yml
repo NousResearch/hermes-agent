@@ -258,6 +258,12 @@ jobs:
       termux: ${{ steps.admission.outputs.termux }}
       # Every group selected: the joins that render or summarize a whole build.
       all-jobs: ${{ steps.admission.outputs.all-jobs }}
+      canary-table-selected: >-
+        ${{ contains(inputs.tag, '+canary.') && inputs.release-phase == ''
+            && inputs.channel == '' && inputs.disposable_channel == ''
+            && steps.admission.outputs.darwin-arm64 == 'true' && steps.admission.outputs.win32-arm64 == 'true'
+            && steps.admission.outputs.win32-x64 == 'true' && steps.admission.outputs.win32-bundle == 'true'
+            && steps.admission.outputs.termux == 'true' }}
       channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
@@ -2299,7 +2305,9 @@ jobs:
     name: Mark the builds table as in progress
     needs: validate
     # Pairs with builds-table: a pending page nothing finalizes must not be written.
-    if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.all-jobs == 'true'
+    if: >-
+      inputs.build_commit == '' && inputs.upload_release == true
+      && (needs.validate.outputs.all-jobs == 'true' || needs.validate.outputs.canary-table-selected == 'true')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -2340,7 +2348,7 @@ jobs:
     if: |
       always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.all-jobs == 'true'
+      && (needs.validate.outputs.all-jobs == 'true' || needs.validate.outputs.canary-table-selected == 'true')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     steps:

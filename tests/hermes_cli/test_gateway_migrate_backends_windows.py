@@ -226,3 +226,16 @@ def test_where_wmic_works_the_windows_report_reads_and_prints_what_main_does(mon
 
     assert [pid for pid, _ in rows] == [10, 11]  # main lists the hermes.exe launcher too
     assert gmb.format_report([item])[3] == f"    runs:    {shlex.join(_BACKEND)}"
+
+
+def test_wmic_missing_follows_the_path_through_the_shared_resolver(tmp_path, monkeypatch):
+    """The lookup goes through hermes_platform's resolver (no bare shutil.which): an empty PATH has no
+    wmic, a PATH holding one does."""
+    tool = tmp_path / ("wmic.exe" if os.name == "nt" else "wmic")
+    tool.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
+    tool.chmod(0o755)
+    for path, missing in (("", True), (str(tmp_path), False)):
+        monkeypatch.setenv("PATH", path)
+        gw.wmic_missing.cache_clear()
+        assert gw.wmic_missing() is missing
+    gw.wmic_missing.cache_clear()

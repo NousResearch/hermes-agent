@@ -17,7 +17,6 @@ import contextlib
 import functools
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -33,7 +32,8 @@ _STARTUP_SUFFIXES = (".lnk", ".cmd", ".bat", ".vbs", ".ps1")
 def wmic_missing() -> bool:
     """True on a Windows without ``wmic`` (11 24H2 and later), the only place this module's scan and
     ownership readers are used; where wmic works the report stays exactly main's."""
-    return shutil.which("wmic") is None
+    from hermes_platform.resolver import locate_command
+    return not locate_command("wmic").command
 
 
 def process_rows() -> list[tuple[int, str]]:

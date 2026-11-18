@@ -83,21 +83,38 @@ def _schedule_service_pid() -> Optional[int]:
     return None
 
 
-def _hermes_args(argv: list[str]) -> list[str]:
-    """The arguments after the ``hermes`` / ``hermes.exe`` / ``hermes_cli.main`` entry token."""
+def _entry_index(argv: list[str]) -> Optional[int]:
+    """Index of the ``hermes`` / ``hermes.exe`` / ``hermes_cli.main`` entry token, or None."""
     for i, token in enumerate(argv):
         low = token.strip("\"'").replace("\\", "/").lower()
         if low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") or low.endswith("hermes_cli.main") \
                 or low.endswith("hermes_cli/main.py"):
-            return argv[i + 1:]
-    return []
+            return i
+    return None
+
+
+def _hermes_args(argv: list[str]) -> list[str]:
+    """The arguments after the ``hermes`` / ``hermes.exe`` / ``hermes_cli.main`` entry token."""
+    i = _entry_index(argv)
+    return argv[i + 1:] if i is not None else []
+
+
+def _install(argv: list[str]) -> Optional[str]:
+    """Which install *argv* runs: the entry's full path (``...\\bin\\hermes.exe``), or for
+    ``python -m hermes_cli.main`` the interpreter's. None for a bare name, whose install is not known."""
+    i = _entry_index(argv)
+    if i is None:
+        return None
+    token = argv[i] if not argv[i].strip("\"'").lower().endswith("hermes_cli.main") else argv[0]
+    path = token.strip("\"'").replace("/", "\\").lower()
+    return path if "\\" in path else None
 
 
 def tasks_running(xml_text: str, argv: list[str]) -> list[tuple[str, bool]]:
-    """``(task path, enabled)`` of every task in a ``schtasks /Query /XML`` dump whose action runs
-    ``hermes`` with exactly the backend's arguments."""
-    want = _hermes_args(argv)
-    if not want:
+    """``(task path, enabled)`` of every task in a ``schtasks /Query /XML`` dump whose action runs the
+    backend's own install (the same ``hermes.exe`` or interpreter path) with exactly its arguments."""
+    want, install = _hermes_args(argv), _install(argv)
+    if not want or install is None:  # a task of another install with the same arguments is not this one's
         return []
     found: list[tuple[str, bool]] = []
     parts = _TASK_HEADER.split(xml_text or "")
@@ -112,7 +129,8 @@ def tasks_running(xml_text: str, argv: list[str]) -> list[tuple[str, bool]]:
             command = (action.findtext(f"{_TASK_NS}Command") or "").strip()
             args = (action.findtext(f"{_TASK_NS}Arguments") or "").strip()
             with contextlib.suppress(ValueError):
-                if _hermes_args([command, *_split_windows_args(args)]) == want:
+                task = [command, *_split_windows_args(args)]
+                if _hermes_args(task) == want and _install(task) == install:
                     found.append((path.lstrip("\\"), enabled))
                     break
     return found

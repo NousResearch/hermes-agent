@@ -17,8 +17,7 @@ from persistence.sqlite._schema_ddl import (
 )
 from persistence.sqlite.conversation._store.messages import _decode_content, _row_to_message_dict, get_messages_around
 from persistence.sqlite.conversation._store.sessions import list_sessions_rich
-from persistence.sqlite.conversation._store.stored_reads import _in_one_read
-from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, escape_like as _escape_like
+from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, _in_one_read, escape_like as _escape_like
 
 
 logger = logging.getLogger("hermes_state")
@@ -464,6 +463,10 @@ def _attribute_ranked_corruption(
         # bm25() is refused inside an aggregate, so stream the rows.
         for _ in conn.execute(f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?", (match_query,)):
             pass
+    except sqlite3.OperationalError:
+        # A transient IOERR (or any other operational failure) proves nothing about the index: let
+        # _read_retrying_ioerr replay the whole read instead of publishing the unattributed error.
+        raise
     except sqlite3.DatabaseError as probe_exc:
         if is_fts_scoped_corruption_error(probe_exc):
             logger.warning("%s ranked MATCH reported bare SQLITE_CORRUPT; the index alone reports %s, "

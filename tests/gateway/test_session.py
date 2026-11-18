@@ -221,10 +221,9 @@ class TestPerPlatformSessionIsolation:
     def test_override_drives_key_context_sender_and_authorization(
         self, tmp_path, monkeypatch
     ):
-        import hermes_state
         from gateway.run import GatewayRunner
 
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config = GatewayConfig(
             group_sessions_per_user=True,
             platforms={
@@ -235,8 +234,8 @@ class TestPerPlatformSessionIsolation:
             },
         )
         store = SessionStore(sessions_dir=tmp_path, config=config)
-        db = store._db
-        assert isinstance(db, SessionDB)
+        db = store.persistence
+        assert db is not None
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = config
         runner.session_store = store
@@ -280,14 +279,12 @@ class TestPerPlatformSessionIsolation:
                 "thread_id": None,
             },
         ) is False
-        db.close()
+        store.close_all_db_handles()
 
     def test_prospective_thread_is_discord_only_and_persists_one_identity(
         self, tmp_path, monkeypatch
     ):
-        import hermes_state
-
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config = GatewayConfig(
             group_sessions_per_user=True,
             platforms={
@@ -298,8 +295,8 @@ class TestPerPlatformSessionIsolation:
             },
         )
         store = SessionStore(sessions_dir=tmp_path, config=config)
-        db = store._db
-        assert isinstance(db, SessionDB)
+        db = store.persistence
+        assert db is not None
         discord = SessionSource(
             platform=Platform.DISCORD,
             chat_id="channel-1",
@@ -311,7 +308,7 @@ class TestPerPlatformSessionIsolation:
         discord_dm = replace(discord, chat_type="dm", chat_id="dm-1")
 
         entry = store.get_or_create_session(discord)
-        row = db.get_session(entry.session_id)
+        row = session_row(db, entry.session_id)
         assert row is not None
 
         assert entry.session_key == "agent:main:discord:thread:channel-1:future-thread"
@@ -320,32 +317,31 @@ class TestPerPlatformSessionIsolation:
         assert build_session_key(telegram) == "agent:main:telegram:group:channel-1:alice"
         assert is_shared_multi_user_session(telegram) is False
         assert "future-thread" not in build_session_key(discord_dm)
-        db.close()
+        store.close_all_db_handles()
 
     def test_durable_profile_owner_controls_shared_key_recovery(
         self, tmp_path, monkeypatch
     ):
-        import hermes_state
-
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "dev"
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
         )
         source = self._whatsapp_source("member@lid", "Member")
         isolated = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
-        isolated_db = isolated._db
-        assert isinstance(isolated_db, SessionDB)
+        isolated_db = isolated.persistence
+        assert isolated_db is not None
         legacy = isolated.get_or_create_session(source)
-        isolated_db.create_session(
+        seed_session(
+            isolated_db,
             legacy.session_id,
             source="whatsapp",
-            profile_name="dev",
+            profile_name="default",
         )
         isolated.append_to_transcript(
             legacy.session_id,
             {"role": "user", "content": "legacy group context"},
         )
-        isolated_db.close()
+        isolated.close_all_db_handles()
         (tmp_path / "sessions.json").unlink()
 
         shared = SessionStore(
@@ -359,8 +355,8 @@ class TestPerPlatformSessionIsolation:
                 }
             ),
         )
-        shared_db = shared._db
-        assert isinstance(shared_db, SessionDB)
+        shared_db = shared.persistence
+        assert shared_db is not None
         recovered = shared.get_or_create_session(source)
 
         assert recovered.session_id == legacy.session_id
@@ -369,9 +365,7 @@ class TestPerPlatformSessionIsolation:
         )
         assert [
             message["content"]
-            for message in shared_db.get_messages_as_conversation(
-                recovered.session_id
-            )
+            for message in conversation(shared_db, recovered.session_id)
         ] == ["legacy group context"]
 
         bare = object.__new__(SessionStore)
@@ -392,7 +386,7 @@ class TestPerPlatformSessionIsolation:
                     "profile_name": durable_profile,
                 },
             ) is allowed
-        shared_db.close()
+        shared.close_all_db_handles()
 
 
 class TestSenderPrefixWithBackfill:

@@ -205,7 +205,8 @@ class SessionRecoveryMixin:
         if found is None:
             return None
         row = found.session
-        return {"id": row.session_id, "session_key": row.session_key, "started_at": row.started_at,
+        return {"id": row.session_id, "session_key": row.session_key, "profile_name": row.profile_name,
+                "started_at": row.started_at,
                 "last_activity_at": row.last_activity_at, "message_count": row.message_count,
                 "_has_messages": found.has_messages,
                 "origin_json": None if row.origin is None else json.dumps(dict(row.origin))}

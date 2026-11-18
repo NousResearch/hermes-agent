@@ -53,11 +53,8 @@ def client(monkeypatch, isolated_profiles):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
@@ -85,15 +82,6 @@ class TestProfileScopedSkills:
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
 
-
-    def test_scope_restores_module_globals(self, client, isolated_profiles):
-        """The SKILLS_DIR swap is per-request; the module global must be
-        restored even after a scoped call (cron-style locked swap)."""
-        from tools import skills_tool
-
-        before = skills_tool.SKILLS_DIR
-        client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert skills_tool.SKILLS_DIR == before
 
     @pytest.mark.parametrize("method,path,body", [
         ("PUT", "/api/learning/node", {"id": "shared-skill", "content": "EDITED"}),

@@ -93,9 +93,9 @@ def backend():
 
 @pytest.fixture(autouse=True)
 def _clean_live():
-    live.reset_for_tests()
+    live._open.clear()
     yield
-    live.reset_for_tests()
+    live._open.clear()
 
 
 @pytest.fixture(autouse=True)

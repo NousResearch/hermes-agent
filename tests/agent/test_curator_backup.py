@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib
 import io
 import json
@@ -81,6 +82,52 @@ def test_snapshot_prunes_to_keep_count(backup_env, monkeypatch):
     remaining = sorted(p.name for p in (backup_env["skills"] / ".curator_backups").iterdir())
     # Newest 3 kept (lex order == date order for this id format)
     assert remaining == ids[2:], f"expected newest 3, got {remaining}"
+
+
+@pytest.mark.platforms("posix")  # directory fsync is a no-op on Windows
+def test_snapshot_is_durable_before_older_snapshots_are_pruned(backup_env, monkeypatch):
+    """A crash after the prune must not leave the only surviving snapshot with a zero-tailed archive."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    backups = backup_env["skills"] / ".curator_backups"
+    synced: set[int] = set()
+    unsynced_at_prune: list[str] = []
+    real_fsync, real_prune = os.fsync, cb._prune_old
+
+    def spy_fsync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        return real_fsync(fd)
+
+    def spy_prune(*args, **kwargs):
+        newest = max(p for p in backups.iterdir() if cb._ID_RE.match(p.name))
+        for path in (newest, *newest.iterdir(), backups, backup_env["skills"]):
+            if path.stat().st_ino not in synced:
+                unsynced_at_prune.append(path.name)
+        return real_prune(*args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(cb, "_prune_old", spy_prune)
+    snap = cb.snapshot_skills(reason="durable")
+
+    assert snap is not None
+    assert unsynced_at_prune == []
+
+
+def test_failed_snapshot_sync_prunes_nothing(backup_env, monkeypatch):
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    monkeypatch.setattr(cb, "get_keep", lambda: 1)
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-01T00-00-00Z")
+    previous = cb.snapshot_skills(reason="previous")
+    assert previous is not None
+
+    def failing_fsync(fd):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-02T00-00-00Z")
+    assert cb.snapshot_skills(reason="unsynced") is None
+    assert [p.name for p in (backup_env["skills"] / ".curator_backups").iterdir()] == [previous.name]
 
 
 # ---------------------------------------------------------------------------

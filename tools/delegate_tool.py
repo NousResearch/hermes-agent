@@ -17,22 +17,23 @@ import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-# The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
-# ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
+# The delegate_tool_* siblings hold the pieces split out of this module; the names this module's code uses, and the
+# ones callers reach as ``tools.delegate_tool.<name>``, are imported here. Config readers are patched in their owner,
+# ``tools.delegate_tool_config``. Mutable flag globals live only in their owning module.
+from tools import delegate_tool_config
 from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _Heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
-    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_max_concurrent_children,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
+    _inherit_parent_capabilities, _merge_request_overrides, _resolve_child_credential_pool,
+    _resolve_child_runtime,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -64,29 +65,30 @@ _ROLES = frozenset({"leaf", "orchestrator"})
 def _parent_live_home(parent_agent: Any) -> Optional[Path]:
     """Resolve the live transcripts' profile home from parent-owned state.
 
-    The parent's per-profile SessionDB sits directly under its profile home
-    (``<home>/state.db``), so the db path's parent IS the home. Returns None
-    when the parent exposes no usable SessionDB — the caller then falls back
-    to the ambient resolve, which is exactly the #91996 failure mode, so the
-    skip is logged rather than silent.
+    The parent's storage handle is bound to its profile, so the handle's
+    profile directory IS the home. Returns None when the parent exposes no
+    usable handle — the caller then falls back to the ambient resolve, which
+    is exactly the #91996 failure mode, so the skip is logged rather than
+    silent.
     """
-    parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    persistence = getattr(parent_agent, "persistence", None)
+    parent_home = getattr(getattr(persistence, "scope", None), "profile_dir", None)
     # Concrete str/Path only — NOT the os.PathLike protocol: MagicMock (and any
     # duck-typed test double) registers __fspath__ and so IS PathLike, which is
     # how a Mock "home" slipped through and transcripts landed at
     # str(<MagicMock>) paths (PR #131931 side-effect screen).
-    if isinstance(parent_db, (str, Path)):
-        return Path(parent_db).parent
-    if parent_db is not None:
+    if isinstance(parent_home, (str, Path)):
+        return Path(parent_home)
+    if persistence is not None:
         logger.debug(
-            "delegate_task: parent _session_db.db_path is %r (not a str/Path); "
+            "delegate_task: parent persistence.scope.profile_dir is %r (not a str/Path); "
             "live-transcript home pinning skipped, falling back to ambient "
             "HERMES_HOME resolve (transcripts may land in a different profile, #91996)",
-            parent_db,
+            parent_home,
         )
         return None
     logger.warning(
-        "delegate_task: parent agent exposes no _session_db; live-transcript "
+        "delegate_task: parent agent exposes no persistence handle; live-transcript "
         "home pinning skipped, falling back to ambient HERMES_HOME resolve "
         "(transcripts may land in a different profile, #91996)"
     )
@@ -104,17 +106,6 @@ def _normalize_role(r: Optional[str]) -> str:
     return r_norm
 
 DEFAULT_MAX_ITERATIONS = 250
-_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-# Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
-# last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
-# stays tight so a truly wedged child doesn't mask the gateway timeout; in-tool is much higher so legitimately long
-# tools can finish.
-_HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
-_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
-# After the stale verdict ends the wait, keep polling the worker this long for its real
-# result (#113222): a child that already wrote its final answer often finishes unwinding a
-# moment later, and that recorded result must be collected instead of a synthesized timeout.
-_STALE_RESULT_GRACE_SECONDS = 2.0
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
@@ -122,19 +113,18 @@ def check_delegate_requirements() -> bool:
 
 
 def _open_child_session_db(parent_agent) -> Any:
-    """DEDICATED SessionDB handle for the child, or None: the parent's handle can be closed by its own lifecycle while
-    a background child still flushes (transcript silently dropped). It MUST open the same db FILE as the parent's
+    """DEDICATED store handle for the child, or None: the parent's handle can be closed by its own lifecycle while
+    a background child still flushes (transcript silently dropped). It MUST open the same store as the parent's
     handle (non-launch profiles), else lineage / session_search break; released by the child's close() via
     _owns_session_db."""
-    # Each child gets a DEDICATED SessionDB connection instead of the parent's live object. The parent's
+    # Each child gets a DEDICATED reference on the store instead of the parent's live object. The parent's
     # handle is owned by the parent's lifecycle (cron run_job's finally block, gateway session end, /new)
     # and can be closed while a fire-and-forget background child is still flushing on a daemon thread —
     # every subsequent flush then hits the closed handle and the child's transcript is silently dropped
-    # (#81267). It MUST point at the same database FILE as the parent's handle: parents can hold non-default
-    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
-    # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
-    # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
-    # .db_path via __getattr__, so this works through them.
+    # (#81267). It MUST open the parent's profile: parents can hold non-default per-profile stores
+    # (tui_gateway opens one per non-launch profile), and the current home's store would take the child's
+    # transcript into the launch profile's db, breaking parent_session_id lineage and session_search. A store
+    # handle names its profile; a store object reached through a wrapper names its file by ``db_path``.
     from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if is_worker_process() or isinstance(parent_session_db, RuntimeSessionStore):
@@ -143,14 +133,29 @@ def _open_child_session_db(parent_agent) -> Any:
         if not isinstance(parent_session_db, RuntimeSessionStore):
             raise WorkerPersistenceError('worker_child_registration_required')
         from agent.runtime_session_child import reserve_child_store
-        return reserve_child_store(parent_session_db)
+        return reserve_child_store(parent_session_db, persistence=getattr(parent_agent, "persistence", None))
     if parent_session_db is None:
         return None
-    with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
-        from hermes_state_registry import acquire
-        _parent_db_path = getattr(parent_session_db, "db_path", None)
-        return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
+    with _quiet("subagent: failed to open dedicated session store; child persistence disabled", exc_info=True):
+        from persistence_assembly import Persistence, open_persistence, profile_scope
+        parent_persistence = getattr(parent_agent, "persistence", None)
+        if isinstance(parent_session_db, Persistence):
+            scope = parent_session_db.scope
+        elif isinstance(parent_persistence, Persistence):
+            # A wrapper with no db_path (the hermes_state stand-in) beside the handle it forwards to.
+            scope = parent_persistence.scope
+        else:
+            _parent_db_path = getattr(parent_session_db, "db_path", None)
+            scope = profile_scope(home=Path(_parent_db_path).parent) if _parent_db_path is not None else profile_scope()
+        return open_persistence(scope, eager=True)
     return None
+
+def _open_child_persistence(child_session_db) -> Any:
+    """The storage interface handle of a dedicated child store, which is the store itself; None beside a worker
+    child's owner-reserved store, which has no store of its own."""
+    from persistence_assembly import Persistence
+    return child_session_db if isinstance(child_session_db, Persistence) else None
+
 
 def _apply_child_cache_ttl(child) -> None:
     """A delegated child never uses the 1h cache tier. The tier is priced for a person who steps
@@ -258,7 +263,7 @@ def _build_child_agent(
     # General delegation behavior (reasoning, compression, capabilities) stays
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
-    delegation_cfg = _load_config()
+    delegation_cfg = delegate_tool_config._load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
@@ -308,6 +313,7 @@ def _build_child_agent(
         from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 
         child_checkpoint_required = checkpoint_required_from_config()
+        child_persistence = _open_child_persistence(child_session_db)
         with delegated_child_context():
             try:
                 child = AIAgent(
@@ -321,7 +327,8 @@ def _build_child_agent(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None
                     ),
-                    session_db=child_session_db, parent_session_id=parent_sid, request_overrides=request_overrides,
+                    session_db=child_session_db, persistence=child_persistence, parent_session_id=parent_sid,
+                    request_overrides=request_overrides,
                     session_id=session_id or getattr(child_session_db, "reserved_session_id", None),
                     tool_progress_callback=child_progress_cb,
                     iteration_budget=None,  # fresh budget per subagent
@@ -332,8 +339,10 @@ def _build_child_agent(
                 # No child close() will ever run: release the dedicated handle here.
                 if child_session_db is not None:
                     with _quiet(None):
-                        from hermes_state_registry import release_or_close
-                        release_or_close(child_session_db)
+                        child_session_db.close()
+                if child_persistence is not None:
+                    with _quiet(None):
+                        child_persistence.close()
                 raise
         # Shared pool lets children rotate credentials on rate limits. A profile child loads ITS profile's pool
         # (inside the scope) and never shares the launching parent's.
@@ -648,7 +657,7 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    cfg = _load_config()
+    cfg = delegate_tool_config._load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
@@ -691,13 +700,13 @@ def delegate_task(
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
     #
     # The transcripts' profile home is resolved from stable parent-owned
-    # state (the parent's per-profile SessionDB path), NOT ambient
+    # state (the parent's per-profile storage handle), NOT ambient
     # get_hermes_dir(): this thread may have crossed a raw threading.Thread
     # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
     # and process-wide HERMES_HOME is unstable under concurrent
     # multi-profile workers — either way transcripts could land in the
-    # wrong profile (#91996). state.db sits directly under the home, so
-    # its parent IS the home; None falls back to today's ambient resolve
+    # wrong profile (#91996). The handle's profile directory IS the
+    # home; None falls back to today's ambient resolve
     # (with a warning — that fallback is exactly the #91996 failure mode).
     _live_home = _parent_live_home(parent_agent)
 
@@ -827,7 +836,7 @@ def _build_dynamic_schema_overrides() -> dict:
     # The active delegation provider's per-task parameters and guidance (delegation.backend; none for the
     # built-in default). Built from config with the rest of the definition, never per turn.
     from tools.delegate_tool_routes import schema_extension
-    extra_params, addendum = schema_extension(_load_config())
+    extra_params, addendum = schema_extension(delegate_tool_config._load_config())
     if extra_params:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {**tasks["items"]["properties"], **extra_params}}

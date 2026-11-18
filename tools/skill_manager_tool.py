@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -37,6 +36,7 @@ from tools.skill_manager_batch import (
 from tools.skill_manager_scan import (
     _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from tools.skills_tool import _skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -76,23 +76,6 @@ def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
-
-
-# All skills live in ~/.hermes/skills/ (single source of truth)
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
-_SKILLS_DIR_AT_IMPORT = SKILLS_DIR
-
-
-def _skills_dir() -> Path:
-    """Active profile's skills dir at call time (multi-profile runtimes rebind per session).
-    An explicitly patched module-level ``SKILLS_DIR`` (tests) wins over the live HERMES_HOME.
-
-    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, kanban workers) import this
-    module once under the launch HERMES_HOME and later bind a different profile per session (#40677).
-    """
-    configured = Path(SKILLS_DIR)
-    return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
 
 
 def _skill_lock_path(name: str) -> Path:

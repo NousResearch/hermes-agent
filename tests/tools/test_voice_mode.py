@@ -255,9 +255,8 @@ class TestDetectAudioEnvironment:
 class TestNativeSttLabelSync:
     """Every native STT built-in must have a CLI voice-gate label.
 
-    ``BUILTIN_STT_PROVIDERS`` and ``agent.transcription_registry._BUILTIN_NAMES``
-    are kept in sync by TestBuiltinSync, but ``tools.voice_mode._NATIVE_STT_LABELS``
-    is a third copy of the same list; without this test a new built-in transcribes
+    ``agent.transcription_registry`` imports ``BUILTIN_STT_PROVIDERS``, but
+    ``tools.voice_mode._NATIVE_STT_LABELS`` is a second copy of the same list; without this test a new built-in transcribes
     fine on the gateway while the CLI voice gate reports it as MISSING.
     """
 

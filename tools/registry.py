@@ -605,7 +605,6 @@ class ToolRegistry:
         # remain confined to the profile that loaded them.
         self._plugin_override_policy: dict[tuple[Optional[str], str], _PluginOverridePolicy] = {}
         self._plugin_module_scopes: dict[str, set[Optional[str]]] = {}
-        self._toolset_checks: dict[str, Callable] = {}
         self._toolset_aliases: dict[str, str] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
@@ -647,17 +646,9 @@ class ToolRegistry:
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> list[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
 
-    def _snapshot_state(
-        self, scope: Optional[str] = None) -> tuple[list[ToolEntry], dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
-        with self._lock:
-            entries = list(self._merged_tools(scope).values())
-            checks = dict(self._toolset_checks)
-            checks.update({e.toolset: e.check_fn for e in entries if e.check_fn is not None})
-            return entries, checks
-
     def _snapshot_entries(self) -> list[ToolEntry]:
-        return self._snapshot_state()[0]
+        with self._lock:
+            return list(self._merged_tools(None).values())
 
     def _toolset_has_exposable_tools(self, toolset: str, entries: list[ToolEntry]) -> bool:
         """True when at least one tool in *toolset* would be exposed. Mirrors
@@ -921,12 +912,6 @@ class ToolRegistry:
                 dynamic_schema_overrides=dynamic_schema_overrides, compat_args=frozenset(compat_args),
                 self_checked_args=frozenset(self_checked_args),
                 deadline_floor=deadline_floor)
-            # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
-            # longer gates a toolset; it still feeds get_toolset_requirements ->
-            # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
-            # never called) to classify an unavailable toolset as lazy-init vs disabled.
-            if scope is None and check_fn and toolset not in self._toolset_checks:
-                self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
     def deregister(self, name: str, *, scope: Optional[str] = None) -> None:
@@ -982,7 +967,6 @@ class ToolRegistry:
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
             if not self._toolset_entries(entry.toolset, scope):
-                self._toolset_checks.pop(entry.toolset, None)
                 self._drop_toolset_aliases(entry.toolset)
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
@@ -1015,19 +999,11 @@ class ToolRegistry:
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
 
-            # Rebuild affected toolset checks from survivors: a plugin may have replaced an
-            # entry in the same toolset, so its check_fn would otherwise linger after restore.
             affected_toolsets = {current.toolset}
             if previous is not None:
                 affected_toolsets.add(previous.toolset)
             for toolset in affected_toolsets:
                 surviving = self._toolset_entries(toolset, scope)
-                check_fn = next((entry.check_fn for entry in surviving if entry.check_fn), None)
-                if scope is None:
-                    if check_fn is None:
-                        self._toolset_checks.pop(toolset, None)
-                    else:
-                        self._toolset_checks[toolset] = check_fn
                 in_overlays = (e for m in self._scoped_tools.values() for e in m.values())
                 if not surviving and not any(e.toolset == toolset for e in in_overlays):
                     self._drop_toolset_aliases(toolset)
@@ -1116,7 +1092,8 @@ class ToolRegistry:
             # exc_info already renders the exception, so keep the message copy bounded.
             logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))
             # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            from storage_user_copy import error_type_name
+            raw = f"Tool execution failed: {error_type_name(e)}: {e}"
             try:
                 from model_tools import _sanitize_tool_error
                 sanitized = _sanitize_tool_error(raw)
@@ -1198,7 +1175,8 @@ class ToolRegistry:
 
     def get_toolset_requirements(self) -> dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
-        entries, toolset_checks = self._snapshot_state()
+        entries = self._snapshot_entries()
+        toolset_checks = {e.toolset: e.check_fn for e in entries if e.check_fn is not None}
         result: dict[str, dict] = {}
         for toolset, members in self._grouped(entries).items():
             result[toolset] = {

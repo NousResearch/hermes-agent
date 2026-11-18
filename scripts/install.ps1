@@ -562,7 +562,7 @@ function Test-PinnedGitHttpsReady([string]$GitExe) {
     if (-not (Test-Path -LiteralPath $GitExe)) { return $false }
     $global:LASTEXITCODE = 0
     try {
-        $exec = Invoke-Native { & $GitExe --exec-path 2>$null }
+        $exec = Invoke-Native -Utf8Output { & $GitExe --exec-path 2>$null }
     } catch {
         return $false
     }

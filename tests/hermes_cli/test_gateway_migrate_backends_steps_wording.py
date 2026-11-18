@@ -20,6 +20,13 @@ import pytest
 from hermes_cli import gateway_migrate_backends_plan as plan
 from hermes_cli import gateway_migrate_backends_windows as win
 
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
+
 _H = "hermes -p work"
 
 
@@ -27,8 +34,10 @@ def _groups(steps: list[str]) -> list[tuple[list[str], str]]:
     """``[(quoted lines, command)]`` of the branch step, in the order a reader checks them."""
     (line,) = [s for s in steps if s.startswith("# then by what it prints")]
     groups = []
-    for part in line.split(":", 1)[1].split(";"):
-        quoted, _, command = part.partition("->")
+    # Each alternative starts with a quoted status line, so "; '" separates them even when a command pins
+    # HERMES_HOME for PowerShell ("$env:HERMES_HOME='…'; hermes -p NAME …").
+    for part in re.split(r";\s*(?=')", line.split(":", 1)[1]):
+        quoted, _, command = part.partition(" -> ")
         groups.append((re.findall(r"'([^']+)'", quoted), command.strip()))
     return groups
 

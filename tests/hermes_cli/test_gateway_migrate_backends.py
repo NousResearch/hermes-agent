@@ -24,6 +24,13 @@ from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
 from tests.waiting import wait_until
 
+
+@pytest.fixture(autouse=True)
+def _standard_root(monkeypatch):
+    """The homes here stand for the user's standard Hermes root, so steps say `hermes -p NAME`; the root
+    pin for any other root is tested in test_gateway_migrate_backends_root_pin.py."""
+    monkeypatch.setattr("hermes_cli.gateway_migrate_backends_plan._is_standard_root", lambda root: True)
+
 _READ_ONLY_SYSTEMCTL = {"show", "list-unit-files"}
 _READ_ONLY_LAUNCHCTL = {"print"}
 

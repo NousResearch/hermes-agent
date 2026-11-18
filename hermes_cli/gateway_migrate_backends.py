@@ -417,7 +417,7 @@ def format_report(items: list[BackendItem]) -> list[str]:
     if any(i.this_home and i.supervisor not in ("desktop-ssh", "desktop-local") for i in items):
         from hermes_cli.gateway_migrate_backends_plan import hermes_command
         from hermes_constants import get_hermes_home
-        lines += ["", NEXT_STEP.format(hermes=hermes_command(str(get_hermes_home())))]
+        lines += ["", NEXT_STEP.format(hermes=hermes_command(str(get_hermes_home()), powershell=os.name == "nt"))]
     return lines
 
 

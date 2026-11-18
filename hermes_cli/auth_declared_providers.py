@@ -116,11 +116,10 @@ def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str, *, mi
     from agent.command_token_source import materialize_probe_api_key
     from agent.secret_scope import get_secret_str
     from hermes_cli import runtime_provider as rp
-    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
+    from hermes_cli.runtime_provider_custom import _owning_entry_credential, model_block_key_for
 
-    is_cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/") == (base_url or "").strip().rstrip("/")
-    own = (str(model_cfg.get("api_key") or "").strip() if is_cfg_url else "") or _model_cfg_key_env_for(model_cfg, base_url)
-    if rp.has_usable_secret(own):
+    own = model_block_key_for(model_cfg, base_url)
+    if own:
         return own
     declared, entry_key = _owning_entry_credential(rp, base_url)
     if declared:

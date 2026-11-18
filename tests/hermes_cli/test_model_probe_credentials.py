@@ -154,3 +154,30 @@ def test_aux_pricing_lookup_leaves_a_declared_credential_source_its_endpoint(key
 def test_aux_pricing_lookup_sends_the_configured_key_beside_a_static_live_key(keyed, monkeypatch, live_main):
     live_main("lab-key")
     assert _record_aux_pricing_key(monkeypatch)["api_key"] == "lab-key"
+
+
+def test_a_placeholder_inline_key_does_not_mask_a_usable_key_env(monkeypatch):
+    """The probes pick the model block's first USABLE credential, as the runtime does: a template
+    ``api_key: your-api-key`` beside a working ``key_env`` probes with the key_env value."""
+    from hermes_cli.runtime_provider_custom import model_block_key_for
+
+    monkeypatch.setenv("LAB_LLAMA_KEY", "lab-key")
+    block = {**MODEL_BLOCK, "api_key": "your-api-key"}
+    assert model_block_key_for(block, BASE) == "lab-key"
+    assert model_block_key_for({**MODEL_BLOCK, "api_key": "your-api-key", "key_env": ""}, BASE) == ""
+
+
+def test_every_main_endpoint_probe_skips_a_placeholder_inline_key(monkeypatch, live_main):
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from agent import image_routing
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+
+    monkeypatch.setenv("LAB_LLAMA_KEY", "lab-key")
+    save_config({"model": {**MODEL_BLOCK, "api_key": "your-api-key"}})
+    cfg = load_config()
+    assert resolve_runtime_provider(requested="custom")["api_key"] == "lab-key"
+    live_main("")
+    assert image_routing._resolve_inference_api_key(cfg, "custom") == "lab-key"
+    assert custom_catalog_probe_api_key(cfg["model"], BASE) == "lab-key"
+    assert _record_aux_pricing_key(monkeypatch)["api_key"] == "lab-key"

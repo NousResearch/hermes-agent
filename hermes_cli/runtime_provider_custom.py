@@ -78,15 +78,21 @@ def _model_cfg_key_env_for(model_cfg: dict[str, Any], base_url: str) -> str:
 
 
 def model_block_key_for(model_cfg: Any, base_url: str) -> str:
-    """The ``model:`` block's own credential for *base_url*: ``model.api_key``, else the variable
-    ``model.key_env`` names, only when *base_url* is the configured ``model.base_url``.
+    """The ``model:`` block's own credential for *base_url*: the first usable of ``model.api_key``
+    and the variable ``model.key_env`` names, only when *base_url* is the configured ``model.base_url``.
 
     Metadata probes of the main endpoint (context length, the local server fingerprint, aux
-    pricing) send it, as the runtime does; a keyed endpoint answers 401 without it.
+    pricing, the catalog) send it, as the runtime does; a keyed endpoint answers 401 without it.
+    Usability is the runtime's own test, so a template ``api_key`` never masks a working key_env.
     """
     if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
         return ""
-    return _clean(model_cfg.get("api_key")) or _key_env_secret(model_cfg, "model")
+    usable = _rp().has_usable_secret
+    inline = _clean(model_cfg.get("api_key"))
+    if usable(inline):
+        return inline
+    from_env = _key_env_secret(model_cfg, "model")
+    return from_env if usable(from_env) else ""
 
 
 def _entry_url(entry: dict[str, Any]) -> str:

@@ -452,9 +452,9 @@ class HubLockFile(_JsonStateFile):
 
 def installed_entry(installed: dict[str, dict], identifier: str,
                     source: Optional[str] = None) -> Optional[dict]:
-    """The ``HubLockFile.by_identifier`` entry a hub result names. Search and the index list a
-    ClawHub skill by its bare slug, so a ``source="clawhub"`` result also matches through its
-    ``clawhub/<slug>`` card id. Any other source matches its exact id only."""
+    """The ``HubLockFile.by_identifier`` entry a hub result names. A ``source="clawhub"`` result
+    also matches through its ``clawhub/<slug>`` card id, which covers results and lock rows that
+    name a skill by its bare slug. Any other source matches its exact id only."""
     if identifier in installed:
         return installed[identifier]
     if source != "clawhub":

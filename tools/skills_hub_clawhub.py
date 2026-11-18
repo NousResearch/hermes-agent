@@ -121,6 +121,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if not isinstance(slug, str) or not slug:
             return None
         owner = cls._owner_from_payload(item)
+        owner = owner if owner and cls._SLUG_RE.fullmatch(owner) else None
         return SkillMeta(
             name=item.get("displayName") or item.get("name") or slug,
             description=item.get("summary") or item.get("description") or "",

@@ -80,6 +80,8 @@ class TestClawHubSource(unittest.TestCase):
                 return _MockResponse(status_code=200, json_data={"items": [
                     {"ownerHandle": "alice", "slug": "bloom", "displayName": "Bloom A"},
                     {"ownerHandle": "bob", "slug": "bloom", "displayName": "Bloom B"},
+                    # A malformed handle would make an identifier that cannot parse.
+                    {"ownerHandle": "eve/../x", "slug": "bloom", "displayName": "Bloom E"},
                 ]})
             return _MockResponse(status_code=409, json_data={"code": "AMBIGUOUS_SKILL_SLUG"})
 
@@ -87,8 +89,8 @@ class TestClawHubSource(unittest.TestCase):
 
         results = self.src.search("bloom", limit=5)
 
-        self.assertEqual(sorted(r.identifier for r in results), ["@alice/bloom", "@bob/bloom"])
-        self.assertEqual({r.extra["owner"] for r in results}, {"alice", "bob"})
+        self.assertEqual(sorted(r.identifier for r in results), ["@alice/bloom", "@bob/bloom", "bloom"])
+        self.assertEqual({r.extra.get("owner") for r in results}, {"alice", "bob", None})
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):

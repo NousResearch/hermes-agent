@@ -36,7 +36,7 @@ The following is the complete skill definition that Hermes loads when this skill
 > ships the skill directory (`skills/brag/`) with its step references, tone
 > presets, bundled music and SFX library, and cue-analysis script. `hermes
 > skills install official/creative/brag` pulls the current tree live from that
-> repo (quarantined and scanned like any hub install) — this directory holds
+> repo (quarantined and scanned like any hub install): this directory holds
 > only the catalog metadata, so the vendored copy can never go stale.
 
 `/brag` reads the project in the current directory, commits to an angle and a

@@ -1,6 +1,6 @@
 # Dashboard Patterns
 
-Building blocks for UI/dashboard mockups inside a concept diagram — admin panels, monitoring dashboards, control interfaces, status displays.
+Building blocks for UI/dashboard mockups inside a concept diagram: admin panels, monitoring dashboards, control interfaces, status displays.
 
 ## Pattern
 
@@ -37,7 +37,7 @@ A "screen" is a rounded dark rect inside a lighter "frame" rect, with chart/gaug
 
 ## Tips
 
-- Dashboard screens stay dark in both light and dark mode — they represent actual monitor glass.
+- Dashboard screens stay dark in both light and dark mode: they represent actual monitor glass.
 - Keep on-screen text small (`font-size:8px` or `10px`) and high-contrast (near-white fill on dark).
-- Use the status triad green/amber/red consistently — OK / warning / alert.
+- Use the status triad green/amber/red consistently: OK / warning / alert.
 - A single dashboard usually sits on top of an infrastructure hub diagram as a unified view (see `examples/smart-city-infrastructure.md`).

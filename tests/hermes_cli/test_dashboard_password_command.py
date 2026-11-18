@@ -104,8 +104,10 @@ def test_without_a_terminal_or_password_stdin_nothing_is_written(tmp_path):
 
 def test_an_empty_password_is_refused(tmp_path):
     home, env = _home(tmp_path)
-    assert _set_password(env, "").returncode == 2
-    assert _set_password_bytes(env, b"").returncode == 2
+    for stdin in (b"\n", b""):
+        result = _set_password_bytes(env, stdin)
+        assert result.returncode == 2
+        assert b"Empty password; nothing was changed" in result.stdout
     assert _basic_auth(home) == {}
 
 

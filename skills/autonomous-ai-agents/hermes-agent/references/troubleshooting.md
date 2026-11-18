@@ -54,7 +54,7 @@ Blunt instruments: `web.cache_ttl_minutes: 1` (min) or
 3. Load explicitly: `hermes -s name` (or the skill's own `/<name>` slash command)
 
 ### Gateway issues
-Check logs first: `search_files` for `(?i)failed to send|error` in `~/.hermes/logs/gateway.log`.
+Check logs first: `read_file` the last page of `~/.hermes/logs/gateway.log` (offset from `total_lines`), or `search_files` it for `[Ff]ailed to send|[Ee]rror` and read the newest hits.
 
 Common gateway problems:
 - **Gateway dies on SSH logout**: Enable linger: `sudo loginctl enable-linger $USER`

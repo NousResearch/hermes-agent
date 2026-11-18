@@ -22,11 +22,17 @@ import {
 } from '@/lib/visitor-access'
 
 import { recordIaAction } from './ia-metrics'
+import { $portalShell } from './shell-variant'
 
 export const $visitorAccess = atom<VisitorAccess>(OPEN_ACCESS)
 
-/** Nothing this visitor sends runs until they sign up. */
-export const $signUpRequired = computed($visitorAccess, access => access.kind === 'sign_up_required')
+/** Nothing this visitor sends runs until they sign up. Only the redesign holds a message and shows
+ *  where it went (the held exchange, the tray card, the splash); classic has no such surface, so it
+ *  sends as it always has. */
+export const $signUpRequired = computed(
+  [$visitorAccess, $portalShell],
+  (access, portal) => portal && access.kind === 'sign_up_required'
+)
 
 /** Sign up came back without signing the visitor in. Cleared by the next attempt. */
 export const $signInFailed = atom(false)

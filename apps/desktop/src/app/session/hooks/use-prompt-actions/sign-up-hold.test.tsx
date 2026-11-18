@@ -2,6 +2,7 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $heldPrompt, takeHeldPrompt } from '@/store/held-prompt'
+import { $shellChoice } from '@/store/shell-variant'
 import { $visitorAccess } from '@/store/visitor-access'
 
 import { actRender, Harness, type HarnessHandle } from './index-test-utils'
@@ -18,6 +19,7 @@ vi.mock('@/hermes', () => ({
 beforeEach(() => {
   window.localStorage.clear()
   takeHeldPrompt()
+  $shellChoice.set(true)
   $visitorAccess.set({ kind: 'open' })
 })
 

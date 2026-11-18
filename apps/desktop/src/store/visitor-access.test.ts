@@ -56,6 +56,15 @@ describe('visitor access on this page', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('never holds a classic visitor: classic has nowhere to show a held message', () => {
+    ;(window as HostWindow).__HERMES_SIGN_UP_URL__ = 'https://portal.example/sign-up'
+    $shellChoice.set(false)
+
+    installVisitorAccess()
+
+    expect($signUpRequired.get()).toBe(false)
+  })
+
   it('leaves for sign up, to come back here, and counts where it started', () => {
     const assign = vi.fn()
     vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })

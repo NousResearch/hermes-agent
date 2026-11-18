@@ -4,8 +4,7 @@ Python port (~170 LOC) of Merit-Systems/OpenInstinct's
 ``lib/manager/server/kernel-login-autofill.ts`` (MIT). Classifies visible
 input controls on a page into login-autofill tokens. The vault fill path
 uses the classification to select the single best current-password control
-(the identifier is agent-visible metadata and is typed by the agent
-itself via normal input tools).
+and, when asked, the login's identifier control.
 
 Scoring:
 - exact autocomplete-token match ................ 100
@@ -159,11 +158,10 @@ def select_password_fill(
 ) -> list[dict[str, Any]]:
     """Select the single best current-password control to fill.
 
-    The vault fill path is password-only: the identifier is agent-visible
-    metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
-    "value": password}]`` or ``[]`` when no password field exists.
+    This picks the highest-scoring ``current-password`` control (ties broken
+    by DOM order) and returns ``[{"index": int, "token": "current-password",
+    "value": password}]`` or ``[]`` when no password field exists. The
+    identifier is a separate fill: see the tool's identifier selection.
     """
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
@@ -441,6 +439,45 @@ def build_unstamp_js(nonce: str = "") -> str:
             "})(document); const find = (s) => roots.flatMap((r) => Array.from(r.querySelectorAll(s))); "
             "find('[data-hermes-vault-slot]').forEach((n) => n.removeAttribute('data-hermes-vault-slot')); "
             "return JSON.stringify({ unstamped: true }); })()")
+
+
+_CLEAR_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  let cleared = 0;
+  for (const f of fills) {
+    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    if (!el) continue;
+    if (el.tagName === "SELECT") continue;
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value");
+    if (setter && setter.set) setter.set.call(el, ""); else el.value = "";
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: "", inputType: "deleteContentBackward" }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    cleared += 1;
+  }
+  return JSON.stringify({ cleared });
+})()"""
+
+
+def build_clear_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+    """Build a JS expression that empties stamped text controls so they can be typed again.
+
+    A trusted bulk insert can land the wrong value in a field with an input mask (a phone number,
+    a date, a card): the mask drops or reformats characters as they stream in. The fill then reads
+    a mismatch, clears the field and retypes it key by key. Clearing goes through the native value
+    setter plus an ``input`` event carrying ``data: ""`` so a controlled input ends up consistent
+    with an empty field instead of holding a value its state does not know about.
+    """
+    payload = json.dumps([{"index": f["index"]} for f in fills])
+    return (_CLEAR_JS_TEMPLATE.replace("__FILLS__", payload)
+            .replace("__NONCE__", json.dumps(nonce)))
 
 
 _VERIFY_JS_TEMPLATE = """(() => {

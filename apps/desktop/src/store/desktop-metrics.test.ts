@@ -465,6 +465,7 @@ describe('long frames', () => {
     async failure => {
       let acceptDaily = false
       const calls: Call[] = []
+
       const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
         calls.push([method, params ?? {}])
 
@@ -512,6 +513,7 @@ describe('long frames', () => {
     const started = Promise.withResolvers<void>()
     const response = Promise.withResolvers<{ recorded: boolean }>()
     const oldCalls: Call[] = []
+
     const oldRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       oldCalls.push([method, params ?? {}])
 

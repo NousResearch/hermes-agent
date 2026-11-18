@@ -234,9 +234,11 @@ describe('visible time ownership', () => {
     recordAction('composer.send', 'click')
     recordLongFrames([70])
     await flush()
+
     const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
       candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
       !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+
     const legacy = JSON.parse(localStorage.getItem(key)!)
 
     legacy.today.frames = { '100ms_to_250ms': 7 }

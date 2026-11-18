@@ -558,6 +558,9 @@ The first frame report is a verified, durable snapshot; concurrent sends and los
 acknowledgements replay the same totals against the backend's first-day latch,
 not a correction that an older backend would ignore. A backend without the frame
 RPC still receives the day's other reports.
+A failed daily activity report does not block a completed frame journal, and its
+later retry does not resend acknowledged frames. Pending legacy frame contributions
+must be durably adopted before freezing that journal.
 
 Journals and pending reports expire after seven days. A renderer whose journal
 was pruned cannot resume its old ownership: the existing focus-time backend

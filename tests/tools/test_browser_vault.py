@@ -699,6 +699,42 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
         assert out["success"] is True and out["filled_fields"] == 1
 
+    @pytest.mark.parametrize("failing", ["fill", "read-back"])
+    def test_a_transport_error_quoting_the_script_never_carries_the_secret_out(self, store, caplog, failing):
+        """Every secret-bearing script (the write AND the read-back, which carries the expected
+        values) goes over the supervisor. A transport that raises with the expression in its message
+        must not surface it in the tool result or the logs."""
+        from tools import browser_vault_tool
+        from tools.registry import registry
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+
+        class _Sup:  # no insert_text: the JS write path
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login"}
+
+            def evaluate_runtime(self, expression):
+                if "location.href" in expression:
+                    return {"ok": True, "result": "https://example.com/login"}
+                if "s3cret-pw" not in expression:
+                    return {"ok": True, "result": json.dumps(controls)}
+                if ("reverted" in expression) == (failing == "read-back"):
+                    raise RuntimeError(f"socket closed while sending {expression}")
+                return {"ok": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+             patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+             patch.object(browser_vault_tool, "_fenced_page_op", lambda tid, fn: fn()), \
+             caplog.at_level("DEBUG"):
+            raw = registry.dispatch("browser_vault", {"action": "fill", "handle": meta.id}, task_id="t")
+        assert json.loads(raw)["success"] is False
+        assert "s3cret-pw" not in raw
+        assert "s3cret-pw" not in caplog.text
+
     def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
         """A framework login form can expose a phone box with no autocomplete, name, id, label or
         placeholder — nothing to classify. When the password's form holds exactly one other text

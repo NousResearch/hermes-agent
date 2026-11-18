@@ -186,7 +186,12 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
 
     if page is not None:
         return _page_eval(page, task_id, expression, secret=True)
-    sup = supervisor.evaluate_runtime(expression)
+    try:
+        sup = supervisor.evaluate_runtime(expression)
+    except Exception as exc:  # health: allow BLE001 -- its text can quote the expression, i.e. the secret
+        logger.debug("vault fill: secret-bearing evaluate raised %s", type(exc).__name__)
+        return {"success": False, "error_type": "eval_failed",
+                "error": "The browser could not run the vault script."}
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {

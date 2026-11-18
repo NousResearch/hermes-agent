@@ -334,6 +334,28 @@ def _copy_worktree_includes(repo_root: str, wt_path: Path) -> None:
         logger.debug("Error copying .worktreeinclude entries: %s", e)
 
 
+def seed_unborn_head(repo_root, env=None) -> bool:
+    """Give a repo with no commits yet a HEAD to branch a worktree from -> True once HEAD resolves.
+
+    ``git init`` leaves HEAD on an unborn branch, so ``worktree add ... HEAD`` dies with "invalid
+    reference: HEAD". Point that branch at an empty root commit built with plumbing: no hooks run,
+    and the index and files stay as they were (``commit --allow-empty`` would sweep anything
+    staged into the seed). The empty old-value on ``update-ref`` refuses if a commit landed meanwhile.
+    """
+    env = env if env is not None else noninteractive_git_env()
+    if _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repo_root, env=env).returncode == 0:
+        return True
+    if _git(["symbolic-ref", "--quiet", "HEAD"], repo_root, env=env).returncode != 0:
+        return False  # a detached HEAD naming a missing object is damage, not a new repo
+    tree = _git_out(["mktree"], repo_root, input="", env=env)
+    commit = tree and _git_out(["-c", "user.name=Hermes", "-c", "user.email=hermes@localhost",
+                                "commit-tree", tree, "-m", "Initial commit"], repo_root, env=env)
+    if not commit:
+        return False
+    _git(["update-ref", "-m", "hermes: seed root commit", "HEAD", commit, ""], repo_root, env=env)
+    return _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repo_root, env=env).returncode == 0
+
+
 def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str, base_label: str):
     """``git worktree add`` with a local-HEAD retry -> ``(base_ref, base_label)``, or None on failure.
 
@@ -348,6 +370,8 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
         return None
 
     def _add(cfg):
+        if base_ref == "HEAD":  # a repo with no commits yet has no HEAD to branch from
+            seed_unborn_head(repo_root)
         # 120s: on a multi-agent box the ~10k-file checkout contends for disk (113s measured under load).
         return _git([*cfg, "worktree", "add", str(wt_path), "-b", branch_name, base_ref], repo_root,
                     timeout=120, stdin=subprocess.DEVNULL, env=env)

@@ -696,6 +696,8 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         args = ["worktree", "add", str(target), branch_name]
     else:
+        from hermes_cli.worktree_ops import seed_unborn_head
+        seed_unborn_head(repo_root)  # a repo with no commits yet has no HEAD to branch from
         args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
     result = _git(repo_root, *args, timeout=60)
     if result.returncode != 0:

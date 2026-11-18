@@ -812,3 +812,30 @@ class TestPrMergedEscapeHatch:
             "False must not be memoized — the PR can merge later with the "
             "same (branch, head) key"
         )
+
+
+@pytest.mark.parametrize("staged", [False, True], ids=["fresh-init", "file-staged"])
+def test_worktree_from_a_repo_with_no_commits(tmp_path, staged):
+    """``hermes -w`` and kanban both branch from HEAD: a just-``git init`` repo gets an empty
+    root commit to branch from, and the user's files and index are left exactly as they were."""
+    from hermes_cli.kanban_db_workspace import _ensure_git_worktree
+
+    def git(*args, repo):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False).stdout
+
+    for name in ("cli", "kanban"):
+        repo = tmp_path / name
+        repo.mkdir()
+        git("init", "-q", "-b", "main", repo=repo)
+        (repo / "notes.txt").write_text("draft\n")
+        if staged:
+            git("add", "notes.txt", repo=repo)
+        status_before = git("status", "--short", "--", "notes.txt", repo=repo)
+        if name == "cli":
+            info = worktree_ops._setup_worktree(str(repo), sync_base=False)
+            assert info is not None and os.path.isdir(info["path"])
+        else:
+            _ensure_git_worktree(repo, repo / ".worktrees" / "t1", "hermes/t1")
+            assert (repo / ".worktrees" / "t1").is_dir()
+        assert git("ls-tree", "-r", "--name-only", "HEAD", repo=repo) == "", "seed commit must be empty"
+        assert git("status", "--short", "--", "notes.txt", repo=repo) == status_before

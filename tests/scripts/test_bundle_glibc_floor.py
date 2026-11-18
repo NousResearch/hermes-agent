@@ -50,7 +50,7 @@ def violations(app, arch):
 def test_needs_are_read_from_every_library_in_either_elf_class_and_byte_order(tmp_path):
     needs = {"libc.so.6": ["GLIBC_2.17", "GLIBC_2.34"], "libstdc++.so.6": ["GLIBCXX_3.4.9", "CXXABI_1.3"]}
     for wide, order in ((True, "<"), (True, ">"), (False, "<"), (False, ">")):
-        elf = write_elf(tmp_path / f"{wide}{order}.so", needs, wide=wide, order=order)
+        elf = write_elf(tmp_path / "library.so", needs, wide=wide, order=order)
         assert version_needs(elf) == {"GLIBC_2.17", "GLIBC_2.34", "GLIBCXX_3.4.9", "CXXABI_1.3"}
     (tmp_path / "notes.txt").write_text("\x7fEL")
     assert version_needs(tmp_path / "notes.txt") is None

@@ -89,6 +89,75 @@ async def test_receipt_lookup_revalidates_authority_before_accept(monkeypatch, s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['agent', 'direct'])
+@pytest.mark.parametrize('shutdown', [False, True])
+async def test_cancelled_http_retains_post_validation_admission(monkeypatch, mode, shutdown):
+    route: dict = {'secret': 'INSECURE_NO_AUTH', 'prompt': '{action}'}
+    if mode == 'direct':
+        route['deliver_only'] = True
+    adapter = _make_adapter(routes={'pr': route})
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    owned = []
+
+    async def handler(*args, **kwargs):
+        calls.append('effect')
+        if len(calls) == 1:
+            owned.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
+        return web.json_response({'status': 'accepted'}, status=202)
+
+    monkeypatch.setattr(adapter, '_dispatch_agent_run', handler)
+    monkeypatch.setattr(adapter, '_handle_deliver_only', handler)
+    request = lambda: _mock_request(_payload(7), delivery_id='cancel-owned')
+    first = asyncio.create_task(adapter._handle_webhook(request()))
+    second = flush = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert owned[0] in adapter._coalescer.intakes
+        second = asyncio.create_task(adapter._handle_webhook(request()))
+        await async_wait_until(
+            lambda: any(entry[1] == 2 for entry in adapter._coalescer.delivery_turns.values()) or second.done(),
+            timeout=2, what='same-delivery waiter',
+        )
+        assert not second.done()
+        first.cancel()
+        await asyncio.sleep(0)  # Deliver cancellation before issuing another one.
+        first.cancel()
+        await asyncio.sleep(0)
+        assert not first.done() and not owned[0].done()
+        assert owned[0] in adapter._coalescer.intakes
+        assert not second.done() and calls == ['effect']
+        if shutdown:
+            flush = asyncio.create_task(adapter._coalescer.flush())
+            await async_wait_until(lambda: adapter._coalescer._closed or flush.done(), timeout=2,
+                                   what='shutdown closes intake')
+            assert adapter._coalescer._closed and not flush.done()
+            assert not owned[0].done() and not second.done()
+        release.set()
+        result, = await asyncio.gather(first, return_exceptions=True)
+        assert isinstance(result, asyncio.CancelledError)
+        retry = await asyncio.wait_for(second, 2)
+        if shutdown:
+            assert retry.status == 503 and calls == ['effect']
+            assert flush is not None
+            await asyncio.wait_for(flush, 2)
+        elif mode == 'direct':
+            assert retry.status == 200 and json.loads(retry.text)['status'] == 'duplicate'
+            assert calls == ['effect']
+        else:
+            # Ordinary retries must reach their verifier rather than a cache shortcut.
+            assert retry.status == 202 and calls == ['effect', 'effect']
+        assert not adapter._coalescer.intakes and not adapter._coalescer.delivery_turns
+    finally:
+        release.set()
+        await asyncio.gather(*[task for task in (first, second, flush) if task is not None],
+                             return_exceptions=True)
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_unresolved_key_retry_reaches_ordinary_verifier(monkeypatch):
     adapter = _make_adapter(routes={'pr': _coalesce_route(key='missing')})
     prompts = []

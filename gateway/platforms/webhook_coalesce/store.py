@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 MAX_PENDING = 1024
 MAX_MEMBERS = 10000
 MAX_BYTES = 16 * 1024 * 1024
+_open_lock = threading.Lock()
 
 
 def _key(value):
@@ -25,14 +27,16 @@ class CoalesceStore:
     @contextmanager
     def connection(self, *, write=True):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Closing a descriptor for an existing inode drops this process's SQLite locks.
-        try:
-            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.close(fd)
-        conn = sqlite3.connect(self.path, timeout=5)
+        # Any raw close on this inode can drop another SQLite connection's POSIX locks.
+        # Serialize first creation and every SQLite open across store instances.
+        with _open_lock:
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                pass
+            else:
+                os.close(fd)
+            conn = sqlite3.connect(self.path, timeout=5)
         conn.row_factory = sqlite3.Row
         try:
             version = conn.execute('PRAGMA user_version').fetchone()[0]

@@ -43,6 +43,19 @@ _PATH_KINDS = {"file_read", "file_write"}
 def _map_denial(tool_name: str, reason: str, detail: str) -> tuple[str, str] | None:
     """Map a denial to (gkind, value), or None when it is not grantable."""
     detail = (detail or "").strip()
+    if reason.startswith("bot_"):
+        # Refused by the bot's own capability list (Bot Builder): the request
+        # is to add it to that bot, for everyone who uses the bot.
+        profile, _, inner_detail = detail.partition(":")
+        if not profile:
+            return None
+        inner = reason[len("bot_"):]
+        if inner == "skill_not_selected":
+            inner = "skill_not_allowed"
+        mapped = _map_denial(tool_name, inner, inner_detail)
+        if mapped is None or mapped[0] not in ("cli", "skill", "mcp"):
+            return None
+        return "bot_" + mapped[0], f"{profile}:{mapped[1]}"
     if reason == "cli_command_not_allowed" and detail:
         return "cli", detail
     if reason == "skill_not_allowed" and detail:

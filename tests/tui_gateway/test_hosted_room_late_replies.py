@@ -232,6 +232,13 @@ def test_a_late_reply_does_not_hide_what_other_bots_said_meanwhile(tmp_path, mon
     said = next(e['payload']['text'] for e in events if e['kind'] == 'message.member')
     rpc.held.pop('ada')({'status': 'settled', 'text': 'Ada, late: the cache was cold.'})
     process()
+    events = hosted_rooms.read_events(db, placement='profile', room_id=ROOM_ID, limit=hosted_rooms.MAX_LOG_LIMIT)['events']
+    replies = [e for e in events if e['kind'] == 'message.member'
+               and e['payload'].get('task_id') == ada['identity'].task_id]
+    settlements = [e for e in events if e['kind'] == 'turn.settled'
+                   and e['payload'].get('task_id') == ada['identity'].task_id]
+    assert [e['payload']['text'] for e in replies] == ['Ada, late: the cache was cold.']
+    assert [e['payload']['message_event_id'] for e in settlements] == [replies[0]['event_id']]
     rpc.prompts.clear()
     service.send(room_id=ROOM_ID, event_id='u2', payload={'text': 'Next step?', 'thread_id': 't1'})
     process()

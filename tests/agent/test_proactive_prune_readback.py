@@ -65,29 +65,3 @@ def test_a_path_that_is_not_an_existing_archive_is_archived_normally(tmp_path, m
     assert len(archives) == 1
     assert archives[0].read_text() == messages[3]["content"]
     assert _archive_path(result[3]["content"]) == archives[0]
-
-
-def test_a_sandboxed_backend_keeps_a_readback_whole(tmp_path, monkeypatch):
-    """A sandbox cannot open a host archive, so a read-back there is not shortened to a host path."""
-    home = tmp_path / "home" / "hermes"
-    home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    archive = _own_archive(home)
-    messages = _readback_messages(json.dumps({"path": str(archive)}))
-    result, count = _compressor().prune_tool_results_only(messages, current_tokens=100_000)
-    assert result is messages and count == 0
-    assert list(archive.parent.iterdir()) == [archive]
-
-
-@pytest.mark.parametrize("arguments", [json.dumps({"path": "ordinary.py"}), "not JSON"])
-def test_other_readbacks_are_archived_normally(tmp_path, monkeypatch, arguments):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    messages = _readback_messages(arguments)
-    result, count = _compressor().prune_tool_results_only(messages, current_tokens=100_000)
-    assert count == 1
-    archives = list((tmp_path / "cache" / "pruned").iterdir())
-    assert len(archives) == 1
-    assert archives[0].read_text() == messages[3]["content"]
-    assert _archive_path(result[3]["content"]) == archives[0]

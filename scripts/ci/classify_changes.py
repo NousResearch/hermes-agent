@@ -290,6 +290,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/venv_sync.py",  # completion obligation + launch-time tail
     "hermes_cli/source_",  # source_completion/_build/_releases/_check/_stamp
     "hermes_cli/_launchers.py",
+    "hermes_cli/hosted_code_fence.py",  # the launchers' and update finish's code-provenance check
     "hermes_cli/release_channels.py",
     "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
     "hermes_cli/git_commit_graph.py",  # every update starts the install checkout's graph refresh

@@ -184,6 +184,17 @@ class GatewayTurnPersistenceMixin:
             if automatic_notices_allowed(source):
                 response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
             response = _sanitize_gateway_final_response(source.platform, response)
+            # Claim gate (#124657): an outcome assertion with no tool result in the
+            # turn gets a visible unverified caveat instead of reading as proven.
+            from agent.claim_gate import apply_claim_gate
+            from gateway.media_repair import _current_turn_messages
+            response = apply_claim_gate(
+                response,
+                _current_turn_messages(
+                    agent_result.get("messages", []) or [],
+                    agent_result.get("history_offset", 0),
+                ),
+            )
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.

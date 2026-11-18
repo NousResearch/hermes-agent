@@ -363,6 +363,7 @@ def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] =
     repository such as ``reader.sessions`` opens nothing), also runs ``StoreAdmin.schema_drift_reason``'s probe and
     raises ``DeclarativeDrift`` with that reason, so a browse needs no second connection for it. Such a handle also
     reports every open failure to its caller only and leaves the process's last session-store init error alone.
+    The probe is the built-in SQLite backend's; a plugin provider owns its schema and opens without it.
     A hosted activity names no target: ``profile_scope`` raises ``ScopePinRefused`` for every target it could name,
     so it reads its own store through its handle."""
     path = target if isinstance(target, Path) and (target.name == "state.db" or target.is_file()) else None

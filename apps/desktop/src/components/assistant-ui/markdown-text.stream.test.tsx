@@ -262,10 +262,13 @@ describe('MarkdownTextContent streaming render path', () => {
         '<!doctype html><html><body><h1>Example</h1>' +
         '<p>A paragraph with enough text to offer as an artifact.</p>'.repeat(8) +
         '</body></html>'
+
       const text = `\`\`\`html\n${source}\n\`\`\``
+
       const content = (isRunning: boolean) => (
         <MarkdownTextContent isRunning={isRunning} text={text} {...{ [option]: true }} />
       )
+
       const { container, rerender } = render(content(true))
 
       await waitFor(() => expect(container.querySelector('[data-slot="code-card"]')?.textContent).toContain(source))

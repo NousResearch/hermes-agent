@@ -174,3 +174,27 @@ def test_two_apply_clicks_at_once_start_one_run_and_answer_409_to_the_other(race
     log = log_path.read_text(encoding="utf-8")
     assert log.count("recorded the current state") == 1 and log.count("Migrated") == 1, log
 
+
+def test_a_real_launcher_exit_6_is_the_routes_unsupported_refusal(race, monkeypatch):
+    """The backend became manual-only (a system unit) after the route's own plan: the real ``--apply
+    --detach`` launcher exits 6 with the steps and starts nothing; the route answers 409 ``unsupported``
+    with the steps, as its own pre-check does."""
+    from hermes_cli import web_server
+    from hermes_cli.web_routers import backend_migration as routes
+    home, race_dir, env = race
+    host = RaceHost(home)  # a user unit when the route plans; a system unit from the launch on
+
+    def becomes_system_unit():
+        host.scope = "system"
+
+    _route_spawns_the_real_launcher(monkeypatch, env, race_dir, becomes_system_unit, RACE_SCOPE="system")
+    monkeypatch.setattr(routes, "_host", lambda _home: host)
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    r = client.post("/api/gateway/migrate/backends/apply", json={})
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert (body["error"], body["launcher_exit_code"]) == ("unsupported", 6)
+    [u] = body["unsupported"]
+    assert u["steps"] and u["unit"] == "hermes-dashboard.service", u
+    assert not engine.manifest_path(home).exists() and _held(race_dir) == []

@@ -192,6 +192,7 @@ def register_delegation(
     as long as that approval is still pending even after ``_DELEGATION_TTL``.
     """
     key = _admin_chat_key(admin_platform, admin_chat_id)
+    rid = str(request_id or "")
     entry = {
         "session_key": session_key,
         "user_platform": user_platform,
@@ -199,15 +200,53 @@ def register_delegation(
         "user_chat_meta": user_chat_meta,
         "command": command,
         "description": description,
-        "request_id": str(request_id or ""),
+        "request_id": rid,
+        "request_ids": {rid} if rid else set(),
         "created_at": time.monotonic(),
     }
     with _delegation_lock:
-        _delegation_map.setdefault(key, {})[session_key] = entry
+        sessions = _delegation_map.setdefault(key, {})
+        # One entry per (admin chat, session): a second pending approval in the same
+        # session REPLACES the entry, so carry the earlier request ids forward —
+        # otherwise settling the newer approval would drop the older one from the
+        # gate's view while it is still pending and still delegated away.
+        previous = sessions.get(session_key)
+        if previous:
+            carried = previous.get("request_ids") or (
+                {str(previous["request_id"])} if previous.get("request_id") else set())
+            entry["request_ids"] = set(carried) | entry["request_ids"]
+        sessions[session_key] = entry
     logger.info(
         "[approval-delegation] Registered: admin=%s → session=%s cmd=%s",
         key, session_key[:16], command[:60],
     )
+
+
+def _bound_request_ids(entry: dict[str, Any]) -> set[str]:
+    """The approval request ids this delegation entry binds (legacy: the single one)."""
+    bound = entry.get("request_ids")
+    if bound:
+        return set(bound)
+    return {str(entry["request_id"])} if entry.get("request_id") else set()
+
+
+def _bound_pending(entry: dict[str, Any], session_key: str) -> bool:
+    """Whether an approval this entry binds is still in *session_key*'s live queue.
+
+    Expiry must never *prune* such an entry: ``is_session_delegated_away`` keeps
+    the self-approve gate closed on exactly this evidence, so deleting it on a
+    stale lookup (any message in the admin's chat runs ``resolve_delegation``)
+    would re-open the gate while the delegated approval is still pending.
+    """
+    bound = _bound_request_ids(entry)
+    if not bound:
+        return False
+    try:
+        from tools.approval import list_gateway_approvals
+        pending = {str(p.get("request_id")) for p in list_gateway_approvals(session_key) if p.get("request_id")}
+    except Exception:
+        return False
+    return bool(bound & pending)
 
 
 def resolve_delegation(platform: str, chat_id: str) -> Optional[dict[str, Any]]:
@@ -222,8 +261,10 @@ def resolve_delegation(platform: str, chat_id: str) -> Optional[dict[str, Any]]:
         sessions = _delegation_map.get(key)
         if not sessions:
             return None
-        # Prune stale entries and find the most recent
-        stale = [sk for sk, e in sessions.items() if now - e["created_at"] > _DELEGATION_TTL]
+        # Prune stale entries (unless an approval they bind is still pending) and
+        # find the most recent.
+        stale = [sk for sk, e in sessions.items()
+                 if now - e["created_at"] > _DELEGATION_TTL and not _bound_pending(e, sk)]
         for sk in stale:
             del sessions[sk]
         if not sessions:
@@ -244,9 +285,11 @@ def resolve_delegation_for_session(platform: str, chat_id: str, session_key: str
         if entry is None:
             return None
         if time.monotonic() - entry["created_at"] > _DELEGATION_TTL:
-            del sessions[session_key]
-            if not sessions:
-                _delegation_map.pop(key, None)
+            # Only drop it when nothing it binds is still pending (see _bound_pending).
+            if not _bound_pending(entry, session_key):
+                del sessions[session_key]
+                if not sessions:
+                    _delegation_map.pop(key, None)
             return None
         return entry
 
@@ -266,18 +309,21 @@ def is_session_delegated_away(session_key: str) -> bool:
     self-approve UX.
 
     Liveness is TTL-or-pending: an entry is "away" while it is inside
-    ``_DELEGATION_TTL`` OR — even after the TTL — while the exact approval it
-    binds (by ``request_id``) is still in this session's pending queue.  The
-    second clause closes a self-approve window when ``approvals.timeout`` is
-    configured larger than ``_DELEGATION_TTL``: without it the entry would look
-    expired (gate open) while the approval it delegated is still pending.  An
-    entry with no recorded ``request_id`` (older card paths) falls back to the
+    ``_DELEGATION_TTL`` OR — even after the TTL — while any approval it binds
+    (by ``request_id``) is still in this session's pending queue.  The second
+    clause closes a self-approve window when ``approvals.timeout`` is configured
+    larger than ``_DELEGATION_TTL``: without it the entry would look expired
+    (gate open) while the approval it delegated is still pending.  An entry
+    accumulates a *set* of request ids, because a session can have several
+    approvals pending at once and the map keeps one entry per (admin chat,
+    session): settling the newer one must not drop the older one from the gate.
+    An entry with no recorded ``request_id`` (older card paths) falls back to the
     TTL alone, so it can never false-block a newer, unrelated approval.
     """
     if not session_key:
         return False
     now = time.monotonic()
-    candidates: list[dict[str, Any]] = []
+    candidates: list[set[str]] = []
     with _delegation_lock:
         for sessions in _delegation_map.values():
             entry = sessions.get(session_key)
@@ -285,8 +331,9 @@ def is_session_delegated_away(session_key: str) -> bool:
                 continue
             if now - entry["created_at"] <= _DELEGATION_TTL:
                 return True  # within TTL — live
-            if entry.get("request_id"):
-                candidates.append(entry)
+            bound = _bound_request_ids(entry)
+            if bound:
+                candidates.append(bound)
     if not candidates:
         return False
     # Past TTL: still "away" only if a bound request id is in the live queue.
@@ -295,7 +342,7 @@ def is_session_delegated_away(session_key: str) -> bool:
         pending_ids = {str(p.get("request_id")) for p in list_gateway_approvals(session_key) if p.get("request_id")}
     except Exception:
         return False
-    return any(str(entry["request_id"]) in pending_ids for entry in candidates)
+    return any(rid in pending_ids for bound in candidates for rid in bound)
 
 
 def clear_delegation(platform: str, chat_id: str, session_key: Optional[str] = None) -> None:

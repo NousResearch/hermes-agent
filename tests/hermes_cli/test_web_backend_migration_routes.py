@@ -758,3 +758,50 @@ def test_an_unreadable_manifest_refusal_from_the_launcher_is_a_refusal(home, spa
     with log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"applied": False, "error": "manifest_unreadable", "message": "cannot trust it"}) + "\n")
     assert routes._launcher_report(home, offset)["error"] == "manifest_unreadable"
+
+
+# --------------------------------------------------------------------------- launcher exit 6 (manual-only host)
+
+
+class BecomesSystemUnitHost(FakeHost):
+    """Supported when the route checks; a system unit (manual steps only) by the time the launcher plans."""
+
+    switched = False
+
+    def backends(self):
+        [item] = super().backends()
+        if BecomesSystemUnitHost.switched:
+            item.scope, item.unit_path = "system", "/etc/systemd/system/hermes-dashboard.service"
+        return [item]
+
+
+def test_a_launcher_exit_6_is_the_unsupported_refusal_with_the_steps(home, spawned, monkeypatch):
+    """``--apply --detach`` exits 6 with the manual steps on a manual-only host (it starts nothing): the
+    route answers what its own pre-check answers for an unsupported plan, never 202 unconfirmed."""
+    BecomesSystemUnitHost.switched = False
+    monkeypatch.setattr(routes, "_host", lambda target_home: BecomesSystemUnitHost(target_home))
+
+    def spawn(subcommand, name, *, env_overrides=None):
+        spawned.append(list(subcommand))
+        BecomesSystemUnitHost.switched = True
+        log = routes.action_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"applied": False, "dry_run": False, "plan": {"unsupported": [{"unit": "x"}]}}) + "\n")
+        return SimpleNamespace(pid=781, poll=lambda: 6, wait=lambda timeout=None: 6)
+
+    monkeypatch.setattr("hermes_cli.web_server_gateway._spawn_hermes_action", spawn)
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    r = client.post("/api/gateway/migrate/backends/apply?profile=default", json={})
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["error"] == "unsupported" and body["launcher_exit_code"] == 6
+    [u] = body["unsupported"]
+    assert u["unit"] == "hermes-dashboard.service" and u["steps"], u
+    assert all(s.startswith("hermes -p default ") for s in u["steps"] if s.startswith("hermes ")), u["steps"]
+    assert len(spawned) == 1
+    # The same answer as the route's own pre-check once the plan is unsupported (nothing spawned then).
+    again = client.post("/api/gateway/migrate/backends/apply?profile=default", json={})
+    assert (again.status_code, again.json()["error"]) == (409, "unsupported")
+    assert again.json()["unsupported"] == body["unsupported"] and len(spawned) == 1

@@ -507,7 +507,7 @@ def _launcher_report(home: Path, offset: int) -> Optional[dict]:
 class Launch:
     """What the launcher said. ``started``: the background run holds this home's run lock. ``busy``:
     another run holds it (nothing changed). ``refused``: it was not started (nothing changed; ``message``
-    says why). ``unconfirmed``: no answer either way (exit 7, a timeout, or no confirmation): the run
+    says why). ``unsupported``: exit 6, the launcher's plan is manual-only (nothing started). ``unconfirmed``: no answer either way (exit 7, a timeout, or no confirmation): the run
     may or may not be going."""
 
     pid: int
@@ -533,6 +533,8 @@ def _launch(argv: list[str], target: Target) -> Launch:
     except subprocess.TimeoutExpired:
         return Launch(proc.pid, "unconfirmed", None)
     report = _launcher_report(target.home, offset) or {}
+    if code == 6:  # the launcher's own plan is unsupported (manual steps only): it started nothing
+        return Launch(proc.pid, "unsupported", code)
     if code == 3:  # nothing changed: another run holds the lock, or the run could not be started
         if report.get("outcome") == "refused" or report.get("error") == "manifest_unreadable":
             return Launch(proc.pid, "refused", code, str(report.get("message") or ""))
@@ -616,6 +618,13 @@ async def backend_migration_apply(body: Optional[ApplyBody] = None, profile: Opt
         launch = await asyncio.to_thread(_launch, _apply_argv(body), target)
     except (OSError, RuntimeError) as exc:
         return _refuse(host, 500, "spawn_failed", f"Could not start the move: {exc}")
+    if launch.outcome == "unsupported":
+        # Exit 6: the backend became manual-only between this route's plan and the launcher's (nothing
+        # started). The same answer as the pre-check above, its steps from a fresh plan (sanitized and
+        # profile-qualified like every view; the launcher's raw plan JSON is not passed on).
+        fresh = _plan_view(await _off_loop(target, lambda: _build_plan(host, body)), target.profile)
+        return _refuse(host, 409, "unsupported", "This server cannot be moved automatically.",
+                       unsupported=fresh["unsupported"], launcher_exit_code=launch.exit_code)
     return _launched(host, target, launch, "move", requested_at=requested_at,
                      old_address=view.get("old_address"), new_address=view.get("new_address"))
 

@@ -153,9 +153,12 @@ def test_retryable_reset_does_not_keep_the_failed_accept_frame_alive():
         connection = (object(), ("127.0.0.1", 50000))
         success.set_result(connection)
 
+        class PendingConnection:
+            pass
+
         def accept(_):
             if not failed_sockets:
-                conn = socket.socket()
+                conn = PendingConnection()
                 failed_sockets.append(weakref.ref(conn))
                 raise failure
             return success

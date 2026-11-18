@@ -1,5 +1,6 @@
 """Tests for agent/prompt_builder.py — context scanning, truncation, skills index."""
 
+import json
 import logging
 import os
 import sys
@@ -266,6 +267,29 @@ class TestBuildSkillsSystemPrompt:
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
 
+
+    def test_rebuilds_legacy_snapshot_with_full_routing_description(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cluster-guide"
+        skill_dir.mkdir(parents=True)
+        description = (
+            "Use when deploying multi-region Kubernetes clusters with custom CNI plugins "
+            "and service mesh."
+        )
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: cluster-guide\ndescription: {description}\n---\nInstructions.\n"
+        )
+        assert description in build_skills_system_prompt()
+        snapshot_path = tmp_path / ".skills_prompt_snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["version"] = 5
+        snapshot["skills"][0]["description"] = description[:57] + "..."
+        snapshot_path.write_text(json.dumps(snapshot))
+        clear_skills_system_prompt_cache()
+
+        assert description in build_skills_system_prompt()
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

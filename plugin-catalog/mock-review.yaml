@@ -11,7 +11,7 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/apelabs-dev/hermes-mock-review#readme
 image: https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/652b582e19075d5fd6106f50ee9c78356323f779/docs/img/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/652b582e19075d5fd6106f50ee9c78356323f779/docs/img/showcase.jpg
+  - https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/4ec3b90d63ef82efa2c91c6e62845e1f16f66d88/docs/img/showcase.jpg
 platforms: []
 known_issues:
   - "2.0.0 removes here.now hosting and board passwords; run `hermes mockreview migrate` once after upgrading to move existing here.now reviews to local or tailnet hosting (see docs/migrating-to-2.md)."

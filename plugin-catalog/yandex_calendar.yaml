@@ -1,6 +1,6 @@
 name: yandex_calendar
 repo: https://github.com/akinfold/hermes-yandex-calendar
-sha: ba4f4e8f990b380c28632aecb2c2698a781f31e2
+sha: 9f858722f705ade2a0ad6d992cee1bfa6bcc55c3
 subdir: hermes_yandex_calendar
 title: "Yandex Calendar"
 image: https://raw.githubusercontent.com/akinfold/hermes-yandex-calendar/51f25e89fcd71c7966892e58b11f3193ee663137/docs/banner.jpg

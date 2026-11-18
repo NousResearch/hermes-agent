@@ -1,6 +1,6 @@
 name: yandex
 repo: https://github.com/akinfold/hermes-yandex-search-api
-sha: b128db1251d1ec62c36f83c53d2cbe2e66b12cb7
+sha: 2442e55ab0bd99c5dd95ff824ebc7ff78666cffb
 subdir: hermes_yandex_search
 title: "Yandex Search API"
 image: https://raw.githubusercontent.com/akinfold/hermes-yandex-search-api/8b9f304a4bc8ce3815cbe02a6b5ad7a9d324d1df/docs/banner.jpg

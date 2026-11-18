@@ -452,8 +452,9 @@ def _fts_match_sql(table: str, match_query: str, order_by_sql: str, *, limit: in
 
 
 class _RankProbeIoerr(sqlite3.OperationalError):
-    """A transient IOERR from the rank probe, carrying the corruption error it was diagnosing so the
-    caller can fail closed with it once ``_read_retrying_ioerr``'s budget is spent."""
+    """A disk I/O error from the rank probe, carrying the corruption error it was diagnosing:
+    ``_read_retrying_ioerr`` replays it as an IOERR, and ``_fts_match_read`` fails closed with the
+    carried error once the retry budget is spent."""
 
     def __init__(self, ioerr: sqlite3.OperationalError, unattributed: sqlite3.DatabaseError):
         super().__init__(str(ioerr))
@@ -467,7 +468,8 @@ def _attribute_ranked_corruption(
     statement whose error SQLite masks to the primary code, so index damage bm25 reports as
     ``SQLITE_CORRUPT_VTAB`` arrives as bare ``SQLITE_CORRUPT`` and would latch the whole store.
     For that case only, re-ask the index on the same connection without the sort, which keeps the
-    extended code; any other outcome keeps *exc*, so damage the index does not reproduce fails closed."""
+    extended code. A disk I/O error from that probe raises ``_RankProbeIoerr`` for a replay; any other
+    outcome keeps *exc*, so damage the index does not reproduce fails closed."""
     if order_by_sql != _FTS_RANK_ORDER_BY or getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_CORRUPT:
         return exc
     try:
@@ -488,8 +490,9 @@ def _attribute_ranked_corruption(
 
 
 def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, **kwargs) -> list[dict[str, Any]]:
-    """One MATCH read whose corruption error is attributed before ``_read_retrying_ioerr`` publishes it
-    to the storage-health latch (see ``_attribute_ranked_corruption``)."""
+    """One MATCH read whose corruption error is attributed inside ``_read_retrying_ioerr``'s callback,
+    before the storage-health latch sees it (see ``_attribute_ranked_corruption``). A probe IOERR that
+    outlasts the retry budget is published and raised here as the original, unattributed error."""
     sql, params = _fts_match_sql(table, match_query, order_by_sql, **kwargs)
 
     def read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -517,14 +520,15 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:
     """``_enter_fts_fail_open`` for a search read. A read-only handle cannot write the stale
-    breadcrumb: it stops using the indexes for its own lifetime only, and the damage stays
-    undetected on disk until a writable search reaches it (or ``optimize-storage`` rebuilds)."""
+    breadcrumb: it stops using the indexes for its own lifetime only. Nothing is persisted, so the
+    damage stays on disk until a writable handle reaches it (a search or a write that hits it detaches
+    the index for repair) or ``optimize-storage`` rebuilds."""
     if not holder.read_only:
         return _enter_fts_fail_open(holder, exc)
     if not holder._fts_enabled or not is_fts_scoped_corruption_error(exc):
         return False
     logger.warning("FTS search on a read-only handle hit index damage (%s); this handle answers from canonical "
-                   "rows. A writable search detaches the index for repair, or run `hermes sessions optimize-storage`.",
+                   "rows. A writable handle that hits it detaches the index for repair, or run `hermes sessions optimize-storage`.",
                    exc)
     _mark_fts_detached(holder)
     return True

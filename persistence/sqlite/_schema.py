@@ -401,12 +401,18 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     marker again takes the same rebuild (an empty one only swaps the shape)."""
     if legacy or not base_index_recognised(cursor):
         return
-    stale_view = base_source_view_is_stale(cursor)
     # Only a release before FTS storage v3 writes the retired marker. Reopening a realigned store, it
     # reinstalls id-gated triggers whose 'delete' sends FULL content for tool rows the v3 rebuild
     # indexed as a prefix, which can leave postings with no _docsize row; the index must be rebuilt.
-    marker_only = not stale_view and not _fts_index_is_misaligned_source(cursor)
-    if marker_only and _meta_row(cursor, "fts_tool_full_content_high_water") is None:
+    def needs_align() -> tuple[bool, bool]:
+        """``(needed, marker_only)``; read again under the lock, where a peer may already have aligned."""
+        layout_off = base_source_view_is_stale(cursor) or _fts_index_is_misaligned_source(cursor)
+        if layout_off:
+            return True, False
+        return _meta_row(cursor, "fts_tool_full_content_high_water") is not None, True
+
+    needed, _ = needs_align()
+    if not needed:
         return
 
     def populated() -> bool:
@@ -416,13 +422,16 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
         """False only when, unadmitted, the store turns out to be populated under the lock."""
         with cursor.connection:
             cursor.execute("BEGIN IMMEDIATE")
+            needed, marker_only = needs_align()
+            if not needed:
+                return True  # a peer aligned this store while this opener waited
             has_messages = populated()
             if has_messages and not admitted:
                 return False
-            _align(has_messages)
+            _align(has_messages, marker_only=marker_only, stale_view=base_source_view_is_stale(cursor))
             return True
 
-    def _align(has_messages: bool) -> None:
+    def _align(has_messages: bool, *, marker_only: bool, stale_view: bool) -> None:
         started = time.monotonic()
         for name in _FTS_BASE_TRIGGERS:
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
@@ -455,7 +464,7 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     def align_admitted() -> None:
         align_locked(admitted=True)
 
-    # The unlocked check only routes to admission; the decision to skip a rebuild is always locked.
+    # The unlocked checks only route to admission; whether to rebuild is decided again under the lock.
     if populated() or not align_locked(admitted=False):
         _run_admitted_startup_rebuild(holder, cursor, align_admitted)
 

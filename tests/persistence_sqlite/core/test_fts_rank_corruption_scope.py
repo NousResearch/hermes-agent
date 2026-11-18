@@ -405,3 +405,39 @@ def test_an_inconclusive_rank_probe_keeps_the_corruption_closed(tmp_path, monkey
         assert (len(ranked_reads) > 1) is retries
     finally:
         holder.close()
+
+
+def test_an_opener_that_waited_for_admission_skips_the_rebuild_a_peer_finished(tmp_path, monkeypatch):
+    """Two openers saw the marker; the one admitted second re-reads it under the lock and does not rebuild."""
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        row_id = append_message(holder, "s", role="user", content="raceword")
+    finally:
+        holder.close()
+    first, second = _reopen(path), _reopen(path)
+    try:
+        first._execute_write(lambda conn: conn.execute(
+            "INSERT OR REPLACE INTO state_meta(key, value) "
+            "VALUES('fts_tool_full_content_high_water', ?)", (str(row_id),)))
+        rebuilds = []
+        for name, opener in (("first", first), ("second", second)):
+            opener._conn.set_trace_callback(
+                lambda stmt, name=name: rebuilds.append(name) if "VALUES('rebuild')" in stmt else None)
+        real_admitted = schema._run_admitted_startup_rebuild
+
+        def peer_finishes_first(holder, cursor, rebuild_fn):
+            if holder is first:  # the peer's own admission runs as usual
+                schema._migrate_misaligned_fts_source(second, second._conn.cursor(), legacy=False)
+            real_admitted(holder, cursor, rebuild_fn)
+
+        monkeypatch.setattr(schema, "_run_admitted_startup_rebuild", peer_finishes_first)
+        schema._migrate_misaligned_fts_source(first, first._conn.cursor(), legacy=False)
+
+        assert rebuilds == ["second"]
+        assert first.get_meta("fts_tool_full_content_high_water") is None
+        assert search_messages(first, "raceword")
+    finally:
+        first.close()
+        second.close()

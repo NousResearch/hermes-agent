@@ -233,6 +233,21 @@ def schema_read_probe_statements(home: Path) -> tuple:
     return _READ_PROBE_STATEMENTS
 
 
+def declared_schema_drift(conn: sqlite3.Connection, home: Path) -> Optional[str]:
+    """The read error naming a declared table or column ``conn``'s store lacks, or None. Any other read error
+    raises."""
+    from persistence.sqlite._state.repair import _schema_not_built
+
+    try:
+        for statement in schema_read_probe_statements(home):
+            conn.execute(statement).fetchone()
+    except sqlite3.OperationalError as exc:
+        if _schema_not_built(exc):
+            return str(exc)
+        raise
+    return None
+
+
 # Title provenance, lowest to highest authority: auto-titling may only replace a
 # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
 TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED

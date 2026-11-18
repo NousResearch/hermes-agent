@@ -6,9 +6,12 @@ handle's own connection, so a read pays one SQLite open, as the read-only Sessio
 """
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 from persistence.conversation.messages import TranscriptRead
@@ -50,6 +53,56 @@ def test_browse_read_opens_the_store_once(tmp_path, monkeypatch):
     finally:
         store.close()
     assert len(opens) == 1, opens
+
+
+def _lagging(home: Path) -> Path:
+    path = _seeded(home)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
+        conn.commit()
+    return path
+
+
+def _corrupt(home: Path) -> Path:
+    path = _seeded(home)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    with open(path, "r+b") as fh:  # sqlite_master overwritten past the header
+        fh.seek(100)
+        fh.write(b"\xde\xad\xbe\xef" * ((page_size - 100) // 4))
+    return path
+
+
+@pytest.mark.parametrize("make, status", [(_lagging, None), (_corrupt, 503)])
+def test_browse_leaves_the_process_init_error_alone(tmp_path, make, status):
+    """A browse reports its own failure in its 503; the process's session-history notice stays the owner's."""
+    import storage_user_copy
+
+    home = tmp_path / "profiles" / "scribe"
+    home.mkdir(parents=True)
+    path = make(home)
+    storage_user_copy.set_last_init_error(None)
+    try:
+        _open_session_db_at_path(path, read_only=True).close()
+        assert status is None
+    except HTTPException as exc:
+        assert exc.status_code == status
+    assert storage_user_copy.get_last_init_error() is None
+
+
+def test_store_still_behind_after_the_catch_up_is_refused_by_name(tmp_path, monkeypatch):
+    from hermes_cli.web_server_sessions import _SCHEMA_UNAVAILABLE
+
+    home = tmp_path / "profiles" / "scribe"
+    home.mkdir(parents=True)
+    path = _lagging(home)
+    monkeypatch.setattr("persistence.sqlite.admin._reconcile.reconcile_drift_for_browse", lambda _path: True)
+    with pytest.raises(HTTPException) as caught:
+        _open_session_db_at_path(path, read_only=True)
+    assert caught.value.status_code == 503
+    assert caught.value.detail == _SCHEMA_UNAVAILABLE
 
 
 @pytest.mark.parametrize("route", ["/api/sessions/kept", "/api/sessions/kept/messages?limit=50&order=latest"])

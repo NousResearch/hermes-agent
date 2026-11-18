@@ -5,15 +5,22 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import types
+import urllib.request
 
 import pytest
 
+from gateway import status as gateway_status
 from gateway.run import GatewayRunner
 from gateway.status_report.reporter import StatusReporter
 from gateway.status_report.target import STATUS_REPORT_URL_ENV
 from tests.gateway.status_report.support import (
+    AFTER_INTERVAL_S,
+    REPORT_URL,
+    Clock,
     Receiver,
     Reply,
+    assert_matches_contract,
     make_reporter,
     new_credential,
     settle,
@@ -99,6 +106,85 @@ def test_a_gateway_started_for_a_named_profile_does_not_report(tmp_path, monkeyp
 
     assert WATCHER not in names
     assert getattr(runner, "_status_reporter", None) is None
+
+
+def _start_the_status_watcher(monkeypatch, runner: GatewayRunner, receiver: Receiver) -> None:
+    """A gateway start's watcher spawn, for real: the reporter is built from the launch environment
+    and handed to the real supervisor. Only the other watchers are left out (they need a booted
+    gateway), and *receiver* stands where urllib would connect."""
+    supervise = runner._spawn_supervised
+    monkeypatch.setattr(
+        runner, "_spawn_supervised",
+        lambda factory, name, **kwargs: supervise(factory, name, **kwargs) if name == WATCHER else None)
+    monkeypatch.setattr(runner, "_spawn_reconnect_watcher", lambda **kwargs: None, raising=False)
+    monkeypatch.setattr(runner, "_scale_to_zero_should_arm", lambda: False, raising=False)
+    monkeypatch.setattr(runner, "_supervised_backoff", lambda attempt: 0)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: types.SimpleNamespace(open=receiver))
+    runner._start_spawn_background_watchers()
+
+
+def _sender_locks() -> list:
+    return list(gateway_status._get_lock_dir().glob("*.lock"))
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_start_runs_the_watcher_to_its_first_beat_and_a_stop_ends_it(monkeypatch):
+    credential = new_credential()
+    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(credential))
+    runner, receiver = _bare_runner(monkeypatch), Receiver()
+
+    _start_the_status_watcher(monkeypatch, runner, receiver)
+    (watcher,) = runner._background_tasks
+    try:
+        await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="the first beat")
+        (beat,) = receiver.requests
+        assert beat.url == REPORT_URL and beat.headers["Authorization"] == f"Bearer {credential}"
+        assert_matches_contract(beat.body, "beat")
+        assert beat.body["boot_id"] == runner._status_reporter.boot_id
+        assert _sender_locks(), "reporting without the sender lock"
+
+        runner._running = False  # the gateway stops: the watcher sees it at its next poll
+        await asyncio.wait({watcher}, timeout=4)
+        assert watcher.done() and not watcher.cancelled(), "the watcher outlived the gateway"
+    finally:
+        watcher.cancel()
+        await settle()
+
+    assert _sender_locks() == []
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_that_dies_is_respawned_and_the_same_reporter_takes_the_lock_again(monkeypatch):
+    """``run()`` gives the lock up on its way out, so the respawn has to take it again to report."""
+    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
+    clock = Clock(monkeypatch)
+    runner, receiver = _bare_runner(monkeypatch), Receiver()
+    run, deaths = StatusReporter.run, [RuntimeError("the watcher died")]
+
+    async def run_that_dies_once(reporter, is_running, **kwargs):
+        def still_running() -> bool:
+            if receiver.requests and deaths:  # the first beat is out
+                raise deaths.pop()
+            return is_running()
+
+        await run(reporter, still_running, tick=0.01)
+
+    monkeypatch.setattr(StatusReporter, "run", run_that_dies_once)
+
+    _start_the_status_watcher(monkeypatch, runner, receiver)
+    try:
+        await async_wait_until(lambda: receiver.kinds == ["beat"] and not deaths, timeout=5, what="a beat, then the death")
+        clock.advance(AFTER_INTERVAL_S)
+        await async_wait_until(lambda: receiver.kinds == ["beat", "beat"], timeout=5, what="a beat from the respawn")
+
+        assert [seen.body["seq"] for seen in receiver.requests] == [1, 2]
+        assert {seen.body["boot_id"] for seen in receiver.requests} == {runner._status_reporter.boot_id}
+        assert _sender_locks(), "reporting without the sender lock"
+    finally:
+        runner._running = False
+        await settle()
+
+    assert _sender_locks() == []
 
 
 def _suspendable(monkeypatch, lever: str) -> tuple[GatewayRunner, _Relay, list[str]]:

@@ -1,0 +1,43 @@
+name: hermes-atlas-evolution
+title: Atlas Evolution
+repo: https://github.com/sesantanajr/hermes-atlas-evolution
+sha: 77e5a88bf46da4dce5922acf1f35340290c6b7e6
+subdir: ''
+image: https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/panel-overview-en.png
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/panel-proposals-en.png
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/panel-health-en.png
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/panel-environment-en.png
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/terminal-menu-en.png
+  - https://raw.githubusercontent.com/sesantanajr/hermes-atlas-evolution/e2dc5a6162b3f87d15b4f042421b4898fc0dd29f/screenshots/terminal-environment-en.png
+readme: true
+description: "Self-improvement and care for a whole Hermes home: turns tool failures that keep coming back into short lessons the agent reads, measures them and retires the useless ones; scores daily progress (Evolution index); runs Hermes' own doctor checks per profile offline; points out conflicting, duplicate or never-loaded plugins, unused skills and memory repeats; and vetoes agent commands that would take Hermes down. Terminal menu (`hermes evolution`) and a dashboard tab. Disclosure — No network access of its own and no telemetry; the reflector (on by default, at most 6 calls a day) sends redacted tool-error excerpts to the model you configured, through Hermes. It reads, read-only, every profile of the Hermes home (config.yaml, state.db, logs/agent.log, MEMORY.md/USER.md, skills, cron jobs, plugins and their install records), /proc, the hermes* systemd units and apt/dpkg state. It injects a lessons section into the system prompt and registers a pre_tool_call guard. By default (Assist mode) it changes only one thing on its own: an entry repeated word for word between MEMORY.md and USER.md (a backup copy is kept). In Auto mode, which you turn on, it also runs Hermes' own commands unattended (`curator lock`, `plugins install` by catalog name, `pm gc` weekly) and can rewrite and start a broken gateway systemd user service; every change except `pm gc` can be undone. Child processes never inherit YOLO or auto-approve variables. The owner-run `evolution system upgrade` runs apt as root and keeps a root-only snapshot of /etc."
+maintainer: sesantanajr
+tier: community
+category: tools
+requires_hermes: '>=0.23.1'
+docs_url: https://github.com/sesantanajr/hermes-atlas-evolution/tree/77e5a88bf46da4dce5922acf1f35340290c6b7e6/docs/en-US
+version: '0.13.0'
+capabilities:
+  provides_tools:
+    - hermes_atlas_evolution_lessons
+  provides_hooks:
+    - pre_tool_call
+    - post_api_request
+    - api_request_error
+    - post_auxiliary_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+    - on_skill_lifecycle
+    - subagent_start
+    - post_compaction
+    - on_session_finalize
+    - on_kanban_dispatch_tick
+    - on_session_reset
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

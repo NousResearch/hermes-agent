@@ -9,7 +9,6 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
-import { adoptDraftToolPanel } from '@/app/redesign/chat-tool-panel'
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
@@ -37,14 +36,13 @@ import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
+import { announceGoneSessionDraft, migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import { pendingSessionReplay, requestGatewayForAgent, retainGatewayForAgent } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { adoptDraftPreviewTabs } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -152,6 +150,7 @@ import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { clearNotificationsForDeletion, sessionDeletionPolicy } from './deletion-owner'
 import { captureDisplayHydration } from './display-hydration'
+import { adoptNewSessionDraft } from './draft-adoption'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -722,13 +721,7 @@ export function useSessionActions({
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
-          // Anything still parked under the pre-session draft bucket belongs
-          // to this chat now (#114122); the composer moves it on scope swap.
-          announceNewSessionDraftKey(stored)
-          // The draft's preview tabs follow it the same way (#73890).
-          adoptDraftPreviewTabs(stored)
-          // ...and so does the tool panel it opened (redesign).
-          adoptDraftToolPanel(stored)
+          adoptNewSessionDraft(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the

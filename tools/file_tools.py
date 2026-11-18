@@ -42,7 +42,7 @@ from tools.file_tools_read_tracking import (
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp, is_programmatic_read)
-from tools.file_tools_read_views import directory_listing, raw_page_text, tail_offset, tail_request
+from tools.file_tools_read_views import cell_read_fields, directory_listing, tail_offset, tail_request
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +626,17 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
+def _denied_or_directory_listing(resolved, task_id: str) -> str | None:
+    """The denylist refusal for a read, else a host directory's listing (``ls -la``), else None.
+    The denylist runs first so a protected directory is never listed."""
+    block_error = get_read_block_error(str(resolved))
+    if block_error:
+        return tool_error(block_error)
+    if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(resolved):
+        return json.dumps(directory_listing(str(resolved), structured=is_programmatic_read()), ensure_ascii=False)
+    return None
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -635,8 +646,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
-        tail = tail_request(offset)
-        offset, limit = normalize_read_pagination(offset, tail or limit)
+        tail, limit = tail_request(offset, limit)
+        offset, limit = normalize_read_pagination(offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -671,13 +682,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # credential stores). Runs BEFORE document extraction so a
         # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
         # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
-
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(_resolved):
-            return json.dumps(directory_listing(str(_resolved), structured=is_programmatic_read()),
-                              ensure_ascii=False)
+        refused_or_listed = _denied_or_directory_listing(_resolved, task_id)
+        if refused_or_listed is not None:
+            return refused_or_listed
 
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
@@ -695,8 +702,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if cached_not_found is not None:
             return cached_not_found
         file_ops = _get_file_ops(task_id)
-        if tail:
-            offset = tail_offset(file_ops, resolved_str if _file_ops_uses_host_paths(file_ops) else path, limit)
+        offset = tail_offset(file_ops, resolved_str if _file_ops_uses_host_paths(file_ops) else path, tail, offset)
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
@@ -738,8 +744,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
-            if is_programmatic_read():  # a cell parses the page: hand it over without the gutter
-                result_dict["text"] = raw_page_text(result.content)
+            result_dict.update(cell_read_fields(result.content, is_programmatic_read()))
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)

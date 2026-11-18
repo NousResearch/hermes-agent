@@ -103,13 +103,14 @@ def _snapshot(store: Path) -> list:
     return sorted((p.relative_to(store), p.is_file() and p.read_bytes(), p.stat().st_mode) for p in store.rglob("*"))
 
 
-def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, bootstrap: bool = True):
+def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, bootstrap: bool = True, cwd: Path | None = None):
     """Run the real runner in a repo-shaped tree holding the real runner, activation library, pin
     check and pm; return the run and the store its setup step was aimed at (None when setup never
     ran). Setup is replaced at its process boundary: it records the store pm resolves for this run
     and stops, so nothing is installed. ``getent`` answers with ``account`` as the OS account's
     home, which makes ``home`` a faked HOME. ``bootstrap=False`` leaves the checkout without the
-    interpreter the runner could ask pm with."""
+    interpreter the runner could ask pm with. Like the real setup, the stub reads the environment
+    from the checkout (setup-hermes.sh cd's there first); ``cwd`` is where the runner is started."""
     root = tmp_path / "checkout"
     if not root.exists():
         (root / "scripts").mkdir(parents=True)
@@ -121,6 +122,7 @@ def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, boot
             _executable(root / ".venv" / "bin" / "python").write_text(
                 f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
         (root / "setup-hermes.sh").write_text(
+            'cd "$(dirname "$0")"\n'
             f"'{sys.executable}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
             "from pm.environments import store_root\nprint(store_root(sys.argv[1]), end=\"\")' "
             f"'{root}' > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
@@ -129,7 +131,7 @@ def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, boot
     home.mkdir(exist_ok=True)
     (root / "provisioned").unlink(missing_ok=True)
     run = subprocess.run(
-        ["bash", str(root / "scripts" / "run_tests.sh"), "tests/nothing.py"], cwd=root,
+        ["bash", str(root / "scripts" / "run_tests.sh"), "tests/nothing.py"], cwd=cwd or root,
         env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}", "HOME": str(home),
              "PYTHONDONTWRITEBYTECODE": "1", **naming},
         capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
@@ -284,3 +286,60 @@ def test_store_pm_cannot_resolve_is_refused_with_pms_reason(tmp_path):
     assert run.returncode != 0
     assert "escapes its root" in run.stderr
     assert "no bootstrap Python" not in run.stderr
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("link_target", ["missing/..", "sub/.."])
+def test_runtime_dir_through_a_link_into_the_account_store_is_recognised(tmp_path, link_target):
+    """Path.resolve() follows a symlink before taking the ``..`` after it, also when the link's own
+    target runs through a missing part: both name the account's store to pm."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    (store / "sub").mkdir()
+    home.mkdir()
+    first, _, rest = link_target.partition("/")
+    if first == "sub":
+        (home / "lnk").symlink_to(store / "sub")
+        named = home / "lnk" / rest
+    else:
+        (home / "lnk").symlink_to(store / link_target)
+        named = home / "lnk"
+    assert named.resolve() == store.resolve(), "control: pm reads the path as the account's store"
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(named)})
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("named_by", ["HERMES_RUNTIME_DIR", "HERMES_HOME"])
+def test_relative_store_is_read_from_the_checkout_like_setup_reads_it(tmp_path, named_by):
+    """setup-hermes.sh changes to the checkout before pm reads the environment, so a relative value
+    names the store relative to the checkout, whatever directory the runner was started from."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    caller = tmp_path / "x" / "y"
+    caller.mkdir(parents=True)
+    naming = {"HERMES_RUNTIME_DIR": "../account/.hermes/tools"} if named_by == "HERMES_RUNTIME_DIR" \
+        else {"HERMES_HOME": "../account/.hermes"}
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, naming, cwd=caller)
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_dir_through_a_link_loop_is_refused(tmp_path):
+    """A link chain the kernel gives up on names no store the runner can compare, so the run stops
+    before setup instead of guessing."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    before = _snapshot(store)
+    home.mkdir()
+    (home / "a").symlink_to(home / "b")
+    (home / "b").symlink_to(home / "a")
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(home / "a")})
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "more than 40 symlinks" in run.stderr
+    assert _snapshot(store) == before

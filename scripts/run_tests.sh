@@ -106,7 +106,7 @@ _account_stores() {
   account="$(_account_home)" || return 0
   for suffix in "" ${HERMES_DATA_DIR_SUFFIX:+"$HERMES_DATA_DIR_SUFFIX"}; do
     if [ -f "$account/.hermes$suffix/tools/facts.json" ]; then
-      _resolved_path "$account/.hermes$suffix/tools"
+      printf '%s\n' "$account/.hermes$suffix/tools"
     fi
   done
 }
@@ -118,20 +118,27 @@ _which_store() {
   done <<<"$2"
   return 1
 }
-# Prints PATH as pm's Path.resolve() reads it: symlinks resolved through the
-# part that exists, a `..` after a missing part taken lexically. `-ef` alone
-# stats the literal path, so `<store>/missing/..` would not match <store>.
+# Prints PATH as pm's Path.resolve() reads it in the checkout, where setup reads
+# it (setup-hermes.sh cd's there first): every symlink followed, dangling ones
+# too, a `..` taken after the link it follows, a missing part kept as written.
+# `-ef` alone stats the literal path, so `<store>/missing/..` would not match
+# <store>. Status 1 past the kernel's 40-link limit, where Path.resolve() stops
+# following and no store can be told apart.
 _resolved_path() {
-  local resolved="" part next parts
-  case "$1" in /*) ;; *) resolved="$(pwd -P)" ;; esac
-  IFS=/ read -r -a parts <<<"$1"
-  for part in "${parts[@]}"; do
+  local resolved="" rest="$1" part target hops=0
+  case "$rest" in /*) ;; *) resolved="$(cd -P "$REPO_ROOT" && pwd)"; resolved="${resolved%/}" ;; esac
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
     case "$part" in
       "" | .) ;;
       ..) resolved="${resolved%/*}" ;;
-      *) if [ -d "$resolved/$part" ]; then
-           next="$(cd -P "$resolved/$part" 2>/dev/null && pwd)" || next="$resolved/$part"
-           resolved="$next"
+      *) if [ -L "$resolved/$part" ]; then
+           hops=$((hops + 1))
+           [ "$hops" -le 40 ] || return 1
+           target="$(readlink "$resolved/$part")"
+           case "$target" in /*) resolved="" ;; esac
+           rest="$target${rest:+/$rest}"
          else
            resolved="$resolved/$part"
          fi ;;
@@ -142,21 +149,27 @@ _resolved_path() {
 # Prints the store this run's `pm install` writes: HERMES_RUNTIME_DIR as pm
 # takes it, else pm's own resolver (stamps, HERMES_HOME, profiles), run by the
 # bootstrap interpreter found beside STORE; says why on stderr when it cannot.
-_pm_store() {
-  local python
-  if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then _resolved_path "$HERMES_RUNTIME_DIR"; return 0; fi
+_pm_store() (
+  if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then
+    _resolved_path "$HERMES_RUNTIME_DIR" && exit
+    echo "error: faked HOME: HERMES_RUNTIME_DIR runs through more than 40 symlinks" >&2
+    exit 1
+  fi
+  # Asked and resolved from the checkout, as setup asks: a relative HERMES_HOME
+  # names a store there, not in the caller's directory.
+  cd "$REPO_ROOT" || exit 1
   if ! python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")"; then
     echo "error: faked HOME: no bootstrap Python to ask pm which tool store this run provisions" >&2
-    return 1
+    exit 1
   fi
   PYTHONHOME= "$python" -I -B -c 'import sys
 sys.path.insert(0, sys.argv[1])
 from pm.environments import store_root
 try:
-    print(store_root(sys.argv[1]))
+    print(store_root(sys.argv[1]).resolve())
 except Exception as error:
     sys.exit(f"error: faked HOME: pm cannot resolve the tool store this run provisions: {error}")' "$REPO_ROOT"
-}
+)
 # Points HERMES_RUNTIME_DIR away from an account store that this run's
 # `pm install` would write other pins into; status 1 when it cannot.
 _avoid_account_stores() {
@@ -170,7 +183,10 @@ _avoid_account_stores() {
   named="$(_which_store "$target" "$stores")" || return 0
   ! _store_has_pins "$named" >/dev/null || return 0
   # The suffix is appended literally (hermes_constants), `..` included.
-  fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools")"
+  if ! fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools")"; then
+    echo "error: faked HOME: $HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools runs through more than 40 symlinks" >&2
+    return 1
+  fi
   if _which_store "$fallback" "$stores" >/dev/null; then
     echo "error: faked HOME: $fallback is the account's tool store $named, which records other pins; set HERMES_RUNTIME_DIR to a store of this home's own" >&2
     return 1

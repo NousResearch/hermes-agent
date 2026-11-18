@@ -14,6 +14,32 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+@pytest.mark.parametrize(
+    ("lazy", "should_deregister"),
+    [
+        (True, False),
+        ("true", False),
+        (False, True),
+        ("false", True),
+        (None, True),
+    ],
+)
+def test_park_preserves_tools_only_for_lazy_servers(monkeypatch, lazy, should_deregister):
+    from tools.mcp_tool import MCPServerTask
+
+    config = {} if lazy is None else {"lazy": lazy}
+    server = MCPServerTask("srv")
+    server._config = config
+    server._registered_tool_names = ["srv__tool"]
+    server._shutdown_event.set()
+    deregister = MagicMock()
+    monkeypatch.setattr(server, "_deregister_tools", deregister)
+
+    assert asyncio.run(server._park("test")) is True
+
+    assert deregister.called is should_deregister
+
+
 def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
     """A managed server revival must publish tools before readiness is reset."""
     from tools import mcp_tool

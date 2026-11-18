@@ -14,6 +14,7 @@ import pytest
 
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
+from tests.waiting import wait_until
 
 _MSGS = [
     {"role": "user", "content": "fix the reaper bug"},
@@ -27,9 +28,7 @@ def _clean_state():
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
     yield
-    deadline = time.monotonic() + 2.0
-    while ad.active_count() and time.monotonic() < deadline:
-        time.sleep(0.02)
+    wait_until(lambda: not ad.active_count(), what="review children to finish")
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
@@ -119,6 +118,28 @@ def test_subagent_call_is_refused(captured):
     result = json.loads(_inline(_parent(depth=1), {}, _MSGS))
     assert "Subagents cannot start reviews" in result["error"]
     assert "routing_cfg" not in captured
+
+
+def test_review_shares_the_per_turn_subagent_cap():
+    """Each review starts a reviewer child through delegate_task from Python, past the guardrail's
+    delegate_task check, so the review call itself must count against max_subagents."""
+    from agent.tool_guardrails import LoopCapConfig, ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    cfg = ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
+    ctl = ToolCallGuardrailController(cfg)
+    assert ctl.before_call("review", {"focus": "a"}).action == "allow"
+    blocked = ctl.before_call("review", {"focus": "b"})
+    assert blocked.action == "block" and blocked.code == "loop_subagent_cap"
+    assert blocked.message.startswith("Blocked review:")
+
+    after_delegate = ToolCallGuardrailController(cfg)
+    assert after_delegate.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    assert after_delegate.before_call("review", {}).action == "block"
+
+    after_review = ToolCallGuardrailController(cfg)
+    assert after_review.before_call("review", {}).action == "allow"
+    spawn = after_review.before_call("delegate_task", {"goal": "a"})
+    assert spawn.action == "block" and spawn.message.startswith("Blocked delegate_task:")
 
 
 def test_empty_conversation_is_a_tool_error(captured):

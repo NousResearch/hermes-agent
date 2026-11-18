@@ -283,7 +283,7 @@ _DECISION_MESSAGES: dict[str, str] = {
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
     ),
     "loop_subagent_cap": (
-        "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
+        "Blocked {tool_name}: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
 }
@@ -306,6 +306,8 @@ _IDENTICAL_CYCLE_NOTICE = (
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
     "delegate_task": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
+    # review starts its reviewer through delegate_task from Python, so it shares the same child budget.
+    "review": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
 }
 
 

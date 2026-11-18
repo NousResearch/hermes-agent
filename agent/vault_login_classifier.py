@@ -394,10 +394,12 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, expect
     between two ``Input.insertText`` calls and must still find the next field by its stamp.
 
     A ``<select>`` holds the value when its selected option matches it the way the fill script
-    picks options. A text control holds it when it reads back exactly — except that a card number,
-    combined expiry, phone number or postal code made only of digits and separators also holds it
-    when a display mask regrouped the same digits (``4111 1111 …``, ``(555) 123-4567``). A dropped
-    or added digit, any letter, and every other token (passwords, usernames) stay exact.
+    picks options. A text control holds it when it reads back exactly — except that a value made only
+    of digits and separators also holds it when a display mask reformatted it without changing what
+    it says: a card number or postal code with the same digits regrouped (``4111 1111 …``), a phone
+    number with the same digits and the same leading ``+`` (``(555) 123-4567``), an expiry with the
+    same month and year (``7/29`` for ``07/29``; ``1/203`` is another date). A dropped or added digit,
+    any letter, and every other token (passwords, usernames, CVC) stay exact.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
@@ -539,13 +541,30 @@ __ORIGIN_GUARD__
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
 __OPTION_MATCH__
-  const digitMasked = new Set(["cc-number", "cc-exp", "tel", "postal-code"]);
   const digitsAndSeparators = (v) => /^[\d\s()+\-./]*$/.test(v) && /\d/.test(v);
+  const digits = (v) => v.replace(/\D/g, "");
+  const groups = (v) => v.match(/\d+/g) || [];
+  const sameDigits = (want, shown) => digits(want) === digits(shown);
+  // Per token: when a display mask's rewrite still says the same thing.
+  const sameMeaning = {
+    "cc-number": sameDigits,
+    "postal-code": sameDigits,
+    // The + is part of the number: 15551234567 dials somewhere else than +15551234567.
+    "tel": (want, shown) => want.trim().startsWith("+") === shown.trim().startsWith("+")
+      && sameDigits(want, shown),
+    // Month and year stay two numbers (1/203 is not 12/03); a mask may drop the month's leading
+    // zero (7/29) or the separator (0729), never move a digit across it.
+    "cc-exp": (want, shown) => {
+      const w = groups(want), g = groups(shown);
+      if (g.length === 1) return g[0] === digits(want);
+      return g.length === w.length && w.every((part, i) => Number(part) === Number(g[i]));
+    },
+  };
   const holds = (f, shown) => {
     const want = String(f.value);
     if (shown === want) return true;
-    return digitMasked.has(f.token) && digitsAndSeparators(want) && digitsAndSeparators(shown)
-      && shown.replace(/\D/g, "") === want.replace(/\D/g, "");
+    const same = sameMeaning[f.token];
+    return Boolean(same) && digitsAndSeparators(want) && digitsAndSeparators(shown) && same(want, shown);
   };
   let landed = 0;
   let reverted = 0;

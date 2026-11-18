@@ -169,6 +169,9 @@ class TestReadBack:
         ("cc-number", "4111111111111111", "4111 1111 1111 1111"),
         ("cc-exp", "07/29", "07 / 29"),
         ("tel", "5551234567", "(555) 123-4567"),
+        ("tel", "+48 600 100 200", "+48600100200"),          # the + stays where it was
+        ("cc-exp", "07/29", "7/29"),                          # month 07 shown as 7: the same month
+        ("cc-exp", "07/29", "0729"),                          # separator dropped, groups intact
     ])
     def test_a_mask_that_only_reformats_digits_is_landed(self, token, value, shown):
         setup = f'stamp(add(document, "input", {{ type: "text", value: {json.dumps(shown)} }}), 0);'
@@ -178,6 +181,10 @@ class TestReadBack:
     @pytest.mark.parametrize(("token", "value", "shown"), [
         ("cc-number", "4111111111111111", "4111 1111 1111 111"),   # a digit lost
         ("tel", "+15551234567", "(555) 123-4567"),                 # the country code dropped
+        ("tel", "+15551234567", "15551234567"),                    # only the + dropped: another number
+        ("tel", "+48 600 100 200", "48600100200"),
+        ("cc-exp", "12/03", "1/203"),                              # same digits, other month and year
+        ("cc-exp", "07/29", "07/2029"),
         ("tel", "user@example.com", ""),                           # not a number: exact only
         ("current-password", "12 34", "1234"),                     # passwords stay exact
         ("username", "a-b", "ab"),

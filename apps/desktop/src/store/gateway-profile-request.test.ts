@@ -901,4 +901,104 @@ describe('session-owner calls for a profile on the shared local host backend (#1
     expect(getConnectionFor).toHaveBeenCalledOnce()
     expect(secondaryGateways).toHaveLength(0)
   })
+
+  it('backs off failed local owner probes, lets foreground retry through, and resets after a served RPC', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+      const getConnectionFor = installLocalHost(profile => ({ profile, sharedPrimary: true }))
+      const unavailable = new Error('Hermes gateway did not start')
+      getConnectionFor.mockRejectedValue(unavailable)
+      const poll = () => requestGatewayForAgent('local', 'work', 'session.control.read')
+
+      for (let index = 0; index < 20; index += 1) {
+        await expect(poll()).rejects.toThrow()
+        await vi.advanceTimersByTimeAsync(50)
+      }
+
+      expect(getConnectionFor).toHaveBeenCalledTimes(3)
+      expect(primary.request).not.toHaveBeenCalled()
+      getConnectionFor.mockImplementation(async ({ connectionId, profile }) => ({
+        connectionId,
+        mode: 'local',
+        port: 4242,
+        profile,
+        sharedPrimary: true,
+        token: 't'
+      }))
+      await requestGatewayForAgent('local', 'work', 'session.control.read', {}, undefined, undefined, {
+        spawnPriority: 'foreground'
+      })
+      expect(getConnectionFor).toHaveBeenCalledTimes(4)
+      expect(primary.request).toHaveBeenCalledWith('session.control.read', { profile: 'work' })
+
+      getConnectionFor.mockRejectedValue(unavailable)
+      await expect(poll()).rejects.toThrow(unavailable)
+      expect(getConnectionFor).toHaveBeenCalledTimes(5)
+      await vi.advanceTimersByTimeAsync(299)
+      await expect(poll()).rejects.toThrow(/reconnecting/)
+      expect(getConnectionFor).toHaveBeenCalledTimes(5)
+      await vi.advanceTimersByTimeAsync(1)
+      await expect(poll()).rejects.toThrow(unavailable)
+      expect(getConnectionFor).toHaveBeenCalledTimes(6)
+      expect(secondaryGateways).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waits for a slow pooled local owner bring-up without restarting the probe at 20 seconds', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
+      const getConnectionFor = installLocalHost(profile => ({ profile }))
+      const bringUp = deferred<void>()
+      getConnectionFor.mockImplementationOnce(async ({ connectionId, profile }) => {
+        await bringUp.promise
+
+        return { connectionId, mode: 'local', port: 4243, profile, token: 't' }
+      })
+      const activation = expect(ensureGatewayForAgent('local', 'work')).resolves.toBe(true)
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(getConnectionFor).toHaveBeenCalledOnce()
+      expect(secondaryGateways).toHaveLength(0)
+      bringUp.resolve()
+      await activation
+
+      expect($gateway.get()).toBe(secondaryGateways[0])
+      expect(secondaryGateways).toHaveLength(1)
+      expect(secondaryGateways[0].connect).toHaveBeenCalledOnce()
+      expect(primary.request).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the 20-second remote probe fallback on the primary', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      setPrimaryGatewayConnection({ connectionId: 'homelab', mode: 'remote' })
+      const getConnectionFor = installLocalHost(profile => ({ profile }))
+      getConnectionFor.mockReturnValueOnce(new Promise(() => undefined))
+      const request = requestGatewayForAgent('homelab', 'work', 'session.create', { title: 'g' })
+      await vi.advanceTimersByTimeAsync(20_000)
+      await request
+
+      expect(primary.request).toHaveBeenCalledWith('session.create', { title: 'g', profile: 'work' })
+      expect(getConnectionFor).toHaveBeenCalledOnce()
+      expect(secondaryGateways).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

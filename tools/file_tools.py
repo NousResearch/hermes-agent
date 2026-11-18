@@ -24,7 +24,9 @@ from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from tools.file_operations_common import (
+    DEFAULT_READ_LIMIT, cell_read_fields, count_conflict_blocks, directory_listing, settle_tail, tail_offset,
+    tail_request, tail_start)
 from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
@@ -42,7 +44,6 @@ from tools.file_tools_read_tracking import (
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp, is_programmatic_read)
-from tools.file_tools_read_views import cell_read_fields, directory_listing, tail_offset, tail_request
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +421,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             tail: int | None = None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -473,6 +475,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
 
     lines = extracted_text.splitlines()
     total_lines = len(lines)
+    offset = tail_start(total_lines, tail, offset)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
     max_line_length = get_max_line_length()
@@ -490,7 +493,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
             f"Use offset={end_line + 1} to continue reading "
             f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)")
     max_chars = _get_max_read_chars()
-    if len(result_dict["content"]) > max_chars:
+    if len(result_dict["content"]) > max_chars and not is_programmatic_read():
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
         rendered = result_dict["content"]
@@ -500,6 +503,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
+    result_dict.update(cell_read_fields(result_dict["content"], is_programmatic_read()))
     if (offset == 1 and not result_dict["truncated"] and not redacted
             and not truncated_lines and not result_dict.get("truncated_lines")):
         # The whole document was shown, so a text-authorable format (.ipynb)
@@ -646,8 +650,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
-        tail, limit = tail_request(offset, limit)
+        raw_offset = offset
         offset, limit = normalize_read_pagination(offset, limit)
+        tail, limit = tail_request(raw_offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -686,7 +691,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if refused_or_listed is not None:
             return refused_or_listed
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, tail=tail)
         if extracted is not None:
             return extracted
 
@@ -702,7 +707,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if cached_not_found is not None:
             return cached_not_found
         file_ops = _get_file_ops(task_id)
-        offset = tail_offset(file_ops, resolved_str if _file_ops_uses_host_paths(file_ops) else path, tail, offset)
+        read_path = resolved_str if _file_ops_uses_host_paths(file_ops) else path
+        offset = tail_offset(file_ops, read_path, tail, offset)
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
@@ -715,7 +721,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        offset, result = settle_tail(file_ops, read_path, tail, offset, limit,
+                                     file_ops.read_file(read_path, offset, limit))
+        dedup_key = (resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -744,7 +752,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
-            result_dict.update(cell_read_fields(result.content, is_programmatic_read()))
+        result_dict.update(cell_read_fields(result.content, is_programmatic_read()))
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)
@@ -1144,8 +1152,11 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        # The path-grouped text block saves the model tokens; a cell wants the match dicts.
+        # The path-grouped text block saves the model tokens; a cell wants the match dicts, always
+        # present for a content search (an empty list when nothing matched) so code can iterate them.
         result_dict = result.to_dict(densify=not is_programmatic_read())
+        if is_programmatic_read() and target == "content" and output_mode == "content" and not result_dict.get("error"):
+            result_dict.setdefault("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (

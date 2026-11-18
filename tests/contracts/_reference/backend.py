@@ -1,6 +1,6 @@
 """Assembly and profile-keyed storage for the in-memory reference backend.
 
-``InMemoryBackend`` is the reference's file system: it holds every profile's store, keyed by the scope's ``hermes_home_key``, under one tree rooted at ``root``. ``open(scope)`` (``PersistenceBackend.open``) returns the ``InMemoryStore`` handle bound to that one profile, with one named repository attribute per registered capability, and no verb takes a scope. Two handles on one profile see the same store. Each public repository method runs under one backend-wide reentrant lock, so a verb is one atomic step (the reference's transaction) whichever thread calls it; ``executor`` is the backend's pool behind each handle's default awaitable view ``aio``.
+``InMemoryBackend`` is the reference's file system: it holds every profile's store, keyed by the scope's ``store_key`` (a local profile's ``hermes_home_key``, a pinned scope's pin), under one tree rooted at ``root``; each pin is its own isolated store, never the store of the folder its scope was built in. ``open(scope)`` (``PersistenceBackend.open``) returns the ``InMemoryStore`` handle bound to that one profile, with one named repository attribute per registered capability, and no verb takes a scope. Two handles on one profile see the same store. Each public repository method runs under one backend-wide reentrant lock, so a verb is one atomic step (the reference's transaction) whichever thread calls it; ``executor`` is the backend's pool behind each handle's default awaitable view ``aio``.
 
 Extension is append-only with no shared hotspot: add ONE capability module in this package that calls ``register_repository`` at import time; the package ``__init__`` auto-imports modules in its subpackages, so nobody edits this file, the package ``__init__``, or another capability's module. Capability flags earned by a repository ride on its registration; the base declaration keeps every earnable flag False so the assembled declaration never promises behavior no registered repository executes.
 """
@@ -39,7 +39,8 @@ _BASE_CAPABILITIES = PersistenceCapabilities(
     durable_admissions=False,
     receipted_writes=False,
     physical_admin=False,
-    scope_pinning=False,
+    # Structural, not earned by a repository: every store is keyed by ``ProfileScope.store_key``, so a pin is its own store.
+    scope_pinning=True,
 )
 
 RepositoryFactory = Callable[["InMemoryStore"], Any]
@@ -111,38 +112,38 @@ class InMemoryBackend:
         """The store handle bound to ``scope``; the harness opens one per profile and reuses it."""
         if self._closed:
             raise RuntimeError("backend used after teardown")
-        handle = self._handles.get(scope.hermes_home_key)
+        handle = self._handles.get(scope.store_key)
         if handle is None:
-            handle = self._handles[scope.hermes_home_key] = InMemoryStore(self, scope)
+            handle = self._handles[scope.store_key] = InMemoryStore(self, scope)
         return handle
 
     def scope_store(self, scope: ProfileScope) -> dict[str, Any]:
         """The mutable namespace of one profile's store, created on first touch; repositories keep their tables under their own keys inside it."""
         if self._closed:
             raise RuntimeError("backend used after teardown")
-        return self._scopes.setdefault(scope.hermes_home_key, {})
+        return self._scopes.setdefault(scope.store_key, {})
 
     def replace_store(self, scope: ProfileScope) -> None:
         """The suites' seam for a store replaced under its open handles: reads keep answering from the store the handles opened, and a write that calls ``require_unreplaced`` refuses."""
-        self._replaced.add(scope.hermes_home_key)
+        self._replaced.add(scope.store_key)
 
     def require_unreplaced(self, scope: ProfileScope) -> None:
         """Raise ``StoreReplaced`` once ``replace_store`` replaced ``scope``'s store."""
-        if scope.hermes_home_key in self._replaced:
+        if scope.store_key in self._replaced:
             raise StoreReplaced(f"the store of {scope.name!r} was replaced under its handle")
 
     def close_store_under(self, scope: ProfileScope) -> None:
         """The suites' seam for a store force-closed under its open handles (a profile delete's sweep): a read that refuses on a closed store calls ``require_held``."""
-        self._closed_under.add(scope.hermes_home_key)
+        self._closed_under.add(scope.store_key)
 
     def require_held(self, scope: ProfileScope) -> None:
         """Raise ``PermanentStoreError`` once ``close_store_under`` closed ``scope``'s store."""
-        if scope.hermes_home_key in self._closed_under:
+        if scope.store_key in self._closed_under:
             raise PermanentStoreError(f"the store of {scope.name!r} is closed")
 
     def scope_exists(self, scope: ProfileScope) -> bool:
         """Whether the profile's store exists, without creating it."""
-        return scope.hermes_home_key in self._scopes
+        return scope.store_key in self._scopes
 
     def file_store(self, path: Path) -> dict[str, Any]:
         """The mutable namespace of one store file outside any profile's ``state.db`` (the root ``shared-state.db``), keyed by its path, created on first touch."""
@@ -182,7 +183,7 @@ class InMemoryBackend:
         return AdminUnsupported(PHYSICAL_ADMIN, "in_memory")
 
     def assert_isolating(self) -> None:
-        """Refuses until the reference serves pinned scopes (``scope_pinning``)."""
+        """Passes: every store is keyed by ``store_key``, so a verb of a pinned handle reaches only its pin's store."""
         from persistence import IsolationUnsupported
 
         if not self.capabilities.scope_pinning:
@@ -212,7 +213,9 @@ class InMemoryStore:
         self.executor = backend.executor
         self.fenced_config_patch = backend.fenced_config_patch
         self.injectable_failpoints = backend.injectable_failpoints
-        self.owner_profile = own_profile_name(Path(scope.hermes_home_key), Path(canonical_home_key(backend.root)))
+        # A pinned store has no profile home, so no profile owns it.
+        self.owner_profile = (own_profile_name(Path(scope.hermes_home_key), Path(canonical_home_key(backend.root)))
+                              if scope.pin is None else None)
         self._lock = backend._lock
         self.aio = AwaitableStore(self)
         for attribute, factory in _REPOSITORY_FACTORIES.items():
@@ -232,7 +235,7 @@ class InMemoryStore:
     def serves_same_store(self, other: object) -> bool:
         """The reference never replaces a store: the same backend and profile serve one store."""
         return (isinstance(other, InMemoryStore) and other.backend is self.backend
-                and other.scope.hermes_home_key == self.scope.hermes_home_key)
+                and other.scope.store_key == self.scope.store_key)
 
 
 def _serialized(backend: InMemoryBackend, method: Callable[..., Any]) -> Callable[..., Any]:

@@ -187,6 +187,7 @@
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_db_notify": 1,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_db_workspace": 1,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_diagnostics": 1,
+    "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_progress": 1,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_transfer": 2,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.kanban_workflow": 1,
     "plugins/kanban/dashboard/plugin_api.py hermes_cli.profile_describer": 1,

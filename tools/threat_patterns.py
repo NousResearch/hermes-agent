@@ -112,13 +112,13 @@ _TRANSLATED_PATTERNS: list[tuple[str, str, str]] = [
     (rf'(?:无视|不要遵守){_FILLER_CJK}(?:规则|指令|准则)',
      "disregard_rules", "all"),  # zh: "无视你的规则/指令"
 
-    (rf'ne\s{{1,64}}{_TRANSLATED_FILLER}(?:le\s{{1,64}})?dis\w{{0,64}}\s{{1,64}}{_TRANSLATED_FILLER}(?:pas\s{{1,64}}{_TRANSLATED_FILLER})?[àa]\s{{1,64}}{_TRANSLATED_FILLER}l.?utilisateur',
+    (rf'ne\s{{1,64}}{_TRANSLATED_FILLER}(?:le\s{{1,64}})?(?:dis|dites)\s{{1,64}}{_TRANSLATED_FILLER}(?:pas\s{{1,64}}{_TRANSLATED_FILLER})?[àa]\s{{1,64}}{_TRANSLATED_FILLER}l.?utilisateur',
      "deception_hide", "all"),  # fr: "ne (le) dis pas à l'utilisateur"
     (rf'no\s{{1,64}}{_TRANSLATED_FILLER}(?:le\s{{1,64}}|se\s{{1,64}}lo\s{{1,64}})?digas\w{{0,64}}\s{{1,64}}{_TRANSLATED_FILLER}al\s{{1,64}}{_TRANSLATED_FILLER}usuario',
      "deception_hide", "all"),  # es: "no (se lo) digas al usuario"
-    (rf'(?:sag|verrate)\w{{0,64}}\s{{1,64}}{_TRANSLATED_FILLER}es\s{{1,64}}{_TRANSLATED_FILLER}dem\s{{1,64}}{_TRANSLATED_FILLER}(?:benutzer|nutzer)\s{{1,64}}{_TRANSLATED_FILLER}nicht',
+    (rf'(?:sag(?:e|t|en)?|verrat(?:e|et|en)?)\s{{1,64}}{_TRANSLATED_FILLER}es\s{{1,64}}{_TRANSLATED_FILLER}dem\s{{1,64}}{_TRANSLATED_FILLER}(?:benutzer|nutzer)\s{{1,64}}{_TRANSLATED_FILLER}nicht',
      "deception_hide", "all"),  # de: "sag/verrate es dem Benutzer/Nutzer nicht"
-    (rf'не\s{{1,64}}{_TRANSLATED_FILLER}говори\w{{0,64}}\s{{1,64}}{_TRANSLATED_FILLER}(?:это\s{{1,64}}{_TRANSLATED_FILLER})?пользовател\w{{0,64}}',
+    (rf'не\s{{1,64}}{_TRANSLATED_FILLER}говори(?:те)?\s{{1,64}}{_TRANSLATED_FILLER}(?:это\s{{1,64}}{_TRANSLATED_FILLER})?пользовател\w{{0,64}}',
      "deception_hide", "all"),  # ru: "не говори (это) пользователю"
     (rf'不要{_FILLER_CJK}告诉{_FILLER_CJK}用户', "deception_hide", "all"),  # zh: "不要...告诉...用户" (bounded separators)
 
@@ -379,4 +379,4 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["EMOJI_TAG_SEQUENCE_RE", "INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "scan_for_threats", "patterns_for_ids"]
+__all__ = ["EMOJI_TAG_SEQUENCE_RE", "INVISIBLE_CHARS", "MAX_SCAN_CHARS", "first_threat_message", "patterns_for_ids", "scan_for_threats"]

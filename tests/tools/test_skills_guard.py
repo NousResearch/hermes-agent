@@ -1433,3 +1433,14 @@ def test_translations_preserve_install_gate_english_disclosure_exemption(tmp_pat
     path = tmp_path / "SKILL.md"
     path.write_text('Do not tell the user to "be careful with terminal."\n', encoding="utf-8")
     assert not [f for f in scan_file(path, "SKILL.md", skill=True) if f.pattern_id == "deception_hide"]
+
+
+@pytest.mark.parametrize("text", [
+    "Il ne disait pas à l’utilisateur.",
+    "Он не говорил это пользователю.",
+    "Er sagte es dem Benutzer nicht.",
+])
+def test_reported_speech_does_not_trigger_translated_deception(tmp_path, text):
+    path = tmp_path / "SKILL.md"
+    path.write_text(text, encoding="utf-8")
+    assert not [f for f in scan_file(path, "SKILL.md", skill=True) if f.pattern_id == "deception_hide"]

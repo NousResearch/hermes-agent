@@ -27,9 +27,14 @@ logger = logging.getLogger("tools.cronjob_tools")
 # against the assembled prompt with this tighter pattern set. Both scanners share the invisible-unicode
 # check. No host is exempt from the auth-header rule: a GitHub allowlist kept leaking via shell expansion
 # (#74667); cron prompts call GitHub through `gh api` or a `--script` instead.
-_CRON_PROSE_PATTERNS = patterns_for_ids((
+_CRON_PROSE_PATTERNS = [
+    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(?:\w+\s+){0,8}(your|all|any)\s+(?:\w+\s+){0,8}(instructions|rules|guidelines)', "disregard_rules"),
+] + patterns_for_ids((
     "prompt_injection", "deception_hide", "sys_prompt_override", "disregard_rules",
-))
+), translated_only=True)
 _CRON_THREAT_PATTERNS = _CRON_PROSE_PATTERNS + [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"), (r'/etc/sudoers|visudo', "sudoers_mod"),

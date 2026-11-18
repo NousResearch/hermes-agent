@@ -6,7 +6,7 @@ import json
 import pytest
 
 from tests.waiting import async_wait_until
-from tests.gateway.test_webhook_coalescing import (
+from tests.gateway.webhook_coalesce.test_config import (
     _capture_admissions, _coalesce_route, _make_adapter, _mock_request, _payload,
 )
 
@@ -101,8 +101,67 @@ async def test_real_producer_commit_recovers_and_expired_retry_does_not_block(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('committed', [False, True])
+@pytest.mark.parametrize('change', ['retire', 'destination'])
+async def test_real_producer_lookup_refuses_changed_binding(monkeypatch, committed, change):
+    import threading
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.platforms import webhook_ingress
+    from gateway.config import HomeChannel, Platform, PlatformConfig
+    from gateway.platforms.api_server_store import authority_store
+    from tests.gateway.test_pre_gateway_dispatch import _post_webhook, _webhook_app
+
+    adapter, app = _webhook_app(prompt='{action}')
+    async with TestClient(TestServer(app)) as client:
+        runner = adapter._message_handler.__self__
+        authority = runner.session_authority
+        adapter.gateway_runner = runner
+        if change == 'destination':
+            runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+                enabled=True, home_channel=HomeChannel(Platform.TELEGRAM, 'old-home', 'Home'))
+            adapter._routes['fixture']['deliver'] = 'telegram'
+        if committed:
+            response = await _post_webhook(client, {'id': 7, 'action': 'opened'}, 'binding-race')
+            assert response.status == 202
+            assert len(authority_store(authority).admissions.match()) == 1
+            adapter._seen_deliveries.clear()
+        adapter._routes['fixture']['coalesce'] = {'key': 'id', 'window_seconds': 60}
+        loop = asyncio.get_running_loop()
+        entered, release = asyncio.Event(), threading.Event()
+        original = webhook_ingress._committed
+        observed = []
+
+        def held(*args):
+            rows = original(*args)
+            observed.append(len(rows))
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            return rows
+
+        monkeypatch.setattr(webhook_ingress, '_committed', held)
+        task = asyncio.create_task(_post_webhook(client, {'id': 7, 'action': 'opened'}, 'binding-race'))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            if change == 'retire':
+                authority.retiring = True
+            else:
+                runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+                    Platform.TELEGRAM, 'new-home', 'Home')
+            release.set()
+            assert (await asyncio.wait_for(task, 2)).status == 503
+            assert observed == [int(committed)]
+            assert not await asyncio.to_thread(adapter._coalescer.store.pending)
+            assert len(authority_store(authority).admissions.match()) == int(committed)
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            authority.retiring = False
+            await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_refused_handoff_keeps_frozen_batch_and_retries(monkeypatch):
-    from gateway.platforms import webhook_coalesce_recovery
+    import gateway.platforms.webhook_coalesce.recovery as webhook_coalesce_recovery
     monkeypatch.setattr(webhook_coalesce_recovery, 'RETRY_SECONDS', 0.01)
     adapter = _make_adapter(routes={'pr': _coalesce_route(key='pull_request.number', window_seconds=0.01)})
     _capture_admissions(adapter, monkeypatch)
@@ -128,7 +187,7 @@ async def test_refused_handoff_keeps_frozen_batch_and_retries(monkeypatch):
 
 
 def test_transactional_members_supersession_sealing_and_capacity(tmp_path, monkeypatch):
-    from gateway.platforms import webhook_coalesce_store as store_module
+    import gateway.platforms.webhook_coalesce.store as store_module
     store = store_module.CoalesceStore(tmp_path)
     assert store.accept('old', 'group', {'text': 'old'}, 0, 10) == 'coalesced'
     assert store.accept('new', 'group', {'text': 'new'}, 0, 10) == 'coalesced'
@@ -167,7 +226,7 @@ async def test_store_failure_never_acknowledges_or_consumes_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_changed_route_holds_then_resumes_original_work(monkeypatch):
-    from gateway.platforms import webhook_coalesce_recovery
+    import gateway.platforms.webhook_coalesce.recovery as webhook_coalesce_recovery
     monkeypatch.setattr(webhook_coalesce_recovery, 'RETRY_SECONDS', 0.01)
     route = _coalesce_route(key='pull_request.number', window_seconds=60)
     adapter = _make_adapter(routes={'pr': route})
@@ -186,7 +245,7 @@ async def test_changed_route_holds_then_resumes_original_work(monkeypatch):
 
 
 def test_binding_change_cannot_replace_accepted_work_and_keys_are_bounded(tmp_path):
-    from gateway.platforms.webhook_coalesce_store import CoalesceStore
+    from gateway.platforms.webhook_coalesce.store import CoalesceStore
     store = CoalesceStore(tmp_path)
     old = {'binding': {'route': 'old'}, 'payload': 'old'}
     new = {'binding': {'route': 'new'}, 'payload': 'new'}
@@ -330,7 +389,7 @@ async def test_ordinary_disconnect_does_not_create_coalescing_store(monkeypatch)
 
 def test_future_schema_is_refused_without_downgrading(tmp_path):
     import sqlite3
-    from gateway.platforms.webhook_coalesce_store import CoalesceStore
+    from gateway.platforms.webhook_coalesce.store import CoalesceStore
     store = CoalesceStore(tmp_path)
     with sqlite3.connect(str(store.path)) as conn:
         conn.execute('PRAGMA user_version=2')
@@ -345,7 +404,7 @@ def test_future_schema_is_refused_without_downgrading(tmp_path):
 async def test_flush_joins_cancelled_physical_handoff(monkeypatch, cancel_flush):
     import threading
     from agent.async_utils import drain_thread
-    from gateway.platforms import webhook_coalesce_recovery as recovery
+    from gateway.platforms.webhook_coalesce import recovery
 
     adapter = _make_adapter(routes={'pr': _coalesce_route()})
     coalescer = adapter._coalescer
@@ -402,7 +461,7 @@ async def test_mode_change_serializes_delivery_until_physical_completion(
         monkeypatch, other_mode, coalesced_first, cancel_first):
     import threading
     from aiohttp import web
-    from gateway.platforms import webhook_coalesce_ingress as ingress
+    from gateway.platforms.webhook_coalesce import ingress
 
     route = _coalesce_route(key='pull_request.number', window_seconds=60)
     coalesce = route.pop('coalesce')
@@ -472,15 +531,15 @@ async def test_mode_change_serializes_delivery_until_physical_completion(
         if cancel_first:
             assert isinstance(result, asyncio.CancelledError)
         else:
-            assert not isinstance(result, BaseException) and result.status == 202
+            assert not isinstance(result, BaseException) and result.status == (202 if coalesced_first else 503)
         retry = await asyncio.wait_for(second, 2)
-        assert retry.status == 200 and json.loads(retry.text)['status'] == 'duplicate'
-        assert calls == ([] if coalesced_first else [other_mode])
+        assert retry.status == (200 if coalesced_first else 202)
+        if coalesced_first:
+            assert json.loads(retry.text)['status'] == 'duplicate'
+        assert calls == []
         assert adapter._coalescer.delivery_turns == {}
-        rows = await asyncio.to_thread(adapter._coalescer.store.pending) if coalesced_first else []
-        assert len(rows) == (1 if coalesced_first else 0)
-        if not coalesced_first:
-            assert not adapter._coalescer.store.path.exists()
+        rows = await asyncio.to_thread(adapter._coalescer.store.pending)
+        assert len(rows) == 1
     finally:
         release_thread.set()
         release_async.set()

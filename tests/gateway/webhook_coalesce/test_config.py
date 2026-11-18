@@ -36,10 +36,10 @@ def _capture_admissions(adapter, monkeypatch):
     adapter._message_handler = SimpleNamespace(__self__=SimpleNamespace())
     monkeypatch.setattr("gateway.session_authorities.authority_for_profile_id", lambda runner, pid: object())
     if hasattr(adapter._coalescer, 'binding'):
-        from gateway.platforms.webhook_coalesce_binding import Binding
+        from gateway.platforms.webhook_coalesce.binding import Binding
 
         async def binding(route_name, profile, delivery_id, payload):
-            from gateway.platforms.webhook_coalesce_recovery import ingress_revision
+            from gateway.platforms.webhook_coalesce.recovery import ingress_revision
             revision = ingress_revision(adapter, route_name, adapter._routes[route_name], profile, delivery_id)
             return Binding(profile or 'default', 'fixture-store', revision[0], revision[1], {})
 

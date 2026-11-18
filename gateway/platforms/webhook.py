@@ -40,8 +40,8 @@ from gateway.platforms._shared import secrets_match, timestamp_fresh
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
-from gateway.platforms.webhook_coalesce import validate_coalesce_config
-from gateway.platforms.webhook_coalesce_recovery import DurableWebhookCoalescer
+from gateway.platforms.webhook_coalesce.config import validate_coalesce_config
+from gateway.platforms.webhook_coalesce.recovery import DurableWebhookCoalescer
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
@@ -685,7 +685,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
         from copy import deepcopy
-        from gateway.platforms.webhook_coalesce_recovery import ingress_revision
+        from gateway.platforms.webhook_coalesce.recovery import ingress_revision
         route_config = deepcopy(route_config)
         revision = (ingress_revision(self, route_name, route_config, profile, _header_delivery_id(request.headers))
                     if route_config else None)
@@ -742,7 +742,7 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        from gateway.platforms.webhook_coalesce_ingress import dispatch_received
+        from gateway.platforms.webhook_coalesce.ingress import dispatch_received
         return await dispatch_received(self, request=request, route_config=route_config, route_name=route_name,
             profile=profile, payload=payload, prompt=prompt, event_type=event_type, delivery_id=delivery_id,
             revision=revision)

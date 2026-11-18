@@ -6,8 +6,8 @@ import time
 from aiohttp import web
 
 from agent.async_utils import drain_task
-from gateway.platforms.webhook_coalesce import group_key
-from gateway.platforms.webhook_coalesce_recovery import accept_coalesced, ingress_revision, prior_coalesced
+from gateway.platforms.webhook_coalesce.config import group_key
+from gateway.platforms.webhook_coalesce.recovery import accept_coalesced, prior_coalesced, revision_current
 from gateway.session_authority import keyed_turn
 
 logger = logging.getLogger(__name__)
@@ -19,10 +19,7 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
     identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
 
     async def admit_once():
-        adapter._reload_dynamic_routes()
-        current = adapter._routes.get(route_name)
-        if (adapter._coalescer._closed or not current or not current.get('enabled', True)
-                or ingress_revision(adapter, route_name, current, profile, delivery_id) != revision):
+        if not revision_current(adapter, route_name, profile, delivery_id, revision):
             return web.json_response({'error': 'Route changed; retry this delivery'}, status=503)
         now = time.time()
         coalesce = route_config.get('coalesce')
@@ -34,11 +31,14 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
                 and now - seen_at < adapter._idempotency_ttl):
             return duplicate(delivery_id)
         try:
-            if await prior_coalesced(adapter._coalescer, profile, route_name, delivery_id):
-                return duplicate(delivery_id)
+            seen = await prior_coalesced(adapter._coalescer, profile, route_name, delivery_id)
         except Exception:
             logger.exception('[webhook] Coalesced receipt lookup unavailable')
             return web.json_response({'error': 'Receipt lookup unavailable; retry this delivery'}, status=503)
+        if not revision_current(adapter, route_name, profile, delivery_id, revision):
+            return web.json_response({'error': 'Route changed; retry this delivery'}, status=503)
+        if seen:
+            return duplicate(delivery_id)
         if non_durable:
             adapter._record_delivery_id(identity, now)
         if route_config.get('cron_job'):

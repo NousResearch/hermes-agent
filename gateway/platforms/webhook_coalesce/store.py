@@ -25,8 +25,13 @@ class CoalesceStore:
     @contextmanager
     def connection(self, *, write=True):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.close(fd)
+        # Closing a descriptor for an existing inode drops this process's SQLite locks.
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
         conn = sqlite3.connect(self.path, timeout=5)
         conn.row_factory = sqlite3.Row
         try:

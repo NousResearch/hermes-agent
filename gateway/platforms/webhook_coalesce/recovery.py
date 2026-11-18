@@ -8,11 +8,11 @@ import time
 from datetime import datetime, UTC
 
 from agent.async_utils import consume_detached_task_result, drain_task, drain_thread
-from gateway.platforms.webhook_coalesce import (
+from gateway.platforms.webhook_coalesce.config import (
     DEFAULT_MAX_WAIT_SECONDS, DEFAULT_WINDOW_SECONDS, prompt_with_note,
 )
-from gateway.platforms.webhook_coalesce_binding import Binding, binding_from, ensure_store_identity, expected_binding
-from gateway.platforms.webhook_coalesce_store import CoalesceStore
+from gateway.platforms.webhook_coalesce.binding import Binding, binding_from, ensure_store_identity, expected_binding
+from gateway.platforms.webhook_coalesce.store import CoalesceStore
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,13 @@ class DurableWebhookCoalescer:
         event = MessageEvent(text='', message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         async with producer_scope(self.adapter, event) as authority:
+            from gateway.platforms.api_server_store import authority_store
+            from gateway.session_authorities import authority_for_home
+            store = authority_store(authority)
             store_id = await drain_thread(ensure_store_identity, authority)
+            if (authority_for_home(authority.runner, store.scope.profile_dir) is not authority
+                    or authority.retiring or authority_store(authority) is not store):
+                raise ValueError('Webhook authority changed')
             digest = route_digest(self.adapter, source.chat_id)
             route = self.adapter._routes[route_name]
             destination = snapshot_destination(self.adapter, delivery_info(self.adapter, route, profile, payload, route_name))
@@ -88,10 +94,9 @@ class DurableWebhookCoalescer:
                 self.adapter._admission_source(route_name, profile, delivery_id).profile) != revision):
             return 'unavailable'
         seen = await self.producer_seen(bound, route_name, profile, delivery_id, payload, prompt)
-        self.adapter._reload_dynamic_routes()
-        route = self.adapter._routes.get(route_name)
-        if (self._closed or route is None
-                or ingress_revision(self.adapter, route_name, route, profile, delivery_id) != revision):
+        current = await self.binding(route_name, profile, delivery_id, payload)
+        if (current != bound or current.authority is not bound.authority or current.store is not bound.store
+                or not revision_current(self.adapter, route_name, profile, delivery_id, revision)):
             return 'unavailable'
         if seen:
             return 'duplicate'
@@ -239,6 +244,13 @@ def ingress_revision(adapter, route_name, route, profile, delivery_id):
     from gateway.platforms.webhook_delivery import route_config_digest
     return (route_config_digest(route), hashlib.sha256(adapter.token.encode()).hexdigest(),
             adapter._admission_source(route_name, profile, delivery_id).profile)
+
+
+def revision_current(adapter, route_name, profile, delivery_id, revision):
+    adapter._reload_dynamic_routes()
+    route = adapter._routes.get(route_name)
+    return bool(not adapter._coalescer._closed and route and route.get('enabled', True)
+                and ingress_revision(adapter, route_name, route, profile, delivery_id) == revision)
 
 
 async def prior_coalesced(coalescer, profile, route_name, delivery_id):

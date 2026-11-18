@@ -7,10 +7,66 @@ import threading
 import pytest
 from aiohttp import web
 
-from tests.gateway.test_webhook_coalescing import (
+from tests.gateway.webhook_coalesce.test_config import (
     _capture_admissions, _coalesce_route, _make_adapter, _mock_request, _payload,
 )
 from tests.waiting import async_wait_until
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['coalesce', 'agent', 'direct', 'cron'])
+@pytest.mark.parametrize('seen', [False, True])
+@pytest.mark.parametrize('change', ['credential', 'destination', 'closed', 'profile'])
+async def test_prior_receipt_lookup_rechecks_revision(monkeypatch, mode, seen, change):
+    from gateway.platforms.webhook_coalesce import ingress
+
+    route = _coalesce_route(key='pull_request.number', window_seconds=60)
+    if mode != 'coalesce':
+        route.pop('coalesce')
+    if mode == 'direct':
+        route['deliver_only'] = True
+    elif mode == 'cron':
+        route['cron_job'] = 'example'
+    adapter = _make_adapter(routes={'pr': route})
+    admissions = _capture_admissions(adapter, monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+    effects = []
+
+    async def lookup(*args):
+        entered.set()
+        await release.wait()
+        return seen
+
+    async def dispatch(*args, **kwargs):
+        effects.append('dispatch')
+        return web.json_response({}, status=202)
+
+    def cron(*args):
+        effects.append('cron')
+        return web.json_response({}, status=202)
+
+    monkeypatch.setattr(ingress, 'prior_coalesced', lookup)
+    monkeypatch.setattr(adapter, '_dispatch_agent_run', dispatch)
+    monkeypatch.setattr(adapter, '_handle_deliver_only', dispatch)
+    monkeypatch.setattr(adapter, '_handle_cron_trigger', cron)
+    task = asyncio.create_task(adapter._handle_webhook(_mock_request(_payload(7), delivery_id='lookup-race')))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        if change == 'credential':
+            adapter._global_secret = 'rotated'
+        elif change == 'destination':
+            route['deliver'] = 'telegram'
+        elif change == 'profile':
+            route['profile'] = 'other'
+        else:
+            adapter._coalescer._closed = True
+        release.set()
+        assert (await asyncio.wait_for(task, 2)).status == 503
+        assert not effects and not admissions and not adapter._coalescer.store.path.exists()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await adapter.disconnect()
 
 
 @pytest.mark.asyncio
@@ -70,7 +126,7 @@ async def test_ordinary_reconnect_reopens_intake_without_recovery(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_receipt_reader_does_not_reserve_writer(tmp_path):
-    from gateway.platforms.webhook_coalesce_store import CoalesceStore
+    from gateway.platforms.webhook_coalesce.store import CoalesceStore
     store = CoalesceStore(tmp_path)
     assert store.accept('known', 'group', {}, 1, 2) == 'coalesced'
     writer = sqlite3.connect(store.path)
@@ -156,7 +212,7 @@ async def test_resolved_group_key_is_rendered_once(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failed_claim_and_defer_wait_before_relaunch(monkeypatch):
-    from gateway.platforms import webhook_coalesce_recovery as recovery
+    from gateway.platforms.webhook_coalesce import recovery
     route = _coalesce_route(key='pull_request.number', window_seconds=0.001)
     adapter = _make_adapter(routes={'pr': route, 'ordinary': {'secret': 'INSECURE_NO_AUTH', 'prompt': '{action}'}})
     admissions = _capture_admissions(adapter, monkeypatch)

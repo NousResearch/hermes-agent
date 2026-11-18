@@ -24,7 +24,8 @@ const FAMILIES = tokenFamilies(TOKEN_SOURCES)
 const UNIFY_ID = 'ds-still-to-unify'
 
 interface NavGroup {
-  caption: string
+  /** Absent for a group whose one row already names it. */
+  caption?: string
   rows: { id: string; label: string }[]
 }
 
@@ -41,7 +42,7 @@ function navGroups(copy: DesignSystemCopy): NavGroup[] {
         { id: NOT_SHOWN_ID, label: copy.notShown }
       ]
     },
-    { caption: copy.stillToUnify, rows: [{ id: UNIFY_ID, label: copy.stillToUnify }] }
+    { rows: [{ id: UNIFY_ID, label: copy.stillToUnify }] }
   ]
 }
 
@@ -117,8 +118,8 @@ function DesignSystemPage() {
       <PageSidebarPanel title={copy.contents}>
         <PageSidebarList>
           {groups.map(group => (
-            <div className="ds-nav-group" key={group.caption}>
-              <PageSidebarCaption>{group.caption}</PageSidebarCaption>
+            <div className="ds-nav-group" key={group.rows[0].id}>
+              {group.caption && <PageSidebarCaption>{group.caption}</PageSidebarCaption>}
               {group.rows.map(row => (
                 <PageSidebarRow current={row.id === current} key={row.id} onClick={() => go(row.id)}>
                   {row.label}

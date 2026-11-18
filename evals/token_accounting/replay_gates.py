@@ -11,7 +11,7 @@ Shapes (each runs several turns):
 * ``cli``      — same history list objects across turns (CLI REPL).
 * ``gateway``  — history JSON round-tripped before every turn (fresh dict identities, as the
                  gateway re-reads the transcript from the DB each turn).
-* ``restore``  — turn 1 persisted to a real ``SessionDB``, DB closed/reopened, a FRESH
+* ``restore``  — turn 1 persisted to a real session store, store closed/reopened, a FRESH
                  ``AIAgent`` resumes (desktop per-turn ``serve`` / CLI ``--resume``).
 
 Scenarios per shape:
@@ -123,13 +123,13 @@ class _FakeChat:
         self.server.server_close()
 
 
-def _make_agent(base_url: str, session_id: str | None = None, session_db=None):
+def _make_agent(base_url: str, session_id: str | None = None, persistence=None):
     from run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key", base_url=base_url, provider="custom", model="replay-model",
         quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[],
-        max_iterations=3, session_id=session_id, session_db=session_db,
+        max_iterations=3, session_id=session_id, persistence=persistence,
     )
     agent.compression_enabled = True
     cc = agent.context_compressor
@@ -192,31 +192,33 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     if shape == "gateway":
         return _run_turns(wire, lambda: _make_agent(wire.base_url), history, reload=True, real=real)
     # restore: turn 1 in one process/agent, persisted; fresh agent + reopened DB for the rest.
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
 
     wire.requests.clear()
     wire.usage_script[:] = [real] * (TURNS + 2)
     sid = f"replay-{shape}-{real}-{chars}"
-    db_path = tmp / f"state-{sid}.db"
-    db = SessionDB(db_path=db_path)
+    scope = profile_scope(home=tmp / f"state-{sid}")
+    db = open_persistence(scope, eager=True)
     # The prior transcript is already durable (run_conversation treats ``conversation_history``
     # as persisted and flushes only the new rows).
-    db.create_session(sid, source="cli")
+    db.sessions.create(NewSession(session_id=sid, source="cli"))
     for m in history:
-        db.append_message(sid, m["role"], m["content"])
-    history = db.get_messages_as_conversation(sid)
-    first = _make_agent(wire.base_url, session_id=sid, session_db=db)
+        db.messages.append(sid, NewMessage(role=m["role"], content=m["content"]))
+    history = [m.as_openai_message() for m in db.messages.read_conversation(sid)]
+    first = _make_agent(wire.base_url, session_id=sid, persistence=db)
     r1 = first.run_conversation("turn 1", conversation_history=history)
     assert r1.get("completed"), r1.get("error")
     calls_t1 = len(first._ab_compress_calls)
     db.close()
-    reopened = SessionDB(db_path=db_path)
-    persisted = reopened.get_messages_as_conversation(sid)
+    reopened = open_persistence(scope, eager=True)
+    persisted = [m.as_openai_message() for m in reopened.messages.read_conversation(sid)]
     compress_by_turn = [calls_t1]
-    fresh = _make_agent(wire.base_url, session_id=sid, session_db=reopened)
+    fresh = _make_agent(wire.base_url, session_id=sid, persistence=reopened)
     from agent.usage_anchor import restore_usage_anchor
 
-    probe = _make_agent(wire.base_url, session_id=sid, session_db=reopened)
+    probe = _make_agent(wire.base_url, session_id=sid, persistence=reopened)
     restore_usage_anchor(probe, persisted)
     anchor_restored = probe._usage_anchor is not None
     hist = persisted

@@ -1,6 +1,6 @@
 # GitHub Actions workflows
 
-This directory has 57 workflow files. Most of them are **reusable workflows**
+This directory has 47 workflow files. Most of them are **reusable workflows**
 (`on: workflow_call`). They never start on their own; an entry-point workflow
 calls them. This README covers what starts each workflow, which jobs it skips
 and why, how to run it by hand, and how a regular CI run differs from a
@@ -45,6 +45,10 @@ PR labeled run-e2e       → label-rerun.yml (reruns CI, Docker, Nix)
 
 schedule daily 06:41 UTC → canary-release.yml → (release.py dispatches) desktop-bundled-release.yml
                                                                          └─ desktop-bundle-smoke.yml
+Canary Release succeeded → canary-e2e.yml ─┬─ ci.yaml (release: true)
+ (on the canary commit)                    ├─ install-e2e.yml
+                                           └─ windows-venv-e2e.yml
+Canary E2E completed     → install-e2e-red.yml (one tracker issue)
 
 release.py release       → stable-release.yml ─┬─ ci.yaml (release: true, strict gate)
  (pushes rc.N-vX.Y.Z,                          ├─ docker.yml (release-phase test → publish)
@@ -96,11 +100,16 @@ The pattern repeats across files:
   `lint.yml`, …) still use `cancel-in-progress` for non-tag refs.
 - **Release / `commit`-pinned calls:** keyed on `github.run_id`, never
   cancelled. A parent rerun cannot kill a child that is still running.
-- **Release controllers:** `canary-release`, `stable-release` (shared with
-  `stable-release-publication`), `pages` (deploy), `docs-search-monitor`,
-  `install-e2e-red-tracker`. All of them queue (`cancel-in-progress: false`).
+- **Release controllers:** `canary-release`, `canary-e2e`, `stable-release`
+  (shared with `stable-release-publication`), `pages` (deploy),
+  `docs-search-monitor`, `install-e2e-red-tracker`. All of them queue
+  (`cancel-in-progress: false`).
   GitHub keeps only one *pending* run per group, so a newer queued run
-  replaces an older queued one.
+  replaces an older queued one. `canary-e2e` and `install-e2e-red-tracker`
+  therefore queue only the runs that will do work (group suffix `-auto`); a
+  run that will skip, or a dispatch, gets a group of its own. A live tracker
+  replay (`dry-run=false`) can write the issue, so it queues with the
+  automatic runs.
 
 ### "Skipped" is not "failed"
 
@@ -144,7 +153,9 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 
 `blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
 `32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.
+`windows-latest` (standard, free on a public repository), `windows-latest-32-core`
+and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
+install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
 No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
 `docker buildx imagetools` cannot commit manifest lists to Docker Hub from
 Blacksmith.
@@ -162,7 +173,7 @@ Blacksmith.
 | `pull_request` (any branch, any path) | The classifier selects lanes from the PR diff. E2E lanes are forced **off**. |
 | `push` to `main` | Every lane is on (a push has no PR diff, so the classifier fails open). E2E lanes are forced **off**. PR-only jobs skip. |
 | `workflow_dispatch` | Every lane is on, **E2E included**. Inputs: `release` (strict gate), `strict_acceptance`. |
-| `workflow_call` from `stable-release.yml` | `release: true` and `commit: <claim commit>`. Every lane is forced on, E2E included, with the strict gate. |
+| `workflow_call` from `stable-release.yml` or `canary-e2e.yml` | `release: true` and `commit: <claim or canary commit>`. Every lane is forced on, E2E included, with the strict gate. |
 
 There are no `paths:` filters: CI starts on every PR. The `detect` job
 decides what runs.
@@ -360,6 +371,7 @@ branch protection.
 | Workflow | Schedule (UTC) | Other triggers | What it does |
 |---|---|---|---|
 | `canary-release.yml` | daily 06:41 | dispatch | See [Canary](#canary-releases) |
+| `canary-e2e.yml` | after each successful Canary Release | dispatch | A claim's E2E set on the canary commit. See [Canary E2E](#canary-e2e) |
 | `skills-index.yml` | 06:00, 18:00 | push, dispatch | See above |
 | `skills-index-freshness.yml` | every 4 h | dispatch | Upstream only. Opens an issue if `/docs/api/skills-index.json` is more than 26 h stale, missing, or a source collapsed. Also checks CORS on `/docs/api/plugins.json`. |
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
@@ -376,7 +388,7 @@ There are three release paths, and none of them starts from a tag push:
 |---|---|---|---|
 | Entry | `canary-release.yml` (daily cron or dispatch) | `python scripts/release.py release …` → dispatches `stable-release.yml` | `python scripts/release.py --build-commit REV [--channel NAME] --publish` → dispatches `desktop-bundled-release.yml` |
 | Identity | `v<stable>+canary.<UTC>` tag, separate `hermes-canary` app | `rc.<N>-vX.Y.Z` attempt ref, then a `vX.Y.Z` receipt at publish | commit: `hermes-<sha7>` app; channel: `Hermes NAME` or stable branding |
-| Tests | native smokes of each bundle | full CI (strict) + Docker + Nix + PM bundle + install/update E2E + signed upgrade acceptance, per the claim's lanes | native smokes |
+| Tests | native smokes of each bundle; afterwards, a claim's E2E set on its commit ([Canary E2E](#canary-e2e), report only) | full CI (strict) + Docker + Nix + PM bundle + install/update E2E + signed upgrade acceptance, per the claim's lanes | native smokes |
 | Publishes | canary feeds, canary GitHub prerelease | Docker versioned tag → `stable`/`latest`, R2 stable feeds, App Installer, Store, APT, GitHub release | commit/channel pages under R2; never a feed or Store |
 
 Long-form reference: `website/docs/developer-guide/stable-releases.md`.
@@ -398,6 +410,31 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 - **Manual:** `gh workflow run canary-release.yml` (on `main`).
 - A queued dispatch that a newer one superseded ends as `cancelled`. Only
   `failure` signals a canary failure.
+
+### Canary E2E
+
+`canary-e2e.yml`, **Canary E2E** (run name `Canary E2E on <commit>`)
+
+- **Runs:** on `workflow_run` when **Canary Release** completes, or on
+  `workflow_dispatch` (`commit`: a full SHA; empty tests the dispatched ref).
+- **Skipped:** `resolve` (and so every call) skips unless the canary run
+  succeeded, ran on the default branch and belongs to the upstream repo. The
+  calls also skip when an automatic run already passed that commit: with no
+  new commits the canary resumes its last tag and succeeds again. A dispatch
+  always runs the set.
+- **Flow:** the same three calls `stable-release.yml` makes for its `ci`,
+  `install-e2e` and `windows-live` lanes, with the same inputs, permissions
+  and secrets (none), on the commit the canary tagged. A `workflow_run` run's
+  `github.sha` is `main`'s tip when the event fired, so the commit comes from
+  the canary run's `head_sha` and is passed down explicitly.
+- **Effect:** reporting only. The canary never waits on it and nothing is
+  published. `install-e2e-red.yml` keeps one `install-e2e-red` issue in step
+  with the latest automatic run.
+- **Concurrency:** automatic runs that will test share group `canary-e2e-auto`,
+  queued. A dispatch or a run that will skip gets its own group, so it never
+  replaces a queued set. About 1,400 job-minutes and 45 minutes wall clock per
+  run.
+- **Manual:** `gh workflow run canary-e2e.yml -f commit=<sha>`.
 
 ### Stable releases
 
@@ -504,11 +541,11 @@ gh workflow run desktop-bundle-smoke.yml --ref <test-branch> \
 
 | Workflow | Triggers | Notes |
 |---|---|---|
-| `install-e2e.yml`, **Install & Update E2E** | `workflow_dispatch`; `workflow_call` from stable (`route=all`) | "Can a user on a released version get to this commit?" `pick-releases` samples release tags (newest, oldest, spread; `tag-count` or `install-ref`). `generate-matrix` expands `scripts/sandbox/generate-e2e-matrix.mjs` into linux/windows/macos legs. The bundled legs need `windows-bundle-manifest` / `macos-bundle-manifest` and a matching `route`. **Never runs on PRs, pushes, or a schedule.** |
+| `install-e2e.yml`, **Install & Update E2E** | `workflow_dispatch`; `workflow_call` from stable and Canary E2E (`route=all`) | "Can a user on a released version get to this commit?" `pick-releases` samples release tags (newest, oldest, spread; `tag-count` or `install-ref`). `generate-matrix` expands `scripts/sandbox/generate-e2e-matrix.mjs` into linux/windows/macos legs. The bundled legs need `windows-bundle-manifest` / `macos-bundle-manifest` and a matching `route`. **Never runs on PRs or pushes**; daily only through Canary E2E. |
 | `install-e2e-run.yml` | `workflow_call` | Linux/OS-agnostic leg: real `curl \| bash` install, then update. Unsupported method pairs skip (grey). |
 | `install-e2e-windows-run.yml` | `workflow_call` | Windows leg (Hermes-Setup.exe via AutoHotkey, `install.ps1`, app "Update now" under Playwright). Packaged-bundle arm only with `install-method=packaged-app`. Also called by stable for signed acceptance. |
 | `install-e2e-macos-run.yml` | `workflow_call` | macOS leg (script installs, Hermes-Setup.dmg, packaged-bundle arm). Also called by stable. |
-| `install-e2e-red.yml`, **Install & Update E2E red tracker** | `workflow_run` of Install & Update E2E; `workflow_dispatch` (`run-id`, `dry-run` default true) | Keeps one `install-e2e-red` issue in sync. The automatic path runs only when the watched run was a `schedule` event (see [dormant paths](#known-dormant-or-inert-paths)). |
+| `install-e2e-red.yml`, **Canary E2E red tracker** | `workflow_run` of Canary E2E; `workflow_dispatch` (`run-id`, `dry-run` default true) | Keeps one `install-e2e-red` issue in sync with the latest Canary E2E run a canary started: a red run opens or rewrites it, a green run closes it. Dispatched and skipped Canary E2E runs leave it alone. |
 
 ```sh
 gh workflow run install-e2e.yml --ref main -f route=all
@@ -534,7 +571,7 @@ matching branch, or dispatch:
 
 | Workflow | Branch pattern | Dispatch | Other callers |
 |---|---|---|---|
-| `windows-venv-e2e.yml`, venv-holder live E2E | `wine2e/**` | no | stable (`windows-live` lane) |
+| `windows-venv-e2e.yml`, venv-holder live E2E | `wine2e/**` | no | stable (`windows-live` lane), Canary E2E |
 | `windows-install-update-e2e.yml`, install.ps1 + `hermes update` | `wine2e-install/**` | yes (`strict_acceptance`) | `tests-os.yml` (`e2e_upgrade` lane) |
 | `windows-desktop-attach-e2e.yml`, Desktop attach to a running gateway | `wine2e-desktop/**` | yes | none |
 
@@ -553,10 +590,11 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `archive-inputs.yml` | Archive pinned PM inputs | main (paths), dispatch, call | none |
 | `bootstrap-installer-build.yml` | Bootstrap installer build | dispatch | none |
 | `bootstrap-installer.yml` | Bootstrap installer | R | ci |
+| `canary-e2e.yml` | Canary E2E | workflow_run(Canary Release completed), dispatch | none |
 | `canary-release.yml` | Canary Release | cron daily 06:41, dispatch | none |
 | `catalog-tests.yml` | Catalog tests | R | ci |
 | `ci-review-comment.yml` | CI review comment | workflow_run(CI in_progress) | none |
-| `ci.yaml` | CI | PR, main, dispatch, call | stable |
+| `ci.yaml` | CI | PR, main, dispatch, call | stable, canary-e2e |
 | `deploy-site.yml` | Deploy Site | main (paths), release published, dispatch | skills-index (dispatch) |
 | `desktop-bundled-release.yml` | Desktop Bundled Release | dispatch, call | stable; canary/release.py (dispatch) |
 | `desktop-bundle-smoke.yml` | Desktop bundle smoke | dispatch, call | desktop-bundled-release |
@@ -567,10 +605,10 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `e2e-desktop-update.yml` | E2E Desktop update | R | ci |
 | `e2e-desktop.yml` | E2E Desktop | R | ci (disabled) |
 | `install-e2e-macos-run.yml` | install-e2e macos leg | R | install-e2e, stable |
-| `install-e2e-red.yml` | Install & Update E2E red tracker | workflow_run(Install & Update E2E), dispatch | none |
+| `install-e2e-red.yml` | Canary E2E red tracker | workflow_run(Canary E2E), dispatch | none |
 | `install-e2e-run.yml` | Install & Update E2E (reusable) | R | install-e2e, macos leg |
 | `install-e2e-windows-run.yml` | install-e2e windows leg | R | install-e2e, stable |
-| `install-e2e.yml` | Install & Update E2E | dispatch, call | stable |
+| `install-e2e.yml` | Install & Update E2E | dispatch, call | stable, canary-e2e |
 | `js-autofix.yml` | auto-fix lint issues & formatting | main (paths), dispatch | none |
 | `js-tests.yml` | JS Tests | R | ci |
 | `label-rerun.yml` | Label rerun | PR labeled | none |
@@ -594,7 +632,7 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `windows-bundle-sdk.yml` | Windows bundle SDK | PR (paths), dispatch | none |
 | `windows-desktop-attach-e2e.yml` | Windows Desktop attach E2E | push `wine2e-desktop/**`, dispatch | none |
 | `windows-install-update-e2e.yml` | Windows install + update E2E | push `wine2e-install/**`, dispatch, call | tests-os |
-| `windows-venv-e2e.yml` | Windows venv-holder live E2E | push `wine2e/**`, call | stable |
+| `windows-venv-e2e.yml` | Windows venv-holder live E2E | push `wine2e/**`, call | stable, canary-e2e |
 
 ---
 
@@ -609,9 +647,6 @@ coverage:
 - **Linux desktop bundles** (`build-linux-x64/arm64` in
   `desktop-bundled-release.yml`) and the Linux targets of `pm-bundle.yml` are
   disabled.
-- **`install-e2e-red.yml`** updates its issue automatically only when the
-  watched run came from a `schedule` event, and `install-e2e.yml` has no
-  schedule. Today only a manual dispatch does anything.
 - **`archive-inputs.yml`** declares `workflow_call`, but nothing in this
   directory calls it.
 - Some file header comments are older than the "E2E only on release or

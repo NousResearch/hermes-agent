@@ -646,6 +646,38 @@ On compact the actions take their own row and the tabs keep their own widths in 
 A page that loads in fills its first paint with placeholders shaped like the loaded content
 (`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
 
+### Routines (`app/routines/`)
+
+The rail's Routines destination follows Figma "Routines — proposal + mock" (1081/1099/1100) and the
+board's decisions of Nov 12: one list, two doors. The rail page lists every agent's routines on this
+machine (the shared `$cronJobs` snapshot, which the redesign's sidebar sync keeps at every profile)
+with **quick actions only**: Run now (Retry on a failure), Pause/Resume, Rename, Delete, and "Edit in
+<agent> settings", which opens that routine, editor open, inside Agent › Settings › Routines
+(`?agentProfile=…&tab=agent:schedules&routine=<id>&edit=1`). That agent page is the same list filtered
+to the agent, read from its own machine, where the one editor changes what a routine does. Both doors
+share the rows, detail and editor (`RoutineSource` is the difference); classic keeps `CronView` and
+`AgentSchedulesSettings`. The rail page's panel and stage use the shared page-panel frame (panel at the
+rail's edge, `--page-nav-width`; H1 where Settings puts it). The panel holds New routine (creation
+opens "What kind of routine?" with an agent select), the overview row, and NEEDS ATTENTION / SCHEDULED
+/ PAUSED (/ FINISHED) groups with a status dot and the agent's name as a tag. The overview is the
+`PageHeader`, search and a status segment, a danger-tint banner per routine that needs attention (its
+streak, its first plain error sentence, when it tries again, Retry) and a Routine · Agent · When · Last
+run · Status table; on compact the schedule moves under the name. A routine needs attention when its
+newest run failed or did not deliver, or its slot sits overdue past the scheduler's grace (a run in
+flight supersedes the result); the rail button then carries the error-ink dot. The detail keeps the H1
+at the page's y (the breadcrumb rides the top band); on the rail it shows what it does, when and where
+read-only with an "Edit in <agent>" card, and Runs (each opens as a chat via `openCronRun`; chips only
+where the backend recorded an outcome). In the agent's settings each row has Change, plus Advanced
+(model, missed runs, run limit, remember last run; developer mode adds expression, script, id) and
+Delete. "What kind of routine?" offers the agent's ready-made catalog, Ask in chat (a new chat with the
+agent, its composer seeded with a starter sentence) and Start blank. When to run composes the
+scheduler's own strings and reads them back in words. Send results to lists the agent's chat and its
+connected channels; nothing checked is today's save-only `local`. A chat's items pane lists the routines
+of the chat's agent first (a Routines section and tab; rev 11/16, 1264:40927), each with its schedule
+in words and an error dot while it needs attention, and opens one on the Routines page. The chat list
+carries no routines; runs never join Chats. The sidebar's scheduled-jobs
+section and the statusbar's Cron item are classic only.
+
 ### Rules of thumb
 
 - A new colour must be a role in `color.css`. A new alpha is not allowed: pick

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +20,7 @@ import { useI18n } from '@/i18n'
 import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
+import { shellCopy } from '@/lib/shell-copy'
 import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -34,20 +36,32 @@ export function CreateProfileDialog({
   onClose,
   onCreated,
   open,
-  profiles = []
+  profiles = [],
+  scope,
+  initialCloneFrom = 'default',
+  title
 }: {
   onClose: () => void
   onCreated?: (name: string) => Promise<void> | void
   open: boolean
   profiles?: ProfileInfo[]
+  scope?: ProfileScope
+  initialCloneFrom?: string | null
+  /** The verb that opened it ("Duplicate agent"); the default is New agent. */
+  title?: string
 }) {
   const { t } = useI18n()
   const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
+  const [cloneFrom, setCloneFrom] = useState<null | string>(initialCloneFrom)
   const [soul, setSoul] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
+
+  // The success state shows briefly before the dialog closes; a dialog that unmounts first must not
+  // call back into a page that is gone.
+  const closing = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(closing.current), [])
 
   useEffect(() => {
     if (!open) {
@@ -55,11 +69,11 @@ export function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFrom('default')
+    setCloneFrom(initialCloneFrom)
     setSoul('')
     setError(null)
     setStatus('idle')
-  }, [open])
+  }, [open, initialCloneFrom])
 
   const trimmed = name.trim()
   const invalid = trimmed !== '' && !isValidProfileName(trimmed)
@@ -78,19 +92,24 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      const result = await createProfile({ name: trimmed, clone_from: cloneFrom, ...(soul.trim() ? { soul } : {}) })
+      const payload = { name: trimmed, clone_from: cloneFrom, ...(soul.trim() ? { soul } : {}) }
+      const result = await (scope === undefined ? createProfile(payload) : createProfile(payload, scope))
       // A create never lands on a live profile's name, so a folder or startup profile stored under
       // it was left by a profile deleted before delete dropped them.
-      dropBrowserProfilePrefs(trimmed)
+      dropBrowserProfilePrefs(trimmed, scope && typeof scope === 'object' ? scope.connectionId : undefined)
 
       // Older remote backends do not accept an initial persona in the create request.
       if (soul.trim() && !result.soul_set) {
-        await updateProfileSoul(trimmed, soul, trimmed)
+        await updateProfileSoul(
+          trimmed,
+          soul,
+          scope && typeof scope === 'object' ? { ...scope, profile: trimmed } : trimmed
+        )
       }
 
       await onCreated?.(trimmed)
       setStatus('done')
-      window.setTimeout(onClose, 800)
+      closing.current = window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedCreate)
@@ -101,7 +120,7 @@ export function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{p.newProfile}</DialogTitle>
+          <DialogTitle>{title ?? p.newProfile}</DialogTitle>
           <DialogDescription>{p.createDesc}</DialogDescription>
         </DialogHeader>
 
@@ -112,7 +131,7 @@ export function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-profile"
+              placeholder={shellCopy({ classic: 'my-profile', redesign: 'my-agent' })}
               sanitize={slug}
               value={name}
             />

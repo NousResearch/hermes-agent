@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { truncateText } from './job-state'
+import type { CronJob } from '@/hermes'
+import { $shellChoice } from '@/store/shell-variant'
+
+import { jobTitle, truncateText } from './job-state'
 
 describe('truncateText', () => {
   it('truncates on Unicode code-point boundaries', () => {
@@ -30,5 +33,18 @@ describe('truncateText', () => {
     for (const [value, max, expected] of cases) {
       expect(truncateText(value, max)).toBe(expected)
     }
+  })
+})
+
+describe('jobTitle', () => {
+  afterEach(() => $shellChoice.set(null))
+
+  it.each([
+    [false, 'Cron job'],
+    [true, 'Routine']
+  ])('names a job with nothing to name it by with the noun, never a count (V2=%s)', (enabled, noun) => {
+    $shellChoice.set(enabled)
+
+    expect(jobTitle({ id: '' } as CronJob)).toBe(noun)
   })
 })

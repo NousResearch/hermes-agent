@@ -11,6 +11,6 @@ export const CommandCenterView = lazyView(async () => (await import('./command-c
 export const CronView = lazyView(async () => (await import('./cron')).CronView)
 export const MessagingView = lazyView(async () => (await import('./messaging')).MessagingView)
 export const ProfilesView = lazyView(async () => (await import('./profiles')).ProfilesView)
-export const SettingsView = lazyView(async () => (await import('./settings')).SettingsView)
+export const SettingsView = lazyView(async () => (await import('./agent-settings/entry')).SettingsView)
 export const StarmapView = lazyView(async () => (await import('./starmap')).StarmapView)
 export const WebhooksView = lazyView(async () => (await import('./webhooks')).WebhooksView)

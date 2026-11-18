@@ -27,7 +27,13 @@ def test_first_party_model_routes_keep_capabilities_and_reasoning(monkeypatch, m
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
     assert models.provider_model_ids("openai-api", force_refresh=True) == [model]
-    assert model in get_codex_model_ids()
+    # Offline hints and stale catalogs aren't proof that the account offers GPT-6.2.
+    assert model not in get_codex_model_ids()
+    monkeypatch.setattr("hermes_cli.codex_models._read_cache_models", lambda *a: [model, "gpt-6-sol"])
+    monkeypatch.setattr("hermes_cli.codex_models._read_default_model", lambda *a: model)
+    assert model not in get_codex_model_ids()
+    monkeypatch.setattr("hermes_cli.codex_models._fetch_models_from_api", lambda *a, **k: [model])
+    assert model in get_codex_model_ids(access_token="test-token")
     assert not is_astra_model(model)  # GPT-6 Astra's preview entitlement gate must not hide 6.2.
     assert not has_codex_context_variant(model)  # No unverified 900K opt-in.
     assert _resolve_codex_oauth_context_length_with_source(model) == (codex_window, "fallback")
@@ -89,8 +95,9 @@ def test_published_tiers_price_the_served_request_not_the_subscription(monkeypat
                         + Decimal(2000) * rate * 5 * (Decimal("1.5") if long else 1)) / 1_000_000
             standard = pricing.estimate_usage_cost(model, usage, provider="openai-api")
             assert standard.status == "estimated" and standard.amount_usd == expected
-            fast = pricing.with_served_service_tier(usage, SimpleNamespace(service_tier="priority"))
-            assert pricing.estimate_usage_cost(model, fast, provider="openai-api").amount_usd == expected * 2
+            for tier in ("fast", "priority"):
+                fast = pricing.with_served_service_tier(usage, SimpleNamespace(service_tier=tier))
+                assert pricing.estimate_usage_cost(model, fast, provider="openai-api").amount_usd == expected * 2
             served = pricing.with_served_service_tier(usage, SimpleNamespace(service_tier="ultrafast"))
             ultra = pricing.estimate_usage_cost(f"openai/{model}", served, provider="openai-api")
             assert ultra.amount_usd == expected * multiplier

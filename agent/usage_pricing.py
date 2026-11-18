@@ -785,11 +785,14 @@ def estimate_usage_cost(
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    if route.provider == "openai" and _served_openai_tier(usage) in {"ultrafast", "priority"}:
-        served_entry = _openai_served_tier_entry(route.model, _served_openai_tier(usage))
+    served_tier = _served_openai_tier(usage)
+    if served_tier == "fast" and route.model in GPT62_MODEL_IDS:
+        served_tier = "priority"
+    if route.provider == "openai" and served_tier in {"ultrafast", "priority"}:
+        served_entry = _openai_served_tier_entry(route.model, served_tier)
         if served_entry:
             entry = served_entry
-        elif _served_openai_tier(usage) == "ultrafast":
+        elif served_tier == "ultrafast":
             return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")

@@ -790,6 +790,36 @@ def test_reopen_review_task_returns_to_ready(kanban_home: Path) -> None:
         assert kb.reopen_review_task(conn, tid) is False
 
 
+def test_reactivate_done_task_returns_same_task_to_ready(kanban_home: Path) -> None:
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="closed too early", assignee="worker")
+        assert kb.complete_task(conn, tid, result="premature")
+
+        ok = kb.reactivate_task(
+            conn,
+            tid,
+            reason="registered pull request is still open and actionable",
+            actor="managed-pr-monitor",
+        )
+
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.id == tid
+        assert task.status == "ready"
+        completed_at = conn.execute(
+            "SELECT completed_at FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()["completed_at"]
+        assert completed_at is None
+        event = _events(conn, tid, kind="reactivated")[-1][1]
+        assert event == {
+            "actor": "managed-pr-monitor",
+            "previous_status": "done",
+            "reason": "registered pull request is still open and actionable",
+            "status": "ready",
+        }
+
+
 def test_review_cycle_end_to_end(kanban_home: Path) -> None:
     """Full loop: run -> review -> follow-up reopen -> re-run -> review ->
     approve -> done. Never blocks, never triages, and stays wake-subscribed

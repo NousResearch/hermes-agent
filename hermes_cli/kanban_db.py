@@ -3634,6 +3634,53 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def reactivate_task(
+    conn: sqlite3.Connection, task_id: str, *, reason: str, actor: str,
+) -> bool:
+    """Return an authoritative owner in ``done``/``review`` to parent-gated work.
+
+    Manual holds and active tasks are deliberately excluded; collectors must
+    classify those states without moving them.
+    """
+    if not reason.strip() or not actor.strip():
+        raise ValueError("reactivation requires an actor and reason")
+    with write_txn(conn):
+        previous_status = _task_status(conn, task_id)
+        if previous_status not in {"done", "review"}:
+            return False
+        new_status = _landing_status_after_parents(conn, task_id)
+        review_event = _latest_event(conn, task_id, "review_requested")
+        handoff = _json_dict(_row_get(review_event, "payload"))
+        implementer = _nonblank_str(handoff.get("implementer"))
+        params: tuple[Any, ...] = (
+            new_status,
+            *((implementer,) if implementer else ()),
+            task_id,
+            previous_status,
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = NULL, current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
+            + (", assignee = ?" if implementer else "")
+            + " WHERE id = ? AND status = ?",
+            params,
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            task_id,
+            "reactivated",
+            {
+                "actor": actor.strip(),
+                "previous_status": previous_status,
+                "reason": reason.strip(),
+                "status": new_status,
+            },
+        )
+    return True
+
+
 def invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection, task_id: str, *, author: str,
 ) -> dict[str, Any]:

@@ -5,7 +5,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 """
 from copy import deepcopy
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tools.approval import list_gateway_approvals, resolve_gateway_approval, withdraw_gateway_approval
 
 
@@ -71,7 +71,7 @@ class PendingControls:
                 return False
             route, prompt = entry
             if prompt['kind'] != 'approval':
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             # A delayed route failure belongs only to its exact execution. Checking before
             # snapshot cleanup keeps an old generation from retiring its successor's prompts.
             if prompt['execution_generation'] != generation:
@@ -84,7 +84,7 @@ class PendingControls:
             if prompt_id in self.remote_responders:
                 try:
                     self.remote_responders[prompt_id]('approval', prompt_id, 'cancelled:' + cause)
-                except RuntimeStoreError as exc:
+                except AuthorityRefusal as exc:
                     # Death/backpressure races are already fail-closed in the child; retire the owner
                     # projection instead of leaving an actionable stale prompt behind.
                     if exc.reason not in {'managed_worker_lost', 'worker_control_backpressure'}:
@@ -105,13 +105,13 @@ class PendingControls:
                 return {'status': 'already_resolved', 'prompt_id': prompt_id}
             route, prompt = entry
             if prompt['kind'] != kind:
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             if prompt_id in self.remote_responders:
                 field = 'answer' if kind == 'clarify' else 'choice'
                 if (not isinstance(response, dict) or set(response) != {field}
                         or not isinstance(response[field], str) or len(response[field]) > 16384
                         or (kind == 'approval' and response[field] not in prompt['choices'])):
-                    raise RuntimeStoreError('invalid_params')
+                    raise AuthorityRefusal('invalid_params')
                 self.remote_responders[prompt_id](kind, prompt_id, response[field])
                 del self.remote_responders[prompt_id]
                 del self.pending[prompt_id]
@@ -119,15 +119,16 @@ class PendingControls:
                                     event_type=kind + '.settled')
                 return {'status': 'resolved', 'prompt_id': prompt_id}
             if kind == 'clarify':
-                from tools.clarify_gateway import resolve_gateway_clarify
+                from tools.clarify_gateway import SKIPPED, resolve_gateway_clarify
                 if (not isinstance(response, dict) or set(response) != {'answer'}
                         or not isinstance(response['answer'], str)):
-                    raise RuntimeStoreError('invalid_params')
-                resolved = resolve_gateway_clarify(prompt_id, response['answer'])
+                    raise AuthorityRefusal('invalid_params')
+                # An empty answer is the documented skip; the waiter reads a bare "" as a timeout.
+                resolved = resolve_gateway_clarify(prompt_id, response['answer'] if response['answer'].strip() else SKIPPED)
                 self.snapshot(session_id, generation)
                 return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
             if not isinstance(response, dict) or set(response) != {'choice'} or response['choice'] not in prompt['choices']:
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             # The tools lock arbitrates native taps versus attached responders;
             # an exact request ID can never consume the next FIFO approval.
             resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id)

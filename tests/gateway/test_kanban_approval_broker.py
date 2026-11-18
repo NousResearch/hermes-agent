@@ -157,13 +157,13 @@ def test_unauthorized_disconnected_or_ambiguous_subscribers_fail_closed():
 
 
 def _running_owner(tmp_path, monkeypatch, adapter):
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_notify as kbn
     from hermes_cli.kanban_db_connect import connect_closing
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setitem(sys.modules, "hermes_bootstrap",
                         SimpleNamespace(_happy_eyeballs_create_connection=socket.create_connection))
@@ -174,17 +174,17 @@ def _running_owner(tmp_path, monkeypatch, adapter):
             conn, task_id=task_id, platform="telegram", chat_id="100", thread_id="7", chat_type="thread",
             user_id="42", notifier_profile="default",
             delivery_metadata={"kanban_approval_forwarding": "v1", "kanban_approval_task_id": task_id})
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("worker-session", source="kanban")
-    epoch = begin_runtime_epoch(db, instance_id="owner")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "worker-session", "kanban")
+    epoch = db.runtime.begin_epoch(instance_id="owner")
     card = {"board": "default", "task_id": task_id, "run_id": 1, "db": str(board_db)}
-    admit_session_input(
-        db, epoch=epoch, principal_id="dispatcher", session_id="worker-session", request_id="kanban:test",
+    db.admissions.admit(
+        epoch=epoch, principal_id="dispatcher", session_id="worker-session", request_id="kanban:test",
         payload={"text": "work", "finite": True, "kanban_card_v1": card, "kanban_approval_broker_v1": True})
-    row = claim_session_input(db, epoch=epoch, session_id="worker-session")
+    row = admission_row(db.admissions.claim(epoch=epoch, session_id="worker-session"))
     runner = _Runner(adapter)
     runner._draining = False
-    authority = SessionAuthority(runner, profile_id="worker-profile", instance_id="owner", db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id="worker-profile", instance_id="owner", persistence=db, epoch=epoch)
     live = authority.sessions["worker-session"] = LiveSession(None, "worker-route")
     live.event_stream.execution = {"admission_id": row["admission_id"], "execution_generation": row["generation"]}
     authority.executing["worker-session"] = row["generation"]
@@ -264,7 +264,6 @@ async def test_stale_worker_response_never_consumes_a_later_prompt(tmp_path, mon
     adapter = _Telegram()
     owner = _running_owner(tmp_path, monkeypatch, adapter)
     from gateway.kanban_approval_broker import FORWARDING_METADATA_KEY, respond_forwarded
-    from hermes_state_runtime import settle_session_input
 
     try:
         owner.authority.register_approval(
@@ -273,8 +272,8 @@ async def test_stale_worker_response_never_consumes_a_later_prompt(tmp_path, mon
             timeout_s=30)
         await asyncio.wait_for(adapter.send_attempted.wait(), 2)
         binding = adapter.sent[0]["metadata"][FORWARDING_METADATA_KEY]
-        settle_session_input(
-            owner.db, epoch=owner.authority.epoch, admission_id=owner.row["admission_id"],
+        owner.db.admissions.settle(
+            epoch=owner.authority.epoch, admission_id=owner.row["admission_id"],
             generation=owner.row["generation"], outcome="completed")
 
         assert await respond_forwarded(binding, "once", user_id="42", chat_id="100", thread_id="7") == 0
@@ -285,13 +284,13 @@ async def test_stale_worker_response_never_consumes_a_later_prompt(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_worker_loss_during_withdrawal_cleans_owner_projection(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     adapter = _Telegram(send_success=False)
     owner = _running_owner(tmp_path, monkeypatch, adapter)
 
     def lost(*args):
-        raise RuntimeStoreError("managed_worker_lost")
+        raise AuthorityRefusal("managed_worker_lost")
 
     owner.authority.sessions["worker-session"].controls.remote_responders["request-1"] = lost
 
@@ -565,10 +564,8 @@ async def test_persisted_default_dm_refusal_controls(tmp_path, monkeypatch, cont
         approval_id, binding = await _persisted_default_dm_forwarded(rig, tmp_path, monkeypatch)
         assert binding.thread_id is None
         if control == "stale":
-            from hermes_state_runtime import settle_session_input
-            settle_session_input(
-                rig.owner.db, epoch=rig.owner.authority.epoch,
-                admission_id=rig.owner.row["admission_id"],
+            rig.owner.db.admissions.settle(
+                epoch=rig.owner.authority.epoch, admission_id=rig.owner.row["admission_id"],
                 generation=rig.owner.row["generation"], outcome="completed")
         elif control == "revoked":
             (rig.notifier_home / ".env").write_text(
@@ -588,7 +585,7 @@ async def test_persisted_default_dm_refusal_controls(tmp_path, monkeypatch, cont
 @pytest.mark.asyncio
 async def test_delayed_old_generation_preflight_cannot_withdraw_new_prompt(tmp_path, monkeypatch):
     from gateway import kanban_approval_broker as broker
-    from hermes_state_runtime import admit_session_input, claim_session_input, settle_session_input
+    from gateway.session_authority import admission_row
 
     owner = _running_owner(tmp_path, monkeypatch, _Telegram())
     live = owner.authority.sessions["worker-session"]
@@ -610,14 +607,14 @@ async def test_delayed_old_generation_preflight_cannot_withdraw_new_prompt(tmp_p
 
     try:
         await asyncio.wait_for(started.wait(), 2)
-        settle_session_input(
-            owner.db, epoch=owner.authority.epoch, admission_id=owner.row["admission_id"],
+        owner.db.admissions.settle(
+            epoch=owner.authority.epoch, admission_id=owner.row["admission_id"],
             generation=owner.row["generation"], outcome="completed")
-        admit_session_input(
-            owner.db, epoch=owner.authority.epoch, principal_id="dispatcher",
-            session_id="worker-session", request_id="next", payload={"text": "next", "finite": True})
-        current = claim_session_input(owner.db, epoch=owner.authority.epoch, session_id="worker-session")
-        assert current is not None and not isinstance(current, bool)
+        owner.db.admissions.admit(
+            epoch=owner.authority.epoch, principal_id="dispatcher", session_id="worker-session",
+            request_id="next", payload={"text": "next", "finite": True})
+        current = admission_row(owner.db.admissions.claim(epoch=owner.authority.epoch, session_id="worker-session"))
+        assert current is not None
         live.event_stream.execution = {
             "admission_id": current["admission_id"], "execution_generation": current["generation"]}
         owner.authority.executing["worker-session"] = current["generation"]

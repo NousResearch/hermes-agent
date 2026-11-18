@@ -1,4 +1,4 @@
-"""Value checks for single config sections (voice, timezone, web backends), run by
+"""Value checks for single config sections (voice, timezone, quoted containers), run by
 ``hermes_cli.config.validate_config_structure`` for doctor and the startup warnings."""
 
 from typing import Any
@@ -56,31 +56,6 @@ def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> Non
         zoneinfo.ZoneInfo(name)
     except Exception:
         _issue(issues, "error", f"timezone {name!r} is not a valid IANA zone name", hint)
-
-
-def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
-    """A stale web backend selection otherwise fails only at the first web_search/web_extract
-    call with a generic "no registered provider" error; warn at startup instead."""
-    # See #99199.
-    web_cfg = config.get("web")
-    if not isinstance(web_cfg, dict):
-        return
-    try:
-        from tools.tool_backend_helpers import removed_backend_note
-    except Exception:
-        return
-    seen: set = set()
-    for _key in ("backend", "search_backend", "extract_backend"):
-        _val = str(web_cfg.get(_key) or "").strip().lower()
-        if not _val or _val in seen:
-            continue
-        seen.add(_val)
-        note = removed_backend_note("web", _val)
-        if note:
-            _issue(issues, "warning",
-                   f"web.{_key} is set to '{_val}', but {note} — "
-                   "web_search/web_extract will fail until it is changed",
-                   "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
 def _container_slots() -> dict[str, str]:

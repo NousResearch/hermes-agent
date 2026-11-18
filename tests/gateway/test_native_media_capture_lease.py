@@ -7,6 +7,8 @@ import threading
 
 import pytest
 
+from gateway.session_persistence import authority_persistence
+
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000a49444154789c6300010000000500010d0a2db40000000049454e44ae426082")
@@ -36,45 +38,70 @@ async def test_same_bytes_captured_for_a_new_turn_survive_an_older_turns_cleanup
     """The same staged image is sent again (a queued prompt edited: cancel + resubmit, or a re-send
     while the previous turn settles): admit_attachments reuses the content-addressed path the older
     row holds, and that row's cleanup runs while the new admission write is still in flight."""
-    from gateway import session_authority
     from gateway.session_ingress_media import release_admission_media, restore_attachments
-    from hermes_state_runtime import (cancel_session_input, claim_session_input, get_session_admission,
-                                      settle_session_input)
     from gateway.platforms.base import cache_image_from_bytes
     authority = await _authority(tmp_path, monkeypatch)
     staged = cache_image_from_bytes(PNG, '.png')
     old = await _submit(authority, 'old', staged)
     if cleanup == 'settled':
-        claim = claim_session_input(authority.db, epoch=authority.epoch, session_id='s')
-        settle_session_input(authority.db, epoch=authority.epoch, admission_id=old.admission_id,
-                             generation=claim['generation'], outcome='completed')
+        claim = authority.persistence.admissions.claim(epoch=authority.epoch, session_id='s')
+        authority.persistence.admissions.settle(epoch=authority.epoch, admission_id=old.admission_id,
+                                                generation=claim.generation, outcome='completed')
     else:
-        cancel_session_input(authority.db, epoch=authority.epoch, admission_id=old.admission_id)
+        authority.persistence.admissions.cancel(epoch=authority.epoch, admission_id=old.admission_id)
     entered, release = threading.Event(), threading.Event()
-    real = session_authority.admit_session_input
+    store = authority_persistence(authority)
+    real = store.admissions.admit
 
     def parked(*args, **kwargs):
         entered.set()
         release.wait(10)
         return real(*args, **kwargs)
-    monkeypatch.setattr(session_authority, 'admit_session_input', parked)
+    monkeypatch.setattr(store.admissions, 'admit', parked)
     new = asyncio.create_task(_submit(authority, 'new', staged))
     assert await asyncio.to_thread(entered.wait, 10)
-    await asyncio.to_thread(release_admission_media, authority.db, old.admission_id)
+    await asyncio.to_thread(release_admission_media, store, old.admission_id)
     release.set()
     receipt = await asyncio.wait_for(new, 10)
-    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+    row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
     assert receipt.status == 'queued'
-    restore_attachments(row['payload'])  # raises storage_unavailable when the bytes were unlinked
+    restore_attachments(row.payload)  # raises storage_unavailable when the bytes were unlinked
+
+
+@pytest.mark.asyncio
+async def test_same_bytes_admitted_after_cleanup_took_its_snapshot_survive_the_unlink(tmp_path, monkeypatch):
+    """An older turn's cleanup has read which references nothing holds; before it unlinks, a new
+    turn reuses the same content-addressed bytes, commits its admission and ends its lease. The
+    cleanup must not unlink bytes the new admission now owns."""
+    from gateway.session_ingress_media import release_admission_media, restore_attachments
+    from gateway.platforms.base import cache_image_from_bytes
+    authority = await _authority(tmp_path, monkeypatch)
+    staged = cache_image_from_bytes(PNG, '.png')
+    old = await _submit(authority, 'old', staged)
+    authority.persistence.admissions.cancel(epoch=authority.epoch, admission_id=old.admission_id)
+    store = authority_persistence(authority)
+    real = store.admissions.unheld_media
+    loop = asyncio.get_running_loop()
+    admitted = []
+
+    def snapshot_then_new_turn(*args, **kwargs):
+        found = real(*args, **kwargs)
+        if not admitted:
+            admitted.append(asyncio.run_coroutine_threadsafe(_submit(authority, 'new', staged), loop).result(10))
+        return found
+    monkeypatch.setattr(store.admissions, 'unheld_media', snapshot_then_new_turn)
+    await asyncio.to_thread(release_admission_media, store, old.admission_id)
+    row = authority.persistence.admissions.get(admission_id=admitted[0].admission_id)
+    assert admitted[0].status == 'queued'
+    restore_attachments(row.payload)  # raises storage_unavailable when the bytes were unlinked
 
 
 @pytest.mark.asyncio
 async def test_refused_native_admission_leaves_no_fresh_capture(tmp_path, monkeypatch):
     """admit_native captured the message's media, then the write refused it (admission_conflict
     on a changed redelivery): the fresh capture no admission owns must not stay retained."""
-    from gateway import session_authority
     from gateway.session_ingress_media import _media_root, capture_native_media
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     authority = await _authority(tmp_path, monkeypatch)
     from gateway.platforms.base import cache_image_from_bytes
 
@@ -86,9 +113,9 @@ async def test_refused_native_admission_leaves_no_fresh_capture(tmp_path, monkey
                         lambda payload: authority.sessions['s'].source)
 
     def refused(*args, **kwargs):
-        raise RuntimeStoreError('admission_conflict')
-    monkeypatch.setattr(session_authority, 'admit_session_input', refused)
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        raise AuthorityRefusal('admission_conflict')
+    monkeypatch.setattr(authority_persistence(authority).admissions, 'admit', refused)
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         await authority.admit_native(object())
     assert not [p for p in _media_root().rglob('*') if p.is_file()], 'a refused capture stayed retained'
     assert Path(_media_root()).is_dir()

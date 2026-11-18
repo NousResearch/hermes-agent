@@ -286,7 +286,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/branch [--here] [name]` (alias: `/fork`) | Branch the current session. Thread-capable platforms (Discord, Telegram, Slack, Matrix) open the branch in a new sibling thread and keep this chat on the original; `--here` switches this chat onto the branch. |
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks. |
 | `/sessions` | Browse and resume previous sessions. |
-| `/context [all]` (alias: `/ctx`) | Context-window usage gauge and category breakdown (messaging-friendly text form). `/context all` adds per-skill / per-toolset cost detail. |
+| `/context [all]` (alias: `/ctx`) | Context-window usage gauge and category breakdown (messaging-friendly text form). `/context all` adds per-skill / per-toolset cost detail. A prompt-cache line says until when the cached prompt stays warm (with how sure Hermes is: proven, declared or assumed), how long ago it expired, or that it is unknown. |
 | `/egress [status]` | Show Docker egress proxy status. |
 | `/init [notes]` | Generate or update `AGENTS.md` from a repo scan. |
 | `/learn <what to learn from>` | Distill a reusable skill from anything you describe. |

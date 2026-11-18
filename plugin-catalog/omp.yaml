@@ -1,6 +1,6 @@
 name: omp
 repo: https://github.com/Thaeland/hermes-omp-backend
-sha: 61f3c1569809fdd411c58a277ea475626aba5067
+sha: 5a1fbf6200791cbc9a302c0b56aed1b4b71e89e8
 description: >
   oh-my-pi (omp) terminal backend for Hermes Agent: Hermes's terminal, file
   and code tools run each task's commands through one long-lived
@@ -20,6 +20,7 @@ requires_hermes: ">=0.21.6"
 version: "1.0.0"
 platforms:
   - linux
+  - windows
 capabilities:
   provides_tools: []
   provides_hooks: []

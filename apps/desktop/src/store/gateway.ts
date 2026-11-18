@@ -1133,6 +1133,29 @@ export async function requestGatewayForProfile<T>(
   }
 }
 
+// The owner-route probe is a dial like sharedPrimaryRoute: background callers honor the cooldown, failures feed it.
+async function probePrimaryRider(
+  connectionId: null | string,
+  key: string,
+  scope: string,
+  spawnPriority: SpawnPriority
+): Promise<boolean> {
+  const existing = g.secondaries.get(scope)
+
+  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(scope)) {
+    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
+  }
+
+  const owner = primaryIdentity() // before the await: a stale answer must not bind to a newer primary
+
+  const rides = await ridesPrimaryBackend(connectionId, key).catch((error: unknown) => {
+    recordDialFailure({ connectionId, scope }, error)
+    throw error
+  })
+
+  return notePrimaryRider(owner, scope, rides)
+}
+
 /**
  * Send a gateway RPC through one registry source without activating it. The
  * composite (connectionId, profile) pool key prevents same-named agents on two
@@ -1168,21 +1191,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  const existing = g.secondaries.get(scope)
-
-  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(scope)) {
-    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
-  }
-
-  // The owner-route probe is itself a dial, just like sharedPrimaryRoute.
-  const owner = primaryIdentity()
-
-  const rides = await ridesPrimaryBackend(connectionId, key).catch((error: unknown) => {
-    recordDialFailure({ connectionId, scope }, error)
-    throw error
-  })
-
-  if (notePrimaryRider(owner, scope, rides)) {
+  if (await probePrimaryRider(connectionId, key, scope, spawnPriority)) {
     traceAgentRoute(scope, 'primary-shared')
 
     const result = await requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)

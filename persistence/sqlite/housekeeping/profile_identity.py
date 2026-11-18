@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Optional
 
+from persistence.authority.bindings import PROFILE_CONFIG_REF_PREFIX
 from persistence.housekeeping.profile_identity import (
     ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts,
 )
@@ -64,13 +66,26 @@ def _rekey_entry(entry: dict, old: str, new: str) -> bool:
     return changed
 
 
-def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
+def _move_config_reference(payload: dict, old_home: Path, new_home: Path) -> bool:
+    policy = payload.get("policy")
+    ref = policy.get("config_secret_ref") if isinstance(policy, dict) else None
+    if not isinstance(ref, str) or not ref.startswith(PROFILE_CONFIG_REF_PREFIX):
+        return False
+    source = _receipt(ref[len(PROFILE_CONFIG_REF_PREFIX):])
+    if not source or source.get("home") != str(old_home) or source.get("profile") != str(old_home):
+        return False
+    source.update(home=str(new_home), profile=str(new_home))
+    policy["config_secret_ref"] = PROFILE_CONFIG_REF_PREFIX + json.dumps(source, sort_keys=True)
+    return True
+
+
+def _rekey_session_receipts(conn, prefix: str, old: str, new: str, *, moved_home: Path | None = None) -> int:
     """Rewrite the session receipts under *prefix* a profile rename would strand; returns how many
     changed.
 
     Every receipt stores the route it was minted on, as its top-level ``route`` and in its
-    ``entry``. Only the ``agent:<old>:`` namespace and ``origin.profile`` move. ``profile_id``
-    stays as stored: it is the home that minted the receipt, and a local session id hashes it.
+    ``entry``. The route, origin and (in the moved profile) current credential home follow the
+    rename. The top-level ``profile_id`` stays as stored: a local session id hashes its minting home.
     """
     rewritten = 0
     rows = conn.execute("SELECT key, value FROM state_meta WHERE key GLOB ?", (prefix + "*",)).fetchall()
@@ -84,6 +99,12 @@ def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
         entry = payload.get("entry")
         if isinstance(entry, dict) and _rekey_entry(entry, old, new):
             changed = True
+        if moved_home is not None and isinstance(entry, dict):
+            origin, route = entry.get("origin"), payload.get("route")
+            if (isinstance(origin, dict) and origin.get("profile") == new
+                    and isinstance(route, str) and route.startswith(f"agent:{new}:")
+                    and entry.get("session_key") == route):
+                changed |= _move_config_reference(payload, moved_home.with_name(old), moved_home)
         if changed:
             conn.execute("UPDATE state_meta SET value=? WHERE key=?",
                          (json.dumps(payload, ensure_ascii=False), key))
@@ -198,7 +219,10 @@ class SQLiteProfileIdentityRepository:
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
             counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
-            counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
+            scope = self._store.scope
+            counts["local_policy_receipts"] = _rekey_session_receipts(
+                conn, POLICY_PREFIX, old, new,
+                moved_home=scope.profile_dir if scope.name == new and scope.profile_dir.name == new else None)
 
         with translated():
             self._store.holder()._execute_write(_do)

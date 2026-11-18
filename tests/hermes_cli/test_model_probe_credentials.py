@@ -266,7 +266,7 @@ def test_an_unavailable_config_backend_leaves_the_vision_probe_keyless(keyed, mo
 
 
 def test_probes_read_the_pool_without_rotating_it(monkeypatch):
-    """A probe reads the entry the pool is on; only a real request counts and rotates it."""
+    """A probe reads the row the pool would select; only a real request counts and rotates it."""
     import json
 
     from hermes_cli.config import save_config
@@ -283,3 +283,75 @@ def test_probes_read_the_pool_without_rotating_it(monkeypatch):
     before = json.loads(auth.read_text(encoding="utf-8"))["credential_pool"]
     assert {main_endpoint_key_for(MODEL_BLOCK, BASE) for _ in range(3)} == {"pool-key-1000"}
     assert json.loads(auth.read_text(encoding="utf-8"))["credential_pool"] == before
+
+
+def _seed_rows(rows):
+    import json
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {"lab": [
+        {"label": f"row-{row['id']}", "auth_type": "api_key", "source": "manual", "base_url": BASE, **row}
+        for row in rows]}}), encoding="utf-8")
+
+
+def test_probes_pick_the_pool_row_the_strategy_picks(monkeypatch):
+    """Under ``least_used`` the runtime takes the least-used row, not the one the pool is on; the
+    probe sends that row's key too, and still counts nothing."""
+    import json
+
+    from hermes_cli.config import save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+    from hermes_constants import get_hermes_home
+
+    save_config({"model": {**MODEL_BLOCK, "provider": "lab", "key_env": ""}, "providers": {"lab": {"base_url": BASE}},
+                 "credential_pool_strategies": {"lab": "least_used"}})
+    _seed_rows([{"id": "a", "priority": 0, "access_token": "pool-key-busy", "request_count": 7},
+                {"id": "b", "priority": 1, "access_token": "pool-key-idle", "request_count": 0}])
+    auth = get_hermes_home() / "auth.json"
+    counts = lambda: {r["id"]: r.get("request_count") for r in json.loads(auth.read_text(encoding="utf-8"))["credential_pool"]["lab"]}
+    before = counts()
+    assert main_endpoint_key_for(MODEL_BLOCK, BASE) == "pool-key-idle"
+    assert counts() == before
+    assert resolve_runtime_provider(requested="lab")["api_key"] == "pool-key-idle"
+
+
+def test_a_loopback_pool_row_with_a_legacy_short_key_probes_keyless(monkeypatch):
+    """The runtime sends ``no-key-required`` for a loopback pool row whose legacy key is unusable
+    ('123'); the probe sends no bearer rather than the raw short value."""
+    from hermes_cli.config import save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+
+    save_config({"model": {**MODEL_BLOCK, "provider": "lab", "key_env": ""}, "providers": {"lab": {"base_url": BASE}}})
+    _seed_rows([{"id": "a", "priority": 0, "access_token": "123"}])
+    assert resolve_runtime_provider(requested="lab")["api_key"] == "no-key-required"
+    assert main_endpoint_key_for(MODEL_BLOCK, BASE) == ""
+
+
+def test_a_bare_custom_endpoint_probes_with_its_host_gated_env_key(monkeypatch):
+    """A bare ``custom`` model block with no key of its own authenticates with the env key gated on
+    its host (``api.deepseek.com`` -> DEEPSEEK_API_KEY); the probes send the same key."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+
+    remote = "https://api.deepseek.com/v1"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-env-key")
+    save_config({"model": {"default": "deepseek-chat", "provider": "custom", "base_url": remote}})
+    assert resolve_runtime_provider(requested="custom")["api_key"] == "deepseek-env-key"
+    assert main_endpoint_key_for(load_config()["model"], remote) == "deepseek-env-key"
+
+
+@pytest.mark.parametrize("provider", ["custom", "lmstudio"])
+def test_the_vision_probe_sends_no_placeholder_inline_key(monkeypatch, provider):
+    """A placeholder-only inline key is never a credential: the vision fingerprint probe of
+    ``model.base_url`` goes keyless instead of falling back to the raw ``api_key`` value."""
+    from agent import image_routing
+    from hermes_cli.config import load_config, save_config
+
+    save_config({"model": {"default": "qwen-lab", "provider": provider, "base_url": BASE, "api_key": "your-api-key"}})
+    monkeypatch.setattr(image_routing, "_runtime_main", lambda key: "")
+    cfg = load_config()
+    assert image_routing._resolve_inference_base_url(cfg, provider) == BASE
+    assert image_routing._resolve_inference_api_key(cfg, provider) == ""

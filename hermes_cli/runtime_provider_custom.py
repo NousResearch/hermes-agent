@@ -82,17 +82,22 @@ def main_endpoint_key_for(model_cfg: Any, base_url: str) -> str:
     probe of *base_url* (context length, the local server fingerprint, aux pricing, the catalog); ""
     unless *base_url* is ``model.base_url``, so it never reaches another host.
 
-    The runtime's order, through the runtime's own helpers rather than a copy of them:
-    a ``providers:`` / ``custom_providers:`` entry ``model.provider`` names at this URL takes the
-    named route (the pool owning it, then the entry's own credential; ``model.key_env`` never
-    applies); a bare ``custom`` route takes the pool owning the URL, then the first usable
-    ``model.api_key`` / ``model.key_env``, then an owning entry's or the host-gated env keys
-    (``auto`` skips the pool and entry, as the runtime does). Any other provider gets the model
-    block's own usable key: its built-in credential resolution is not replayed here.
+    For the custom routes this is the runtime's order, through the runtime's own helpers rather
+    than a copy of them: a ``providers:`` / ``custom_providers:`` entry ``model.provider`` names at
+    this URL takes the named route (the pool owning it, then the entry's own credential;
+    ``model.key_env`` never applies); a bare ``custom`` route takes the pool owning the URL, then
+    the first usable ``model.api_key`` / ``model.key_env``, then an owning entry's or the
+    host-gated env keys. Elsewhere it is only an approximation, never another host's key:
+    ``auto`` / unset gets the first usable model-block or host-gated env key (at openrouter.ai the
+    runtime sends ``OPENROUTER_API_KEY`` instead of ``model.api_key``), and any other provider gets
+    the model block's own usable key; their built-in env/OAuth resolution is not replayed here.
 
-    Not ``resolve_runtime_provider`` itself: a probe must not select (count, rotate) a pool entry,
-    mint a ``key_cmd`` token or install a plugin. So a pool is read where it stands (``peek``), and a
-    credential source (``key_cmd``) yields "": it owns its endpoint, so no saved key goes beside it.
+    Not ``resolve_runtime_provider`` itself: a probe must not count or rotate a pool row, mint a
+    ``key_cmd`` token or install a plugin. So a pool yields the row its strategy would select
+    (``choose``) without recording it, and a credential source (``key_cmd``) yields "": it owns its
+    endpoint, so no saved key goes beside it. Loading a pool can still persist the same idempotent
+    row seeding and origin binding the runtime does (config-seeded rows, an unbound manual row's
+    ``base_url``).
     """
     if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
         return ""
@@ -135,9 +140,9 @@ def _model_block_probe_key(rp, model_cfg: dict[str, Any], base_url: str, *, cust
 
 
 def _pool_probe_key(rp, base_url: str, provider_name: Any) -> Optional[str]:
-    """The key the custom pool owning *base_url* is on, None when no pool serves it; a loopback
+    """The key of the row the custom pool owning *base_url* would select, None when no pool serves it; a loopback
     endpoint's unusable legacy key is "" (the runtime sends its ``no-key-required`` placeholder)."""
-    picked = _custom_pool_pick(rp, base_url, provider_name, peek=True)
+    picked = _custom_pool_pick(rp, base_url, provider_name, probe=True)
     if picked is None:
         return None
     key = picked[2]
@@ -642,11 +647,11 @@ def _entry_credential(rp, entry: dict[str, Any], name: str) -> Any:
     return next((c for c in candidates if rp.has_usable_secret(c)), "")
 
 
-def _custom_pool_pick(rp, base_url: str, provider_name: Any, *, peek: bool = False) -> Optional[tuple[str, Any, str]]:
+def _custom_pool_pick(rp, base_url: str, provider_name: Any, *, probe: bool = False) -> Optional[tuple[str, Any, str]]:
     """``(pool_key, pool, key)`` from the first credential pool that owns this custom endpoint, else
     None. A pool the owning entry shares with a same-named built-in yields only the entry's rows,
-    and only those bound to this endpoint's origin (entry_scoped_pool). ``peek`` reads the entry
-    the pool is on without selecting (no count, no rotation)."""
+    and only those bound to this endpoint's origin (entry_scoped_pool). ``probe`` takes the row the
+    pool's strategy would select (``choose``) without counting it or rotating the pool."""
     try:
         # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
         frozen = rp._FROZEN_RUNTIME_CONFIG.get()
@@ -662,7 +667,7 @@ def _custom_pool_pick(rp, base_url: str, provider_name: Any, *, peek: bool = Fal
         try:
             if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner, base_url)) is None:
                 continue
-            entry = (pool.peek() if peek else pool.select()) if pool.has_credentials() else None
+            entry = (pool.choose() if probe else pool.select()) if pool.has_credentials() else None
             pool_api_key = rp._pool_entry_api_key(entry) if entry is not None else ""
             if pool_api_key:
                 return pool_key, pool, pool_api_key

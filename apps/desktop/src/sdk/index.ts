@@ -49,6 +49,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { shellCopy } from '@/lib/shell-copy'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -556,6 +557,12 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
+const routeGoneMessage = (profile: string) =>
+  shellCopy({
+    classic: `The ${profile} gateway is no longer available.`,
+    redesign: `The machine running ${profile} is no longer available.`
+  })
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -617,7 +624,7 @@ export const host = {
   // rejection a plugin's .catch() sees, never an error-boundary crash.
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
-  logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+  logs: async (params: Parameters<typeof getLogs>[0]) => getLogs(params),
 
   /** Complete client-local MCP sign-in for a pinned bot profile, optionally
    *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
@@ -1111,7 +1118,7 @@ export const host = {
           // (explicit): a synthesized local route is never in getProfileRoutes,
           // so checking it would spuriously abort a local bot's hydration retry.
           if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
-            throw new Error(`The ${targetProfile} gateway is no longer available.`)
+            throw new Error(routeGoneMessage(targetProfile))
           }
 
           // Logged per attempt so a support bundle shows the retry happened at

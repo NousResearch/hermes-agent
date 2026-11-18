@@ -5,10 +5,10 @@
 // surface. Fully translated locale files may satisfy this interface directly;
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
-
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { SimplifiedAgentsCopy } from './simplified-agents'
 import type { AppTourTranslations } from './types_app_tour'
 import type { BackupTransferTranslations } from './types_backup_transfer'
 import type { BillingTranslations } from './types_billing'
@@ -93,6 +93,7 @@ interface ModeOptionCopy {
 }
 
 export interface Translations extends NoticeTranslations {
+  simplifiedAgents: SimplifiedAgentsCopy
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
@@ -777,6 +778,13 @@ export interface Translations extends NoticeTranslations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
+      redesign: {
+        toolViewTitle: string
+        toolViewDesc: string
+        product: string
+        introSplashTitle: string
+        embedsTitle: string
+      }
       title: string
       intro: string
       colorMode: string
@@ -1860,6 +1868,13 @@ export interface Translations extends NoticeTranslations {
 
   skillDeepLink: SkillDeepLinkCopy
   skills: {
+    inventoryScopeHint: string
+    agentScopeHint: string
+    toolSecretsHint: string
+    openAgentSettings: string
+    openToolLibrary: string
+    remotePluginHint: string
+    showAllToolsets: (count: number) => string
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
@@ -2934,6 +2949,7 @@ export interface Translations extends NoticeTranslations {
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
+    browseAllSessions: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
@@ -3573,6 +3589,8 @@ export interface Translations extends NoticeTranslations {
       daybreakFailed: string
     }
     gatewayMenu: {
+      connectionLabel: string
+      inferenceLabel: string
       gateway: string
       connected: string
       connecting: string
@@ -3587,6 +3605,12 @@ export interface Translations extends NoticeTranslations {
       recentActivity: string
       viewAllLogs: string
       messagingPlatforms: string
+      machineStatus: (machine: string, status: string) => string
+      checkAgain: string
+      switchToMachine: string
+      machineSettings: string
+      restartTitle: string
+      restartBody: string
     }
     approvalMode: {
       title: string
@@ -3857,6 +3881,7 @@ export interface Translations extends NoticeTranslations {
     hideStripTab: (title: string) => string
     zoneMenuLabel: (title: string) => string
     lastTabKeptTitle: string
+    resizePanes: string
     lastTabKeptBody: string
     toggleStripTab: (title: string) => string
     minimize: string
@@ -4212,6 +4237,9 @@ export interface Translations extends NoticeTranslations {
   desktop: {
     audioReadFailed: string
     sessionUnavailable: string
+    sessionOwnerConflictTitle: string
+    sessionOwnerConflictBody: string
+    sessionOpenFailed: string
     createSessionFailed: string
     promptFailed: string
     providerCredentialRequired: string

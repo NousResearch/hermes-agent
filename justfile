@@ -39,6 +39,13 @@ electron-runtime:
 check *args:
     scripts/hermes-python scripts/check "$@"
 
+# Desktop redesign design tokens: list findings, or regenerate DESIGN.md tables / the ratchet
+# (`just design-tokens --write-docs`, `just design-tokens --list`)
+[group('check')]
+[positional-arguments]
+design-tokens *args:
+    scripts/hermes-python scripts/check_desktop_design_tokens.py "$@"
+
 # Apply ruff and JS workspace autofixes to the tree
 [group('check')]
 fix:

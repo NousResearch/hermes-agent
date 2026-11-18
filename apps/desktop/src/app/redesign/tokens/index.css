@@ -1,0 +1,13 @@
+/* The redesign's design tokens: the ONLY file anything imports (main.tsx, right after styles.css).
+   Every block is gated on <html data-shell="portal">, so classic never sees them. Order matters only
+   against styles.css: these root rules tie its own `:root.dark { --ui-text-* … }` on specificity and
+   must come after it. See DESIGN.md "Portal design language". */
+@import './raw.css';
+@import './color.css';
+@import './type.css';
+@import './space.css';
+@import './shape.css';
+@import './motion.css';
+@import './layers.css';
+@import './bridge.css';
+@import './sidebar.css';

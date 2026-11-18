@@ -1,4 +1,5 @@
 import type { StatusbarMenuItem } from '@/app/shell/statusbar-controls'
+import { shellCopy } from '@/lib/shell-copy'
 
 const LOG_TAIL = 5
 
@@ -257,7 +258,7 @@ export function buildGatewayLogItems(lines: readonly string[]): readonly Statusb
         className: 'text-muted-foreground',
         disabled: true,
         id: 'gateway-log-empty',
-        label: 'No recent gateway log lines'
+        label: shellCopy({ classic: 'No recent gateway log lines', redesign: 'No recent Hermes service log lines' })
       }
     ]
   }

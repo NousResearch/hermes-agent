@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
+import { usePortalPresentation } from '@/store/shell-presentation'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -13,7 +14,7 @@ import {
   normalizeLocale,
   resolveInitialLocale
 } from './languages'
-import { $appLocaleVersion, normalizeLocaleId, resolveTranslations } from './registry'
+import { $appLocaleVersion, normalizeLocaleId, resolveTranslations, shellWordingFor } from './registry'
 import { $requestedLocale, setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
 
@@ -113,6 +114,8 @@ export function I18nProvider({
   // Registered languages (plugin packs, backend `.desktop.yaml`) change the
   // catalog without a locale change; the version keys re-resolution.
   const registryVersion = useStore($appLocaleVersion)
+  // The shell picks the wording (classic vs the redesign overlay); a toggle flip re-resolves `t`.
+  const shell = shellWordingFor(usePortalPresentation())
   // The language THIS scope's config asked for (what $requestedLocale was last
   // set to from here). A ref, not the atom: another provider's or an earlier
   // scope's ask must never be promoted into this one.
@@ -288,12 +291,12 @@ export function I18nProvider({
       locale,
       saveError,
       setLocale,
-      t: resolveTranslations(locale)
+      t: resolveTranslations(locale, shell)
     }),
     // `registryVersion` is the registry's change token: a pack landing after
     // first paint re-resolves `t` without a locale change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [configLoadError, isLoadingConfig, isSavingLocale, locale, registryVersion, saveError, setLocale]
+    [configLoadError, isLoadingConfig, isSavingLocale, locale, registryVersion, saveError, setLocale, shell]
   )
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>

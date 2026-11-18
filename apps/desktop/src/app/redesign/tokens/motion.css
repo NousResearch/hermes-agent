@@ -1,0 +1,10 @@
+/* Motion (LANGUAGE §4): fast for hover returns and small state flips, base for disclosures, popovers
+   and reveals, slow for drawers and decorative fades; one easing (a quick settle). Navigation, selection,
+   panel folds and resizes never animate, hover enters instantly, and every transition stands down
+   under prefers-reduced-motion. */
+:root[data-shell='portal'] {
+  --portal-motion-fast: 120ms;
+  --portal-motion-base: 180ms;
+  --portal-motion-slow: 240ms;
+  --portal-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}

@@ -13,6 +13,8 @@ import {
   DATA_URL_READ_MIN_MAX_MB
 } from '../../shared/src/data-url-read-max'
 
+import { shellMessages } from './shell-wording'
+
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
@@ -211,7 +213,7 @@ function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?:
     throw new Error(
       'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
         'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
-        'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
+        shellMessages.plainTextStoragePrompt() +
         'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }

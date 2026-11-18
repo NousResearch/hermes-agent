@@ -25,7 +25,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key, is_launch_only_env_key, normalize_scope
+from hermes_constants import get_hermes_home, hermes_home_key, is_launch_only_env_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,40 @@ def _section(secrets_cfg: dict, name: str) -> dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _installed_plugin_source_names() -> frozenset[str]:
+    """Names declared by installed secret-source plugins — import-free.
+
+    Scans ``<hermes_home>/plugins/*/plugin.yaml`` for each plugin's declared
+    ``name:`` (the same value ``ctx.register_secret_source()`` registers).
+    Lets the ``secrets.sources`` validation tell "config names a source that
+    does not exist" (warn) from "names a plugin-installed source this
+    plugin-less process simply has not registered" (stay quiet: discovery is
+    a later startup step for gateway/cron/worker processes and never runs on
+    bare CLI command paths, so warning there prints on every CLI invocation
+    about a backend that IS installed and hydrates where it is needed).
+    Never imports plugin code, so it stays cheap on hot paths.
+    """
+    names: set[str] = set()
+    try:
+        plugins_dir = Path(get_hermes_home()) / "plugins"
+        manifests = list(plugins_dir.glob("*/plugin.yaml"))
+    except Exception:
+        return frozenset()
+    for manifest in manifests:
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("name:") and ":" in stripped:
+                value = stripped.split(":", 1)[1].strip().strip("'\"")
+                if value:
+                    names.add(value)
+                break
+    return frozenset(names)
+
+
 def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) -> list[SecretSource]:
     """Enabled sources: ``secrets.sources`` order first, then registration order
     (mapped-vs-bulk precedence is applied on top by :func:`apply_all`)."""
@@ -256,8 +290,21 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
     names = [e for e in explicit if isinstance(e, str)] if isinstance(explicit, list) else []
     unknown = [n for n in names if n not in sources]
     if unknown:
-        logger.warning("secrets.sources names unknown source(s): %s (known: %s)",
-                       ", ".join(unknown), ", ".join(sources) or "none")
+        installed = _installed_plugin_source_names()
+        missing = [n for n in unknown if n not in installed]
+        if missing:
+            logger.warning("secrets.sources names unknown source(s): %s (known: %s)",
+                           ", ".join(missing), ", ".join(sources) or "none")
+        else:
+            # Every unknown name is an installed plugin source this process has not
+            # registered. Plugin discovery runs later than this check on gateway/cron/
+            # worker startup (it registers the source and re-pulls — #64177) and never
+            # runs on bare CLI command paths; demoting to debug keeps every `hermes`
+            # CLI invocation from printing a warning about a working backend.
+            logger.debug(
+                "secrets.sources name(s) %s installed as plugin secret source(s) but not "
+                "registered in this process (plugin discovery has not run here)",
+                ", ".join(unknown))
     order = dict.fromkeys([n for n in names if n in sources] + list(sources))  # insertion-ordered set
 
     enabled: list[SecretSource] = []

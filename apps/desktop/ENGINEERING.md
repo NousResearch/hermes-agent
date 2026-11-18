@@ -119,6 +119,9 @@ There are three distinct switch shapes, and conflating them is the classic bug:
 - A **live profile swap** in the same window activates another profile's socket
   while background profiles keep streaming; lists merge rather than wipe, and
   only an explicit user selection starts a fresh foreground draft.
+  Failed rail picks, including registry-owned profiles, offer Retry without replacing
+  that draft. Automatic stored-session resume is not a new user selection and must
+  not cancel launch restoration.
 
 Treating a soft switch as hard flickers the app; treating a hard one as soft
 strands stale rows. After any swap, the active socket, active profile, and

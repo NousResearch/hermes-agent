@@ -302,6 +302,7 @@ def stage_tool_call_message(
     if _had_prefill or getattr(agent, "_thinking_prefill_retries", 0):
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
+    agent._malformed_response_retries = 0  # a landed tool call is a recovered generation
     # Re-arm the post-tool nudge so it can fire on a LATER tool round; a landed tool call
     # recovers any dropped-tool-call stall, so refresh that budget per stall.
     agent._post_tool_empty_retried = False

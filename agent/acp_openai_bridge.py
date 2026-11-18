@@ -17,6 +17,8 @@ from typing import Any, Iterable
 
 from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
 
+from agent.message_sanitization import native_finish_reason
+
 TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 TOOL_CALL_JSON_RE = re.compile(
     r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL
@@ -66,7 +68,8 @@ def completion_to_stream_chunks(completion: SimpleNamespace) -> StreamChunks:
         reasoning_content=getattr(message, "reasoning_content", None), reasoning=getattr(message, "reasoning", None),
     )
     data_chunk = SimpleNamespace(
-        choices=[SimpleNamespace(index=0, delta=delta, finish_reason=choice.finish_reason)],
+        choices=[SimpleNamespace(index=0, delta=delta, finish_reason=choice.finish_reason,
+                                 native_finish_reason=native_finish_reason(choice))],
         model=completion.model, usage=None,
     )
     usage_chunk = SimpleNamespace(choices=[], model=completion.model, usage=completion.usage)

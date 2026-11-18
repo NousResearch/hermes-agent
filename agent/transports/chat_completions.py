@@ -16,6 +16,7 @@ from agent.reasoning_effort import (
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
+from agent.message_sanitization import is_malformed_response
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from session_rules.turns import coalesce_tool_call_id
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -720,6 +721,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if getattr(msg, "tool_calls", None):
             tool_calls = [tc for tc in (self._normalize_tool_call(tc) for tc in msg.tool_calls) if tc is not None]
 
+
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
@@ -749,6 +751,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+
+        # Gemini MALFORMED_* is a broken generation, neither a refusal (CLIProxyAPI reports it as
+        # content_filter) nor a finished answer (the native adapter maps it to stop): partial text
+        # takes the continuation path, an empty reply the corrected retry in turn_empty_response.
+        if finish_reason in ("content_filter", "stop") and is_malformed_response(response):
+            _partial = isinstance(content, str) and bool(content.strip())
+            finish_reason = "tool_calls" if tool_calls else ("length" if _partial else "stop")
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,

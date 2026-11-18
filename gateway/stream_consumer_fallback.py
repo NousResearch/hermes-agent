@@ -343,7 +343,7 @@ class StreamFallbackMixin:
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
 
-    async def _send_commentary(self, text: str) -> bool:
+    async def _send_commentary(self, text: str, receipt=None) -> bool:
         """Send a completed interim assistant commentary message."""
         text = self._clean_for_display(text)
         if not text.strip():
@@ -365,14 +365,17 @@ class StreamFallbackMixin:
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:
+                if receipt is not None: receipt.resolve("delivered")
                 self._notify_new_message()
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"
                 # actually carried the final response, vs. unrelated commentary delivered during a session
                 # split (#14238).
                 self._delivered_commentary_texts.append(text)
+            if receipt is not None and not result.success: receipt.resolve("failed")
             return result.success
         except Exception as e:
+            if receipt is not None: receipt.resolve("ambiguous")
             logger.error("Commentary send error: %s", e)
             return False
 

@@ -1731,6 +1731,10 @@ def _run_conversation_turn(
     # for on_turn_complete() stays None on turns that never reach a response.
     agent._delivered_interim_texts = set()
     agent._public_status_fallback_sent = False
+    agent._public_status_fallback_pending = False
+    agent._public_status_fallback_ambiguous = False
+    agent._pending_interim_texts = set()
+    agent._ambiguous_interim_texts = set()
     agent._incremental_persistence_failed = False
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False

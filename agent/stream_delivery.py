@@ -200,6 +200,22 @@ class StreamDeliveryMixin:
         normalized = self._normalize_interim_visible_text(text)
         return bool(normalized) and normalized in getattr(self, "_delivered_interim_texts", set())
 
+    def _interim_text_is_pending(self,text: str)->bool:
+        n=self._normalize_interim_visible_text(text); return bool(n) and n in getattr(self,"_pending_interim_texts",set())
+    def _interim_text_is_ambiguous(self,text: str)->bool:
+        n=self._normalize_interim_visible_text(text); return bool(n) and n in getattr(self,"_ambiguous_interim_texts",set())
+    def _on_interim_delivery_state(self,text: str,state: str)->None:
+        n=self._normalize_interim_visible_text(text)
+        if not n:return
+        getattr(self,"_pending_interim_texts",set()).discard(n); f=self._normalize_interim_visible_text(t("cli.stream.public_status_fallback"))
+        if state=="delivered":
+            self._record_delivered_interim_text(text)
+            if n==f:self._public_status_fallback_pending=False; self._public_status_fallback_sent=True
+        elif state=="ambiguous":
+            if not isinstance(getattr(self,"_ambiguous_interim_texts",None),set):self._ambiguous_interim_texts=set()
+            self._ambiguous_interim_texts.add(n)
+            if n==f:self._public_status_fallback_pending=False; self._public_status_fallback_ambiguous=True
+        elif n==f:self._public_status_fallback_pending=False
     def _record_delivered_interim_text(self, text: str) -> None:
         normalized = self._normalize_interim_visible_text(text)
         if normalized:
@@ -243,7 +259,8 @@ class StreamDeliveryMixin:
         if request_id is not None and request_id != getattr(self, "_current_api_request_id", ""):
             return False
         visible = self._visible_commentary(text)
-        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+        if (not visible or visible == "(empty)" or self._interim_text_was_delivered(visible)
+                or self._interim_text_is_pending(visible) or self._interim_text_is_ambiguous(visible)):
             return False
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=False)
         self._deliver_interim(visible, already_streamed=False, record=[visible])
@@ -252,14 +269,20 @@ class StreamDeliveryMixin:
     def emit_public_status_fallback(self, *, request_id: str | None = None) -> bool:
         """Publish one neutral status when a Codex turn has no public commentary item."""
         if (getattr(self, "_public_status_fallback_sent", False)
+                or getattr(self, "_public_status_fallback_pending", False)
+                or getattr(self, "_public_status_fallback_ambiguous", False)
                 or getattr(self, "_delivered_interim_texts", set())):
             return False
+        self._public_status_fallback_pending = True
         delivered = self.emit_interim_text(
             t("cli.stream.public_status_fallback"),
             request_id=request_id,
         )
         if delivered:
+            self._public_status_fallback_pending = False
             self._public_status_fallback_sent = True
+        elif not self._interim_text_is_pending(t("cli.stream.public_status_fallback")):
+            self._public_status_fallback_pending = False
         return delivered
 
     def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> None:

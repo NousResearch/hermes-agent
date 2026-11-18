@@ -33,6 +33,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from '@/store/review'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
@@ -44,6 +45,12 @@ import { ReviewShipBar } from './ship-bar'
 // Compact header/diff action buttons — micro hit targets packed tight, matching
 // the rest of the app's icon-action rows.
 const ACTION_BTN = 'size-5'
+
+/** Classic caps the selected diff under the tree, as on main; the redesign's tool panel gives it
+ *  the larger share. */
+function useReviewDiffSize(): string {
+  return usePortalShell() ? 'min-h-0 flex-[2]' : 'max-h-[55%] shrink-0'
+}
 
 export function ReviewPane() {
   const { t } = useI18n()
@@ -62,6 +69,7 @@ export function ReviewPane() {
   // only apply to the uncommitted scope; branch / last-turn are read-only.
   const isUncommitted = scope === 'uncommitted'
 
+  const diffSize = useReviewDiffSize()
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
   // A repo (or a load that may reveal one) gets the header + scope chrome.
@@ -82,6 +90,7 @@ export function ReviewPane() {
           ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
+      data-slot="review-pane"
     >
       {showChrome && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
@@ -162,7 +171,10 @@ export function ReviewPane() {
 
       {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div
+          className={cn('flex flex-col border-t border-(--ui-stroke-secondary)', diffSize)}
+          data-slot="review-diff"
+        >
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"

@@ -279,7 +279,11 @@ export function ProfileRemoteOverrideDialog({ profileNames }: { profileNames: st
                 </label>
               )}
 
-              {collision && <p className="text-xs text-(--ui-text-secondary)">{p.collisionWarning(collision)}</p>}
+              {collision && (
+                <p className="text-xs text-(--ui-text-secondary)" role="status">
+                  {p.collisionWarning(collision)}
+                </p>
+              )}
               {error && <p className="text-xs text-destructive">{error}</p>}
             </div>
 

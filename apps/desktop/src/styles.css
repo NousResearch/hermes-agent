@@ -3,6 +3,7 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+@import './app/chat/stage.css';
 /* The redesign's `ds-` utilities (role tokens; no values of their own). */
 @import './app/redesign/tokens/tailwind.css';
 

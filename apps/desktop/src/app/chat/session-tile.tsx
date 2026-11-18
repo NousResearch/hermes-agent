@@ -72,6 +72,7 @@ import {
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
@@ -458,6 +459,8 @@ function TileChat({
 }
 
 export function SessionTilePane({ storedSessionId }: { storedSessionId: string }) {
+  const { t } = useI18n()
+  const portal = usePortalShell()
   const tiles = useStore($sessionTiles)
   const tile = tiles.find(t => t.storedSessionId === storedSessionId)
   const ownerRoute = tile?.ownerRoute
@@ -594,10 +597,13 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     return (
       <div className="grid h-full place-items-center p-4">
         <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]">
-          <div className="text-(--ui-danger,#f87171)">Couldn't open this session</div>
+          {/* Classic keeps its fixed English; the redesign speaks the app's language. */}
+          <div className="text-(--ui-danger,#f87171)">
+            {portal ? t.desktop.sessionOpenFailed : "Couldn't open this session"}
+          </div>
           <div className="break-words text-(--ui-text-quaternary)">{tile.error}</div>
           <Button onClick={() => patchSessionTile(storedSessionId, { error: undefined })} size="sm" variant="outline">
-            Retry
+            {portal ? t.common.retry : 'Retry'}
           </Button>
         </div>
       </div>

@@ -24,6 +24,7 @@ import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -67,6 +68,8 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
+  /** This composer's own pre-session send was just given its new session's scope. */
+  onSessionCreated?: (scope: string) => void
   /** `submissionId`: the restored send this draft retries, so the owner deduplicates it. */
   queueCurrentDraft: (submissionId?: string) => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
@@ -108,6 +111,7 @@ export function useComposerSubmit({
   onSteer,
   onSteerHidden,
   onSubmit,
+  onSessionCreated,
   queueCurrentDraft,
   queueEdit,
   queuedPrompts,
@@ -155,6 +159,7 @@ export function useComposerSubmit({
             onComposerScopeAssigned: (scope: string) => {
               restoreScope = scope
               outgoing?.move(scope)
+              onSessionCreated?.(scope)
             }
           }
         : {}
@@ -413,7 +418,11 @@ export function useComposerSubmit({
     // no parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
-    const routable = payloadPresent && !queueEdit && !isSideQuestion
+
+    if (!payloadPresent || queueEdit || isSideQuestion) {
+      return null
+    }
+
     const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
 
     // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
@@ -427,7 +436,7 @@ export function useComposerSubmit({
       }
     }
 
-    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
+    if (!attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
@@ -435,19 +444,20 @@ export function useComposerSubmit({
       return 'answered'
     }
 
-    const yielded = routable && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
+    const classicSetup = !$setupGuideOnboarding.get()
+    const yielded = classicSetup && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
 
-    if (routable && hasClarifyRequest(sessionId)) {
+    if (hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
     // Same for a pending connection card: ordinary typing continues the operation.
-    if (routable && hasConnectionRequest(sessionId)) {
+    if (hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }
 
     // And for the onboarding chat's setup and theme cards.
-    if (routable) {
+    if (classicSetup) {
       skipParkedCards(sessionId ?? '')
     }
 
@@ -457,7 +467,7 @@ export function useComposerSubmit({
   // Slash commands come after setup. Every send action asks here first, so the words stay put and one
   // note (re-shown, never stacked) says why.
   const refusedDuringSetup = (text: string): boolean => {
-    if (!isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+    if ($setupGuideOnboarding.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
       return false
     }
 

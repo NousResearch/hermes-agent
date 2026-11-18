@@ -105,3 +105,32 @@
 [data-slot='composer-status-stack'] .status-subagent-detail {
   padding-left: calc(0.5rem + var(--status-nest) * 2 + var(--status-action-width) + var(--status-icon-width) + var(--status-gap) * 2);
 }
+
+/* Keep consent and trial choices reachable in the redesign's narrow chat panes. Only the redesign
+   makes the stack a size container (inline-size containment changes its layout), so the query below
+   never matches in classic. */
+:root[data-shell='portal'] [data-slot='composer-status-stack'] {
+  container: composer-status / inline-size;
+}
+
+@container composer-status (max-width: 28rem) {
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-content {
+    grid-column: 3 / -1;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-content > span {
+    white-space: normal;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-actions {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+  }
+
+  [data-slot='composer-status-stack'] .status-notice-row .status-row-actions > button {
+    min-height: 1.75rem;
+    max-width: 100%;
+    white-space: normal;
+  }
+}

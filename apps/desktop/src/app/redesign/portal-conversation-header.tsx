@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useLocation } from 'react-router'
 
+import { ChatItemsButton } from '@/app/chat/items/chat-items-button'
 import { $workspaceIsPage, appViewForPath, isOverlayView } from '@/app/routes'
 import { tabStripVisibleForZone } from '@/components/pane-shell/tree/renderer/strip-visibility'
 import type { ZoneHeaderHook } from '@/components/pane-shell/tree/renderer/zone-header-provider'
@@ -40,7 +41,7 @@ export const usePortalZoneHeader: ZoneHeaderHook = (node, options) => {
  *  chat's Agent settings rides the band (PortalBandAgentSettings); an extra tile keeps its own here. */
 export function PortalConversationHeader({ paneId }: { paneId: string }) {
   const { pathname } = useLocation()
-  const { label } = useConversationAgent(paneId)
+  const { chat, label, sessionId } = useConversationAgent(paneId)
 
   // Route overlays cover the chat but keep its host alive. Covered chrome must
   // leave the tab order without replacing the draft-owning body underneath.
@@ -55,6 +56,7 @@ export function PortalConversationHeader({ paneId }: { paneId: string }) {
   return (
     <header className="@container/conversation" data-slot="portal-conversation-header">
       <span className="portal-conversation-agent hidden min-w-0 truncate @min-[30rem]/conversation:block">{label}</span>
+      <ChatItemsButton chat={chat} sessionId={sessionId} />
       {paneId !== 'workspace' && <PortalAgentSettingsButton paneId={paneId} />}
     </header>
   )

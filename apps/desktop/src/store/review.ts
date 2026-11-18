@@ -1,10 +1,8 @@
 import { atom, computed } from 'nanostores'
 
-import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import { isNarrowViewport, isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
-import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
@@ -393,7 +391,7 @@ export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main
   // Narrow width: the pane is a collapsed overlay (like the sidebar under ⌘B).
   // Make sure its data is loaded, then slide it in/out via the forced-reveal pin
   // — never the docked open state, which a 0px track would render invisibly.
-  if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+  if (isNarrowViewport()) {
     const target = scopeTarget.trim() || 'main'
 
     const originChanged =
@@ -439,7 +437,7 @@ export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main
     $reviewScopeTarget.set(target)
   }
 
-  if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+  if (isNarrowViewport()) {
     // The reveal pin is a toggle, so only fire it when the overlay isn't
     // already slid in — otherwise "show me the diff" would hide the pane.
     if (!wasOpen) {

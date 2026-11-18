@@ -10,9 +10,12 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
+import { chatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { bindChatToolPanels, bindChatToolRouteCollapse } from '@/app/redesign/chat-tool-panel'
+import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -49,6 +52,7 @@ import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { LocalizedTabTitle, translateNow } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
   Download,
@@ -64,9 +68,10 @@ import {
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import { $chatItemsOpen, CHAT_ITEMS_PANE_ID, closeChatItems, openChatItems } from '@/store/chat-items'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { watchDeadSessionPrune } from '@/store/dead-session-prune'
-import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
+import { $interfaceMode, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $sidebarOpen,
@@ -104,6 +109,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { $portalShell } from '@/store/shell-variant'
 import { $statusbarShown, $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
@@ -123,16 +129,17 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
-import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
+import { $terminalCollapsedRail, $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { Butterbar } from '../shell/butterbar'
 import { TermsButterbar } from '../shell/terms-butterbar'
 
 import { bindBotsPaneToShell } from './bots-pane-shell'
+import { DeveloperRail } from './developer-rail'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
-import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { ChatItemsPane, ChatItemsTabTitle, FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 import { LayoutTreeCover } from './route-cover'
 import { ContribWiring, WiredPane } from './wiring'
@@ -250,7 +257,19 @@ registry.registerMany([
       uncloseable: true
     },
     render: renderWorkspacePane
-  },
+  }
+])
+
+// The developer tools (terminal, files, review). Their sizing depends on the shell: the redesign's
+// tool panel has one shared width (redesign/developer-tool-panel.ts), classic sizes each pane on its
+// own. A shell flip re-registers them in place; the render functions are shared constants, so the
+// panes keep their mounted bodies.
+const renderTerminalPane = () => <WiredPane part="terminal" />
+const renderFilesPane = () => idle(<FilesPane />)
+const renderReviewPane = () => idle(<ReviewPaneContent />)
+const renderChatItemsPane = () => idle(<ChatItemsPane />)
+
+const toolPanes = (portal: boolean) => [
   {
     id: 'terminal',
     area: 'panes',
@@ -265,13 +284,16 @@ registry.registerMany([
     // its rail there). A real floor left a sliver of unusable terminal.
     data: {
       placement: 'bottom',
+      ...(portal
+        ? developerToolSizing('var(--terminal-panel-min-width, 0px)')
+        : { minWidth: 'var(--terminal-panel-min-width, 0px)' }),
       height: '20vh',
       maxHeight: '80vh',
       lifecycleKeepAlive: true,
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.terminal} />,
       tabTitleText: () => translateNow('sidebar.terminal')
     },
-    render: () => <WiredPane part="terminal" />
+    render: renderTerminalPane
   },
   {
     id: 'files',
@@ -283,13 +305,13 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'right' },
       revealAliases: ['file-browser'],
-      width: FILE_BROWSER_DEFAULT_WIDTH,
-      minWidth: FILE_BROWSER_MIN_WIDTH,
-      maxWidth: FILE_BROWSER_MAX_WIDTH,
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.files} />,
       tabTitleText: () => translateNow('sidebar.files')
     },
-    render: () => idle(<FilesPane />)
+    render: renderFilesPane
   },
   {
     id: 'review',
@@ -301,15 +323,37 @@ registry.registerMany([
       placement: 'right',
       collapsible: true,
       revealAliases: [REVIEW_PANE_ID],
-      width: FILE_BROWSER_DEFAULT_WIDTH,
-      minWidth: FILE_BROWSER_MIN_WIDTH,
-      maxWidth: FILE_BROWSER_MAX_WIDTH,
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
       tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.review} />,
       tabTitleText: () => translateNow('sidebar.review')
     },
-    render: () => idle(<ReviewPaneContent />)
+    render: renderReviewPane
+  },
+  {
+    id: CHAT_ITEMS_PANE_ID,
+    area: 'panes',
+    title: chatItemsCopy(getRuntimeI18nLocale()).pane,
+    // The chat's artifacts, files and links (redesign only: bound hidden in classic below). It
+    // docks beside the chat and joins the tools' one panel and width when revealed.
+    data: {
+      placement: 'right',
+      collapsible: true,
+      dock: { pane: 'workspace', pos: 'right' },
+      ...(portal
+        ? developerToolSizing(FILE_BROWSER_MIN_WIDTH)
+        : { width: FILE_BROWSER_DEFAULT_WIDTH, minWidth: FILE_BROWSER_MIN_WIDTH, maxWidth: FILE_BROWSER_MAX_WIDTH }),
+      tabTitle: () => <ChatItemsTabTitle />,
+      tabTitleText: () => chatItemsCopy(getRuntimeI18nLocale()).pane
+    },
+    render: renderChatItemsPane
   }
-])
+]
+
+registry.registerMany(toolPanes($portalShell.get()))
+$portalShell.listen(portal => registry.registerMany(toolPanes(portal)))
+installDeveloperToolPanelWidth()
 
 // ---------------------------------------------------------------------------
 // Chrome contributions. The title bar and status bar are fixed chrome outside
@@ -621,17 +665,26 @@ bindPaneVisibility(
   closeReview,
   () => openReview($reviewScopeCwd.get(), $reviewScopeTarget.get())
 )
-// ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
-// hides; PTYs stay alive while collapsed (see PersistentTerminal). Simple has
-// no terminal: where chrome is off a closed one hides, rail and all, and ⌃`
-// is the door for the session.
+// The chat's items: the redesign's, shown when asked for (the rail, simple mode's "N items").
+bindPaneVisibility(
+  CHAT_ITEMS_PANE_ID,
+  computed([$chatItemsOpen, $portalShell], (open, portal) => open && portal),
+  closeChatItems,
+  openChatItems
+)
+// Classic Advanced keeps a collapsed terminal rail; the redesign and Simple
+// hide it completely. PersistentTerminal keeps the shells alive in either case.
 bindToolPaneCollapse(
   'terminal',
   $terminalTakeover,
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true),
-  $showsAdvancedChrome
+  $terminalCollapsedRail
 )
+// The redesign's tool panel belongs to the chat on screen: off a chat it is out of sight (still
+// mounted), and each chat comes back to the tools it had open (app/redesign/chat-tool-panel.ts).
+bindChatToolPanels()
+bindChatToolRouteCollapse()
 // Without the statusbar, the rail is the only way to switch profiles or gateways.
 $profiles.subscribe(profiles => setModeContext({ profileCount: profiles.length }))
 $connectionsRegistry.subscribe(registry => setModeContext({ connectionCount: registry?.connections.length ?? 0 }))
@@ -855,9 +908,11 @@ export function ContribController() {
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
           <div className="flex min-h-0 flex-1">
+            <WiredPane part="globalNav" />
             <LayoutTreeCover>
               <LayoutTreeRoot titlebar />
             </LayoutTreeCover>
+            <DeveloperRail />
           </div>
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}

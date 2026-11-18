@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useCallback, useEffect } from 'react'
+import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -7,8 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { middleEllipsis } from '@/lib/middle-ellipsis'
 import { cn } from '@/lib/utils'
 import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
 import { $panesFlipped } from '@/store/layout'
@@ -16,6 +19,7 @@ import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { openFolderAsProject } from '@/store/projects'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -99,6 +103,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
           ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
+      data-slot="files-pane"
     >
       <FilesystemTab
         canCollapse={canCollapse}
@@ -163,6 +168,7 @@ function FilesystemTab({
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const portal = usePortalShell()
 
   // No working directory (a bare/detached chat) → no tree, but keep a way back
   // into a folder (#53004): the projects paradigm removed the old folder picker,
@@ -185,8 +191,9 @@ function FilesystemTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <div className="flex min-w-0 flex-1">
-          <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
+        <div className="flex min-w-0 flex-1 flex-col" data-slot="pane-title">
+          <SidebarPanelLabel title={cwd}>{cwdName}</SidebarPanelLabel>
+          {portal && <PanePath path={cwd} />}
         </div>
         <Tip label={showIgnored ? r.hideIgnored : r.showIgnored}>
           <Button
@@ -249,9 +256,51 @@ function FilesystemTab({
   )
 }
 
+/** The pane's full path under its title, home collapsed to `~`: one line that gives way in the
+ *  middle, so the leaf (the folder you are in) stays readable and nothing gaps between the ends. */
+function PanePath({ path }: { path: string }) {
+  const shown = displayPath(path)
+  const ref = useRef<HTMLSpanElement>(null)
+  const [text, setText] = useState(shown)
+
+  const fit = useCallback(
+    (entries: readonly ResizeObserverEntry[]) => {
+      const element = ref.current
+      const width = entries[0]?.contentRect.width ?? element?.clientWidth ?? 0
+
+      if (!element || !width) {
+        return
+      }
+
+      const style = getComputedStyle(element)
+      const context = textMeasure()
+      context.font = style.font
+      context.letterSpacing = style.letterSpacing
+      setText(middleEllipsis(shown, width, value => context.measureText(value).width))
+    },
+    [shown]
+  )
+
+  useResizeObserver(fit, ref)
+
+  return (
+    <span className="block min-w-0 overflow-hidden whitespace-nowrap" data-slot="pane-subtitle" ref={ref} title={path}>
+      {text}
+    </span>
+  )
+}
+
+let measureContext: CanvasRenderingContext2D | null = null
+
+const textMeasure = () => (measureContext ??= document.createElement('canvas').getContext('2d')!)
+
 export function RightSidebarSectionHeader({ children, className, ...props }: ComponentProps<'div'>) {
   return (
-    <div className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)} {...props}>
+    <div
+      className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)}
+      data-slot="pane-section-header"
+      {...props}
+    >
       {children}
     </div>
   )

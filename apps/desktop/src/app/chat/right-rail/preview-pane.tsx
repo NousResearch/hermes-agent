@@ -62,7 +62,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { externalOpenerFor, PreviewBrowserBar } from './preview-browser-bar'
+import { externalOpenerFor, PreviewBrowserToolbar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import { PreviewBrowserFrameHint } from './preview-browser-frame-hint'
 import {
@@ -858,6 +858,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -1401,7 +1402,6 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1493,8 +1493,8 @@ export function PreviewPane({
 
         {usesBrowserIframe && !isBlankPage && <PreviewBrowserFrameHint target={target} />}
 
-        {usesWebview && (
-          <PreviewBrowserBar
+        {webSurface && (
+          <PreviewBrowserToolbar
             annotateMode={annotate.mode}
             canGoBack={history.back}
             canGoForward={history.forward}

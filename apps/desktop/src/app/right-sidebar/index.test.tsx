@@ -149,6 +149,7 @@ describe('RightSidebarPane', () => {
     const glyph = collapse.querySelector('.codicon')
     expect(glyph).not.toBeNull()
     expect(glyph?.classList.contains('codicon-three-bars')).toBe(true)
-    expect(collapse.querySelector('svg')).toBeNull()
+    // The only glyph is the Codicon primitive's (font in classic, its pixel twin in the redesign).
+    expect(collapse.querySelectorAll('svg:not(.codicon)')).toHaveLength(0)
   })
 })

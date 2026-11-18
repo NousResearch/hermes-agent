@@ -9,11 +9,13 @@ import type { AutomationBlueprint, CronJob, ProfileInfo } from '@/hermes'
 import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
-import { $cronFocusJobId, setCronFocusJobId, setCronJobs } from '@/store/cron'
+import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { $interfaceMode } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { $profiles } from '@/store/profile'
 import { $shellChoice } from '@/store/shell-variant'
+
+import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 
 import { AgentRoutines } from './agent-routines'
 import { routinesByAgent } from './routines-by-agent'
@@ -410,5 +412,30 @@ describe('an agent’s routines for its chats', () => {
       'job-flights'
     ])
     expect(routinesByAgent([brief], '').size).toBe(0)
+  })
+})
+
+describe('the rail’s Routines destination', () => {
+  function renderRail() {
+    return render(
+      <MemoryRouter>
+        <SimplifiedGlobalNav onNavigate={vi.fn()} />
+      </MemoryRouter>
+    )
+  }
+
+  it('carries a failure dot while a routine needs attention, and nothing when all is well', () => {
+    $cronJobs.set([brief, failing])
+    const { container, unmount } = renderRail()
+    const button = screen.getByRole('button', { name: en.cron.title })
+
+    expect(container.querySelector('[data-slot="rail-alert"]')).toBeTruthy()
+    expect(button.getAttribute('aria-description')).toBe(copy.railAttention(1))
+    unmount()
+
+    $cronJobs.set([brief, paused])
+    const quiet = renderRail()
+
+    expect(quiet.container.querySelector('[data-slot="rail-alert"]')).toBeNull()
   })
 })

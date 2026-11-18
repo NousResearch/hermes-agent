@@ -141,6 +141,12 @@ def test_review_shares_the_per_turn_subagent_cap():
     spawn = after_review.before_call("delegate_task", {"goal": "a"})
     assert spawn.action == "block" and spawn.message.startswith("Blocked delegate_task:")
 
+    # delegate_task's spawn-free control actions don't apply to review: an extra action arg still starts a reviewer.
+    smuggled = ToolCallGuardrailController(cfg)
+    assert smuggled.before_call("review", {"action": "list"}).action == "allow"
+    for action in ("list", "steer", "stop"):
+        assert smuggled.before_call("review", {"focus": "x", "action": action}).action == "block"
+
 
 def test_empty_conversation_is_a_tool_error(captured):
     assert "Nothing to review" in json.loads(_inline(_parent(), {}, []))["error"]

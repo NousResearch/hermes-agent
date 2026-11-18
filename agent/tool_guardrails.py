@@ -568,7 +568,8 @@ class ToolCallGuardrailController:
             return None
         cap_field, count_attr, code = spec
         cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
+        # Only delegate_task has spawn-free control actions; every review call starts one reviewer.
+        increment = (_subagent_spawn_count(args) if cap else 0) if tool_name == "delegate_task" else 1
         if increment and cap and count >= cap:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)

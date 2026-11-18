@@ -106,23 +106,11 @@ mkdir -p "$OUTPUT_DIR/modules" "$OUTPUT_DIR/diagrams"
 
 ### 2. Scan repo structure
 
-Use the `terminal` tool for the shell work, `read_file` for manifests:
+Map the tree with `search_files` (`target="files"`, `pattern="*"`, `path="."`; it honours
+`.gitignore`, so `node_modules`, `venv` and build output drop out), `read_file` the manifests, and use the
+`terminal` tool for the rest:
 
 ```bash
-# Shallow tree first
-ls -la
-
-# Deeper tree, noise filtered
-find . -type d \
-  -not -path '*/\.*' \
-  -not -path '*/node_modules*' \
-  -not -path '*/venv*' \
-  -not -path '*/__pycache__*' \
-  -not -path '*/dist*' \
-  -not -path '*/build*' \
-  -not -path '*/target*' \
-  -maxdepth 3 | sort
-
 # Language breakdown (skip if pygount unavailable)
 pygount --format=summary \
   --folders-to-skip=".git,node_modules,venv,.venv,__pycache__,.cache,dist,build,target" \
@@ -378,8 +366,9 @@ Only write this if the project is a library or API server. If it is:
 
 ### 11. Write the state file
 
-```bash
-cat > "$OUTPUT_DIR/.codewiki-state.json" <<EOF
+`write_file` `$OUTPUT_DIR/.codewiki-state.json` with the values filled in:
+
+```json
 {
   "repo_name": "$REPO_NAME",
   "source_path": "$PWD",
@@ -388,7 +377,6 @@ cat > "$OUTPUT_DIR/.codewiki-state.json" <<EOF
   "generator": "hermes-agent code-wiki skill v0.1.0",
   "modules_documented": []
 }
-EOF
 ```
 
 ### 12. Report to user

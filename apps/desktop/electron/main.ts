@@ -577,6 +577,7 @@ import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
+import { spellSuggestionsFor } from './spell-suggestions'
 import { registerSpellcheckDictionaryIpc } from './spellcheck-dictionary-ipc'
 import { resolveSshBinary, windowsSshEnv } from './ssh-binary'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
@@ -6702,9 +6703,13 @@ function installContextMenuBridge(window: BrowserWindow) {
     const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
 
     if (params.isEditable && params.misspelledWord) {
-      window.webContents.send('hermes:context-menu-spellcheck', {
-        misspelledWord: params.misspelledWord,
-        suggestions
+      const misspelledWord = params.misspelledWord
+
+      // macOS reports the word with no suggestions; spellSuggestionsFor fills them in.
+      void spellSuggestionsFor(misspelledWord, suggestions).then(list => {
+        if (!window.isDestroyed()) {
+          window.webContents.send('hermes:context-menu-spellcheck', { misspelledWord, suggestions: list })
+        }
       })
     }
   })

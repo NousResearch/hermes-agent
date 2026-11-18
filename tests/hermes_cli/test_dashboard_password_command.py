@@ -18,7 +18,7 @@ import httpx
 import pytest
 import hermes_yaml as yaml
 
-from plugins.dashboard_auth.basic import _verify_password
+from plugins.dashboard_auth.basic import _verify_password, hash_password
 from tests.hermes_cli.live_gateway import REPO_ROOT, free_port, home_env, live_gateway, run_cli, write_config
 
 pytestmark = pytest.mark.platforms("linux")
@@ -289,6 +289,37 @@ def test_a_restart_keeps_sign_ins_and_one_after_a_change_ends_them(tmp_path):
         with _old_backend(env, port) as base:
             assert not _signed_in(client)
             assert _sign_in(base, PASSWORD)[0] == 401
+
+
+def _managed_dir(tmp_path, basic_auth: dict):
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump({"dashboard": {"basic_auth": basic_auth}}))
+    return managed
+
+
+def test_a_password_hash_the_administrator_pins_is_refused_before_anything_is_written(tmp_path):
+    home, env = _home(tmp_path)
+    managed = _managed_dir(tmp_path, {"username": USER, "password_hash": hash_password("throwaway-admin-pinned")})
+    before = (home / "config.yaml").read_bytes()
+    result = _set_password({**env, "HERMES_MANAGED_DIR": str(managed)})
+    assert result.returncode == 1, result.stdout
+    assert "dashboard.basic_auth.password_hash is managed by your administrator" in result.stdout
+    assert "nothing was changed" in result.stdout and "scrypt$" not in result.stdout
+    assert (home / "config.yaml").read_bytes() == before
+
+
+def test_a_pinned_username_refuses_another_name_and_keeps_its_own(tmp_path):
+    home, env = _home(tmp_path)
+    env = {**env, "HERMES_MANAGED_DIR": str(_managed_dir(tmp_path, {"username": "pinned-operator"}))}
+    renamed = _set_password(env)  # --username spike-admin
+    assert renamed.returncode == 1, renamed.stdout
+    assert "dashboard.basic_auth.username is managed by your administrator" in renamed.stdout
+    assert _basic_auth(home) == {}
+    kept = run_cli(env, "dashboard", "password", "--password-stdin", stdin=PASSWORD + "\n")
+    assert kept.returncode == 0, kept.stdout
+    assert "user 'pinned-operator'" in kept.stdout
+    assert _verify_password(PASSWORD, _basic_auth(home)["password_hash"])
 
 
 def test_a_password_the_calling_environment_also_sets_is_named_and_still_wins_where_it_is_set(tmp_path):

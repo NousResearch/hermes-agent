@@ -142,6 +142,29 @@ def _shadow_refusal() -> Optional[str]:
     return None
 
 
+def _managed_config_refusal(username: str) -> Optional[str]:
+    """Why the administrator's managed config.yaml keeps the new sign-in from taking effect, or None:
+    a pinned ``password_hash``, or a pinned ``username`` other than *username*. ``save_config`` drops
+    pinned keys with only a note, so this is asked before anything is written."""
+    from hermes_cli import managed_scope
+    pinned = managed_scope.managed_config_keys()
+    if not pinned:
+        return None
+    source = managed_scope.get_managed_dir() / "config.yaml"
+
+    def is_pinned(key: str) -> bool:
+        return any(key == item or key.startswith(item + ".") for item in pinned)
+
+    if is_pinned("dashboard.basic_auth.password_hash"):
+        return f"dashboard.basic_auth.password_hash is managed by your administrator ({source})"
+    section = (managed_scope.load_managed_config().get("dashboard") or {}).get("basic_auth") or {}
+    pinned_user = str(section.get("username") or "").strip() if isinstance(section, dict) else ""
+    if is_pinned("dashboard.basic_auth.username") and pinned_user != username:
+        return (f"dashboard.basic_auth.username is managed by your administrator ({source}) as "
+                f"'{pinned_user}'; leave out --username to keep it")
+    return None
+
+
 def _inherited_shadows() -> list[str]:
     """The names in :data:`SHADOWING_ENV` the environment this command was started in sets (not this
     home's ``.env``, which the CLI loads over it and this command clears). Read before that clearing."""
@@ -198,7 +221,7 @@ def cmd_dashboard_password(args) -> int:
     if not password:
         print("✗ Empty password; nothing was changed.", file=sys.stderr)
         return EXIT_INVALID
-    refusal = _shadow_refusal()
+    refusal = _shadow_refusal() or _managed_config_refusal(username)
     if refusal:
         print(f"✗ {refusal}; nothing was changed.", file=sys.stderr)
         return 1

@@ -492,12 +492,25 @@ _VERIFY_JS_TEMPLATE = """(() => {
   let landed = 0;
   let reverted = 0;
   const missing = [];
+  const failed = [];
   for (const f of fills) {
     const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el) { missing.push(f.index); continue; }
     if (el.tagName === "SELECT") { landed += 1; continue; }
-    if (String(el.value) === String(f.value)) landed += 1; else reverted += 1;
+    if (String(el.value) === String(f.value)) { landed += 1; continue; }
+    // A masked field (phone, date, card) reformats what was typed: compare the digits for
+    // anything that is not the password, so a mask adding "+7 (", dashes or spaces still counts
+    // as the value landing. The password check stays exact.
+    const digits = (v) => String(v).replace(/[^0-9]/g, "");
+    const want = digits(f.value);
+    const got = digits(el.value);
+    if (f.token !== "current-password" && want.length >= 4 && (got === want || got.endsWith(want))) {
+      landed += 1;
+    } else {
+      reverted += 1;
+      failed.push(f.index);
+    }
   }
   if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ landed, reverted, missing });
+  return JSON.stringify({ landed, reverted, missing, failed });
 })()"""

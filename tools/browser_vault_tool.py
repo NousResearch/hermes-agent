@@ -601,15 +601,35 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     )
     from agent.vault_store import scrub_secret_from_text
 
-    def _abort(error_type: str, message: str) -> dict[str, Any]:
-        # Remove every stamp: a stamp left behind would let a later read address the control
-        # this fill just targeted.
+    typed_fields: list[dict[str, Any]] = []
+
+    def _abort(error_type: str, message: str, *, field: Optional[str] = None,
+               counts: Optional[dict[str, Any]] = None, next_hint: Optional[str] = None,
+               clear: bool = True) -> dict[str, Any]:
+        """Refuse the fill: clear whatever this fill already wrote, drop the stamps, say why.
+
+        A refused fill must not leave a partial value behind — the password field holding the
+        secret while the tool reports "nothing is filled" is both wrong and a leak.
+        """
+        if clear and typed_fields:
+            try:
+                _eval_js_secret(task_id, build_clear_js(typed_fields, nonce))
+            except Exception:  # health: allow BLE001 -- cleanup must not mask the refusal
+                logger.debug("vault fill: could not clear the typed fields")
+            typed_fields.clear()
         try:
             _eval_js_secret(task_id, build_unstamp_js(nonce))
         except Exception:  # health: allow BLE001 -- cleanup must not mask the refusal
             logger.debug("vault fill: stamp cleanup failed")
-        return {"ok": False, "success": False, "error_type": error_type, "filled_fields": 0,
-                "error": scrub_secret_from_text(message, secret)}
+        out: dict[str, Any] = {"ok": False, "success": False, "error_type": error_type,
+                               "filled_fields": 0, "error": scrub_secret_from_text(message, secret)}
+        if field:
+            out["field"] = field
+        if counts:
+            out["counts"] = counts
+        if next_hint:
+            out["next"] = next_hint
+        return out
 
     def _script(expression: str) -> Any:
         res = _eval_js_secret(task_id, expression)
@@ -627,14 +647,17 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         found = origin.get("found") if isinstance(origin, dict) else None
         return _abort("origin_changed",
                       f"Refused: the page navigated away from the bound origin ({page_origin}) "
-                      f"before the value could be typed (now on {found or 'unknown'}). Nothing was written.")
+                      f"before the value could be typed (now on {found or 'unknown'}). Nothing was written.",
+                      next_hint="Re-open the saved site's login page and retry; the fill only writes on the "
+                                "origin the vault item is bound to.")
 
     filled = 0
     # Non-text controls (select, checkbox, radio) keep the JS path.
     if js_fills:
         js_result = _script(build_fill_js(js_fills, expected_origin=page_origin, nonce=nonce))
         if not isinstance(js_result, dict):
-            return _abort("fill_unverified", "The page could not be written to; nothing was filled.")
+            return _abort("fill_unverified", "The page could not be written to; nothing was filled.",
+                          next_hint="Retry once; if it repeats, inspect the page before filling again.")
         if js_result.get("refused") == "origin_changed":
             return _abort("origin_changed",
                           f"Refused: the page navigated away from the bound origin ({page_origin}) "
@@ -664,7 +687,9 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
             return _abort("focus_lost",
                           f"Refused: focus moved off the target field (tag {tag or 'unknown'}, "
                           f"focus now on {found or 'nothing'}) before the value could be typed. "
-                          "Nothing further was typed.")
+                          "Nothing further was typed.",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Click the field, then retry. Nothing was typed into the page.")
 
         aborted = _assert_focus()
         if aborted:
@@ -673,13 +698,18 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         if not typed.get("ok"):
             return _abort("fill_unverified",
                           "The browser refused the trusted input for one field: "
-                          f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
+                          f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Check the browser is still attached, then retry the fill.")
         verified = _verify()
         if not isinstance(verified, dict):
             return _abort("fill_unverified",
                           "The page could not be read back after the value was typed; "
-                          "treating the fill as failed.")
+                          "treating the fill as failed.",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Retry once; if it repeats, read the page state before filling again.")
         if _holds(verified):
+            typed_fields.append(f)  # this field is written; a later refusal must clear it
             return None
 
         # A bulk insert lands wrong in a masked field (phone, date, card): the mask drops or
@@ -689,19 +719,42 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         aborted = _assert_focus()
         if aborted:
             return aborted
-        for char in str(f["value"]):
-            typed = supervisor.insert_text(char)
-            if not typed.get("ok"):
+        type_keys = getattr(supervisor, "type_keys", None)
+        if callable(type_keys):
+            # A mask reformats on every edit, so the value has to arrive as key events.
+            keyed = type_keys(str(f["value"]), delay=_TYPE_PER_KEY_DELAY_S)
+            if not isinstance(keyed, dict) or not keyed.get("ok"):
+                detail = keyed.get("error") if isinstance(keyed, dict) else None
                 return _abort("fill_unverified",
                               "The browser refused the trusted input for one field: "
-                              f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
-            time.sleep(_TYPE_PER_KEY_DELAY_S)
+                              f"{scrub_secret_from_text(str(detail or 'input failed'), secret)}",
+                              field=str(f.get("token", "unknown")),
+                              next_hint="Check the browser is still attached, then retry the fill.")
+        else:
+            for char in str(f["value"]):
+                typed = supervisor.insert_text(char)
+                if not typed.get("ok"):
+                    return _abort("fill_unverified",
+                                  "The browser refused the trusted input for one field: "
+                                  f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}",
+                                  field=str(f.get("token", "unknown")),
+                                  next_hint="Check the browser is still attached, then retry the fill.")
+                time.sleep(_TYPE_PER_KEY_DELAY_S)
         verified = _verify()
         if _holds(verified):
+            typed_fields.append(f)
             return None
+        counts = verified if isinstance(verified, dict) else {}
         return _abort("fill_reverted",
-                      "The page rejected the value: the field did not hold it after it was "
-                      "typed key by key. Nothing is filled.")
+                      "The page rejected the value: the field did not hold it after a bulk insert "
+                      "and after being retyped key by key. The field was cleared, so nothing is filled.",
+                      field=str(f.get("token", "unknown")),
+                      counts={"expected": 1,
+                              "landed": int(counts.get("landed", 0) or 0),
+                              "reverted": int(counts.get("reverted", 0) or 0)},
+                      next_hint="Check the value format the page expects (mask, country code, length). "
+                                "If this is the identifier, retry with with_identifier=false and type it "
+                                "yourself.")
 
     for f in type_fills:
         aborted = _type_field(f)
@@ -788,16 +841,32 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[st
         if not isinstance(verified, dict):
             _eval_js(task_id, build_unstamp_js())
             return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
-                    "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
+                    "error": "The page could not be read back after the fill, so it is treated as failed.",
+                    "next": "Retry once. If it repeats, read the page (browser_exec page_info) before filling again."}
         landed = int(verified.get("landed", 0) or 0)
         reverted = int(verified.get("reverted", 0) or 0)
+        failed = [int(i) for i in (verified.get("failed") or []) if isinstance(i, (int, float))]
         if landed >= expected or time.monotonic() >= deadline:
             break
-    _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
     if landed < expected:
-        return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
-                "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
-                          "or were re-rendered. Nothing is filled.")}
+        # The fill is refused, so the fields must not be left holding a partial value: clear them
+        # (the stamps are still on the page) and then drop the stamps.
+        from agent.vault_login_classifier import build_clear_js
+
+        _eval_js(task_id, build_clear_js(fills, nonce))
+        _eval_js(task_id, build_unstamp_js())
+        kinds = sorted({str(f.get("token", "unknown")) for f in fills if f["index"] in failed}) or ["unknown"]
+        return {
+            "success": False, "error_type": "fill_reverted", "filled_fields": 0,
+            "counts": {"expected": expected, "landed": landed, "reverted": reverted},
+            "fields": kinds,
+            "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
+                      f"({', '.join(kinds)}). The fields were cleared, so nothing is filled."),
+            "next": ("Retry once. If the same field reverts again, fill the password alone "
+                     "(with_identifier=false) and type the identifier yourself, or check whether the "
+                     "page expects a different value format."),
+        }
+    _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
     return {"success": True, "landed": landed}
 
 

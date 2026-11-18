@@ -118,7 +118,8 @@ class HostedControls:
         if local:
             # Every daemon is asked before the policy lock (a reverse RPC under it deadlocks real
             # gateways); a deferred turn is never admitted meanwhile, and the requeue is fenced.
-            settled = self._local_retry_probe(room_id, member_id, task_id, execution_generation)
+            probed, authority = self._control_task(room_id, member_id, task_id, execution_generation)
+            settled = self._local_retry_probe(authority, probed)
             if settled is not None:
                 return settled
         with self._policy_lock:
@@ -130,21 +131,25 @@ class HostedControls:
             if task['status'] != 'deferred':
                 raise AuthorityRefusal('stale_generation')
             if local:
+                if binding != authority or task['cancel_generation'] != probed['cancel_generation']:
+                    raise AuthorityRefusal('stale_generation')
                 lease = self.runtime._ensure_lease(binding)
-                return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
+                return self.runtime._requeue(tasks.requeue_deferred_task, probed, lease, room_id)
         return self._retry_peer(binding, task)
 
-    def _local_retry_probe(self, room_id, member_id, task_id, execution_generation):
+    def _local_retry_probe(self, binding, task):
         """Refuse Retry while any home could still run this generation. A turn from before attempt
         homes were recorded may run at an older home of its profile, which must first answer that
         it holds nothing; then the home the Stop is asked at must be idle (unless it is gone).
         A reply already stored for this attempt settles the turn instead, and that row is returned:
         running it again would answer twice. Reading the receipts fails the Retry when it fails."""
         from gateway.session_hosted_member_homes import moved_attempt_gone, unsettled_legacy_homes
-        task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
+        room_id = binding.room_id
+        if task['status'] == 'indeterminate':
+            raise AuthorityRefusal('unknown_execution')
         if task['status'] != 'deferred':
-            return  # refused under the lock
-        held = unsettled_legacy_homes(self, room_id, task)
+            raise AuthorityRefusal('stale_generation')
+        held = unsettled_legacy_homes(self, room_id, task, for_retry=True)
         if held:
             raise AuthorityRefusal('session_busy', field='home', detail=(
                 f'an older home of this profile may still run this turn: {held[0]}'))
@@ -167,6 +172,10 @@ class HostedControls:
             receipt = (lost if isinstance(lost, _TerminalReceipt) else
                        self.runtime._terminal_receipt(rpc, profile, session_id, task))
             if receipt is None:
+                if (getattr(rpc, 'served_elsewhere', False) and lost is not True
+                        and info.get('exact_attempt_results') is not True):
+                    # Older daemons can omit finished turns from their bounded results list.
+                    raise AuthorityRefusal('unknown_execution')
                 return None
         return self.runtime._fenced(tasks.settle_recovered_task, binding, task,
                                     self.runtime._ensure_lease(binding), **asdict(receipt))

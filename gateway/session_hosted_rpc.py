@@ -248,7 +248,8 @@ class HostedRoomAuthorityRPC:
             if row['status'] == 'terminal' and row['admission_id'] in self.callbacks:
                 self._terminal(row, task, generation)
         current = next(((row, task, generation) for row, task, generation in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
-        result = {'active': current is not None and current[0]['status'] != 'unknown',
+        result = {'exact_attempt_results': True,
+                  'active': current is not None and current[0]['status'] != 'unknown',
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}

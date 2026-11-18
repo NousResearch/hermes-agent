@@ -146,3 +146,26 @@ def drop_credentials_of_other_route(model_cfg: dict[str, Any], prior_model_cfg: 
     if not same_route:
         clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
     return model_cfg
+
+
+def _llamacpp_aliases() -> frozenset:
+    from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+    return LLAMACPP_ALIASES
+
+
+def persisted_base_url(provider: Any, base_url: Any) -> str:
+    """The ``model.base_url`` a selection stores: *base_url*, except the managed llama.cpp
+    server's own address, which is "" (stored as unset).
+
+    That address is not a route. Its port is ephemeral — a busy stable port falls back to a free
+    one and a restart can move it — and its API key is known only to the supervisor. Pinned into
+    ``model.base_url`` it makes ``provider: llamacpp`` bypass the managed endpoint resolver, so
+    every later request aims at a dead port (connection refused) or at the live router without
+    its key (401). Unset, the alias resolves the live endpoint and key per request. A URL for an
+    external llama-server (not the managed one) is still stored verbatim."""
+    url = str(base_url or "")
+    if url and str(provider or "").strip().lower() in _llamacpp_aliases():
+        from hermes_cli.local_runtime.growth import is_managed_endpoint
+        if is_managed_endpoint(url):
+            return ""
+    return url

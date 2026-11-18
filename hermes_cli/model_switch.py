@@ -1843,16 +1843,18 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
-    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
+    from hermes_cli.route_identity import (
+        ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, persisted_base_url, should_clear_context_pin)
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
+    base_url = persisted_base_url(result.target_provider, result.base_url)  # managed llama.cpp address: unset
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
-        "base_url": result.base_url or None, "api_mode": result.api_mode or None,
+        "base_url": base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:
         if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-                model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
+                model_cfg.get("base_url"), base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
     route_changed = selection_route_changed(model_cfg, result)
@@ -1868,10 +1870,11 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
 def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
     """Provider or endpoint differs between a ``model:`` block and the switch target. The one
     route-identity test for endpoint-bound credentials (inline keys, ``key_env``, launch keys)."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_cli.route_identity import normalize_route_base_url, persisted_base_url
     if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
         return True
-    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
+    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(
+        persisted_base_url(result.target_provider, result.base_url))
 
 
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult, *, mask_cleared: bool = False) -> dict:

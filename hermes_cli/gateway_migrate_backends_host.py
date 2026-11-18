@@ -363,7 +363,8 @@ class SystemHost:
     # ------------------------------------------------------------------ network
 
     def http_status(self, host: str, port: int) -> Optional[dict]:
-        """Read sign-in state without invoking /api/status's install-ID or stale-record maintenance."""
+        """Read sign-in state without invoking /api/status's install-ID or stale-record maintenance.
+        ``{"health": "missing"}`` when the backend answers 404 there (a Hermes older than v2026.7.30)."""
         from hermes_cli.url_utils import format_url_host
         origin = f"http://{format_url_host(host)}:{port}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -372,7 +373,12 @@ class SystemHost:
             with opener.open(request, timeout=5) as resp:
                 return json.load(resp) if resp.status == 200 else None
         try:
-            data = read("/api/health")
+            try:
+                data = read("/api/health")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:  # Hermes before v2026.7.30 has no /api/health
+                    return {"health": "missing"}
+                raise
             if not isinstance(data, dict) or not isinstance(data.get("auth_required"), bool):
                 return None
             if data["auth_required"]:

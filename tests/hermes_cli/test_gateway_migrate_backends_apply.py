@@ -1045,3 +1045,35 @@ def test_an_enabled_secret_source_blocks_unless_webapp_public_url_is_set(home, c
 
     blocked = any("external secret source is enabled" in b for b in out["plan"]["blockers"])
     assert blocked is not webapp_url and (code == engine.EXIT_BLOCKED) is not webapp_url
+
+
+# --- review round 2: a backend older than v2026.7.30 has no /api/health
+
+
+def test_a_backend_without_api_health_is_reported_as_missing(home, monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    class Opener:
+        def open(self, request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: Opener())
+
+    assert SystemHost(home).http_status("127.0.0.1", 9119) == {"health": "missing"}
+
+
+@pytest.mark.parametrize(("supervisor", "hint"), [("systemd", "systemctl --user restart hermes-dashboard.service"),
+                                                   ("manual", "stop it and start it again the way it was started")])
+def test_an_old_backend_without_api_health_says_to_restart_it_with_the_updated_hermes(home, capsys, monkeypatch,
+                                                                                         supervisor, hint):
+    host = FakeHost(home, host="127.0.0.1", supervisor=supervisor)
+    monkeypatch.setattr(host, "http_status", lambda h, p: {"health": "missing"})
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["steps"] == []
+    (blocker,) = [b for b in out["plan"]["blockers"] if "v2026.7.30" in b]
+    assert "Restart the old backend with the updated hermes" in blocker and hint in blocker
+    assert "re-run the dry run" in blocker

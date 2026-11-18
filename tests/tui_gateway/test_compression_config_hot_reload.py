@@ -169,7 +169,7 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
 
     # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
     # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
-    import agent.agent_init as agent_init
+    from agent import agent_init
 
     monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
     _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
@@ -248,6 +248,23 @@ def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
         assert getattr(compressor, attr) == getattr(fresh, attr), attr
 
 
+def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
+    """Hot reload parses YAML booleans like agent_init: a bool is never a count (`true` is not a 1-token
+    trigger); it keeps the default."""
+    session, compressor = _session_with_compressor()
+    for raw, expected in ((True, 0), (False, 0)):
+        monkeypatch.setattr(server, "_load_cfg", lambda raw=raw: {"compression": {"proactive_prune_tokens": raw}})
+        server._sync_agent_compression_with_config("sid-bool", session)
+        assert compressor.proactive_prune_tokens == expected
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.proactive_prune_min_reclaim_tokens == 4_096
+    # Non-prune keys keep their existing reload coercion (protect_last_n: false -> 0, as agent_init's int()).
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.protect_last_n == 0
+
+
 def test_removing_threshold_restores_derived_default(monkeypatch):
     session, compressor = _neutral_session(threshold_percent=0.85)
     assert compressor.threshold_percent == 0.85
@@ -277,6 +294,16 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     assert compressor._config_context_length is None
     assert compressor.context_length == 1_000_000
     assert compressor.threshold_tokens == _with_default_cap(int(1_000_000 * 0.50))
+
+
+def test_live_checkpoint_required_reaches_the_prune_gate(monkeypatch):
+    """The proactive prune bypasses the checkpoint hook, so its call-site gate must see a live flip."""
+    session, _ = _neutral_session()
+    session["agent"].compression_checkpoint_required = False
+    _sync_with_cfg(monkeypatch, session, {"compression": {"checkpoint_required": True}})
+    assert session["agent"].compression_checkpoint_required is True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_checkpoint_required is False
 
 
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):

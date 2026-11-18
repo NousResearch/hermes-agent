@@ -9,7 +9,7 @@ class DiscordVoiceInfoMixin:
     _voice_clients: dict[int, Any]
     _voice_receivers: dict[int, Any]
     _voice_text_channels: dict[int, Any]
-    _voice_sources: dict[int, Dict[str, Any]]
+    _voice_sources: dict[int, dict[str, Any]]
     _client: Any
     discard_pending_voice_input: Any
 
@@ -29,7 +29,7 @@ class DiscordVoiceInfoMixin:
         if source is not None:
             self._voice_sources[guild_id] = source
 
-    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
+    def get_voice_channel_info(self, guild_id: int) -> Optional[dict[str, Any]]:
         """Return voice channel info (name, members, count, speaking user IDs) or None if not connected."""
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():

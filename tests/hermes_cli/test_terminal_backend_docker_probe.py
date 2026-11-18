@@ -29,7 +29,6 @@ def _hide_host_runtimes(monkeypatch):
     monkeypatch.delenv("HERMES_DOCKER_BINARY", raising=False)
     monkeypatch.setattr(docker_mod.shutil, "which", lambda name: None)
     monkeypatch.setattr(docker_mod, "_DOCKER_SEARCH_PATHS", [])
-    monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
 
 
 def test_probe_ready_when_only_podman_is_configured(tmp_path, monkeypatch):

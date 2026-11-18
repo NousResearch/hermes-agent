@@ -6,7 +6,7 @@ import logging
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -173,7 +173,7 @@ def _skill_md_preview(bundle) -> Optional[str]:
     return "\n".join(lines[:50]) + more
 
 
-def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
+def _format_extra_metadata_lines(extra: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for key, label in _EXTRA_META_LABELS:
         value = extra.get(key)
@@ -214,9 +214,11 @@ def _exact_name_hits(results, name: str):
     return [r for r in results if key in (_slug_key(r.name), _slug_key(_identifier_slug(r.identifier)))]
 
 
-def _resolve_short_name(name: str, sources, console: Console) -> str:
+def _resolve_short_name(name: str, sources, console: Console, attempt: Optional[dict] = None) -> str:
     """Short name -> full identifier via search; "" when ambiguous/missing (one exact match wins,
-    several -> the single official one, else they are listed)."""
+    several -> the single official one, else they are listed). ``attempt`` (an install's metric
+    record) gets ``failure_class`` ``ambiguous`` / ``not_found`` when it returns ""."""
+    attempt = attempt if attempt is not None else {}
     from tools.skills_hub_search import unified_search
     c = console or _console
     c.print(f"[dim]Resolving '{name}'...[/]")
@@ -225,11 +227,13 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
     if len(exact) == 1:
         c.print(f"[dim]Resolved to: {exact[0].identifier}[/]")
+        attempt["registry"] = exact[0].source  # the adapter that served it overrides this
         return exact[0].identifier
     if len(exact) > 1:
         official = [r for r in exact if r.source == "official"]  # outranks community mirrors
         if len(official) == 1:
             c.print(f"[dim]Resolved to: {official[0].identifier} (official catalog)[/]")
+            attempt["registry"] = "official"
             return official[0].identifier
         c.print(f"\n[yellow]Multiple skills named '{name}' found:[/]")
         table = _table("Source", "Trust", _ident_col("bold cyan"))
@@ -237,14 +241,17 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
             table.add_row(r.source, _trust_cell(r.trust_level, r.source), r.identifier)
         c.print(table)
         c.print("[bold]Use the full identifier to install a specific one.[/]\n")
+        attempt["failure_class"] = "ambiguous"
         return ""
     if results:
         c.print(f"[yellow]No exact match for '{name}'. Did you mean one of these?[/]")
         for r in results[:5]:
             c.print(f"  [cyan]{r.name}[/] — {r.identifier}")
         c.print()
+        attempt["failure_class"] = "not_found"
         return ""
     _print_error(c, f"No skill named '{name}' found in any source.")
+    attempt["failure_class"] = "not_found"
     return ""
 
 
@@ -266,9 +273,9 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
     return first_meta, None, first_meta_source
 
 
-def _full_identifier(identifier: str, sources, c) -> str:
+def _full_identifier(identifier: str, sources, c, attempt: Optional[dict] = None) -> str:
     """Identifiers without a slash are short names; "" when they cannot be resolved."""
-    return identifier if "/" in identifier else _resolve_short_name(identifier, sources, c)
+    return identifier if "/" in identifier else _resolve_short_name(identifier, sources, c, attempt)
 
 
 def _resolve_identifier(identifier: str, sources, c) -> tuple:
@@ -288,7 +295,7 @@ def _is_valid_installed_skill_name(name: str) -> bool:
                 and _VALID_NAME_RE.match(candidate))
 
 
-def _existing_categories() -> List[str]:
+def _existing_categories() -> list[str]:
     """Sorted category buckets under ``~/.hermes/skills/`` (children without their own SKILL.md)."""
     from tools.skills_hub import SKILLS_DIR
     from tools.skills_hub_install import _category_skill_dirs
@@ -325,7 +332,7 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
     return answer
 
 
-def _prompt_for_category(c: Console, existing: List[str]) -> str:
+def _prompt_for_category(c: Console, existing: list[str]) -> str:
     """Prompt interactively for a category. Empty/None input means flat install."""
     c.print()
     if existing:
@@ -377,7 +384,7 @@ def do_search(query: str, source: str = "all", limit: int = 10, console: Optiona
 def _rank_and_page(all_results, page: int, page_size: int):
     """Dedupe by identifier (higher trust wins; names are NOT unique across browse-sh sites),
     sort official-first, slice one page -> (deduped, page_items, page, total_pages, start)."""
-    rank = lambda r: _TRUST_RANK.get(r.trust_level, 0)  # noqa: E731
+    rank = lambda r: _TRUST_RANK.get(r.trust_level, 0)
     seen: dict = {}
     for r in all_results:
         if r.identifier not in seen or rank(r) > rank(seen[r.identifier]):
@@ -396,7 +403,7 @@ def _fetch_browse_results(c: Console, source: str):
     with c.status("[bold]Fetching skills from registries...") as status:
         # parallel_search_sources invokes the callback from the collecting thread as each
         # source completes; the page itself is rendered once over the final, fully sorted set.
-        _done: List[str] = []
+        _done: list[str] = []
 
         def _on_source_done(sid: str, count: int) -> None:
             _done.append(f"{sid} ({count})")
@@ -525,7 +532,8 @@ def _install_blocked(c: Console, bundle, message: str, verdict: str, detail: str
     """Print the blocked-install line, drop the quarantine copy, append the audit row."""
     c.print(f"{lead}[bold red]{label}[/] {message}")
     if q_path is not None:
-        shutil.rmtree(q_path, ignore_errors=True)
+        from tools.skills_hub_install import discard_quarantine
+        discard_quarantine(q_path)
     from tools.skills_hub import append_audit_log
     append_audit_log("BLOCKED", bundle.name, bundle.source, bundle.trust_level, verdict, detail)
 
@@ -593,7 +601,7 @@ def _announce_blueprint(c: Console, skill_name: str) -> None:
     """Offer an installed skill's ``metadata.hermes.blueprint`` via /suggestions — never
     auto-scheduled (installing must not silently create a recurring job). Never raises."""
     try:
-        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+        from cron.skill_blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
         try:
             spec = blueprint_spec_for_installed(skill_name)
         except BlueprintError as _rec_err:
@@ -629,13 +637,22 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     return None
 
 
-def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
-    rate_limited = any(getattr(src, "is_rate_limited", False)
-                       or getattr(getattr(src, "github", None), "is_rate_limited", False)
-                       for src in sources)
-    # Credentials GitHub refused with 401 (the fetch already fell through past them, #98725).
-    rejected = next((r for src in sources
-                     if isinstance(r := getattr(getattr(src, "auth", None), "rejected", None), list) and r), [])
+def _hub_rate_limited(sources) -> bool:
+    return any(getattr(src, "is_rate_limited", False)
+               or getattr(getattr(src, "github", None), "is_rate_limited", False)
+               for src in sources)
+
+
+def _hub_rejected_credentials(sources) -> list:
+    """Credentials GitHub refused with 401 (the fetch already fell through past them, #98725)."""
+    return next((r for src in sources
+                 if isinstance(r := getattr(getattr(src, "auth", None), "rejected", None), list) and r), [])
+
+
+def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> str:
+    """Explain a resolved identifier no adapter served; returns the extension-install failure class."""
+    rate_limited = _hub_rate_limited(sources)
+    rejected = _hub_rejected_credentials(sources)
     # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
     # re-trying spellings (#3259). Only when no adapter was rate limited or refused a credential:
     # those fetches also yield meta-without-bundle, and calling that "stale" would send users away
@@ -646,7 +663,7 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
                 f"but its files no longer exist upstream.")
         c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
                 "its author. Try `hermes skills search` for an alternative.[/]\n")
-        return
+        return "stale_index"
     c.print(f"[bold red]Error:[/] Could not download '{identifier}'.")
     if rejected:
         c.print(f"[yellow]Hint:[/] GitHub rejected {' and '.join(rejected)} (401 Bad credentials). "
@@ -659,19 +676,53 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     else:
         c.print(f"Check the name with [bold]hermes skills search {identifier.rsplit('/', 1)[-1]}[/] "
                 "and check your internet connection. If it keeps failing, run [bold]hermes doctor[/].\n")
+    return "rate_limited" if rate_limited else "auth_rejected" if rejected else "fetch_failed"
 
 
-def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str):
+def _untrusted_scan_source(candidate: str, fallback: str = "") -> str:
+    """``candidate`` unless it names a reserved origin marker ("official", "agent-created", alias-prefixed
+    forms) that skills_guard elevates to builtin/agent-created trust. Identifiers are publisher-chosen (a
+    ClawHub slug ``official`` would install a dangerous skill as builtin), so they never carry that trust."""
+    from tools.skills_guard import _resolve_trust_level
+    for value in (candidate, fallback):
+        if value and _resolve_trust_level(value) not in {"builtin", "agent-created"}:
+            return value
+    return "community"
+
+
+def _is_official_adapter(matched_source) -> bool:
+    """Official provenance is the adapter that served the bytes, never a ``bundle.source`` string: the
+    hermes-index adapter copies ``source`` from its JSON rows onto GitHub-fetched bundles."""
+    from tools.skills_hub_official import OptionalSkillSource
+    return isinstance(matched_source, OptionalSkillSource)
+
+
+def _scan_source_for_install(bundle, meta, identifier: str, matched_source) -> tuple[str, str | None]:
+    """``(scan source, explicit trust tier or None)`` for a resolved hub bundle. Builtin trust only for the
+    official adapter's own optional-skills bytes (local, or its NousResearch/hermes-agent live-repo fallback): a
+    catalog stub's upstream bundle is live third-party content labelled ``trusted``, so a dangerous verdict blocks."""
+    if _is_official_adapter(matched_source):
+        bundle_trust = getattr(bundle, "trust_level", "")
+        upstream_repo = (getattr(bundle, "metadata", None) or {}).get("upstream_repo")
+        if bundle_trust == "builtin" and not upstream_repo:
+            return "official", None
+        return (upstream_repo or "community",
+                bundle_trust if bundle_trust in {"trusted", "community"} else "trusted")
+    candidate = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    source_id = getattr(matched_source, "source_id", None)
+    return _untrusted_scan_source(candidate, source_id() if callable(source_id) else ""), None
+
+
+def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str, matched_source=None):
     """Run the cached security scan on the quarantined bundle and print the report."""
     from tools.skills_hub import HUB_DIR
     from tools.skills_hub_models import source_url_for_bundle
     from tools.skills_guard import scan_skill_cached, format_scan_report
     c.print("[bold]Running security scan...[/]")
-    scan_source = ("official" if bundle.source == "official"
-                   else bundle.identifier or getattr(meta, "identifier", "") or identifier)
+    scan_source, scan_trust = _scan_source_for_install(bundle, meta, identifier, matched_source)
     result, prov = scan_skill_cached(
         q_path, source=scan_source, source_url=source_url_for_bundle(bundle),
-        cache_dir=HUB_DIR / "scan-cache")
+        cache_dir=HUB_DIR / "scan-cache", trust_level=scan_trust)
     c.print(format_scan_report(result))
     c.print(f"[dim]Scan provenance: {'fresh' if prov['fresh'] else 'cached'}; scanner "
             f"{prov['scanner_version']}; hash {prov['bundle_hash']}[/]")
@@ -686,6 +737,12 @@ _INSTALL_PANELS = {
         "It ships with hermes-agent but is not activated by default.\n"
         "Installing will copy it to your skills directory where the agent can use it.\n\n",
         "Official Skill", "bright_cyan"),
+    "upstream": (
+        "[bold yellow]This catalog entry installs third-party content from "
+        "[cyan]https://github.com/{repo}[/] (live default branch).[/]\n\n"
+        "It is listed in the Hermes optional-skills catalog but is not maintained by Nous Research.\n"
+        "Review the installed files before use.\n\n",
+        "Third-Party Skill", "yellow"),
     "external": (
         "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
         "External skills can contain instructions that influence agent behavior,\n"
@@ -694,10 +751,18 @@ _INSTALL_PANELS = {
         "Disclaimer", "yellow")}
 
 
-def _confirm_install(c: Console, bundle, category: str) -> bool:
+def _upstream_repo(bundle) -> Optional[str]:
+    """The live third-party repo an official catalog stub installs from, or None for vendored content."""
+    return (getattr(bundle, "metadata", None) or {}).get("upstream_repo") if bundle.source == "official" else None
+
+
+def _confirm_install(c: Console, bundle, category: str, official: bool) -> bool:
     """Source-appropriate disclaimer panel + `Install '<name>'?` prompt."""
     files_at = f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]"
-    body, title, style = _INSTALL_PANELS["official" if bundle.source == "official" else "external"]
+    upstream_repo = _upstream_repo(bundle) if official else None
+    kind = "upstream" if upstream_repo else "official" if official else "external"
+    body, title, style = _INSTALL_PANELS[kind]
+    body = body.replace("{repo}", str(upstream_repo or ""))
     c.print()
     c.print(Panel(body + files_at, title=title, border_style=style))
     return _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
@@ -729,25 +794,56 @@ def _install_bundled(c: Console, name: str, invalidate_cache: bool) -> tuple:
     return SimpleNamespace(name=name, source="bundled"), "success", True
 
 
-def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
+def _registry_prefixes() -> tuple:
+    """Identifier prefixes each adapter accepts, from the adapters themselves (``<SOURCE_ID>/``, the
+    skills.sh spellings, ``well-known:``), so a fetch no adapter answered still names the registry
+    it was meant for. Bare owner/repo/path stays unresolved."""
+    from tools.skills_hub_clawhub import ClawHubSource
+    from tools.skills_hub_official import OptionalSkillSource
+    from tools.skills_hub_skillssh import SkillsShSource
+    from tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
+
+    return (
+        *((f"{cls.SOURCE_ID}/", cls.SOURCE_ID) for cls in (OptionalSkillSource, ClawHubSource, LobeHubSource, BrowseShSource)),
+        *((prefix, SkillsShSource.SOURCE_ID) for prefix in SkillsShSource._ID_PREFIX_ALIASES),
+        (f"{WellKnownSkillSource.SOURCE_ID}:", WellKnownSkillSource.SOURCE_ID),
+        ("http://", UrlSource.SOURCE_ID), ("https://", UrlSource.SOURCE_ID),
+    )
+
+
+def _registry_from_identifier(identifier: str) -> str:
+    lowered = identifier.lower()
+    if lowered.startswith(("http://", "https://")) and "/.well-known/skills/" in lowered:
+        return "well-known"
+    return next((sid for prefix, sid in _registry_prefixes() if lowered.startswith(prefix)), "unresolved")
+
+
+def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Optional[dict] = None,
+                          error: Optional[BaseException] = None) -> None:
     """One shared-metrics extension install: official optional skills are the catalog, URL skills
-    stay anonymous, every other registry is the hub."""
+    stay anonymous, every other registry is the hub. ``attempt`` carries the failure class the
+    failing exit named and the hub adapter id (``registry``); a raised ``error`` is classified by
+    its type inside the metrics guard."""
     from hermes_cli.observability.shared_metrics_events import record_extension_install
-    origin = getattr(bundle, "source", None) or (
+    attempt = attempt or {}
+    origin = getattr(bundle, "source", None) or attempt.get("origin") or (
         "official" if identifier.startswith("official/")
         else "url" if identifier.startswith(("http://", "https://")) else "hub")
     source = _SKILL_METRIC_SOURCES.get(origin, "hub")
     name = None if source == "url" else (getattr(bundle, "name", None) or identifier)
-    record_extension_install(kind="skill", source=source, name=name, outcome=outcome)
+    record_extension_install(kind="skill", source=source, name=name, outcome=outcome,
+                             failure_class=attempt.get("failure_class"), registry=attempt.get("registry"),
+                             error=error)
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, reinstall_existing: bool = False) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere.
+    cannot resolve to a same-named skill elsewhere. ``reinstall_existing`` lets update flows replace
+    an installed copy without ``force``'s Skills Guard override.
 
     A first install is recorded once as an extension install; updates and ``--force`` reinstalls
     of an installed skill run through here too and are not installs, nor is a cancelled prompt.
@@ -757,45 +853,83 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
+    from contextlib import ExitStack
+
     from tools.skills_hub import HubLockFile
-    fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
-    try:
-        bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
-                                                    skip_confirm, invalidate_cache, name_override, source_id)
-    except Exception:
-        if fresh:
-            _record_skill_install(identifier, None, "failed")
-        raise
-    if fresh and outcome:
-        _record_skill_install(identifier, bundle, outcome)
-    return installed
+    from tools.skills_hub_install import hub_install_lock
+
+    with ExitStack() as stack:
+        # Held fetch→lock.json so a concurrent CLI/dashboard install can't swap the target between
+        # this install's scan and its move. A filesystem without flock degrades to unlocked, like
+        # HubLockFile._update; a held lock queues this install behind the running one.
+        try:
+            stack.enter_context(hub_install_lock())
+        except TimeoutError as exc:
+            (console or _console).print(f"[bold red]Not installed:[/] {exc}\n")
+            return False
+        except OSError:
+            logging.getLogger(__name__).warning("Installing %s without the hub install lock", identifier,
+                                                exc_info=True)
+        fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+        attempt: dict = {}
+        try:
+            bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
+                                                        skip_confirm, invalidate_cache, name_override, source_id,
+                                                        attempt=attempt, reinstall_existing=reinstall_existing)
+        except Exception as exc:
+            if fresh:
+                _record_skill_install(identifier, None, "failed", attempt, error=exc)
+            raise
+        if fresh and outcome:
+            _record_skill_install(identifier, bundle, outcome, attempt)
+        return installed
 
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
-                   invalidate_cache: bool, name_override: str, source_id: Optional[str]) -> tuple:
+                   invalidate_cache: bool, name_override: str, source_id: Optional[str],
+                   attempt: Optional[dict] = None, reinstall_existing: bool = False) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
-    event (None when this was no new install); ``installed`` is ``do_install``'s return value."""
+    event (None when this was no new install); ``installed`` is ``do_install``'s return value.
+    ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
+    ``failure_class``."""
+    attempt = attempt if attempt is not None else {}
+    attempt["registry"] = "none"
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
-    from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
+    from tools.skills_hub_install import discard_quarantine, install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
     if not source_id and not name_override and (builtin := bundled_skill_for_install(identifier)):
+        # Read only when the restore fails or raises: either way it was a bundled install, not a hub one.
+        attempt.update(failure_class="filesystem_error", origin="bundled")
         return _install_bundled(c, builtin, invalidate_cache)
+    attempt["registry"] = "unresolved"
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
+        attempt["failure_class"] = "not_found"
         return None, "failed", False
     # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
     with skills_hub_http_session():
-        identifier = _full_identifier(identifier, sources, c)
+        identifier = _full_identifier(identifier, sources, c, attempt)
         if not identifier:
+            # Search fans out to every adapter and swallows their errors: a name that resolved to
+            # nothing while GitHub was refusing us is the refusal, not a missing skill.
+            if _hub_rate_limited(sources):
+                attempt["failure_class"] = "rate_limited"
+            elif _hub_rejected_credentials(sources):
+                attempt["failure_class"] = "auth_rejected"
             return None, "failed", False
         c.print(f"\n[bold]Fetching:[/] {identifier}")
         meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    if _matched_source is not None:
+        attempt["registry"] = _matched_source.source_id() or "other"
+    elif attempt.get("registry") == "unresolved":
+        attempt["registry"] = _registry_from_identifier(identifier)
     if not bundle:
-        _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
+        attempt["failure_class"] = _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return None, "failed", False
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
+        attempt["failure_class"] = "invalid_name"
         return bundle, "failed", False
 
     # URL-sourced skills: pick a category interactively when none was given (TTY only;
@@ -804,13 +938,14 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         category = _prompt_for_category(c, _existing_categories())
     # Official skills can be nested ("official/mlops/training/trl-fine-tuning"): keep every
     # identifier segment between "official" and the final slug as the category path.
-    if bundle.source == "official" and not category:
+    official = _is_official_adapter(_matched_source)
+    if official and not category:
         category = "/".join(bundle.identifier.split("/")[1:-1])
 
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not (force or reinstall_existing):
             c.print("Use --force to reinstall.\n")
             return bundle, None, None
     failed = None if existing else "failed"
@@ -821,35 +956,48 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
         _invalid_path(c, bundle, exc)
+        attempt["failure_class"] = "invalid_bundle"
         return bundle, failed, False
-    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
+    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parents[3])}[/]")
 
-    result = _scan_quarantined(c, q_path, bundle, meta, identifier)
-    allowed, _reason = should_allow_install(result, force=force)
-    if not allowed:
-        _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
-                         f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
-        return bundle, failed, False
-    # Advisory second opinion — warn-and-continue by design (PII-class findings are
-    # informational); the install confirmation below is where the user decides.
-    _print_tier1_advisory(q_path, c)
-    metadata_lines = _format_extra_metadata_lines(extra_metadata)
-    if metadata_lines:
-        c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
-
-    # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category):
-        shutil.rmtree(q_path, ignore_errors=True)
-        return bundle, None, None
-
+    # Each quarantine is a unique staging dir; drop it on every exit (scan error, Ctrl-C at the
+    # prompt) so leftovers don't pile up as "pending review" in ``hermes doctor``.
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
-    except ValueError as exc:
-        _invalid_path(c, bundle, exc, q_path)
-        return bundle, failed, False
+        result = _scan_quarantined(c, q_path, bundle, meta, identifier, _matched_source)
+        allowed, _reason = should_allow_install(result, force=force)
+        if not allowed:
+            _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
+                             f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
+            attempt["failure_class"] = "scan_blocked"
+            return bundle, failed, False
+        # Advisory second opinion — warn-and-continue by design (PII-class findings are
+        # informational); the install confirmation below is where the user decides.
+        _print_tier1_advisory(q_path, c)
+        metadata_lines = _format_extra_metadata_lines(extra_metadata)
+        if metadata_lines:
+            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
+
+        # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
+        if not force and not skip_confirm and not _confirm_install(c, bundle, category, official):
+            return bundle, None, None
+
+        try:
+            install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        except ValueError as exc:
+            _invalid_path(c, bundle, exc, q_path)
+            attempt["failure_class"] = "invalid_bundle"
+            return bundle, failed, False
+    finally:
+        discard_quarantine(q_path)
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]")
+    # Unprompted installs never showed the Third-Party panel; print its notice last, so a log view that
+    # keeps only the tail (the dashboard's action log) still shows it after a long file list.
+    if official and (upstream_repo := _upstream_repo(bundle)) and (force or skip_confirm):
+        c.print(f"[yellow]Third-party content:[/] '{bundle.name}' installs the live default branch of "
+                f"[cyan]https://github.com/{upstream_repo}[/] (not maintained by Nous Research).")
+    c.print()
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
     return bundle, None if existing else "success", True
@@ -974,7 +1122,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     when any update failed (e.g. the new version is refused by the scan gate), else None.
 
     Skills whose on-disk content no longer matches the hash recorded at install time have been edited
-    locally; updating them would silently destroy the user's work (``do_install(force=True)``
+    locally; updating them would silently destroy the user's work (the reinstall
     rmtree-replaces the directory). Those are skipped by default and only overwritten when ``force=True``.
     Mirrors the user-modified protection bundled skills already get from ``hermes update`` (ported from
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive replacement must be an explicit
@@ -1006,7 +1154,11 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
-        if do_install(entry["identifier"], category=category, force=True, console=c,
+        # No force: the scan decision do_install prints is the one it must enforce (#38041); this
+        # ``force`` only means "overwrite local edits". The installed name keeps a nameless URL
+        # skill updatable without the prompt skip_confirm suppresses.
+        if do_install(entry["identifier"], category=category, console=c, skip_confirm=True,
+                      reinstall_existing=True, name_override=entry["name"],
                       source_id=entry.get("source", "") or None) is False:
             failed.append(entry["name"])
 
@@ -1045,7 +1197,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
-        c.print(format_scan_report(scan_skill(skill_path, source=entry.get("identifier", entry["source"]))))
+        c.print(format_scan_report(scan_skill(skill_path, source=_untrusted_scan_source(
+            entry.get("identifier", ""), entry.get("source", "")))))
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
         c.print()
@@ -1381,7 +1534,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
     tap_list = TapsManager().list_taps()
     snapshot = {
         "hermes_version": "0.1.0",
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "skills": [
             {"name": entry["name"], "source": entry.get("source", ""),
              "identifier": entry.get("identifier", ""),
@@ -1511,7 +1664,7 @@ def skills_command(args) -> Optional[int]:
 
 # --- Slash command entry point (/skills in chat) ---
 
-def _opt_value(args: List[str], flag: str, default: str, last: bool = False) -> str:
+def _opt_value(args: list[str], flag: str, default: str, last: bool = False) -> str:
     """Value following `flag` (default if absent/trailing); `last` makes a repeated flag's final
     occurrence win (historical install/publish/browse behaviour), else the first."""
     hits = [args[i + 1] for i, a in enumerate(args) if a == flag and i + 1 < len(args)]
@@ -1525,7 +1678,7 @@ def _int_or(text: str, default: int) -> int:
         return default
 
 
-def _opt_int(args: List[str], flag: str, default: int) -> int:
+def _opt_int(args: list[str], flag: str, default: int) -> int:
     """Like _opt_value(last=True) but int-parsed; a non-integer keeps the default."""
     return _int_or(_opt_value(args, flag, str(default), last=True), default)
 

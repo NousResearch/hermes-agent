@@ -13,6 +13,7 @@ import pytest
 from gateway import run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
+from persistence_assembly import store_location
 
 
 def _runner():
@@ -36,7 +37,7 @@ def _install_secondary(monkeypatch, runner, stamps):
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
@@ -85,20 +86,28 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
     assert served.served_profile_unserved_platforms("other") == {}
 
 
+@pytest.mark.parametrize("default_state", ["live", "queued_for_reconnect"])
 @pytest.mark.asyncio
-async def test_secondary_relay_served_by_default_is_not_warned(monkeypatch, caplog):
-    """The default owns Relay: the secondary IS served through the shared adapter — no WARNING,
-    the INFO line still explains where the channel lives."""
+async def test_secondary_relay_served_by_default_is_not_reported(monkeypatch, caplog, default_state):
+    """The default owns Relay (live, or retrying with its own status entry): the secondary IS served
+    through the shared adapter. No WARNING, and no ``<profile>:relay`` entry, which every health
+    reader (dashboard, Cloud availability check) would count as a broken platform."""
     runner = _runner()
-    runner.adapters[Platform.RELAY] = object()
-    _install_secondary(monkeypatch, runner, [])
+    if default_state == "live":
+        runner.adapters[Platform.RELAY] = object()
+    else:
+        runner._failed_platforms[Platform.RELAY] = {"attempts": 1}
+    stamps = []
+    _install_secondary(monkeypatch, runner, stamps)
 
     with caplog.at_level(logging.INFO, logger="gateway.run"):
         await runner._start_one_profile_adapters("work", Path("/profiles/work"), {})
         await runner._start_secondary_profiles(1, [])
 
     assert not [r for r in caplog.records if r.levelno == logging.WARNING and "not being served" in r.getMessage()]
-    assert [r for r in caplog.records if r.levelno == logging.INFO and "not served" in r.getMessage()]
+    assert not [s for s in stamps if s[0] == "work:relay"], stamps
+    assert [r for r in caplog.records if r.levelno == logging.INFO
+            and "'work'" in r.getMessage() and "served through the default" in r.getMessage()]
 
 
 @pytest.mark.asyncio
@@ -111,7 +120,7 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
     monkeypatch.setattr(pr_mod.process_registry, "_completions_restored", False)
     order = []
     monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
-                        lambda q: order.append(("restore", async_delegation._db_path())) or 0)
+                        lambda q: order.append(("restore", store_location(async_delegation._scope()))) or 0)
     runner = _runner()
 
     async def secondaries():
@@ -119,6 +128,6 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
         return 0
 
     runner._start_secondary_profile_adapters = secondaries
-    runner._unserved_shared_ingress_warnings = lambda: []
+    runner._unserved_shared_ingress_warnings = list
     assert await runner._start_secondary_profiles(0, []) == (False, 0)
     assert order == [("restore", tmp_path / "launch" / "state.db"), ("secondaries", None)]

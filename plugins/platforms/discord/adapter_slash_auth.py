@@ -15,18 +15,20 @@ class DiscordSlashAuthMixin:
     _get_allowed_channels: Callable[[], set]
     _get_ignored_channels: Callable[[], set]
     _is_allowed_user: Callable[..., bool]
+    _refresh_live_gates: Callable[[], None]
 
     # ── Slash command authorization ─────────────────────────────────────
     # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
     # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
 
     def _evaluate_slash_authorization(
-        self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
+        self, interaction: discord.Interaction,
+    ) -> tuple[bool, Optional[str]]:
         """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        self._refresh_live_gates()  # a config.yaml edit applies to the next invocation
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()
@@ -83,10 +85,10 @@ class DiscordSlashAuthMixin:
             return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
         return (True, None)
 
-    def _slash_role_grant(self, interaction: "discord.Interaction") -> bool:
+    def _slash_role_grant(self, interaction: discord.Interaction) -> bool:
         """``role_authorized`` for an event built from ``interaction``, with the message path's
         meaning (_discord_message_admission): a role allowlist exists and THIS actor passes the gate.
         Re-evaluated for the interaction instead of trusted from call order, so a builder can never
         stamp the grant on an actor the slash gate would refuse."""
-        return bool(getattr(self, "_allowed_role_ids", set())) and self._evaluate_slash_authorization(
-            interaction)[0]
+        allowed = self._evaluate_slash_authorization(interaction)[0]  # refreshes the gate first
+        return allowed and bool(getattr(self, "_allowed_role_ids", set()))

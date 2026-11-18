@@ -108,8 +108,10 @@ def marker_verdict(raw):
 `
 
 /**
- * POSIX gate: `python3 -c GATE <marker> [payload] [hermes...]` (an empty payload
- * is the probe). Holds the updaters' kernel lock `<marker>.lock` (A7 rule 1:
+ * POSIX gate: `python3 -c GATE <marker> [payload] [hermes...]`, or the same
+ * arguments after `python3 -` with the program on stdin (an empty payload is the
+ * probe, which the relaunch gate ships on stdin to keep its ssh argv small).
+ * Holds the updaters' kernel lock `<marker>.lock` (A7 rule 1:
  * Python update_lock flock, marker.sh flock) for a bounded 10 s, judges the
  * marker, and unlinks a dead claim inside that hold only while the install's
  * CHECKOUT lock is free (update_lock._reclaim_dead): a killed updater's

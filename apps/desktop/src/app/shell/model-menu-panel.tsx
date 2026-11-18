@@ -11,6 +11,7 @@ import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { $currentModelSource } from '@/store/session'
 
+import { LocalSetupMenuRow } from './local-setup-menu-row'
 import { ModelCatalogMenu } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
 
@@ -101,6 +102,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
         </>
       }
       gateway={gateway}
+      header={<LocalSetupMenuRow />}
       includeMoa
       ownerConnectionId={ownerConnectionId}
       profile={profile}

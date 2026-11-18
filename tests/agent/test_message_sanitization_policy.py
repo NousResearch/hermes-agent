@@ -12,15 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.message_sanitization import (
-    apply_reasoning_content_policy,
-    coalesce_tool_call_id,
-    deterministic_call_id,
-    matches_reasoning_echo_family,
-    needs_reasoning_echo,
-    reapply_reasoning_echo,
-    reasoning_echo_family,
-    uniquify_tool_call_ids,
+    apply_reasoning_content_policy, deterministic_call_id, matches_reasoning_echo_family,
+    needs_reasoning_echo, reapply_reasoning_echo, reasoning_echo_family, uniquify_tool_call_ids,
 )
+from session_rules.turns import coalesce_tool_call_id
 
 # ---------------------------------------------------------------------------
 # deterministic_call_id — byte-exact (prompt-cache keys)
@@ -108,6 +103,18 @@ class TestUniquifyToolCallIds:
         uniquify_tool_call_ids(tcs)
         assert tcs[2]["id"] == "z_d3"
 
+    def test_id_used_earlier_in_the_session_is_renamed_and_history_is_not(self):
+        # Providers that name every call "call_0" turn after turn: the session's
+        # earlier ids stay as stored (prompt cache); the incoming call moves.
+        taken = {"call_0", "call_0_d2"}
+        tcs = [
+            {"id": "call_0", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "call_fresh", "function": {"name": "g", "arguments": "{}"}},
+        ]
+        uniquify_tool_call_ids(tcs, taken=taken)
+        assert [tc["id"] for tc in tcs] == ["call_0_d3", "call_fresh"]
+        assert taken == {"call_0", "call_0_d2"}
+
     def test_blank_and_non_string_ids_skipped(self):
         tcs = [
             {"id": "", "function": {"name": "a", "arguments": "{}"}},
@@ -151,6 +158,13 @@ class TestReasoningEchoFamily:
         ("xiaomi", None, "https://x", "mimo"),
         ("custom", "MiMo-7B", "https://x", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),
+        # Ollama has no echo-back requirement: replayed (as reasoning + reasoning_content) but never padded.
+        ("ollama-cloud", "kimi-k3", "https://x", None),
+        ("custom", "kimi-k3", "https://ollama.com/v1", None),
+        ("custom", "kimi-k3:cloud", "http://127.0.0.1:11434/v1", None),
+        ("custom", "gpt-oss:120b-cloud", "http://127.0.0.1:11434/v1", None),
+        ("gmi", "gmi-cloud", "https://x", None),
+        ("custom", "qwen3:8b", "http://127.0.0.1:11434/v1", None),
         ("openai", "gpt-5", "https://api.openai.com/v1", None),
         ("mistral", "mistral-large", "https://api.mistral.ai/v1", None),
         (None, None, None, None),

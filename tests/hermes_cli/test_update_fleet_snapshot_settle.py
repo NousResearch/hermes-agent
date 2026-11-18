@@ -13,7 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_fleet as update_cmd_fleet
+from hermes_cli import update_cmd_fleet
 import hermes_cli.update_cmd_fleet_verify as fleet_verify
 from hermes_constants import get_hermes_home
 

@@ -2,7 +2,7 @@
  * Tests for electron/composer-image-name.ts.
  *
  * Run with: vitest run --project electron composer-image-name
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * Regression (issue #96403): pasted composer screenshots were named with a
  * UTC timestamp (Date.toISOString()), so the filename disagreed with the

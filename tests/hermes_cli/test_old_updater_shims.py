@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.compat.old_updater_support import (
-    fresh_child as fresh_child,
-    no_external_work as no_external_work,
+    fresh_child as fresh_child,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    no_external_work as no_external_work,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -177,11 +177,11 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
     fresh_child.returncode = status
     with fresh_child.exits():
         if unpack:
-            uv, fresh_bootstrap = ensure_uv()
+            uv, _fresh_bootstrap = ensure_uv()
         else:
             uv = ensure_uv()
         # A falsy result is NOT inert: old callers install through pip instead.
-        subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"])
+        subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"], check=False)
 
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
@@ -224,9 +224,26 @@ def old_updater():
     return old
 
 
-def test_old_android_updater_handoffs_before_download(old_updater, fresh_child):
+def _under_historical_update(fn, module="hermes_cli.update_cmd"):
+    """Run *fn* below a frame shaped like a historical ``_cmd_update_impl`` (no sentinel local):
+    every shipped caller of the psutil Android installer ran inside that entrypoint."""
+    namespace = {"__name__": module, "_fn": fn}
+    exec("def _cmd_update_impl():\n    pre_update_version = '1.0'\n    _fn()\n", namespace)
+    return namespace["_cmd_update_impl"]
+
+
+def test_old_android_updater_handoffs_before_download(old_updater, fresh_child, monkeypatch):
+    monkeypatch.delitem(sys.modules, "hermes_cli.psutil_android", raising=False)
     with fresh_child.exits():
-        old_updater._install_psutil_android_compat(["uv", "pip"])
+        _under_historical_update(lambda: old_updater._install_psutil_android_compat(["uv", "pip"]))()
+
+
+def test_psutil_android_import_outside_an_update_starts_nothing(no_external_work, monkeypatch):
+    # 2026-10-01: an import smoke imported this shim and the unconditional import-time
+    # handoff ran a whole update takeover, which restarted the account's live gateway.
+    monkeypatch.delitem(sys.modules, "hermes_cli.psutil_android", raising=False)
+    module = importlib.import_module("hermes_cli.psutil_android")
+    assert module.PSUTIL_URL.endswith(".tar.gz")
 
 
 def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, fresh_child, no_external_work, tmp_path):
@@ -264,7 +281,7 @@ def test_live_windows_scan_does_not_use_the_retired_main_alias(monkeypatch, no_e
 
     # Routing, not OS emulation: lifecycle fallback accepts rows on any host.
     monkeypatch.setattr(main, "_detect_venv_python_processes", no_external_work)
-    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    monkeypatch.setattr(process_identity, "ledger_entries", list)
     monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: None)
     monkeypatch.setattr(
         update_cmd_windows, "_detect_venv_python_processes",

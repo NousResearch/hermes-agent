@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.local_runtime.hardware as hw
+from hermes_platform.host import gpu_adapters
 
 GIB = 1 << 30
 
@@ -175,6 +176,7 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, None))
+    monkeypatch.setattr(gpu_adapters, "windows_gpu_adapters", tuple)
     b = hw.probe_budget(planning=True)
     assert b.uma is True
     assert b.total_device_bytes == UMA_RAM  # RAM path, not the pool
@@ -187,8 +189,8 @@ def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, d
     """A discrete AMD/Intel card behind a Vulkan engine budgets its own memory with RAM as spill;
     an integrated one (ggml IGPU) keeps the RAM-as-unified budget, never both pools. The engine is
     the one config.yaml names, read through the real config loader."""
-    import hermes_cli.local_runtime.binaries as binaries
-    import hermes_cli.local_runtime.devices as devices
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime import devices
 
     total = 16304 << 20
     home = tmp_path / ".hermes"
@@ -205,6 +207,7 @@ def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, d
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
+    monkeypatch.setattr(gpu_adapters, "windows_gpu_adapters", tuple)
 
     b = hw.probe_budget(planning=True)
 

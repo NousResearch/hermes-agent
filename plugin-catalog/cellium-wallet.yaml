@@ -1,0 +1,9 @@
+name: cellium-wallet
+repo: https://github.com/xjubiliance/cellium-hermes-plugin
+sha: 077d76e9dbbd5880eb6dd81e68158c6f9570491b
+description: "Connect Hermes to a Cellium agent for wallet operations, swaps, bridges, and managed orders. Disclosure — Crypto wallet plugin: sends the Cellium agent credential, wallet addresses, transaction details and order parameters to the hosted Cellium MCP at app.cellium.xyz, which supplies its tool list at runtime and, with signing access granted on the Cellium account, can sign transactions, move funds, swap, bridge, trade on Aave/Morpho/Hyperliquid and schedule future orders; keys are held by Cellium, and the server is marked untrusted so Hermes asks for approval before each write-capable call."
+maintainer: xjubiliance
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"

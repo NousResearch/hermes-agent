@@ -136,7 +136,7 @@ def test_icon_portrait_sits_on_the_plain_tile_inside_the_outer_silhouette(monkey
     assert portrait.get("overflow") == "visible"
     assert len(result.findall(".//svg:path", ns)) == 2  # one badge and one portrait
     # The dragged bottom node lands below the tile: the clip, not a gap, ends her.
-    x, y, width, height, _ = geometry
+    _x, y, width, height, _ = geometry
     _, by, bw, bh = art.bboxes[girl]
     box_y, box_h = module.GIRL_BOXES[name][1], module.GIRL_BOXES[name][3]
     scale = min(module.GIRL_BOXES[name][2] / bw, box_h / bh)

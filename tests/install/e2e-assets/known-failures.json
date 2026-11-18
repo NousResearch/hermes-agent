@@ -20,5 +20,17 @@
     "signatures": ["\\[updates\\] no staged updater; surfacing manual `hermes update` for CLI install at", "\\[updates\\] manual: hermes update(?:\\r?\\n|$)"],
     "explanation": "The July Windows app has no staged updater after a script install. Its Update button explicitly returns manual: hermes update without starting a hand-off. Desktop-installer installs are not covered by this exception.",
     "evidence": "https://github.com/ethernet8023/hermes-agent/actions/runs/34055462305/job/101546487667"
+  },
+  {
+    "id": "macos-june-setup-update-self-lock",
+    "title": "June Hermes-Setup.dmg updater is refused by the v2026.7.30 update lock",
+    "platforms": ["macos"],
+    "commits": ["cc4cab2f592e60a197e796506de9168f74baf3ea"],
+    "cases": [["desktop-installer@latest", "hermes-desktop-app-update"], ["desktop-installer@latest", "open-app-update"]],
+    "errors": ["^E2E ASSERTION FAILED: app-driven update exited 1; transcript above$"],
+    "log": "bootstrap",
+    "signatures": ["bootstrap\\.log: ✗ Another Hermes update is already running \\(PID [0-9]+, started [^\\r\\n]* stage=update", "hermes_bootstrap_lib::update: update stage stage=update state=Failed [^\\r\\n]*Hermes is still running\\. Close all Hermes windows and try the update again\\."],
+    "explanation": "The published June Hermes-Setup.dmg updater writes the update marker with its own PID, then runs the v2026.7.30 checkout's hermes update. That release recognises its orchestrator only through HERMES_UPDATE_HANDOFF_PID, which the June binary predates, so the pre-pull CLI refuses with Another Hermes update is already running. The update target cannot change that loaded code; hermes update from a terminal or re-running the installer recovers.",
+    "evidence": "https://github.com/NousResearch/hermes-agent/actions/runs/41435547785/job/125244635706"
   }
 ]

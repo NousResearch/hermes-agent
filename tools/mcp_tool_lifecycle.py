@@ -6,6 +6,7 @@ import asyncio
 import os
 import time
 from typing import Dict, Optional
+from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -13,15 +14,15 @@ logger = logging.getLogger("tools.mcp_tool")
 
 # Live stdio MCP children (pid -> server_name), added after connection and removed on normal
 # shutdown, so they can be force-killed if SDK teardown fails.
-_stdio_pids: Dict[int, str] = {}
+_stdio_pids: dict[int, str] = {}
 # PIDs that survived their session context exit (detected in _run_stdio's finally, reaped by
 # _kill_orphaned_mcp_children). Separate from _stdio_pids so sweeps never race active sessions.
 _orphan_stdio_pids: set = set()
-_orphan_stdio_pid_servers: Dict[int, str] = {}
+_orphan_stdio_pid_servers: dict[int, str] = {}
 # pid -> pgid captured at spawn. The SDK spawns with start_new_session=True (PGID == PID);
 # grandchildren keep that PGID after the direct child exits, so killpg still reaches them.
 # Separate from _stdio_pids so the PGID survives the child's removal. Empty on Windows.
-_stdio_pgids: Dict[int, int] = {}
+_stdio_pgids: dict[int, int] = {}
 # Spawn-time start-time fingerprints of each stdio child's pgroup leader, captured
 # alongside the PGID (the psutil fallback means every platform has a baseline, macOS
 # included).  PIDs/PGIDs are recycled by the kernel once the original process exits and
@@ -32,7 +33,7 @@ _stdio_pgids: Dict[int, int] = {}
 # readings drift ~1 s on macOS (#117505) — before signalling so a recycled PGID is
 # never killed.  None entries are dropped: a capture that raced the child's exit keeps
 # the legacy best-effort behaviour.
-_stdio_starttimes: Dict[int, int] = {}  # pid -> leader start ticks
+_stdio_starttimes: dict[int, int] = {}  # pid -> leader start ticks
 
 
 def _leader_start_time(pid: int) -> Optional[int]:
@@ -42,7 +43,7 @@ def _leader_start_time(pid: int) -> Optional[int]:
     from gateway.status import get_process_start_time
     try:
         return get_process_start_time(pid)
-    except Exception:  # noqa: BLE001 — the guard must never break signalling
+    except Exception:
         return None
 
 
@@ -77,8 +78,9 @@ def _snapshot_child_pids() -> set:
 
 
 # argv markers of non-MCP gateway children that can race into the snapshot delta during an
-# MCP spawn (defense-in-depth; LSP/slash_worker already use start_new_session). Matched against
-# argv[1:] because Python/Java children start with the interpreter path.
+# MCP spawn (defense-in-depth: LSP servers and the slash worker lead their own groups under the
+# owner-death supervisor, see spawn_owned). Matched against argv[1:] because Python/Java children
+# start with the interpreter path.
 _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
     "tui_gateway.slash_worker", "tui_gateway.entry",
     "-dorg.eclipse.equinox.launcher", "eclipse.jdt.ls", "org.eclipse.equinox.launcher_",  # jdtls
@@ -101,6 +103,8 @@ def _filter_mcp_children(pids: set) -> set:
             argv = psutil.Process(pid).cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue  # raced away or zombie — cannot be our fresh server, unsafe to track
+        if is_owner_death_supervisor(argv):
+            continue  # the shared reaper of every owned child; MCP teardown must never kill it
         if not any(marker in arg for arg in argv[1:] for marker in _NON_MCP_CHILD_CMDLINE_MARKERS):
             kept.add(pid)
     return kept
@@ -241,10 +245,10 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         _close_mcp_stderr_logs(scope=scope)
 
 
-def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int], Dict[int, int]]:
+def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[dict[int, str], dict[int, int], dict[int, int]]:
     """Pop the PIDs to reap (and their spawn-time pgids) out of the ledgers under the lock, so
     a future spawn can't collide with stale state. Returns ``(pid -> owner, pid -> pgid)``."""
-    def _owned(entries: Dict[int, str]) -> Dict[int, str]:
+    def _owned(entries: dict[int, str]) -> dict[int, str]:
         return {pid: owner for pid, owner in entries.items() if server_name is None or owner == server_name}
 
     with _core._lock:
@@ -334,14 +338,14 @@ def _kill_windows_process_tree(pid: int, sig: int) -> None:
     for child in descendants:
         try:
             child.terminate()
-        except Exception:  # noqa: BLE001 - raced away or refused; sweep continues
+        except Exception:
             pass
     if sig == getattr(_signal, "SIGKILL", _signal.SIGTERM):  # force pass: don't wait for graceful exit
         _, alive = psutil.wait_procs(descendants, timeout=0)
         for child in alive:
             try:
                 child.kill()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
 
@@ -385,7 +389,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
     # dance still leaves the supervisor holding them.
-    _core._update_death_supervisor("unregister", pgids.values())
+    release_process_groups(pgids.values())
 
 
 def _stop_mcp_loop_if_idle() -> bool:

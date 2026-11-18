@@ -11,7 +11,7 @@ class TestInactivityWatchdogLoop:
     """The daemon-thread inactivity helper must not depend on the caller thread."""
 
     def test_fires_when_idle_crosses_limit(self):
-        from cron.scheduler import _inactivity_watchdog_loop
+        from cron.scheduler_liveness import _inactivity_watchdog_loop
 
         stop = threading.Event()
         idle = {"s": 0.0}
@@ -38,7 +38,7 @@ class TestInactivityWatchdogLoop:
         assert not watcher.is_alive()
 
     def test_stops_when_future_completes_before_idle_limit(self):
-        from cron.scheduler import _inactivity_watchdog_loop
+        from cron.scheduler_liveness import _inactivity_watchdog_loop
 
         stop = threading.Event()
         fired = _inactivity_watchdog_loop(
@@ -52,7 +52,7 @@ class TestInactivityWatchdogLoop:
 
     def test_fires_while_caller_thread_is_blocked(self):
         """#94285: a blocked run_job thread must not disable the watchdog."""
-        from cron.scheduler import _inactivity_watchdog_loop
+        from cron.scheduler_liveness import _inactivity_watchdog_loop
 
         stop = threading.Event()
         idle = {"s": 1.0}
@@ -84,7 +84,7 @@ class TestHostSleep:
     @pytest.mark.parametrize("during_sample", [False, True])
     def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch, during_sample):
         from agent import session_activity
-        from cron.scheduler import _inactivity_watchdog_loop
+        from cron.scheduler_liveness import _inactivity_watchdog_loop
 
         # Wall time keeps running while the host sleeps; monotonic time pauses (macOS, Linux).
         clock = SimpleNamespace(wall=1_000_000.0, mono=50.0)

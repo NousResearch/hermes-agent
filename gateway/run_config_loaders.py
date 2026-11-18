@@ -31,15 +31,95 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+
+def _profile_channel_overrides(home: Path, platform: Platform):
+    """A config holding only *platform*'s ``channel_overrides`` and ``allow_silence`` from *home*'s
+    config.yaml, read the way the loader does: merge every nested platform block, then the block
+    ``platform_section`` picks (a top-level ``<platform>:`` block first) wins for the overrides and
+    the platform keys it sets. ``GatewayConfig.from_dict(raw)`` alone reads only the nested form."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.config_loader import merge_platform_sections, platform_section
+    from gateway.run import _load_gateway_config
+    raw = _load_gateway_config(home / "config.yaml")
+    name, gateway_section = str(platform.value), raw.get("gateway")
+    merged = merge_platform_sections(raw, gateway_section, {}).get(name) or {}
+    overrides, extra = merged.get("channel_overrides"), PlatformConfig.from_dict(merged).extra
+    section, toplevel = platform_section(raw, name, (
+        gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+    if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+        overrides = section["channel_overrides"]
+    if toplevel and isinstance(section, dict):
+        # A root block's keys win, except over what the user authored under ``platforms.<p>.extra``.
+        authored = merged.get("extra")
+        extra = {**extra, **PlatformConfig.from_dict(section).extra,
+                 **(authored if isinstance(authored, dict) else {})}
+    return GatewayConfig.from_dict({"platforms": {name: {
+        "channel_overrides": overrides if isinstance(overrides, dict) else {},
+        "allow_silence": extra.get("allow_silence")}}})
+
+
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+
+
+def streaming_config_for_source(runner, source):
+    """The ``StreamingConfig`` of the profile that runs ``source``'s turn. Under ``multiplex_profiles``
+    ``runner.config`` is the launch profile's alone, so a served profile's own ``streaming`` block was
+    ignored (#136972). A served profile reads the GatewayConfig the multiplexer loaded for it (the
+    same loader as the launch one: ``gateway.streaming`` and gateway.json fallbacks included); the
+    launch profile, and a profile whose config is not cached, keep ``runner.config``."""
+    from gateway.config import StreamingConfig
+    from gateway.session_identity import identity_of
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False) is True and source is not None:
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (getattr(source, "profile", None) or None)
+        if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
+            config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
+    return getattr(config, "streaming", None) or StreamingConfig()
+
+
+def _allow_silence_value(value: Any) -> Optional[bool]:
+    """One parse for a room's and a platform's ``allow_silence``: a bool as is; a falsy token
+    (a quoted ``"false"``) is False at both levels; anything else, a quoted ``"true"`` included,
+    is None: opting in to silence takes a real boolean."""
+    from gateway.config import _bool_token
+    if isinstance(value, bool):
+        return value
+    return False if isinstance(value, str) and _bool_token(value) is False else None
+
+
+def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
+    """``allow_silence`` for ``source``: the room entry's, else the platform's.
+
+    The room entry is the first ``channel_overrides`` match along chat -> thread -> parent, as for
+    every channel override; an entry that sets only ``model``/``provider``/``system_prompt`` still
+    matches first, so its unset ``allow_silence`` falls to the platform, not to a parent entry.
+    """
+    if platform_config is None:
+        return None
+    from gateway.run import _channel_override_lookup_keys
+    overrides = platform_config.channel_overrides or {}
+    for key in _channel_override_lookup_keys(
+            source.chat_id, thread_id=source.thread_id, parent_id=source.parent_chat_id):
+        entry = overrides.get(key)
+        if entry is not None:
+            allow = _allow_silence_value(entry.allow_silence)
+            if allow is not None:
+                return allow
+            break
+    return _allow_silence_value((platform_config.extra or {}).get("allow_silence"))
+
+
+# "" = an unclassified source: treated as a DM, where a question must get a visible answer.
+_DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
 
 
 class GatewayConfigLoadersMixin:
@@ -57,7 +137,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -91,24 +171,99 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
         from gateway.run import _load_gateway_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
-    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
-        """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
+    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
+        """``channel_overrides`` entry for this channel/thread in *source*'s serving profile (the
+        launch config without a source), or None (also when no config is bound)."""
         from gateway.run import _get_channel_override
-        config = getattr(self, "config", None)
+        config = self._serving_channel_config(source) if source is not None else getattr(self, "config", None)
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
+    def _serving_channel_config(self, source: SessionSource, *, unbound_reads_home: bool = False):
+        """The config whose ``channel_overrides`` serve *source*.
+
+        ``self.config`` (a ``gateway --config`` file included) belongs to the primary profile only.
+        A turn another multiplexed profile serves reads that profile's own config.yaml: chat ids
+        repeat across profiles' bots (a Telegram DM's id is the user's id), so the launch
+        profile's override would otherwise steer every routed bot in the same chat (#136198).
+        ``unbound_reads_home``: with no config bound, read the source's home too (the room policy).
+        """
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        if routed or (config is None and unbound_reads_home):
+            return _profile_channel_overrides(self._resolve_profile_home_for_source(source), source.platform)
+        return config
+
+    def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
+        """Evaluate existing exemptions before consulting the optional room/platform permission.
+
+        An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
+        unset everywhere does the warning policy apply: with warning notifications hidden for the
+        turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
+        final in a shared chat stays silent instead. Never in a DM: there the notice is the only
+        answer a direct question gets, and suppression predates this rule (legacy default).
+        """
+        from gateway.response_filters import silence_allowed
+        if silence_allowed(display_kind, reply_expected):
+            return True
+        allow = self._room_allow_silence(source)
+        shared = str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
+        if allow is None and shared and self._silence_notice_suppressed(source):
+            silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
+            if silent:
+                logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",
+                            source.platform.value, source.chat_id or "unknown")
+            return silent
+        return silence_allowed(display_kind, reply_expected, allow_silence=allow, agent_result=agent_result)
+
+    def _silence_notice_suppressed(self, source: SessionSource) -> bool:
+        """``display.suppress_warning_notifications`` for ``source.platform`` in the serving profile.
+
+        Read under the routed profile's scope, as crash recovery reads the diagnostic policy; a
+        failed read keeps the notice (presentation fails open).
+        """
+        from gateway.warning_notifications import warning_notifications_enabled
+        try:
+            with self._media_delivery_scope_for_source(source):
+                return not warning_notifications_enabled(source.platform)
+        except Exception:
+            logger.debug("Warning policy lookup failed for %s; keeping the notice", source.chat_id, exc_info=True)
+            return False
+
+    def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.
+
+        The first ``channel_overrides`` entry along chat -> thread -> parent decides when it sets
+        it (true or false); otherwise the platform's own ``platforms.<platform>.allow_silence``
+        applies, else None (the default reply rule).
+        """
+        try:
+            config = self._serving_channel_config(source, unbound_reads_home=True)
+            platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
+            return _effective_allow_silence(platform_config, source)
+        except Exception:
+            # No permission means the default reply rule; a lookup failure must not become an error reply.
+            logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
+
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default.
 
@@ -120,13 +275,13 @@ class GatewayConfigLoadersMixin:
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
-            self._channel_override(platform, chat_id, thread_id, parent_id),
+            self._channel_override(platform, chat_id, thread_id, parent_id, source),
             _resolve_gateway_model(user_config),
         )
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source: Optional[SessionSource] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -140,7 +295,7 @@ class GatewayConfigLoadersMixin:
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
         turn for the same reason.
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()
@@ -186,6 +341,10 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            # A local session runs its frozen (or followed) level, not the profile's.
+            return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
@@ -208,6 +367,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -226,6 +389,27 @@ class GatewayConfigLoadersMixin:
         from hermes_cli.cli_config_load import _parse_service_tier_config
 
         return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
+
+    def _daybreak_surface(self, source) -> bool:
+        """Whether a turn from ``source`` is the owner's own chat, the only place Daybreak may run: it is the
+        approved account's own access (OpenAI: no third-party or downstream use), and a messaging platform's
+        chats, a hosted room or an A2A peer can be other people. LOCAL is the canonical transport, not the
+        owner, so the route's frozen launch policy decides."""
+        from gateway.session_policy import DAYBREAK_LABELS, policy_for_source
+        if getattr(source, "platform", None) != Platform.LOCAL:
+            return False
+        try:
+            policy = policy_for_source(self, source)
+        except Exception:  # health: allow BLE001 -- an unreadable policy fails closed to standard requests
+            return False
+        return getattr(policy, "source", None) in DAYBREAK_LABELS
+
+    def _load_daybreak(self, source) -> bool:
+        """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``, on the owner's own chats
+        only. Read per turn so the Desktop switch reaches the next turn of a running chat without rebuilding
+        its cached agent."""
+        from gateway.run import _load_gateway_config
+        return self._daybreak_surface(source) and cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -522,6 +706,7 @@ class GatewayConfigLoadersMixin:
         and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
         home handed every secondary profile the default profile's fallback chain.
         """
+        from hermes_cli.config_backend import config_exists
         from gateway.run import _gateway_config_home
         from hermes_constants import hermes_home_key
         home = _gateway_config_home()
@@ -532,7 +717,7 @@ class GatewayConfigLoadersMixin:
         try:
             from hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
-            if not cfg_path.exists():
+            if not config_exists(cfg_path):
                 by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
             # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain

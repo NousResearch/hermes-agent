@@ -86,7 +86,7 @@ def test_one_failing_pin_does_not_block_the_rest(tmp_path, monkeypatch, capsys):
 
 
 def test_all_pins_failing_leaves_lockfile_untouched(tmp_path, monkeypatch, capsys):
-    lock, broken, healthy = prepare(tmp_path, monkeypatch)
+    lock, broken, _healthy = prepare(tmp_path, monkeypatch)
     before = lock.path.read_bytes()
     changed = [_decision(broken, "2.0")]
     assert cli._apply_pins(changed, lock) == 1

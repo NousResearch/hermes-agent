@@ -21,8 +21,16 @@ logger = logging.getLogger(__name__)
 
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # Files that define the sidecar; node_modules is deliberately absent (baked on managed
-# images or installed by npm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
+# images or installed by npm in the mirror). .npmrc rides along so a fresh resolve in
+# the mirror (the `npm install` fallback when `npm ci` refuses a drifted lockfile) keeps
+# the source tree's release-age gate (#134019); `npm ci` from the lockfile never reads it.
+_MIRROR_FILES = (
+    "index.mjs",
+    "package.json",
+    "package-lock.json",
+    "patch-spectrum-mixed-attachments.mjs",
+    ".npmrc",
+)
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
 # Written by `hermes photon install-sidecar` on npm failure so check_requirements() can

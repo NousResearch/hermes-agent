@@ -1,0 +1,27 @@
+name: clack
+repo: https://github.com/adroidian/clack
+sha: a965b33051d35bcef1dd3fa15255d34aacdba99a
+subdir: plugins/hermes-clack
+description: "Encrypted agent-to-agent messaging with durable receipts and no plaintext fallback. Disclosure — sends your agent's signed identity, relay service token and end-to-end-encrypted messages the model writes to the configured Clack relay (default relay.tryclack.com); messages received from peers are untrusted input handed to the model, and their decrypted text is kept indefinitely in plugin-data/clack; Linux/macOS only."
+maintainer: adroidian
+tier: community
+category: tools
+requires_hermes: '>=0.21.0'
+version: 0.1.0
+capabilities:
+  provides_tools:
+  - clack_whoami
+  - clack_peers
+  - clack_send
+  - clack_poll
+  - clack_reconcile
+  - clack_ack
+  - clack_invite
+  - clack_join
+  - clack_accept
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- linux
+- macos

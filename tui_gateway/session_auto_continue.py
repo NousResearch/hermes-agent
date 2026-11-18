@@ -103,6 +103,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 session["_auto_continue_scheduled"] = False  # a real user prompt beat us; it clears the marker
                 return
             session["running"] = True
+            session["_notif_turn_claim"] = claim = object()  # the exception release below frees only this claim
             session["last_active"] = time.time()
         # Ownership admission BEFORE message.start: a sibling backend sharing this HERMES_HOME may have written the
         # marker and still be mid-turn. Leave the marker so a later resume retries.
@@ -130,7 +131,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
-            _notif_release_turn(session)  # rebound from session_notifications
+            _notif_release_claim(session, claim)  # a user turn admitted after a refusal keeps its ``running``
     if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
         session["_auto_continue_scheduled"] = False
         return None
@@ -276,11 +277,10 @@ def _session_compression_in_flight(session: dict) -> bool:
     if not sid:
         return False
     try:
-        with _session_db(session) as db:
-            get_holder = getattr(db, "get_compression_lock_holder", None)
-            if not callable(get_holder):
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return False
-            holder = get_holder(sid)
+            holder = persistence.coordination.get_compression_lock_holder(session_id=sid)
     except Exception:
         logger.debug("compression in-flight check failed for session %s", sid, exc_info=True)
         return False
@@ -311,8 +311,8 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):
         # Merge sync: the envelope text grew; the already-written row must not lag it.
         if staged.get("content") != envelope.get("text"):
-            with _session_db(session) as db:
-                if db is None:
+            with _session_db(session) as db, _persistence_for(db) as persistence:
+                if persistence is None:
                     return
                 try:
                     # The staged dict records the session its row was written under; a rotated-away
@@ -321,9 +321,9 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                     # new id (the original was deactivated and cloned): follow it or the update
                     # no-ops against the dead original (#123675).
                     key = _submit_row_owner_key(staged, session)
-                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    live_id = persistence.messages.resolve_active_row_id(key, staged["_row_id"])
                     updated = live_id is not None and bool(
-                        db.set_user_message_content(key, live_id, envelope["text"]))
+                        persistence.messages.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
@@ -337,7 +337,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
-    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
         accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
@@ -369,15 +369,15 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     if is_dispatching:
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
     else:
-        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
                                  accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
     queued["_submit_user_row"] = fresh  # the envelope follows the live row (a retry drains cleanly)
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return
         try:
             # The accept-time dict records the session its row was written under; a rotated-away
@@ -387,9 +387,9 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
             # the row that is live NOW, or the clone stays active beside its replacement and the
             # queued prompt is active twice after the drain (#123675).
             key = _submit_row_owner_key(early, session)
-            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            live_id = persistence.messages.resolve_active_row_id(key, early["_row_id"])
             if live_id is not None:
-                db.deactivate_message(key, live_id)
+                persistence.messages.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.
@@ -413,6 +413,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
+        session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
@@ -461,6 +463,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
+        session["_notif_turn_claim"] = claim = object()  # the exception release below frees only this claim
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
@@ -513,7 +516,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             dispatch_failed = True
     except Exception as exc:
         _notif_log_failure("queued prompt dispatch failed", exc)
-        _notif_release_turn(session)
+        _notif_release_claim(session, claim)
         dispatch_failed = True
     if dispatch_failed:
         with session["history_lock"]:

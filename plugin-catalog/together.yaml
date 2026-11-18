@@ -1,0 +1,18 @@
+name: together
+repo: https://github.com/pepijndevos/hermes-together-provider
+sha: d5267d5d1e1bf98097b13546a739bd8dab8db7ec
+subdir: ""
+description: "Together AI model-provider plugin — OpenAI-compatible API, 270+ serverless open-weight models, live catalog discovery."
+maintainer: pepijndevos
+tier: community
+category: models
+docs_url: https://github.com/pepijndevos/hermes-together-provider#readme
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TOGETHER_API_KEY
+requires_hermes: ">=0.21.4"

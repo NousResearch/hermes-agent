@@ -58,9 +58,6 @@ def coerce_modal_mode(value: object | None) -> str:
     return mode if mode in _VALID_MODAL_MODES else _DEFAULT_MODAL_MODE
 
 
-normalize_modal_mode = coerce_modal_mode
-
-
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available. The token pair is a
     profile credential: read it through the secret scope so the default profile's Modal
@@ -75,7 +72,7 @@ def has_direct_modal_credentials() -> bool:
 
 def resolve_modal_backend_state(modal_mode: object | None, *, has_direct: bool,
                                 managed_ready: bool,
-                                managed_enabled: bool | None = None) -> Dict[str, Any]:
+                                managed_enabled: bool | None = None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend: ``direct``/``managed`` are exclusive; ``auto``
     prefers managed when available, else direct."""
     requested_mode = coerce_modal_mode(modal_mode)
@@ -180,28 +177,32 @@ def resolve_openai_audio_api_key() -> str:
             or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
 
 
-def prefers_gateway(config_section: str) -> bool:
-    """True when ``<section>.use_gateway`` is set in config.yaml. Never raises."""
-    try:
-        from hermes_cli.config import load_config
-        section = (load_config() or {}).get(config_section)
-        return isinstance(section, dict) and is_truthy_value(section.get("use_gateway"))
-    except Exception:
-        return False
-
-
 # Provider value the managed "Nous Subscription" picker rows write for every category;
 # any other name = that vendor direct; no key = legacy autodetect.
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
-# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
-# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
-_SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+# Key(s) carrying each category's provider selection: one entry per `hermes tools` / Tool Gateway
+# category read_selection() serves. A leftover ``browser.backend`` (the pre-v52 driver choice) is
+# not the cloud provider — excluded.
+_SELECTION_NAME_KEYS = {
+    "browser": ("cloud_provider",), "web": ("backend",),
+    **dict.fromkeys(("image_gen", "video_gen", "tts", "stt"), _DEFAULT_NAME_KEYS),
+}
 
 
-def _raw_section(section: str) -> Dict[str, Any] | None:
+def selection_config_keys() -> frozenset[str]:
+    """Dotted config keys read_selection()/selection_exists() honour, from their own tables.
+    DEFAULT_CONFIG leaves them unseeded on purpose (a stored key is the user's explicit pick), so
+    the config-key validator asks here instead of walking the defaults."""
+    return frozenset(
+        f"{section}.{key}"
+        for section, name_keys in _SELECTION_NAME_KEYS.items()
+        for key in ("use_gateway", *name_keys, *_EXTRA_SELECTION_KEYS.get(section, ())))
+
+
+def _raw_section(section: str) -> dict[str, Any] | None:
     """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
     try:
         from hermes_cli.config import read_raw_config_readonly
@@ -256,36 +257,18 @@ def selection_exists(section: str) -> bool:
     return raw is not None and any(str(raw.get(key) or "").strip() for key in extra)
 
 
-# Backends that once shipped in-tree but were removed; a config still pointing at one would
-# otherwise fail silently at the FIRST tool call with a generic "no registered provider has that
-# name". Used by the startup config check and selection_error(); add removals here, never as
-# one-off string checks:  "web": {"<name>": "the <Name> backend was removed in vX (...)"}
-REMOVED_BACKENDS: Dict[str, Dict[str, str]] = {}
-
-
-# Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails
-# silently at the FIRST tool call with a generic "no registered provider has that name" — no migration, no
-# startup notice (reported after the Tavily removal in #99199). Both the startup config check
-# (hermes_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
-# what actually happened and what to do. Declared data, one policy — add future removals here, never as
-# one-off string checks at call sites.
-# Currently empty: the Tavily removal (#99199) that introduced this registry was reverted by the #99731
-# restore. Future backend removals add an entry here, e.g. "web": {"<name>": "the <Name> backend was removed
-# in vX.Y.Z (...)"},
-def removed_backend_note(section: str, name: str) -> Optional[str]:
-    """Explanation for a backend that used to ship in-tree, or None. ``name`` tolerates the
-    quoted form callers pass to selection_error()."""
-    return REMOVED_BACKENDS.get(section, {}).get((name or "").strip().strip("'\"").lower())
-
-
 def selection_error(section: str, selection_name: str, failure: str) -> str:
     """The uniform honest-error contract for a selected-but-broken provider."""
-    failure = removed_backend_note(section, selection_name) or failure
     return (f"{section} is configured to use {selection_name} (set via hermes "
             f"tools), but {failure}. Run 'hermes tools' to change it.")
 
 
+def fal_key() -> str:
+    """The active profile's FAL_KEY (scope/env, else ``.env`` for CLI paths that run before dotenv
+    loads), stripped; ``""`` when unset. The key a direct FAL client is built with."""
+    return _scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY")
+
+
 def fal_key_is_configured() -> bool:
-    """True when FAL_KEY is set (scope/env, else ``.env`` for CLI paths that run before dotenv
-    loads) to a non-whitespace value, so tool-side and CLI setup-time checks agree."""
-    return bool(_scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY"))
+    """True when :func:`fal_key` is non-empty, so tool-side and CLI setup-time checks agree."""
+    return bool(fal_key())

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +24,30 @@ test('desktop development composition reuses prepared icon pixels instead of pro
   expect(compile[compile.indexOf('--icons') + 1]).toBe(input.icons)
 })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+test('desktop development composition restages native inputs only when their receipt is stale', async () => {
+  const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
+  const { recordNativeInputs } = await import('../apps/desktop/scripts/prepared-native-deps.mjs')
+  const input = fixture()
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
+  const nativeDeps = join(input.source, 'apps/desktop/build/native-deps')
+  cpSync(input.nativeDeps, nativeDeps, { recursive: true })
+  const staged = () => {
+    const commands = []
+    buildSourceDesktop({ source: input.source, run: (command, args) => commands.push([command, ...args]) })
+    return commands.some(command => command.some(arg => /stage-native-deps\.mjs$/.test(arg)))
+  }
+  expect(staged()).toBe(true) // no receipt
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  expect(staged()).toBe(false)
+  put(join(nativeDeps, 'native/helper-fixture'), 'tampered')
+  expect(staged()).toBe(true) // the tree no longer matches its digest
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch, degraded: true })
+  expect(staged()).toBe(true) // a soft-failed component restages until the host can complete it
+  recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n\nimporters: {}\n")
+  expect(staged()).toBe(true) // a dependency pin moved
+})
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'desktop build with spaces-'))
@@ -44,13 +69,19 @@ function fixture() {
   for (const helper of ['scripts/msix-shared.mjs', 'scripts/release-content-types.json']) {
     cpSync(join(repo, helper), join(source, helper))
   }
-  symlinkSync(join(repo, 'node_modules'), join(app, 'node_modules'), 'junction')
+  // Mirror both install trees so the fixture app resolves its dependencies
+  // exactly as the checkout's desktop does, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (existsSync(join(repo, dir, 'node_modules'))) {
+      symlinkSync(join(repo, dir, 'node_modules'), join(source, dir, 'node_modules'), 'junction')
+    }
+  }
   const icons = join(root, 'icons')
   put(join(icons, 'apps/desktop/public/apple-touch-icon.png'), 'fresh icon')
   put(join(app, 'public/apple-touch-icon.png'), 'stale icon')
   const nativeDeps = join(root, 'native')
   // The native input is the real host binding, not a fake compiler/dependency.
-  stageNodePtyInto(join(repo, 'node_modules/node-pty'), join(nativeDeps, 'node-pty'))
+  stageNodePtyInto(dirname(createRequire(join(repo, 'apps/desktop/package.json')).resolve('node-pty/package.json')), join(nativeDeps, 'node-pty'))
   stageGetWindows({ source: repo, out: nativeDeps })
   put(join(nativeDeps, 'native/helper-fixture'), 'prepared executable resource')
   const stamp = join(root, 'install-stamp.json')
@@ -112,6 +143,36 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+// validateNativeTree checks get-windows only for darwin; run that branch on every host by giving the
+// fixture's host node-pty bindings a Mach-O header.
+function asDarwin(input) {
+  const pty = join(input.nativeDeps, 'node-pty')
+  for (const name of readdirSync(pty, { recursive: true }).filter(name => String(name).endsWith('.node'))) {
+    writeFileSync(join(pty, name), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]))
+  }
+  return { ...input, platform: 'darwin' }
+}
+
+test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
+  // An interrupted install can leave get-windows absent (#90829), as pnpm's name-based skip of
+  // the optional declaration did (#149861); staging then leaves it out and the app ships
+  // without read_window_below instead of failing the build.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await buildDesktop(input)
+  expect(existsSync(join(input.out, 'electron-main.mjs'))).toBe(true)
+  expect(existsSync(join(input.out, 'node_modules/get-windows'))).toBe(false)
+}, 60000)
+
+test('desktop compiler refuses a staged get-windows without its macOS helper', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  put(join(input.nativeDeps, 'get-windows/package.json'), '{"name":"get-windows"}')
+  await expect(buildDesktop(input)).rejects.toThrow(/missing its macOS helper/)
+}, 60000)
+
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))
@@ -157,6 +218,61 @@ test('in-tree desktop products rebuild after build exists without replacing prep
     expect(files(input.out)).toEqual(built)
   }
 }, 30000)
+
+test('a stamp-only change reuses the renderer bytes and rebakes only main/preload; a source change recompiles', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  const renderer = () => files(input.out).filter(([name]) => !/electron-|preload|hermes-build\.json/.test(name))
+  const before = renderer()
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'c'.repeat(40) }))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+  expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  expect(renderer()).toEqual(before)
+  const run = () => JSON.parse(execFileSync(process.execPath, [join(input.out, 'electron-main.mjs')], { cwd: tmpdir(), encoding: 'utf8' }))
+  expect(run().stamp.commit).toBe('c'.repeat(40))
+  // A tampered output is never reused: the receipt's output hash no longer matches.
+  put(join(input.out, 'index.html'), '<html>tampered</html>')
+  put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit: 'd'.repeat(40) }))
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(readFileSync(join(input.out, 'index.html'), 'utf8')).not.toContain('tampered')
+  put(join(input.source, 'apps/desktop/src/index.js'), 'document.getElementById("app").textContent = "changed source"')
+  expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  expect(files(join(input.out, 'assets')).map(([, b]) => Buffer.from(b, 'base64').toString()).join('')).toContain('changed source')
+}, 60000)
+
+test('a renderer built under different VITE_*/NODE_ENV settings is never reused or certified', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const { productCurrent } = await import('../scripts/build/freshness.mjs')
+  const input = fixture()
+  const restamp = commit => put(input.stamp, JSON.stringify({ ...JSON.parse(readFileSync(input.stamp, 'utf8')), commit }))
+  const saved = { probe: process.env.VITE_PERF_PROBE, node: process.env.NODE_ENV }
+  try {
+    process.env.NODE_ENV = 'production' // vitest itself runs with NODE_ENV=test
+    process.env.VITE_PERF_PROBE = '1'
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    delete process.env.VITE_PERF_PROBE
+    // The probe build's receipt no longer describes a plain build: neither gate accepts it.
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
+    restamp('e'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+    // Unset NODE_ENV means production (vite's own build default): the production receipt stays
+    // current without it, and the next stamp-only build reuses it.
+    delete process.env.NODE_ENV
+    expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+    restamp('f'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(true)
+    process.env.NODE_ENV = 'development'
+    restamp('a'.repeat(40))
+    expect((await buildDesktop(input)).reusedRenderer).toBe(false)
+  } finally {
+    for (const [key, value] of [['VITE_PERF_PROBE', saved.probe], ['NODE_ENV', saved.node]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
+}, 90000)
 
 test('the mid-compile guard ignores the build clock but still fails on a real provenance change', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
@@ -300,7 +416,7 @@ test('a prepared input changing during desktop compilation cannot publish a curr
 test('native preparation stages the selected source into an explicit tree before compilation', async () => {
   const { prepareDesktopNativeDependencies } = await import('../apps/desktop/scripts/stage-native-deps.mjs')
   const input = fixture()
-  cpSync(join(repo, 'package-lock.json'), join(input.source, 'package-lock.json'))
+  cpSync(join(repo, 'pnpm-lock.yaml'), join(input.source, 'pnpm-lock.yaml'))
   const nativeOut = join(dirname(input.out), 'prepared-native')
   await prepareDesktopNativeDependencies({ source: input.source, out: nativeOut })
   expect(existsSync(join(nativeOut, 'node-pty/package.json'))).toBe(true)

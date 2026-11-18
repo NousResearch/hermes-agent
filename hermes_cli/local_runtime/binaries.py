@@ -204,7 +204,7 @@ def adopt_legacy_engine(backend: str) -> bool:
                 if _adopt(package, version, target, source, manifest, root, facts_path):
                     return True
                 _LEFT_IN_PLACE.add(source)
-    except Exception as exc:  # noqa: BLE001 - a failed move must not break the callers that ask
+    except Exception as exc:
         logger.warning("could not move the pre-PM llama.cpp %s engine into the PM store: %s", backend, exc)
     return False
 

@@ -305,7 +305,7 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     home = tmp_path / "own-profile"
     home.mkdir()
 
-    deleg_id, writers, paths = create_live_transcripts(
+    deleg_id, _writers, paths = create_live_transcripts(
         [{"goal": "pin me"}], home=home,
     )
     update_manifest_statuses(
@@ -319,14 +319,24 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     assert manifest["tasks"][0]["status"] == "completed"
 
 
+def test_manifest_records_inherited_child_model(tmp_path):
+    """With delegation.model blank the dispatch-time model is None; the manifest must still name what ran (#123452)."""
+    deleg_id, _writers, paths = create_live_transcripts([{"goal": "a"}, {"goal": "b"}], home=tmp_path)
+    update_manifest_statuses(deleg_id, [{"task_index": 0, "status": "completed", "model": "parent/model"},
+                                        {"task_index": 1, "status": "completed", "model": "parent/model"}], home=tmp_path)
+    manifest = json.loads((Path(paths[0]).parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model"] == "parent/model"
+    assert [t["model"] for t in manifest["tasks"]] == ["parent/model", "parent/model"]
+
+
 def test_parent_without_session_db_warns_and_skips_pin(caplog):
-    """A parent with no _session_db cannot be pinned; the skip must be
+    """A parent with no persistence handle cannot be pinned; the skip must be
     observable (ambient fallback is the #91996 failure mode), not silent."""
     import logging as _logging
 
     from tools.delegate_tool import _parent_live_home
 
-    parent = MagicMock(spec=[])  # no _session_db attribute at all
+    parent = MagicMock(spec=[])  # no persistence attribute at all
 
     with caplog.at_level(_logging.WARNING, logger="tools.delegate_tool"):
         assert _parent_live_home(parent) is None
@@ -338,15 +348,15 @@ def test_parent_without_session_db_warns_and_skips_pin(caplog):
 def test_parent_session_db_pins_home():
     from tools.delegate_tool import _parent_live_home
 
-    parent = MagicMock(spec=["_session_db"])
-    parent._session_db.db_path = Path("/prof/state.db")
+    parent = MagicMock(spec=["persistence"])
+    parent.persistence.scope.profile_dir = Path("/prof")
 
     assert _parent_live_home(parent) == Path("/prof")
 
 
 def test_mock_parent_db_path_is_not_pinned(caplog):
     """Regression (PR #131931 side-effect screen): a duck-typed parent whose
-    ``_session_db.db_path`` is auto-created by a Mock is not a real path —
+    ``persistence.scope.profile_dir`` is auto-created by a Mock is not a real path —
     pinning to it would send transcripts to ``str(<MagicMock>)`` paths.  The
     pin must fall back to None (ambient resolve), and the skip must leave a
     trace.  Note the check is for concrete ``str``/``Path``, NOT the
@@ -356,7 +366,7 @@ def test_mock_parent_db_path_is_not_pinned(caplog):
 
     from tools.delegate_tool import _parent_live_home
 
-    parent = MagicMock()  # plain mock: _session_db.db_path auto-creates a Mock
+    parent = MagicMock()  # plain mock: persistence.scope.profile_dir auto-creates a Mock
 
     with caplog.at_level(_logging.DEBUG, logger="tools.delegate_tool"):
         assert _parent_live_home(parent) is None
@@ -366,12 +376,12 @@ def test_mock_parent_db_path_is_not_pinned(caplog):
 
 
 def test_parent_db_path_accepts_str_paths():
-    """SessionDB always holds a Path, but a str db_path is a valid path value
+    """A scope always holds a Path, but a str profile_dir is a valid path value
     too — it must pin, not be rejected by the concrete-type guard."""
     from tools.delegate_tool import _parent_live_home
 
-    parent = MagicMock(spec=["_session_db"])
-    parent._session_db.db_path = "/prof/state.db"
+    parent = MagicMock(spec=["persistence"])
+    parent.persistence.scope.profile_dir = "/prof"
 
     assert _parent_live_home(parent) == Path("/prof")
 

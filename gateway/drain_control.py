@@ -16,7 +16,8 @@ import contextlib
 import functools
 import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,6 +26,68 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
+
+# ``drain_reason`` a graceful restart publishes for its after-turn wait (#139041). The owner still
+# runs its in-flight turns, so a client may attach to answer a parked approval/clarify; new input is
+# committed queued for the next owner and never claimed here. ``stop()`` withdraws it.
+RESTART_WAIT_REASON = "restart_wait"
+
+
+def open_restart_wait(runner) -> None:
+    """Publish the restart's after-turn wait (``drain_reason``) unless a drain already named its own."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None)
+    if descriptor is not None and not descriptor.get("drain_reason"):
+        descriptor["drain_reason"] = RESTART_WAIT_REASON
+
+
+def restart_wait_open(runner) -> bool:
+    """True while *runner* is in a restart's after-turn wait (draining, not yet stopping)."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None) or {}
+    return (bool(getattr(runner, "_draining", False)) and bool(getattr(runner, "_running", False))
+            and descriptor.get("drain_reason") == RESTART_WAIT_REASON)
+
+
+# The requests a client needs during that wait to find, open and answer the conversation parked on
+# approval/clarify: the GET reads below (Desktop's session picker, the session detail and its
+# transcript pages, and the health probes) and one write, a Webapp tab's mint of the one-use ticket
+# its /api/ws dial-back needs (restart_wait_socket_ticket). Both only pass the drain's refusal; the
+# listener's auth gate still runs on them. Every other write and route keeps that refusal. The
+# prompt itself (approval.pending / *.respond) rides the WebSocket.
+_RESTART_WAIT_READS = re.compile(
+    r"/api/(?:health|status|profiles/sessions(?:/sidebar)?"
+    r"|sessions/[^/]+(?:/messages(?:/around)?|/timeline)?)")
+
+
+def restart_wait_read(runner, method, path) -> bool:
+    """True for an allowlisted read request while *runner* is in a restart's after-turn wait."""
+    return (method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
+            and restart_wait_open(runner))
+
+
+def restart_wait_socket_ticket(runner, method, path, query) -> bool:
+    """True for a gateway-socket ticket mint while *runner* is in a restart's after-turn wait.
+
+    Exempts the request from the drain's refusal only: it does not authenticate it."""
+    from urllib.parse import parse_qs
+    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+    return (method == "POST" and path == "/api/webapp/socket-ticket"
+            and parse_qs(query or "").get("socket") == [GATEWAY_SOCKET] and restart_wait_open(runner))
+
+# The WebSocket verbs an interactive client may still call during that wait: attach to and read the
+# parked session, answer its prompt (or interrupt the turn so the restart can finish) and commit
+# queued input for the next owner. Every other verb (config.set, session.save, rollback.restore,
+# process.kill, reload.*, ...) would run on an owner that is shutting down, so it is refused with
+# ``runtime_draining`` exactly like the REST writes above.
+RESTART_WAIT_WS_METHODS = frozenset({
+    "ping", "runtime.describe", "session.resume", "session.detach", "session.events.since",
+    "session.info", "session.list", "prompt.submit", "prompt.receipt", "session.interrupt",
+    "approval.pending", "approval.received", "approval.respond", "clarify.respond", "clarify.lock",
+})
+
+
+def ws_method_refused_while_draining(runner, method) -> bool:
+    """True when an interactive WebSocket verb must be refused because *runner* is draining."""
+    return bool(getattr(runner, "_draining", False)) and method not in RESTART_WAIT_WS_METHODS
 
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
 # Drain-gated lifecycle actions complete in minutes; an hour bounds the wedge a leaked
@@ -73,7 +136,7 @@ def write_drain_request(
     copy surviving a machine restart on the durable volume reads as stale.
     """
     payload = {
-        "action": "drain", "requested_at": datetime.now(timezone.utc).isoformat(), "principal": principal,
+        "action": "drain", "requested_at": datetime.now(UTC).isoformat(), "principal": principal,
         "epoch": current_instantiation_epoch(), "suppress_notification": bool(suppress_notification),
     }
     atomic_json_write(drain_request_path(home), payload)
@@ -105,7 +168,7 @@ def _marker_is_expired(body: dict[str, Any]) -> bool:
     requested_at = _parse_iso(raw)
     if requested_at is None:
         return False
-    age = (datetime.now(timezone.utc) - requested_at).total_seconds()
+    age = (datetime.now(UTC) - requested_at).total_seconds()
     if age <= DRAIN_REQUEST_MAX_AGE_SECONDS:
         return False
     if _expiry_logged_for != raw:

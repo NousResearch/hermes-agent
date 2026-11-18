@@ -125,7 +125,7 @@ def read_launchd_exit_timeout_s(
     *,
     environ: Mapping[str, str] | None = None,
     uid: int | None = None,
-    run: Callable[..., "subprocess.CompletedProcess[str]"] = subprocess.run,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     platform: str = sys.platform,
 ) -> float | None:
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.

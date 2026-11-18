@@ -34,6 +34,20 @@ class TestSnapshotShutdownContext:
         assert "takeover_marker" in ctx
         assert ctx["takeover_marker_for_self"] is True
 
+    @pytest.mark.parametrize("env, expected", [
+        ({}, "under_systemd=no supervisor=none"),  # a macOS launchd orphan: ppid 1, nothing revives it
+        ({"INVOCATION_ID": "abc"}, "under_systemd=yes supervisor=systemd"),
+        ({"HERMES_LAUNCHD_LABEL": "ai.hermes.gateway"}, "under_systemd=no supervisor=launchd"),
+    ])
+    def test_supervisor_comes_from_its_stamp_not_from_ppid_1(self, monkeypatch, env, expected):
+        for key in ("INVOCATION_ID", "XPC_SERVICE_NAME", "HERMES_LAUNCHD_LABEL"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setattr(sf.os, "getppid", lambda: 1)
+        line = sf.format_context_for_log(sf.snapshot_shutdown_context(signal.SIGTERM))
+        assert expected in line
+
 # ---------------------------------------------------------------------------
 # format_context_for_log / context_as_json
 # ---------------------------------------------------------------------------

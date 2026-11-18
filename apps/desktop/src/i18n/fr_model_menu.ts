@@ -1,4 +1,5 @@
 export const frModelMenu = {
+  pickDeferred: (model: string) => `${model} s’applique à partir de votre prochain message`,
   search: 'Rechercher des modèles',
   noModels: 'Aucun modèle trouvé',
   editModels: 'Modifier les modèles…',
@@ -13,6 +14,11 @@ export const frModelMenu = {
   cacheRead: 'lecture en cache',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Exécuter en local · gratuit, privé',
+    text: (model: string, size: string) => `${model} tient sur cette machine · téléchargement de ${size}`,
+    action: 'Configurer'
+  },
   limited: 'Limité',
   limitedUntil: (time: string) => `Limité jusqu’à ${time}`,
   limitedTip: (provider: string, time: null | string) =>

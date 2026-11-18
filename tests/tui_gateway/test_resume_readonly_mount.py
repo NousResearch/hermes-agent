@@ -11,7 +11,9 @@ import types
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
@@ -32,18 +34,17 @@ def _wait_for(out: io.StringIO, predicate, timeout: float = 10.0) -> dict:
 def _finalized_db(tmp_path, *, ended_reason="agent_close"):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    db = SessionDB(home / "state.db")
-    db.create_session("finalized", source="desktop")
-    db.append_message("finalized", "user", "old ask", timestamp=100.0)
-    db.append_message("finalized", "assistant", "old answer", timestamp=101.0)
-    db.end_session("finalized", ended_reason)
+    db = open_persistence(profile_scope(home=home))
+    seed_session(db, "finalized", "desktop")
+    seed_messages(db, "finalized", {"role": "user", "content": "old ask", "timestamp": 100.0},
+                  {"role": "assistant", "content": "old answer", "timestamp": 101.0})
+    db.sessions.end("finalized", ended_reason)
     return db, home
 
 
 def _mount(monkeypatch, db, home, tmp_path, *, defer_history=False):
     events = []
     built = threading.Event()
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **kwargs: db)
     monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
@@ -59,7 +60,7 @@ def _mount(monkeypatch, db, home, tmp_path, *, defer_history=False):
 @pytest.mark.parametrize("defer_history", [False, True])
 def test_resume_mount_keeps_finalized_row_ended(tmp_path, monkeypatch, defer_history):
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, built = _mount(monkeypatch, db, home, tmp_path)
     sid = None
     try:
         response = server.handle_request({"id": "resume", "method": "session.resume", "params": {
@@ -72,7 +73,7 @@ def test_resume_mount_keeps_finalized_row_ended(tmp_path, monkeypatch, defer_his
             assert session["resume_history_ready"].wait(5)
         else:
             assert built.wait(5)
-        row = db.get_session("finalized")
+        row = session_row(db, "finalized")
         assert row["ended_at"] is not None, "mounting a finalized session must not reopen its row (#85303)"
         assert row["end_reason"] == "agent_close"
     finally:
@@ -83,14 +84,14 @@ def test_resume_mount_keeps_finalized_row_ended(tmp_path, monkeypatch, defer_his
 
 def test_lazy_watch_mount_keeps_finalized_row_ended(tmp_path, monkeypatch):
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     sid = None
     try:
         response = server.handle_request({"id": "resume", "method": "session.resume", "params": {
             "session_id": "finalized", "source": "desktop", "lazy": True,
         }})
         assert response is not None and "error" not in response, response
-        row = db.get_session("finalized")
+        row = session_row(db, "finalized")
         assert row["ended_at"] is not None, "the lazy watch mount must not reopen a finalized row"
     finally:
         if sid is not None:
@@ -100,32 +101,30 @@ def test_lazy_watch_mount_keeps_finalized_row_ended(tmp_path, monkeypatch):
 
 def test_first_real_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     """The activity gate: prompt.submit (a real send) is what clears ended_at, not the mount."""
-    from tui_gateway import methods_prompt
-
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     reopened = []
-    monkeypatch.setattr(db, "reopen_session", lambda sid: reopened.append(sid) or
-                        SessionDB.reopen_session(db, sid))
-    reopened_row = db.get_session("finalized")
+    with server._persistence_for(db) as persistence:
+        sessions_type = type(persistence.sessions)
+    real_reopen = sessions_type.reopen
+    monkeypatch.setattr(sessions_type, "reopen", lambda self, sid: reopened.append(sid) or real_reopen(self, sid))
+    reopened_row = session_row(db, "finalized")
     assert reopened_row["ended_at"] is not None
     # The submit path's reopen helper: the row is finalized, so a real send reopens it.
-    methods_prompt._reopen_if_finalized(db, "finalized")
+    server._reopen_if_finalized(db, "finalized")
     assert reopened == ["finalized"]
-    row = db.get_session("finalized")
+    row = session_row(db, "finalized")
     assert row["ended_at"] is None, "the first real turn must reopen the finalized row"
     db.close()
 
 
 def test_reopen_if_finalized_leaves_live_rows_untouched(tmp_path):
-    db, home = _finalized_db(tmp_path)
-    from tui_gateway import methods_prompt
-
-    db.create_session("live", source="desktop")
-    db.append_message("live", "user", "ask", timestamp=100.0)
-    methods_prompt._reopen_if_finalized(db, "live")
-    methods_prompt._reopen_if_finalized(db, "missing-entirely")
-    row = db.get_session("live")
+    db, _home = _finalized_db(tmp_path)
+    seed_session(db, "live", "desktop")
+    seed_messages(db, "live", {"role": "user", "content": "ask", "timestamp": 100.0})
+    server._reopen_if_finalized(db, "live")
+    server._reopen_if_finalized(db, "missing-entirely")
+    row = session_row(db, "live")
     assert row["ended_at"] is None and row["end_reason"] is None
     db.close()
 
@@ -138,7 +137,7 @@ def test_isolated_dispatch_reopens_a_finalized_row(tmp_path, monkeypatch):
     from tui_gateway import server
 
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda session, cfg=None: True)
     monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {"turn_isolation": True})
     dispatched = {}
@@ -160,7 +159,7 @@ def test_isolated_dispatch_reopens_a_finalized_row(tmp_path, monkeypatch):
             "session_id": sid, "text": "one more thing"}})
         assert response is not None and "error" not in response, response
         assert dispatched.get("text") == "one more thing"
-        row = db.get_session("finalized")
+        row = session_row(db, "finalized")
         assert row["ended_at"] is None, (
             "an isolated (compute-host) dispatch is a real turn: the finalized row must be "
             "reopened even though prompt.submit returns before its own persist (#85303)")
@@ -179,7 +178,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     from tui_gateway.compute_host import ComputeHost
 
     db, home = _finalized_db(tmp_path)
-    events, built = _mount(monkeypatch, db, home, tmp_path)
+    _events, _built = _mount(monkeypatch, db, home, tmp_path)
     # The child-side session record: built from a turn.start frame, agent already attached.
     agent = types.SimpleNamespace(session_id="finalized", clear_interrupt=lambda: None)
     session = {
@@ -190,7 +189,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     }
     server._sessions["child-sid"] = session
     # Cut the turn right after admission (the reopen runs BEFORE admission).
-    import tui_gateway.prompt_turn as prompt_turn
+    from tui_gateway import prompt_turn
     monkeypatch.setattr(server, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(prompt_turn, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     out = io.StringIO()
@@ -199,7 +198,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
         host.handle_frame({"type": "turn.start", "sid": "child-sid", "request_id": "t",
                            "text": "hello", "session_key": "finalized", "source": "desktop"})
         _wait_for(out, lambda f: f["type"] == "turn.end", timeout=10.0)
-        row = db.get_session("finalized")
+        row = session_row(db, "finalized")
         assert row["ended_at"] is None, (
             "a turn run by the compute-host child is a real turn: the finalized row must be "
             "reopened before the child's transcript writes land (#85303)")

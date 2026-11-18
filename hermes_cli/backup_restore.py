@@ -17,17 +17,37 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
-from hermes_state_holders import read_only_db_uri
+# Stale-module bridge: this module binds ``utils.mkstemp_beside`` at import time, so a fresh
+# import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
+# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
+from persistence.core.admin import AdminUnsupported
+from persistence_assembly import open_store_admin
+from sqlite_support import read_only_db_uri
+from hermes_cli.config_backend import drop_other_access
 from utils import (
-    _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
-    mkstemp_beside,
+    atomic_replace, mkstemp_beside, preserve_file_mode, preserve_file_owner, restore_file_mode,
+    restore_file_owner,
 )
 
 logger = logging.getLogger(__name__)
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+# The database files the storage backend owns, by the names they keep in backups and snapshots: each profile's
+# state.db and the root shared-state.db. Their copies, checks and restores go through the store admin.
+_STORE_FILE_NAMES = frozenset({"state.db", "shared-state.db"})
+
+
+def _is_store_file(path: Path) -> bool:
+    """Whether *path* names a file the storage backend owns, as given or once resolved."""
+    return path.name in _STORE_FILE_NAMES or path.resolve().name in _STORE_FILE_NAMES
+
+
+def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
     Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
@@ -46,7 +66,7 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
 
     canonical_db = _canonical(os.fspath(db_path))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
-    pids: List[int] = []
+    pids: list[int] = []
     try:
         own_pid = os.getpid()
         for pid_str in os.listdir("/proc"):
@@ -156,6 +176,45 @@ def _restore_auth_json(src: Path, dst: Path) -> bool:
 
 
 def _safe_restore_db(src: Path, dst: Path) -> bool:
+    """Restore only while holding the destination authority's maintenance reservation.
+
+    Returns ``False``, without touching *dst*, when *src* fails the SQLite
+    integrity check, when the runtime owns the profile, or when a canonical
+    ``state.db`` epoch floor cannot be proven. A store file is restored by its
+    store admin, which carries the runtime-epoch floor.
+    """
+    if _is_store_file(dst):
+        admin = open_store_admin(dst, read_only=False)
+        return not isinstance(admin, AdminUnsupported) and admin.restore_from(src)
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    # backup() copies pages without validating their contents; its fallback
+    # copies bytes even when SQLite rejected the source. Neither may touch the
+    # destination until the snapshot passes the existing bounded integrity policy.
+    source_check = verify_sqlite_integrity(src)
+    if not source_check["valid"]:
+        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
+        return False
+    try:
+        with exclusive_maintenance([dst.absolute().parent, dst.resolve().parent]):
+            return _restore_db_pages(src, dst)
+    except (OwnershipConflict, OSError, sqlite3.Error) as exc:
+        logger.error("%s", exc)
+        return False
+
+
+def _restore_destination_epoch(dst: Path) -> int:
+    """The runtime epoch a restore over the store file *dst* keeps, read by its store admin: 0 for a missing file or
+    epoch row; ``OSError`` pointing at transcript salvage when it cannot be read."""
+    admin = open_store_admin(dst)
+    if isinstance(admin, AdminUnsupported):
+        raise OSError(f"{admin.capability} is unsupported by the {admin.backend_kind} storage backend; "
+                      f"refusing in-place restore of {dst}")
+    return admin.restore_epoch_floor()
+
+
+def _restore_db_pages(src: Path, dst: Path) -> bool:
     """Restore a SQLite database from snapshot *src* into live *dst*.
 
     Uses SQLite's backup() API to write snapshot pages into the live
@@ -181,29 +240,22 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     process or in-process connection holds the file: replacing the inode
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
-    It also returns ``False``, without touching *dst*, when *src* fails the
-    SQLite integrity check.
+    Callers go through ``_safe_restore_db``, which validates *src* and holds
+    the maintenance reservation around this publication.
     """
-    from hermes_cli.backup import verify_sqlite_integrity
-
-    # backup() copies pages without validating their contents; its fallback
-    # copies bytes even when SQLite rejected the source. Neither may touch the
-    # destination until the snapshot passes the existing bounded integrity policy.
-    source_check = verify_sqlite_integrity(src)
-    if not source_check["valid"]:
-        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
-        return False
+    from hermes_cli.sqlite_safe_read import connect_tracked
 
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        dst_conn = connect_tracked(str(dst), tracking_path=dst)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
-        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
+        except sqlite3.Error as exc:
+            # Optional: backup() still publishes over a deep WAL, just less tidily.
+            logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)  # health: allow HX015 -- the backup being restored, not a live store
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -213,10 +265,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         try:
             mode = src.stat().st_mode
             dst.chmod(mode)
-        except Exception:
-            pass
+        except OSError as exc:
+            # The data is restored; only the snapshot's file mode could not be carried over.
+            logger.warning("Restored %s but could not apply the snapshot's file mode: %s", dst, exc)
         return True
-    except Exception as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:  # ValueError: an unrepresentable path
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an
         # open connection blocks unlink() with WinError 32, which would make
@@ -224,8 +277,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         if dst_conn is not None:
             try:
                 dst_conn.close()
-            except Exception:
-                pass
+            except sqlite3.Error as close_exc:
+                logger.debug("Closing %s before the fallback restore failed: %s", dst, close_exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
         from hermes_cli.sqlite_safe_read import (
@@ -285,9 +338,42 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                 dst, exc2,
             )
             return False
-        except Exception as exc2:
+        except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
+
+
+def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
+    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
+    try:
+        if dst.suffix == ".db":
+            # Restore through SQLite backup API so live connections
+            # (gateway, dashboard, another CLI session) see the
+            # restored data instead of continuing to serve stale
+            # cached pages from a replaced inode (issue #65942).
+            if not _safe_restore_db(src, dst):
+                # Refused, failed, or source failed its integrity check:
+                # dst left as it was. Count as a failure, not a restore.
+                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                return False
+        elif rel == "auth.json":
+            # Refresh tokens for these OAuth providers rotate on use. A historical
+            # snapshot can therefore contain a spent pair even though the current
+            # auth.json has the live successor. Restore the historical auth state
+            # while retaining that live single-use grant under the auth-store lock.
+            if not _restore_auth_json(src, dst):
+                logger.error("Failed to restore %s safely", rel)
+                return False
+        else:
+            shutil.copy2(src, dst)
+            if dst.name == "config.yaml":  # the snapshot copy carries the mode it was taken with
+                drop_other_access(dst)
+            elif dst.name == ".env":  # secrets file: owner-only, as `hermes import` leaves it
+                os.chmod(dst, 0o600)
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.error("Failed to restore %s: %s", rel, exc)
+        return False
 
 
 def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
@@ -346,7 +432,7 @@ def _default_new_file_mode() -> Optional[int]:
 
     ``tempfile.mkstemp`` always creates at 0600, so staging an import through a
     temp file would tighten every *newly created* file to owner-only — the same
-    hazard ``utils._restore_file_mode`` documents for Docker/NAS volume mounts
+    hazard ``utils.restore_file_mode`` documents for Docker/NAS volume mounts
     that rely on broader permissions.  The umask can only be read by setting it,
     so this is resolved once per import rather than once per member.  The probe
     installs a *restrictive* mask rather than 0 so that anything another thread
@@ -394,7 +480,7 @@ def _extract_member_atomically(
     produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
     so without the chown a ``sudo hermes import`` would silently re-own every
     restored file to root — on the disaster-recovery path, and on exactly the
-    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    Docker/NAS installs ``utils.restore_file_owner`` documents.  Both concerns
     delegate to the shared ``utils`` helpers rather than being re-derived here.
     The temp file is removed on any failure so a partial import leaves no
     residue.
@@ -408,16 +494,16 @@ def _extract_member_atomically(
     pre-replace ``fchmod`` nor the post-replace restore can re-elevate the
     target.
     """
-    # ``_preserve_file_mode`` returns None when the target does not exist (or
+    # ``preserve_file_mode`` returns None when the target does not exist (or
     # cannot be stat'd), in which case the umask-derived create-mode applies —
     # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
-    mode = _preserve_file_mode(target)
-    owner = _preserve_file_owner(target)
+    mode = preserve_file_mode(target)
+    owner = preserve_file_owner(target)
     if mode is None:
         mode = new_file_mode
     else:
         # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
-        # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
+        # ``preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
         # bits, and the content replacing this file comes from the archive.
         # Carrying the elevated bits across would let archive-controlled bytes
         # take over an existing setuid/setgid file, so ``hermes import`` would
@@ -453,8 +539,8 @@ def _extract_member_atomically(
         # because chown drops setuid/setgid and a mode restore that ran first
         # would be partly undone.  Here ``mode`` no longer carries those bits,
         # so the two agree: neither step can re-elevate the restored file.
-        _restore_file_owner(real_path, owner)
-        _restore_file_mode(real_path, mode)
+        restore_file_owner(real_path, owner)
+        restore_file_mode(real_path, mode)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -463,7 +549,7 @@ def _extract_member_atomically(
         raise
 
 
-def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
+def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     """Return ``(sessions, messages)`` stored in the session database *path*.
 
     Read-only and best effort.  ``None`` means "unknown" — a missing file, a
@@ -474,21 +560,25 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     """
     if not path.is_file():
         return None
-    try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-        messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        return int(sessions), int(messages)
-    except (sqlite3.Error, TypeError, ValueError):
-        return None
-    finally:
-        conn.close()
+    admin = open_store_admin(path)
+    return None if isinstance(admin, AdminUnsupported) else admin.session_row_counts()
 
 
 def _import_db_member(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    try:
+        with exclusive_maintenance([target.absolute().parent, target.resolve().parent]):
+            _import_db_member_exclusive(zf, member, target, new_file_mode)
+    except OwnershipConflict as exc:
+        raise OSError(str(exc)) from exc
+
+
+def _import_db_member_exclusive(
     zf: zipfile.ZipFile,
     member: str,
     target: Path,
@@ -531,8 +621,8 @@ def _import_db_member(
 
     # The database keeps its own mode/ownership: the bytes come from the
     # archive but the file does not, so the archive has no say in either.
-    mode = _preserve_file_mode(target)
-    owner = _preserve_file_owner(target)
+    mode = preserve_file_mode(target)
+    owner = preserve_file_owner(target)
 
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".dbimport"
@@ -560,10 +650,61 @@ def _import_db_member(
                 "left untouched. Stop the gateway/dashboard processes holding it "
                 "open and re-run the import."
             )
-        _restore_file_owner(target, owner)
-        _restore_file_mode(target, mode)
+        restore_file_owner(target, owner)
+        restore_file_mode(target, mode)
     finally:
         try:
             os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
+    node: Any = data
+    for key in dotted:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in dotted[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[dotted[-1]] = value
+
+
+def _count_cron_jobs(path: Path) -> Optional[int]:
+    """Return the number of cron jobs stored in ``path``.
+
+    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
+    A legacy bare-list shape (``[...]``) is also honoured.
+
+    Returns:
+        The job count for any *valid, readable* JSON document, or ``None`` if
+        the file is missing or cannot be parsed. ``None`` means "unknown" —
+        callers must not treat it as "zero jobs", because acting on an
+        unreadable file could mask a real corruption the user needs to see.
+    """
+    if not path.is_file():
+        return None
+    try:
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
+        # it a BOM'd jobs.json counts as "unreadable" (None) and the
+        # post-update cron-loss auto-restore safety net silently disables.
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        return len(jobs) if isinstance(jobs, list) else None
+    if isinstance(data, list):
+        return len(data)
+    return None

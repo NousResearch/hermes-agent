@@ -14,13 +14,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
-_FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
-    ("prototype patching",
-     re.compile(r"\b[A-Za-z_$][\w$]*\.prototype\.[\w$]+\s*=[^=]")),
-    ("prototype patching",
-     re.compile(r"\bObject\.definePropert(?:y|ies)\(\s*[\w$.]+\.prototype\b")),
-    ("prototype patching",
-     re.compile(r"\b(?:Reflect|Object)\.setPrototypeOf\(|\.__proto__\s*=")),
+# Prototype writes are not linted: bundled libraries (three.js) set fields on their own classes, and
+# no regex could tell those from patching a renderer global without misfiring on minified names.
+# Catalog review reads them by hand.
+_FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dynamic code evaluation",
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
@@ -41,6 +38,24 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
                 r"\[data-(?:slot|tour|sidebar|testid)\b")),
     ("app DOM reach",
      re.compile(r"\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b")),
+    # The preview Browser can hold pages the user is signed in to. Script reaches it only through
+    # ``ctx.preview.executeJavaScript``: a declared capability plus the user's per-origin consent.
+    # Grabbing the app's ``<webview>`` (or minting one on the preview partition) skips both.
+    ("preview guest reach",
+     re.compile(r"\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'\"]webview\b")),
+)
+
+# Review cues, warned and never refused (catalog rule 8): the raw ``window.hermesDesktop`` native bridge
+# (files, git, REST, installs) has no folder or profile scoping — ``ctx.files`` / ``ctx.os`` /
+# ``host.request`` do — yet listed plugins still use it where the SDK has no verb (microphone access,
+# favicon lookup). And the app's markup selected from a CSS rule string, ``closest()`` or a template
+# (``[data-tree-tab=…]{display:none}``) is the reach the refused ``document.querySelector`` rule
+# names, in shapes no refusal regex can tell from a plugin styling SDK components it rendered itself.
+_REVIEW: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("raw bridge window.hermesDesktop",
+     re.compile(r"\b(?:window|globalThis|self)\s*(?:\?\.|\.)\s*hermesDesktop\b")),
+    ("app markup selector",
+     re.compile(r"\[data-(?:slot|tour|sidebar|testid|tree-[\w-]+|pane-host|titlebar-cluster)\b")),
 )
 
 # String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as
@@ -49,7 +64,7 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
 _COMMENT = re.compile(
     r"(\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)"
     r"|/\*.*?\*/|(?<![:\w])//[^\n]*",
-    re.S,
+    re.DOTALL,
 )
 
 
@@ -79,16 +94,24 @@ def _mask_regex_literals(source: str) -> str:
     return _REGEXP_CTOR_MATCHER.sub(lambda m: " " * len(m.group(0)), masked)
 
 
-def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
+def desktop_surface_findings(source: str) -> list[tuple[str, int]]:
     """Return ``[(rule, line)]`` for every forbidden construct in a plugin.js source."""
     stripped = _strip_comments(source)
     no_regex = _mask_regex_literals(stripped)
-    findings: List[Tuple[str, int]] = []
+    findings: list[tuple[str, int]] = []
     for rule, pattern in _FORBIDDEN:
         haystack = no_regex if rule in _MARKUP_RULES else stripped
         for match in pattern.finditer(haystack):
             findings.append((rule, haystack.count("\n", 0, match.start()) + 1))
     return sorted(findings, key=lambda f: f[1])
+
+
+def desktop_review_findings(source: str) -> list[tuple[str, int]]:
+    """``[(cue, line)]`` for every review cue in a plugin.js source, skipping lines a refusal covers."""
+    stripped = _strip_comments(source)
+    refused = {line for _rule, line in desktop_surface_findings(source)}
+    found = {(cue, stripped.count("\n", 0, m.start()) + 1) for cue, pattern in _REVIEW for m in pattern.finditer(stripped)}
+    return sorted((hit for hit in found if hit[1] not in refused), key=lambda h: (h[1], h[0]))
 
 
 # The Desktop installer's entry rules (apps/desktop/electron/desktop-plugin-install.ts
@@ -122,7 +145,7 @@ def is_desktop_surface(rel_path: str, root_entry: bool = False) -> bool:
     return parts[0] == _DESKTOP_DIR
 
 
-def _desktop_surface_files(plugin_dir: Path) -> List[Path]:
+def _desktop_surface_files(plugin_dir: Path) -> list[Path]:
     root_entry = _has_root_entry(plugin_dir)
     candidates = list(plugin_dir.glob("*.js"))
     desktop = plugin_dir / _DESKTOP_DIR
@@ -134,17 +157,18 @@ def _desktop_surface_files(plugin_dir: Path) -> List[Path]:
     )
 
 
-def desktop_surface_hits(plugin_dir: Path) -> List[str]:
-    """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only."""
+def desktop_surface_hits(plugin_dir: Path, findings=None) -> list[str]:
+    """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only. *findings* is
+    the per-source rule pass (``desktop_surface_findings`` refusals by default)."""
     plugin_dir = Path(plugin_dir)
-    hits: List[str] = []
+    hits: list[str] = []
     for js in _desktop_surface_files(plugin_dir):
         rel = js.relative_to(plugin_dir).as_posix()
         try:
             source = js.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        hits.extend(f"{rule} ({rel}:{line})" for rule, line in desktop_surface_findings(source))
+        hits.extend(f"{rule} ({rel}:{line})" for rule, line in (findings or desktop_surface_findings)(source))
     return hits
 
 
@@ -159,3 +183,7 @@ def check_desktop_surface(report, plugin_dir: Path) -> None:
         "; ".join(hits[:8]) + (f" (+{len(hits) - 8} more)" if len(hits) > 8 else "")
         if hits else "stays inside the plugin SDK surface",
     )
+    if cues := desktop_surface_hits(plugin_dir, desktop_review_findings):
+        report.warn("desktop surface review (catalog rule 8: SDK surface only): " + "; ".join(cues[:8])
+                    + (f" (+{len(cues) - 8} more)" if len(cues) > 8 else "")
+                    + ". Use ctx.files / ctx.os / host.request and SDK slots, or open an issue for the hook you need.")

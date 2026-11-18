@@ -52,7 +52,7 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
     return SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
 
 
@@ -134,7 +134,7 @@ def test_retirement_adopts_destination_only_after_success(source, monkeypatch, o
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("channel", ["preview-not-registered", "stable", "canary", "main"])
+@pytest.mark.parametrize("channel", ["preview-not-registered", "stable", "canary"])
 def test_missing_channel_cannot_fall_back_to_main(source, monkeypatch, channel):
     from hermes_cli import source_check
 
@@ -151,23 +151,36 @@ def test_missing_channel_cannot_fall_back_to_main(source, monkeypatch, channel):
     assert git(source.root, "rev-parse", "HEAD") == before
 
 
-def test_unpublished_main_record_keeps_following_the_git_branch(source, monkeypatch):
-    """main IS the source branch: until R2 publishes its record, a checkout
-    still updates via git instead of failing on a missing channel object."""
+@pytest.mark.parametrize("failure", ["not-found", "forbidden", "timeout"])
+def test_main_follows_the_git_branch_without_reading_a_channel_record(source, monkeypatch, failure):
+    """main IS the source branch, so its R2 record is never read: a 403 from a regional
+    WAF or a timeout cannot stop an install following main. Preview channels still read theirs."""
+    import urllib.error
+
     from hermes_cli import source_check
     from hermes_cli.release_channels import ChannelNotFound
 
     set_install_channel("main", source.root)
-    def unpublished(name, repository):
+    reads = []
+
+    def record(name, repository):
+        reads.append(name)
+        if failure == "forbidden":
+            raise urllib.error.HTTPError(f"https://x/releases/channels/{name}.json", 403, "Forbidden", {}, None)
+        if failure == "timeout":
+            raise TimeoutError("timed out")
         raise ChannelNotFound(f"Channel object not found: releases/channels/{name}.json")
-    monkeypatch.setattr(source_releases, "_resolve_channel", unpublished)
+
+    monkeypatch.setattr(source_releases, "_resolve_channel", record)
     target = source_releases.resolve_source_target("main", ["git"], source.root)
     assert target.branch == "main" and target.commit is None
     status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
     assert "error" not in status, status
     assert status["targetSha"] == source.commits[2]
-    with pytest.raises(ChannelNotFound):
-        source_releases.resolve_source_target("stable", ["git"], source.root)
+    assert reads == []
+    with pytest.raises((ChannelNotFound, urllib.error.HTTPError, TimeoutError)):
+        source_releases.resolve_source_target("canary", ["git"], source.root)
+    assert reads == ["canary"]
 
 
 def test_passive_check_reports_retirement_without_adopting_it(source, monkeypatch):
@@ -332,6 +345,9 @@ def test_offline_retirement_uses_qualified_build_before_current_stable(
     update_cmd._cmd_update_impl(args, False)
     assert git(source.root, "rev-parse", "HEAD") == source.commits[1]
     assert saved(source)["channel"] == "stable"
+    # The adopted stable subscription follows the published GitHub release, not R2.
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, commit=source.commits[2], version="1.2.4"))
     status = source_check.check_for_updates(install_root=source.root, home=source.home, force=True)
     assert status["targetSha"] == source.commits[2], status
     update_cmd._cmd_update_impl(args, False)
@@ -350,7 +366,7 @@ def test_retirement_refuses_to_downgrade_newer_source(
         git(source.root.parent, "clone", "--depth=1", source.origin.as_uri(), str(source.root))
     if transport == "zip":
         (source.root / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n')
-        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     original = deepcopy(saved(source))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
@@ -380,7 +396,7 @@ def test_tagless_zip_apply_uses_pinned_source_archive(source, monkeypatch, dirty
         urls.append(url)
         shutil.copyfile(archive, filename)
     monkeypatch.setattr(urllib.request, "urlretrieve", download)
-    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda req: completed.append(deepcopy(req)))
     if dirty:

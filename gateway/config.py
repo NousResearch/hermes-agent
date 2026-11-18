@@ -43,7 +43,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
-def _env_multiplex_profiles_override() -> "bool | None":
+def _env_multiplex_profiles_override() -> bool | None:
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml
@@ -68,7 +68,7 @@ def _env_multiplex_profiles_override() -> "bool | None":
 ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
 
 
-def _env_on_all_adapters_down_override() -> "str | None":
+def _env_on_all_adapters_down_override() -> str | None:
     """GATEWAY_ON_ALL_ADAPTERS_DOWN operator override: 'exit'/'stay_alive' for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml value
@@ -156,7 +156,7 @@ def coerce_systemd_watchdog_seconds(
     return parsed
 
 
-def _coerce_dict(value: Any) -> Dict[str, Any]:
+def _coerce_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
@@ -172,6 +172,24 @@ def _normalize_choice(value: Any, choices: set, default: str) -> str:
     """Lower-cased *value* when it is one of *choices*, else *default*."""
     normalized = value.strip().lower() if isinstance(value, str) else None
     return normalized if normalized in choices else default
+
+
+_REPLY_TO_MODES = frozenset({"off", "first", "all"})
+
+
+def _reply_to_mode_choice(value: Any) -> str:
+    """``reply_to_mode`` as one of off/first/all. YAML 1.1 reads a bare ``off`` as ``False`` (and
+    ``hermes config set ... off`` writes it that way), so ``False`` means ``off``; an unknown value
+    warns and keeps the ``first`` default rather than passing a non-mode to the adapters."""
+    if value is None:
+        return "first"
+    if value is False:
+        return "off"
+    mode = value.strip().lower() if isinstance(value, str) else None
+    if mode in _REPLY_TO_MODES:
+        return mode
+    logger.warning("Ignoring invalid reply_to_mode %r (expected one of: off, first, all); using 'first'", value)
+    return "first"
 
 
 def _dict_slot(container: dict, key: str) -> dict:
@@ -238,7 +256,6 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
-    YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
 
     @classmethod
@@ -276,12 +293,13 @@ class Platform(Enum):
         return pseudo
 
     @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> "tuple[set, dict]":
+    def _scan_bundled_plugin_platforms(cls) -> tuple[set, dict]:
         """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
         manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
         never shadow a directory name, so the directory stays the canonical platform value."""
         try:
-            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
+            from hermes_cli.plugins import get_bundled_plugins_dir
+            platforms_dir = get_bundled_plugins_dir() / "platforms"
             dirs = [
                 child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
@@ -313,6 +331,9 @@ PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Everything a served profile reads from the default's own entry: the listener mirrors plus Relay,
+# process-level shared ingress whose one adapter serves every profile (no per-profile URL).
+SERVED_PROFILE_MIRROR_PLATFORMS = SHARED_LISTENER_MIRROR_PLATFORMS | frozenset({"relay"})
 # Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
@@ -354,12 +375,12 @@ class HomeChannel:
         if self.platform == Platform.DISCORD and isinstance(self.chat_id, str):
             self.chat_id = discord_channel_id_from_link(self.chat_id.strip()) or self.chat_id
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
@@ -377,16 +398,17 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel reply policy/model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    allow_silence: Optional[bool] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
@@ -395,7 +417,7 @@ class ChannelOverride:
 # authenticate another way and must never be skipped for a missing token.
 # Platforms absent from this map authenticate some other way (session files, port-bound webhooks,
 # api_key-only) and must never be skipped for a missing token. See #64674.
-PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
+PLATFORM_TOKEN_ENV_NAMES: dict[Platform, str] = {
     Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
     Platform.DISCORD: "DISCORD_BOT_TOKEN",
     Platform.SLACK: "SLACK_BOT_TOKEN",
@@ -417,10 +439,16 @@ class PlatformConfig:
     typing_indicator: bool = True  # drives _keep_typing; False where unwanted (Slack setStatus blocks compose)
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
-    channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
+    channel_overrides: dict[str, ChannelOverride] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
+    # Runtime-only, never serialized: set when the GATEWAY_RELAY_URL relay-exclusive rule
+    # (config_env._relay) switched an enabled platform off, so surfaces can say why (#141175).
+    disabled_by_relay: bool = False
+    # Runtime-only: the config.yaml version this copy was loaded from (taken before the read), so the
+    # live-allowlist baseline names the file that produced the adapter's gates, not a later edit.
+    loaded_version: Optional[tuple] = field(default=None, compare=False, repr=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "enabled": self.enabled, "extra": self.extra, "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
@@ -442,7 +470,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -467,7 +495,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_reply_to_mode_choice(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion
@@ -514,11 +542,11 @@ class StreamingConfig:
         """
         return self.globally_enabled and (platform_override is None or bool(platform_override))
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "StreamingConfig":
         if not isinstance(data, dict) or not data:
             return cls()
 
@@ -553,25 +581,32 @@ def _has_usable_api_server_key(key: object) -> bool:
         return len(str(key).strip()) >= 16
 
 
-def _needs_extra(*keys: str) -> Callable[[PlatformConfig], bool]:
-    return lambda cfg: all(cfg.extra.get(k) for k in keys)
-
-
-# Built-in "sufficiently configured?" checks; platforms covered by the generic
-# ``token or api_key`` check (Telegram, Discord, Slack, Matrix, ...) need no entry.
+# Core-only "sufficiently configured?" checks (no plugin entry). Plugin platforms declare theirs as
+# ``PlatformEntry.config_connected_fn`` (or rely on the generic ``token or api_key`` check).
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.WEIXIN: lambda cfg: bool(cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))),
-    Platform.WHATSAPP_CLOUD: _needs_extra("phone_number_id", "access_token"),
-    Platform.SIGNAL: _needs_extra("http_url"),
     Platform.API_SERVER: lambda cfg: _has_usable_api_server_key(cfg.extra.get("key") if cfg else None),
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(str(cfg.extra.get("client_state") or "").strip()),
-    Platform.BLUEBUBBLES: _needs_extra("server_url", "password"),
-    Platform.QQBOT: _needs_extra("app_id", "client_secret"),
-    Platform.YUANBAO: _needs_extra("app_id", "app_secret"),
     # Relay dials OUT: "connected" once an endpoint URL is configured. EXPERIMENTAL.
     Platform.RELAY: lambda cfg: bool(cfg.extra.get("relay_url") or cfg.extra.get("url")),
 }
+
+
+def _discovered_registry_entry(platform: Platform):
+    """Registry entry for *platform* after (idempotent) plugin discovery, so a directly-constructed
+    config sees plugin platforms; None when absent or the registry is not initialised yet (early import).
+
+    Enablement gate (#31116): a plugin's ``is_connected`` ("has the user actually configured
+    credentials for this?") is consulted before treating it as connected; ``check_fn`` alone — a
+    passive "is the SDK importable?" probe — must never make a platform the user never opted into
+    look connected (``_platform_status`` was fixed for the same bug class in commit 7849a3d73)."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    with contextlib.suppress(Exception):  # registry not initialised yet during early import
+        from gateway.platform_registry import platform_registry
+        return platform_registry.get(platform.value)
+    return None
 
 
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
@@ -584,9 +619,9 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 @dataclass
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
-    platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
-    reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
-    quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
+    platforms: dict[Platform, PlatformConfig] = field(default_factory=dict)
+    reset_triggers: list[str] = field(default_factory=lambda: ["/new", "/reset"])
+    quick_commands: dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
     # Legacy sessions.json mirror of the routing index (primary: state.db) for external tooling / downgrades.
     # The primary copy lives in state.db (gateway_routing table, #9006). Default True for backward
@@ -656,7 +691,7 @@ class GatewayConfig:
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
-    def get_connected_platforms(self) -> List[Platform]:
+    def get_connected_platforms(self) -> list[Platform]:
         """Enabled + configured platforms, sorted by value so the rendered "Connected
         Platforms" prompt block is byte-stable (a reorder busts the prompt cache)."""
         connected = [p for p, c in self.platforms.items() if c.enabled and self._is_platform_connected(p, c)]
@@ -664,47 +699,26 @@ class GatewayConfig:
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
-        # Weixin needs token AND account_id, so it must bypass the generic token branch.
-        if platform == Platform.WEIXIN:
-            return checker(config)
+        if checker is not None:
+            return bool(config.token or config.api_key) or checker(config)
+        entry = _discovered_registry_entry(platform)
+        # ``config_connected_fn`` owns the token shortcut (Weixin needs token AND account_id).
+        if entry is not None and entry.config_connected_fn is not None:
+            return entry.config_connected_fn(config)
         if config.token or config.api_key:
             return True
-        if checker is not None:
-            return checker(config)
-
-        # Plugin platforms; force (idempotent) discovery for directly-constructed configs.
+        if entry is None:
+            return False
+        check = entry.is_connected if entry.is_connected is not None else entry.validate_config
         try:
-            from gateway.platform_registry import platform_registry
-            with contextlib.suppress(Exception):
-                # Iterate built-in platforms plus any registered plugin platforms so plugin authors get the
-                # same shared-key bridging (#24836).
-                # Registry-driven enable for plugin platforms. Built-ins have explicit blocks above. A
-                # plugin platform is enabled when its credentials are configured (``is_connected``) and its
-                # dependencies are either present (passive ``check_fn``) or installable on demand
-                # (``ensure_deps_fn``, run later by ``create_adapter()`` — never here). Plugins that need to
-                # seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's project_id /
-                # subscription_name) can supply ``env_enablement_fn`` on their PlatformEntry — called here
-                # BEFORE adapter construction. Enablement gate (#31116): when a plugin registers
-                # ``is_connected`` (the "has the user actually configured credentials for this?" check), we
-                # MUST consult it before flipping ``enabled = True``. Otherwise ``check_fn`` alone — a
-                # passive "is the SDK importable?" probe — silently enables platforms the user never opted
-                # into, and the gateway then tries to connect to Discord / Teams / Google Chat with no token
-                # and emits noisy retry-forever errors. ``_platform_status`` was already fixed for the same
-                # bug class in commit 7849a3d73; this is the runtime counterpart.
-                from hermes_cli.plugins import discover_plugins
-                discover_plugins()
-            entry = platform_registry.get(platform.value)
-            if entry:
-                check = entry.is_connected if entry.is_connected is not None else entry.validate_config
-                return True if check is None else check(config)
+            return True if check is None else check(config)
         except Exception:
-            pass  # Registry not yet initialised during early import
-        return False
+            return False
 
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         return self.platforms[platform].home_channel if self.platforms.get(platform) else None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},
             "reset_triggers": self.reset_triggers,
@@ -721,7 +735,7 @@ class GatewayConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "GatewayConfig":
         data = _coerce_dict(data)
         nested_gateway = _coerce_dict(data.get("gateway"))
 
@@ -836,15 +850,35 @@ class GatewayConfig:
         return "public" if choice is None else choice
 
 
-def load_gateway_config() -> GatewayConfig:
-    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults."""
+def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
+    """Load gateway configuration. Priority: env > ~/.hermes/config.yaml > legacy gateway.json > defaults.
+
+    ``strict=True`` raises a config.yaml failure instead of falling back to env + gateway.json: a live
+    allowlist refresh keeps its last good lists rather than apply an env-only config."""
     from gateway import config_loader
+    from gateway.platforms._shared import gate_config_version, yaml_env_transaction
 
     _home = get_hermes_home()
+    version = gate_config_version()
     gw_data = config_loader.load_legacy_gateway_json(_home)
+    # One transaction through typed construction, overrides and validation: the runner's authorization
+    # reads the bridged env, so a load that fails after the YAML overlay must not leave its writes.
+    with yaml_env_transaction():
+        config = _load_gateway_config_layers(_home, gw_data, strict)
+    for platform_config in config.platforms.values():
+        platform_config.loaded_version = version
+    return config
+
+
+def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
+    from gateway import config_loader
+    from gateway.platforms._shared import abort_yaml_env_refresh
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if strict:
+            raise
+        abort_yaml_env_refresh()
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
@@ -865,7 +899,7 @@ def load_gateway_config() -> GatewayConfig:
     return config
 
 
-def _validate_gateway_config(config: "GatewayConfig") -> None:
+def _validate_gateway_config(config: GatewayConfig) -> None:
     """Validate and sanitize a loaded GatewayConfig in place (after all sources are merged)."""
     try:
         # Reject known-weak placeholder tokens. Ported from openclaw/openclaw#64586: users who copy

@@ -23,6 +23,7 @@ from tools.tool_result_storage import (
     _write_to_sandbox,
     cleanup_spillover_cache,
     enforce_turn_budget,
+    extract_persisted_path,
     generate_preview,
     get_spillover_dir,
     maybe_persist_tool_result,
@@ -55,7 +56,7 @@ class TestWriteToSandbox:
             # pattern-matched.
             def _bash(cmd, timeout=None, stdin_data=None, **_kw):
                 r = subprocess.run(["bash", "-c", cmd], input=stdin_data or "",
-                                   capture_output=True, text=True, timeout=timeout)
+                                   capture_output=True, text=True, timeout=timeout, check=False)
                 return {"output": r.stdout + r.stderr, "returncode": r.returncode}
             env.execute.side_effect = _bash
         result = _write_to_sandbox("hello world", remote, env)
@@ -211,6 +212,16 @@ class TestBuildPersistedMessage:
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
 
+    def test_message_conditions_the_do_not_rerequest_promise(self):
+        """#126351: the pointer must not promise the file forever, and the recovery line
+        must never tell the model to blindly re-run the producing tool — that call may
+        have been a mutation whose effect already landed."""
+        msg = _build_persisted_message(
+            preview="preview", has_more=True, original_size=50_000,
+            file_path="/tmp/hermes-results/test123.txt")
+        assert "re-run the original tool" not in msg
+        assert "inspect the current state before retrying" in msg
+
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
 class TestMaybePersistToolResult:
@@ -240,8 +251,7 @@ class TestMaybePersistToolResult:
         assert "tc_456.txt" in result
         assert len(result) < len(content)
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_unwrapped_content_via_stdin(self):
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -264,7 +274,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"].endswith("</tool-result-metadata>\n\n" + raw)
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -341,6 +351,17 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_results_count_their_text_and_spill_it(self):
+        """Image-bearing results are part lists: the aggregate counts their text characters (not the number of
+        parts) and spills the big text part, keeping images and the short notes inline."""
+        img = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        msgs = [{"role": "tool", "tool_call_id": f"mm{i}",
+                 "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
+                for i in range(6)]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
+        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
+
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:
@@ -350,7 +371,7 @@ class TestPerToolThresholds:
         """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("read_file")
             # float('inf') disables the Layer 2 result-size guard.
             assert 0 < val < float("inf"), val
@@ -360,7 +381,7 @@ class TestPerToolThresholds:
     def test_search_files_threshold(self):
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("search_files")
             assert 0 < val < float("inf"), val
         except ImportError:
@@ -400,6 +421,7 @@ class TestSpillover:
         from tools.environments.local import LocalEnvironment
 
         env = MagicMock(spec=LocalEnvironment)
+        env.uses_host_filesystem = LocalEnvironment.uses_host_filesystem
         content = "y" * 60_000
         result = maybe_persist_tool_result(
             content=content,
@@ -490,14 +512,82 @@ class TestSpillover:
         assert not old.exists()
         assert new.exists()
 
+    def test_gateway_housekeeping_keeps_spills_for_the_retention_window(self, monkeypatch):
+        """#126351: the hourly gateway sweep must not apply the 24h media age to spills — a
+        25h-old unreferenced spill survives, a 100-day orphan is still reclaimed."""
+        import os
+        import time as _time
+
+        import tools.tool_result_storage as trs
+        from gateway.run_housekeeping_disk import housekeeping_media_caches
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        recent, orphan = spill_dir / "recent.txt", spill_dir / "orphan.txt"
+        for path, hours in ((recent, 25), (orphan, 100 * 24)):
+            path.write_text("spill", encoding="utf-8")
+            stale = _time.time() - hours * 3600
+            os.utime(path, (stale, stale))
+
+        monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 90 * 24)
+        housekeeping_media_caches()
+
+        assert recent.exists()
+        assert not orphan.exists()
+
+    def test_retention_hours_reads_session_retention_days(self, monkeypatch):
+        import hermes_cli.config
+        import tools.tool_result_storage as trs
+
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": 7}})
+        assert trs._spillover_retention_hours() == 7 * 24
+
+    def test_retention_hours_defaults_and_falls_back(self, monkeypatch):
+        import hermes_cli.config
+        import tools.tool_result_storage as trs
+
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+        assert trs._spillover_retention_hours() == 90 * 24
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", _boom)
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": -5}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
+        # 0 is a legal prune setting (ended sessions go at once) but open sessions survive it;
+        # a 0h spill window would delete the file the first spill just wrote.
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": 0}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
+        # YAML ``.inf`` / ``.nan`` parse as floats; int() on them raises and used to
+        # silently kill every sweep after the once-per-home flag was set.
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": float("inf")}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": float("nan")}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
     def test_cleanup_missing_dir_returns_zero(self):
         assert cleanup_spillover_cache() == 0
 
-    def test_first_spill_prunes_expired_files(self):
+    def test_first_spill_prunes_expired_files(self, monkeypatch):
         """The once-per-process prune fires on the first host-side spill."""
         import os
         import time as _time
 
+        import tools.tool_result_storage as trs
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
@@ -505,6 +595,9 @@ class TestSpillover:
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
+        # The prune default is the session retention window (>= 24h), so pin a
+        # one-day retention to prove the sweep actually fires on a 48h-old file.
+        monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 24)
         maybe_persist_tool_result(
             content="v" * 60_000,
             tool_name="tool_call",
@@ -515,6 +608,25 @@ class TestSpillover:
 
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
+
+    def test_read_file_on_pruned_archive_says_expired(self, tmp_path, monkeypatch):
+        """A pruned archive's pointer read via read_file says "expired", not a generic miss;
+        an ordinary missing file keeps the plain not-found result."""
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        from tools.file_tools import read_file_tool
+        out = maybe_persist_tool_result(content="z" * 50_000, tool_name="terminal",
+                                        tool_use_id="tc_expired_1", env=None, threshold=30_000)
+        path = extract_persisted_path(out)
+        assert path
+        os.remove(path)
+
+        expired = json.loads(read_file_tool(path, task_id="t_expired_archive"))
+        plain = json.loads(read_file_tool(str(tmp_path / "nope.txt"), task_id="t_expired_archive"))
+
+        assert expired["error"].startswith("File not found:")
+        assert expired.get("expired") is True and "expired" in expired["hint"]
+        assert "expired" not in plain and "expired" not in (plain.get("hint") or "")
 
 # ── recovery hint in the persisted preview ────────────────────────────
 
@@ -588,12 +700,75 @@ class TestMcpEnvelopeSpillover:
         assert text == markdown
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
-    def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
-        maybe_persist_tool_result(
-            content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
+    def test_builtin_tool_spills_newlines_and_metadata(self):
+        output = "terminal output line\n" * 2_000
+        content = json.dumps({"output": output, "exit_code": 0, "error": None})
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_text",
             env=None, threshold=30_000)
-        assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+        assert PERSISTED_OUTPUT_TAG in result
+        spill = (get_spillover_dir() / "tc_terminal_text.txt").read_text(encoding="utf-8")
+        head, _, text = spill.partition("\n</tool-result-metadata>\n\n")
+        assert text == output
+        assert json.loads(head.removeprefix("<tool-result-metadata>\n")) == {
+            "error": None, "exit_code": 0, "text_field": "output"}
+        assert '"exit_code": 0' in result
+
+    def test_lists_and_dicts_follow_the_text_so_the_preview_shows_it(self):
+        body = "# Big skill\n\n" + "".join(f"Step {i}: do the thing carefully.\n" for i in range(3_000))
+        payload = {
+            "success": True,
+            "name": "big-skill",
+            "description": "Use when testing spill layout.",
+            "tags": ["Testing", "Spill"],
+            "content": body,
+            "skill_dir": "/srv/skills/testing/big-skill",
+            "linked_files": {"references": [f"references/topic-{i}.md" for i in range(60)]},
+            "usage_hint": "To view linked files, call skill_view(name, file_path).",
+            "metadata": {"hermes": {"tags": ["Testing"], "related_skills": []}},
+        }
+        result = maybe_persist_tool_result(
+            content=json.dumps(payload, ensure_ascii=False), tool_name="skill_view",
+            tool_use_id="tc_skill_layout", env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert body[:1_000] in preview
+        assert '"name": "big-skill"' in preview
+        spill = (get_spillover_dir() / "tc_skill_layout.txt").read_text(encoding="utf-8")
+        head, _, rest = spill.partition("\n</tool-result-metadata>\n\n")
+        text, _, tail = rest.partition("\n\n<tool-result-metadata>\n")
+        assert text == body
+        fields = {**json.loads(head.removeprefix("<tool-result-metadata>\n")),
+                  **json.loads(tail.removesuffix("\n</tool-result-metadata>\n"))}
+        assert fields.pop("text_field") == "content"
+        assert fields == {key: value for key, value in payload.items() if key != "content"}
+
+    def test_long_terminal_notes_stay_in_the_preview(self):
+        note = ("Output exceeded the capture window (head+tail shown). Full output saved to "
+                "/srv/logs/" + "build-" * 40 + "out.log — page it with read_file.")
+        content = json.dumps({"output": "build line\n" * 5_000, "exit_code": 2, "error": None,
+                              "truncation_note": note}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_note",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert note in preview
+        assert '"exit_code": 2' in preview
+
+    def test_unpageable_json_strings_still_verbatim(self):
+        cases = {
+            "tc_json_short": {"output": "one line", "exit_code": 0, "error": None},
+            "tc_json_nul": {"output": "abcdefghijklmnop\x00\n" * 2_000, "exit_code": 0},
+            "tc_json_minor": {"output": "line\n" * 100, "rows": list(range(2_000))},
+        }
+        for tool_use_id, payload in cases.items():
+            content = json.dumps(payload)
+            maybe_persist_tool_result(
+                content=content, tool_name="terminal", tool_use_id=tool_use_id,
+                env=None, threshold=1)
+            assert (get_spillover_dir() / f"{tool_use_id}.txt").read_text(encoding="utf-8") == content
 
     def test_structured_content_only_result_still_verbatim(self):
         content = json.dumps({"result": {"blob": "z" * 40_000}})

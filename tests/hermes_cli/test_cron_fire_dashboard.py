@@ -205,7 +205,7 @@ def test_gateway_error_status_passes_through(monkeypatch):
 def test_fire_endpoint_default_port(tmp_path, monkeypatch):
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     url = _web_server_cron._gateway_fire_endpoint("default", tmp_path)
     assert url == "http://127.0.0.1:8642/api/cron/fire"
 
@@ -272,11 +272,21 @@ def test_fire_endpoint_profile_env_port(tmp_path, monkeypatch):
     dashboard process env (per-profile-gateway topology)."""
     monkeypatch.setenv("API_SERVER_PORT", "9999")  # dashboard process env
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
     (tmp_path / ".env").write_text("API_SERVER_PORT=8701\n", encoding="utf-8")
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
     assert url == "http://127.0.0.1:8701/api/cron/fire"
+
+
+def test_fire_endpoint_profile_env_port_expands_references(tmp_path, monkeypatch):
+    """The other profile's .env is read the way its own gateway reads it: ${VAR} expanded."""
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
+    monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
+    (tmp_path / ".env").write_text("WORKER_PORT=8702\nAPI_SERVER_PORT=${WORKER_PORT}\n", encoding="utf-8")
+    url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
+    assert url == "http://127.0.0.1:8702/api/cron/fire"
 
 
 def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
@@ -284,7 +294,7 @@ def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
     gateway's port with the /p/<profile>/ prefix mirror."""
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "1")
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
     assert url == "http://127.0.0.1:8642/p/worker_alpha/api/cron/fire"
 

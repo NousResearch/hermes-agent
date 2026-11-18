@@ -23,11 +23,11 @@ interface AuxTaskMeta {
 const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'vision' },
   { key: 'compression' },
-  { key: 'skills_hub' },
   { key: 'approval' },
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
+  { key: 'voice_chat' },
   // Same three canonical slots the backend serves but the list below used to
   // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
   { key: 'triage_specifier' },

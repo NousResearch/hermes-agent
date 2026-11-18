@@ -15,12 +15,17 @@ import pytest
 
 pytest.importorskip("telegram")
 from telegram import InlineQuery, Message, PhotoSize, Sticker, Update
-from telegram.ext import ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, Defaults, MessageHandler, TypeHandler, filters
 from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.event import MessageType
-from plugins.platforms.telegram import adapter as tg_adapter
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource, build_session_context
+from gateway.session_context import get_session_env
+from tests.waiting import async_wait_until
+from plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
@@ -49,6 +54,35 @@ class NoNetwork(BaseRequest):
         return 200, json.dumps({"ok": True, "result": {
             "id": self.bot_id, "is_bot": True, "first_name": "Offline", "username": "offline_bot",
         }}).encode()
+
+
+def test_observe_attribution_keeps_live_actor_outside_shared_source():
+    """Regression for #140059: a mentioned turn keeps its trusted Telegram author."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, extra={
+        "observe_unmentioned_group_messages": True, "allowed_chats": ["42"], "group_allowed_chats": ["42"],
+    }))
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="42", chat_type="group",
+        user_id="current-author", user_name="Current Author",
+    )
+    raw_message = SimpleNamespace(chat=SimpleNamespace(id=42, type="supergroup"))
+    event = MessageEvent(
+        text="@bot save this", source=source, raw_message=raw_message,
+        user_id=source.user_id, user_name=source.user_name,
+    )
+
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert attributed.source.user_id is None  # shared session routing stays sender-less
+    context = build_session_context(attributed.source, GatewayConfig(), event=attributed)
+    runner = object.__new__(GatewayRunner)
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_ACTOR_ID") == "current-author"
+        assert get_session_env("HERMES_SESSION_ACTOR_NAME") == "Current Author"
+        assert get_session_env("HERMES_SESSION_USER_ID") == ""
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def update(bot, uid=10, kind="text", *, edited=False, chat=42, text="hello", group=False, user=88):
@@ -182,6 +216,9 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             assert [event.text for event in delivered] == ["hello", "changed", "hello"]
             assert observer.await_count == 2
         if mode == "retention":
+            async def native_serve(unused, context):
+                return None  # plugin-owned: bare update ids are accepted, so they receipt
+            app.add_handler(TypeHandler(Update, native_serve))
             now = time.time()
             with monkeypatch.context() as clock:
                 clock.setattr(time, "time", lambda: now + 6.5 * 60 * 60)
@@ -430,6 +467,49 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
     assert len(delivered) == 1
 
 
+@pytest.mark.asyncio
+async def test_cancelled_stop_preserves_pending_claim_release(monkeypatch):
+    entered, release, ptb_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tasks, callback_errors = [], []
+    loop = asyncio.get_running_loop()
+    previous_error_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
+    try:
+        async with connected(monkeypatch) as (adapter, app, _delivered):
+            async def notify(incoming, context):
+                tasks.append(asyncio.current_task())
+                entered.set()
+                await release.wait()
+
+            app.add_error_handler(notify, block=False)
+            monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+            await app.process_update(update(app.bot))
+            await entered.wait()
+
+            async def completed_ptb_stop(self):
+                # Isolate the adapter-owned completion wait from PTB's earlier task wait.
+                ptb_stopped.set()
+
+            with monkeypatch.context() as stopped:
+                stopped.setattr(Application, "stop", completed_ptb_stop)
+                stop = asyncio.create_task(app.stop())
+                await ptb_stopped.wait()
+                stop.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await stop
+                assert not tasks[0].done()
+                callbacks_finished = loop.create_future()
+                tasks[0].add_done_callback(lambda _: callbacks_finished.set_result(None))
+                release.set()
+                await callbacks_finished
+                assert not callback_errors
+                assert not adapter._inflight_update_ids
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        loop.set_exception_handler(previous_error_handler)
+
+
 async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure):
     entered, release = asyncio.Event(), asyncio.Event()
     effects, tasks = [], []
@@ -592,7 +672,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
 
             conversation = ConversationHandler(entry_points=[TypeHandler(Update, entry)], states={}, fallbacks=[])
             app.add_handler(conversation, group=-1)
-            async with connected(monkeypatch, bot_id=222) as (other, other_app, _):
+            async with connected(monkeypatch, bot_id=222) as (_other, other_app, _):
                 other_app.add_handler(conversation, group=-1)
                 for _ in range(2):
                     await other_app.process_update(update(other_app.bot))
@@ -699,6 +779,9 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
         if stage == "inline":
             monkeypatch.setattr(InlineQuery, "answer", effect_then_fail)
         if stage == "media_warning":
+            # Every retry still runs (3 fetches), just without the production 2 s / 5 s backoff,
+            # so the warning reply is reached inside the 2 s entry wait below.
+            monkeypatch.setattr(telegram_media_fetch, "FETCH_RETRY_DELAYS", (0.0, 0.0))
             monkeypatch.setattr(PhotoSize, "get_file", AsyncMock(side_effect=OSError("download unavailable")))
             monkeypatch.setattr(Message, "reply_text", effect_then_fail)
         first = asyncio.create_task(app.process_update(update(app.bot, **args)))
@@ -800,15 +883,15 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     the update fetcher then awaits each update's full handler chain inline, so one slow
     update deafens every other chat (and local commands) until it finishes. The adapter
     must enable a bounded concurrent processor, overridable via config extra (#125098)."""
-    async with connected(monkeypatch) as (adapter, app, delivered):
+    async with connected(monkeypatch) as (_adapter, app, _delivered):
         assert isinstance(app.update_processor, PerChatUpdateProcessor)
         assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
 
-    async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (adapter, app, delivered):
+    async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (_adapter, app, _delivered):
         assert app.concurrent_updates == 7
 
     for bad in ("lots", float("inf")):  # .inf in YAML: int() raises OverflowError
-        async with connected(monkeypatch, extra={"max_concurrent_updates": bad}) as (adapter, app, delivered):
+        async with connected(monkeypatch, extra={"max_concurrent_updates": bad}) as (_adapter, app, _delivered):
             assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
 
     # Cancelling a waiting same-chat update must neither fail its running predecessor nor
@@ -822,9 +905,11 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
         order.append(f"end {name}")
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
-    tasks = []
+    tasks, coroutines = [], []
     for name in "ABC":
-        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        coroutine = handler(name)
+        coroutines.append(coroutine)
+        tasks.append(asyncio.create_task(processor.process_update(chat, coroutine)))
         await asyncio.sleep(0.01)
     tasks[1].cancel()
     await asyncio.sleep(0.01)
@@ -832,6 +917,42 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results[0] is None and results[2] is None
     assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
+    assert all(coroutine.cr_frame is None for coroutine in coroutines)  # B never entered: closed, not leaked
+
+
+@pytest.mark.asyncio
+async def test_slow_topic_does_not_block_other_topic_in_same_private_chat():
+    """DM forum topics are independent lanes even though Telegram gives them one chat id; a reply
+    anchor (``is_topic_message`` unset) and a topic-creation service message stay on the chat lane."""
+    def update(thread_id, **fields):
+        fields.setdefault("is_topic_message", True)
+        return SimpleNamespace(effective_chat=SimpleNamespace(id=42),
+                               effective_message=SimpleNamespace(message_thread_id=thread_id, **fields))
+
+    async def second_waits(first_update, second_update):
+        processor, order, gate = PerChatUpdateProcessor(32), [], asyncio.Event()
+
+        async def handler(name):
+            order.append(f"start {name}")
+            if name == "A":
+                await gate.wait()
+            order.append(f"end {name}")
+
+        first = asyncio.create_task(processor.process_update(first_update, handler("A")))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        other = asyncio.create_task(processor.process_update(second_update, handler("B")))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        waited = order == ["start A"]
+        gate.set()
+        await asyncio.gather(first, other)
+        return waited
+
+    assert not await second_waits(update(100), update(200))
+    assert await second_waits(update(100), update(100))  # FIFO inside one topic
+    assert await second_waits(update(None), update(77, is_topic_message=False))  # reply anchor
+    assert await second_waits(update(600, forum_topic_created=object()), update(None, is_topic_message=False))
 
 
 @pytest.mark.asyncio
@@ -883,6 +1004,146 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
                 break
             await asyncio.sleep(0.02)
         await asyncio.gather(*adapter._pending_text_batch_tasks.values())
-        assert [e.source.chat_id for e in delivered][0] == "43"
+        assert next(e.source.chat_id for e in delivered) == "43"
         same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
         assert same_chat == "hello\nsecond"
+
+
+@pytest.mark.asyncio
+async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, caplog):
+    """#141570: an update that no group-0 handler serves (e.g. a chat-title service message) must not be
+    receipted by the group-99 observer's return — the receipt would suppress redelivery of
+    an update nobody served, silently. Instead one INFO line names the update id and the
+    field names only (never values), and a redelivery dispatches again."""
+    import logging as stdlib_logging
+
+    unserved_payload = {
+        "update_id": 77,
+        "message": {
+            "message_id": 473, "date": 1800000000,
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 88, "is_bot": False, "first_name": "Human"},
+            "new_chat_title": "Lunch club",
+        },
+    }
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        unserved = Update.de_json(unserved_payload, app.bot)
+        await app.process_update(unserved)
+        assert not delivered  # no core handler serves a title change
+        assert f"{app.bot.id}:77" not in adapter._seen_update_ids  # not receipted
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 1
+        text = records[0].getMessage()
+        assert "Update 77" in text
+        assert "message(chat,date,from,message_id,new_chat_title)" in text  # field names only
+        assert "Lunch" not in text and "473" not in text and "88" not in text  # never values
+        # No receipt: a redelivery of the same id dispatches again instead of being dropped.
+        await app.process_update(unserved)
+        records = [r for r in caplog.records if "matched no core handler" in r.message]
+        assert len(records) == 2
+
+
+@pytest.mark.asyncio
+async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(monkeypatch, caplog):
+    """#141570 only takes completion away from observers: a group-0 core handler that returns
+    early (a blocked sender) served the update, so it keeps its receipt; a failed preparation
+    stays unreceipted without being reported as unserved."""
+    import logging as stdlib_logging
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        await app.process_update(update(app.bot, 20, user=99))
+        assert not delivered
+        assert f"{app.bot.id}:20" in adapter._seen_update_ids
+        monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
+        await app.process_update(update(app.bot, 21))
+        assert f"{app.bot.id}:21" not in adapter._seen_update_ids
+        assert not [r for r in caplog.records if "matched no core handler" in r.message]
+
+
+@pytest.mark.asyncio
+async def test_adopted_threadless_opener_is_not_overtaken_by_threaded_follow_up(monkeypatch):
+    """Android sends a new DM topic's opener thread-less (the adapter adopts it into the topic):
+    a later explicitly-threaded message must queue behind it even while the opener is slow."""
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "7")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="111:offline-test"))
+    sent = datetime(2026, 11, 9, tzinfo=UTC)
+    chat = SimpleNamespace(id=42, type="private")
+    user = SimpleNamespace(id=7, is_bot=False)
+    ids = iter(range(500, 600))
+
+    def update(thread_id, **fields):
+        return SimpleNamespace(effective_chat=chat, effective_message=SimpleNamespace(
+            chat=chat, from_user=user, date=sent, message_thread_id=thread_id, message_id=next(ids), **fields))
+
+    processor, order, gate = PerChatUpdateProcessor(32, adopt=adapter._admit_topic_follow), [], asyncio.Event()
+
+    async def handler(name, slow=False):
+        order.append(f"start {name}")
+        if slow:
+            await gate.wait()
+        order.append(f"end {name}")
+
+    await processor.process_update(update(600, forum_topic_created=object(), is_topic_message=True), handler("created"))
+    opener_update = update(None)
+    opener = asyncio.create_task(processor.process_update(opener_update, handler("opener", slow=True)))
+    while order[-1:] != ["start opener"]:
+        await asyncio.sleep(0)
+    follow = asyncio.create_task(processor.process_update(update(600, is_topic_message=True), handler("follow")))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert order[-1] == "start opener"
+    gate.set()
+    await asyncio.gather(opener, follow)
+    assert order[-2:] == ["start follow", "end follow"]
+    # The handler reads the decision admission made, although the threaded follow-up ended the follow.
+    assert adapter._adopt_created_topic_thread(opener_update.effective_message, "dm", None) == "600"
+
+
+@pytest.mark.asyncio
+async def test_root_message_after_threaded_follow_up_stays_root_while_creation_waits(monkeypatch):
+    """A slow root DM update holds the chat lane, so the topic-creation service message waits behind
+    it while the first explicitly threaded message runs on its own lane. That threaded message ends
+    the creation's follow; a later thread-less root message must not adopt the topic once the
+    creation's handler finally runs."""
+    gate = asyncio.Event()
+    sender = {"id": 88, "is_bot": False, "first_name": "Human"}
+
+    def message(bot, uid, sent, *, thread=None, created=False, text="hello"):
+        body = {"message_id": 500 + uid, "date": 1800000000 + sent, "from": sender,
+                "chat": {"id": 42, "type": "private"}}
+        if thread is not None:
+            body.update(message_thread_id=thread, is_topic_message=True)
+        body.update({"forum_topic_created": {"name": "New", "icon_color": 0}} if created else {"text": text})
+        return Update.de_json({"update_id": uid, "message": body}, bot)
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        async def park_slow_root(update, context):
+            if update.update_id == 10:
+                await gate.wait()
+
+        app.add_handler(TypeHandler(Update, park_slow_root), group=-1)
+
+        async def flushed(count):
+            await async_wait_until(lambda: len(delivered) + len(adapter._pending_text_batch_tasks) >= count,
+                                   what=f"{count} events to reach batching")
+            await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+            return len(delivered) >= count
+
+        app.update_queue.put_nowait(message(app.bot, 10, 0, text="slow root"))
+        await async_wait_until(lambda: f"{app.bot.id}:10" in adapter._inflight_update_ids, what="u10 parked")
+        app.update_queue.put_nowait(message(app.bot, 11, 1, thread=600, created=True))
+        app.update_queue.put_nowait(message(app.bot, 12, 2, thread=600, text="in the topic"))
+        assert await flushed(1)
+        assert [e.source.thread_id for e in delivered] == ["600"]
+        gate.set()
+        assert await flushed(2)
+        await async_wait_until(lambda: not adapter._inflight_update_ids, what="the creation to be handled")
+
+        app.update_queue.put_nowait(message(app.bot, 13, 3, text="back at the root"))
+        assert await flushed(3)
+        assert delivered[-1].text == "back at the root"
+        assert delivered[-1].source.thread_id is None

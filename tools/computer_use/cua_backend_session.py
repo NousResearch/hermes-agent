@@ -79,7 +79,7 @@ _UNKNOWN_OUTCOME_MESSAGES = {
         "whether to act again."),
 }
 
-def _outcome_unknown(name: str, exc: Exception, code: str) -> Dict[str, Any]:
+def _outcome_unknown(name: str, exc: Exception, code: str) -> dict[str, Any]:
     """Fail-closed ``isError`` result for *code* (see ``_UNKNOWN_OUTCOME_MESSAGES``)."""
     message = _UNKNOWN_OUTCOME_MESSAGES[code].format(name=name)
     return _tool_envelope(message, [], {"ok": False, "code": code, "message": message, "operation": name,
@@ -92,7 +92,7 @@ def _tool_field(obj: Any, *names: str) -> Any:
 
 _CLI_ATTEMPTS = 4  # CLI fallback transport retries (backoff 0.5s doubling)
 
-def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float) -> Any:
+def _cli_run_json(cmd: list[str], env: dict[str, str], name: str, timeout: float) -> Any:
     """Run ``cua-driver call`` with backoff until it prints JSON; return the parsed value. "daemon is not running"
     is PERMANENT for this invocation (the CLI needs the machine-wide daemon socket, which Linux installs typically
     never start) -> fail fast, no ~3.5s backoff."""
@@ -104,7 +104,7 @@ def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float
         try:
             proc = _subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                    timeout=max(15.0, timeout), creationflags=windows_hide_flags(), env=env,
-                                   stdin=_subprocess.DEVNULL)
+                                   stdin=_subprocess.DEVNULL, check=False)
         except Exception as e:  # pragma: no cover - subprocess spawn failure
             raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
         out, err = (proc.stdout or "").strip(), proc.stderr or ""
@@ -125,7 +125,7 @@ def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float
     raise RuntimeError(f"cua-driver CLI fallback for {name} returned no JSON after "
                        f"{_CLI_ATTEMPTS} attempts: {last_err}")
 
-def _cli_result(parsed: Any, shot_file: Optional[str]) -> Dict[str, Any]:
+def _cli_result(parsed: Any, shot_file: Optional[str]) -> dict[str, Any]:
     """Remap a ``cua-driver call`` JSON body into the ``_extract_tool_result`` shape (no ``image_mime_types`` key)."""
     if not isinstance(parsed, dict):
         return _tool_envelope(None, [], None, False)
@@ -146,9 +146,9 @@ def _cli_result(parsed: Any, shot_file: Optional[str]) -> Dict[str, Any]:
     return _tool_envelope(data, [shot] if shot else [], parsed, is_error)
 
 
-def _logical_error_text(result: Dict[str, Any]) -> str:
+def _logical_error_text(result: dict[str, Any]) -> str:
     """Flatten a logical MCP error into text for narrow classification."""
-    chunks: List[str] = []
+    chunks: list[str] = []
     for value in (result.get("data"), result.get("structuredContent")):
         if value is None:
             continue
@@ -195,9 +195,9 @@ class _CuaDriverSession:
         # (e.g. "accessibility.element_tokens", "input.keyboard.type.terminal_safe"). Empty until the
         # session starts; consumers should call `supports_capability` rather than reading directly. See
         # #47072.
-        self._capabilities: Dict[str, set] = {}
-        self._tool_schemas: Dict[str, Dict[str, Any]] = {}
-        self._capability_version, self._ready_event = "", threading.Event()
+        self._capabilities: dict[str, set] = {}
+        self._tool_schemas: dict[str, dict[str, Any]] = {}
+        self._ready_event = threading.Event()
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
         self._setup_error: Optional[BaseException] = None
@@ -263,9 +263,9 @@ class _CuaDriverSession:
     # safe from the bridge-loop thread without taking self._lock (which stop() may hold while awaiting this
     # coro's future). See #55048 Bug 1.
     async def _populate_capabilities(self, session: Any) -> None:
-        """Cache per-tool capability sets, input schemas and capability_version from tools/list. Soft
+        """Cache per-tool capability sets and input schemas from tools/list. Soft
         prerequisite: on failure the map stays empty (capability False)."""
-        self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+        self._capabilities, self._tool_schemas = {}, {}
         try:
             tools_list = await session.list_tools()
             for tool in getattr(tools_list, "tools", []) or []:
@@ -276,10 +276,6 @@ class _CuaDriverSession:
                 self._capabilities[tool_name] = (
                     {c for c in caps if isinstance(c, str)} if isinstance(caps, list) else set())
                 self._tool_schemas[tool_name] = dict(schema) if isinstance(schema, dict) else {}
-            # capability_version is a sibling of `tools` in tools/list (NOT in initialize).
-            cv = _tool_field(tools_list, "capability_version")
-            if isinstance(cv, str):
-                self._capability_version = cv
         except Exception as e:
             logger.debug("cua-driver tools/list capability discovery failed: %s", e)
 
@@ -349,7 +345,7 @@ class _CuaDriverSession:
             with contextlib.suppress(RuntimeError):  # loop closed — nothing to signal
                 loop.call_soon_threadsafe(event.set)
 
-    async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_tool_async(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         return _extract_tool_result(await self._session.call_tool(name, args))
 
     # ── Capability detection ─────────────────────────────────────────
@@ -377,11 +373,6 @@ class _CuaDriverSession:
     def capabilities_discovered(self) -> bool:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""
         return bool(self._capabilities)
-
-    @property
-    def capability_version(self) -> str:
-        """Driver-advertised capability vocabulary version ("" on old builds)."""
-        return self._capability_version
 
     # ── Error classification (instance-patchable seams; result-shape checks live at module level) ──
     @staticmethod
@@ -426,7 +417,7 @@ class _CuaDriverSession:
                 except Exception as e:
                     logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
                 self._started = False
-                self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+                self._capabilities, self._tool_schemas = {}, {}
                 self._start_lifecycle_locked()
                 self._started = True
             if clear_timeout_suspect:
@@ -434,7 +425,7 @@ class _CuaDriverSession:
         if getattr(self, "_declared_session_id", None):
             self._redeclare_session(timeout, "cua-driver public session label %s could not be restored: %s")
 
-    def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    def _call_tool_via_cli(self, name: str, args: dict[str, Any], timeout: float) -> dict[str, Any]:
         """Fallback transport: ``cua-driver call <tool> <json>`` subprocess. The MCP stdio bridge can persistently
         fail heavy calls (``get_window_state``) with EAGAIN while the plain CLI, on its own daemon socket, keeps
         working. Output is remapped to the ``_extract_tool_result`` shape. ``get_window_state`` routes its
@@ -465,7 +456,7 @@ class _CuaDriverSession:
                 with contextlib.suppress(OSError):
                     os.remove(shot_file)
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
             # poisons the run. Healthy sessions are never restarted here.

@@ -198,11 +198,13 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             type_args = {
                                 "pid": launched_pid,
                                 "window_id": window_id,
-                                "element_index": editor.get("element_index", editor.get("index")),
                                 "text": marker,
                                 "delivery_mode": "foreground",
                                 "session": session_id,
                             }
+                            # Cua 0.3x+ type_text is token-only and refuses an unknown element_index.
+                            if capabilities.supports_input_property("type_text", "element_index"):
+                                type_args["element_index"] = editor.get("element_index", editor.get("index"))
                             token = editor.get("element_token")
                             if isinstance(token, str) and token:
                                 type_args["element_token"] = token

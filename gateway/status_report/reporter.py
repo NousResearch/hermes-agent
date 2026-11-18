@@ -22,6 +22,9 @@ from hermes_constants import get_process_hermes_home, profile_name_for_home
 logger = logging.getLogger(__name__)
 
 INTERVAL_S = 120.0
+# The receiver may set another interval in a stored reply, within these bounds.
+INTERVAL_MIN_S = 60.0
+INTERVAL_MAX_S = 600.0
 _JITTER = 0.1
 _QUICK_RETRY_S = 5.0
 _RETRY_AFTER_MAX_S = 600.0
@@ -34,13 +37,14 @@ _TICK_S = 1.0
 _LOCK_SCOPE = "status-report"
 
 
-def _interval_s() -> float:
-    return random.uniform(INTERVAL_S * (1 - _JITTER), INTERVAL_S * (1 + _JITTER))
+def _jittered(interval_s: float) -> float:
+    return random.uniform(interval_s * (1 - _JITTER), interval_s * (1 + _JITTER))
 
 
 class StatusReporter:
-    """Reports this gateway's status to the deployment's URL: a beat about every ``INTERVAL_S`` and
-    a goodbye before the gateway suspends its own machine.
+    """Reports this gateway's status to the deployment's URL: a beat about every ``INTERVAL_S``, or
+    the interval the receiver's last stored reply set, and a goodbye before the gateway suspends
+    its own machine.
 
     Timed on the WALL clock. A machine suspend stops the monotonic clock the event loop sleeps on
     while the wall clock keeps host time, so a slept interval would resume with its remainder after
@@ -58,6 +62,7 @@ class StatusReporter:
         self._read_source = read_source
         self._opener = opener
         self._seqs = itertools.count(1)
+        self._interval_s = INTERVAL_S
         self._due_at = 0.0
         self._last_poll_at = 0.0
         self._no_beat_before = 0.0
@@ -89,7 +94,7 @@ class StatusReporter:
         """A poll that raised costs one interval, never the watcher: a supervised task that keeps
         dying is given up on, and the gateway would then never report again. Said once per type of
         error, by the type alone: an error's text can quote a path or the report URL."""
-        self._due_at = time.time() + _interval_s()
+        self._due_at = time.time() + _jittered(self._interval_s)
         kind = type(exc).__name__
         if kind not in self._poll_failures:
             self._poll_failures.add(kind)
@@ -105,7 +110,7 @@ class StatusReporter:
         if now < self._due_at:
             return
         if not await self._become_sender():
-            self._due_at = now + _interval_s()
+            self._due_at = now + _jittered(self._interval_s)
             return
         retry, self._retry_body = self._retry_body, None
         body = retry or await self._next_report("beat")
@@ -182,10 +187,14 @@ class StatusReporter:
     def _settle(self, outcome: Outcome, body: bytes, *, retried: bool) -> None:
         """Set the next beat from how this one went."""
         now = time.time()
-        wait, held_off = _interval_s(), False
         if outcome.kind == "stored":
             self._rejections = 0
-        elif outcome.kind == "throttled" and outcome.retry_after_s is not None:
+            # A stored reply without a usable Report-Interval sets the interval back: a receiver
+            # that stops sending one gets the normal interval again without a gateway restart.
+            told = outcome.report_interval_s
+            self._interval_s = INTERVAL_S if told is None else min(max(told, INTERVAL_MIN_S), INTERVAL_MAX_S)
+        wait, held_off = _jittered(self._interval_s), False
+        if outcome.kind == "throttled" and outcome.retry_after_s is not None:
             wait, held_off = min(outcome.retry_after_s, _RETRY_AFTER_MAX_S), True
         elif outcome.kind == "rejected":
             wait, held_off = _REJECTED_BACKOFF_S[min(self._rejections, len(_REJECTED_BACKOFF_S) - 1)], True

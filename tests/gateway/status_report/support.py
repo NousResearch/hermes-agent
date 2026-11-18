@@ -30,9 +30,15 @@ def fixture(name: str) -> Any:
 
 RESPONSES = fixture("responses.json")
 INTERVAL_S = RESPONSES["interval_s"]
-# One second outside the jitter band on either side: no report before, one after.
-BEFORE_INTERVAL_S = INTERVAL_S * (1 - RESPONSES["jitter"]) - 1
-AFTER_INTERVAL_S = INTERVAL_S * (1 + RESPONSES["jitter"]) + 1
+INTERVAL_HEADER = RESPONSES["interval_header"]
+
+
+def around(interval_s: float) -> tuple[float, float]:
+    """One second outside the jitter band of *interval_s* on either side: no report before, one after."""
+    return interval_s * (1 - RESPONSES["jitter"]) - 1, interval_s * (1 + RESPONSES["jitter"]) + 1
+
+
+AFTER_INTERVAL_S = around(INTERVAL_S)[1]
 
 
 def new_credential() -> str:

@@ -152,6 +152,21 @@ function answer(capabilities: unknown) {
   })
 }
 
+it.each([undefined, 8])('creates up to the gateway member capacity %s without losing seats', async capacity => {
+  const limit = capacity ?? 6
+  const members: RosterRow[] = Array.from({ length: 9 }, (_, index) => ({ name: `bot-${index}`, connectionId: 'local' }))
+  answer({ driver: true, persistent_process: true, ...(capacity ? { max_members: capacity } : {}) })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={members} />)
+  await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(9))
+
+  for (const checkbox of screen.getAllByRole('checkbox').slice(0, limit)) {fireEvent.click(checkbox)}
+  expect((screen.getAllByRole('checkbox')[limit] as HTMLButtonElement).disabled).toBe(true)
+  const submit = screen.getByRole('button', { name: `Create group (${limit})` })
+  await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(submit)
+  await waitFor(() => expect(request.mock.calls.find(call => call[1] === 'groups.create')?.[2].members).toHaveLength(limit))
+})
+
 /** The room record an older build saved for "Existing": a name with no record is a new group chat. */
 function existingRoom() {
   updateGroupChat('Existing', room => ({ ...room, members: roster }))

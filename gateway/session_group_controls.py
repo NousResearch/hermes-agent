@@ -171,6 +171,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return register(service, params)
 
     def capabilities():
+        from gateway.hosted_room_discussion import DEFAULT_DISCUSSION_MEMBERS
         from gateway.session_group_peers import room_link
         from gateway.session_hosted_members import member_roster
         # The roster groups.create will accept from THIS caller, so a picker never offers a bot
@@ -181,6 +182,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
                 'room_link': room_link(authority),
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon'],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
+                'max_members': service.discussion_limits.max_members if service else DEFAULT_DISCUSSION_MEMBERS,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
 
     def listing():
@@ -219,7 +221,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return {'rooms': found, 'next_offset': next_offset}
 
     def create():
-        from gateway.hosted_room_discussion import DiscussionValidationError, validate_roster
+        from gateway.hosted_room_discussion import DEFAULT_DISCUSSION_MEMBERS, DiscussionValidationError, validate_roster
         from gateway.session_hosted_members import member_roster, refuse_unseatable
         # Only a host-scoped grant, the one that may address siblings directly
         # (``AuthorityConnection._sibling_for``), seats served siblings with no entry; a
@@ -228,7 +230,9 @@ def _group(authority, actor, method, params, *, host_scope=False):
         homes, refused = member_roster(authority, siblings=host_scope)
         refuse_unseatable(params.get('members'), refused)
         try:
-            members = validate_roster(params.get('members'), local_profiles=homes)
+            members = validate_roster(
+                params.get('members'), local_profiles=homes,
+                max_members=service.discussion_limits.max_members if service else DEFAULT_DISCUSSION_MEMBERS)
             if service is not None:
                 return {'room': service.create_room(**params, owner=owner)}
         except DiscussionValidationError as exc:

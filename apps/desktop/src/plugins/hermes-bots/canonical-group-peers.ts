@@ -10,6 +10,7 @@ import type {
   CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember, GroupCreationIntent
 } from './canonical-groups'
 import { uniqueGroupChatName } from './group-chat'
+import { GROUP_CHAT_MAX_MEMBERS } from './group-engine'
 import { liveGroupChatNames } from './group-membership'
 import { resolveBotConnectionRoute } from './routing'
 import type { GroupMember, ProfileRoute, RosterRow } from './types'
@@ -254,7 +255,8 @@ export async function createGroupAcrossConnections(
   targets: ReadonlyMap<string, PeerTargetState>,
   intent: GroupCreationIntent,
   /** The room name, from the entered one, once per request (a blank one is filled from the Bots'). */
-  sentName: (name: string) => string = entered => entered
+  sentName: (name: string) => string = entered => entered,
+  maxMembers = GROUP_CHAT_MAX_MEMBERS
 ) {
   const seats: (Omit<PeerSeat, 'member'> & { gateway: string })[] = []
 
@@ -266,10 +268,10 @@ export async function createGroupAcrossConnections(
     seats.push({ route: own, renewal: target.renewal, gateway: target.gateway })
 
     return target
-  })
+  }, maxMembers)
 
   if ('problem' in checked) {
-    throw Object.assign(new Error('A gateway group needs two to six unique members its gateway can seat'),
+    throw Object.assign(new Error(`A gateway group needs two to ${maxMembers} unique members its gateway can seat`),
       { canonicalGroupProblem: checked.problem })
   }
 

@@ -67,6 +67,39 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
         asyncio.run(probe(desc))
 
 
+def test_configured_room_capacity_is_advertised_and_enforced_on_native_socket(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    home, user = tmp_path / 'state', tmp_path / 'user'
+    home.mkdir(mode=0o700)
+    user.mkdir()
+    profiles = {f'helper-{index}': str(home / 'profiles' / f'helper-{index}') for index in range(8)}
+    for path in profiles.values():
+        Path(path).mkdir(parents=True)
+    (home / 'config.yaml').write_text(json.dumps({
+        'gateway': {'multiplex_profiles': False},
+        'hosted_rooms': {'profiles': profiles, 'discussion': {'max_members': 8}},
+        'model': {'provider': 'custom', 'default': 'no-inference', 'base_url': 'http://127.0.0.1:1/v1'},
+        'auxiliary': {'title_generation': {'enabled': False}},
+    }))
+    env = child_env() | dict(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
+                             PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
+
+    async def probe(desc):
+        async with websocket(home, desc) as ws:
+            capabilities = await rpc(ws, 'groups.capabilities')
+            assert capabilities['result']['max_members'] == 8
+            members = [{'member_id': name, 'profile': name, 'handle': name} for name in ['default', *profiles]]
+            created = await rpc(ws, 'groups.create', room_id='eight', name='Eight', members=members[:8])
+            assert len(created['result']['room']['members']) == 8
+            refused = await rpc(ws, 'groups.create', room_id='nine', name='Nine', members=members)
+            assert refused['error']['message'] == 'invalid_params'
+            state = await rpc(ws, 'groups.state', room_id='eight')
+            assert len(state['result']['room']['members']) == 8
+
+    with daemon(root, home, env, barrier=False) as (_, desc):
+        asyncio.run(probe(desc))
+
+
 def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monkeypatch):
     home = tmp_path / 'state'
     home.mkdir()

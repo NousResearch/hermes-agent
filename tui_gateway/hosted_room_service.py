@@ -115,7 +115,8 @@ def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
             raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
         return discussion.DiscussionLimits(
             max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
-            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES),
+            max_members=settings.get("max_members", discussion.DEFAULT_DISCUSSION_MEMBERS))
     except discussion.DiscussionValidationError as exc:
         logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
         return discussion.DiscussionLimits()
@@ -929,7 +930,8 @@ class HostedRoomService:
         self.runtime.wakeup()
 
     def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
-        normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
+        normalized = discussion.validate_roster(
+            members, local_profiles=self.local_profiles(), max_members=self.discussion_limits.max_members)
         room = hosted_rooms.create_room(
             self.store, placement=self.placement, room_id=room_id, name=name,
             members=[

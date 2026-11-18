@@ -2857,12 +2857,14 @@ not Desktop renderer-driven or mirrored rooms.
 ```yaml
 hosted_rooms:
   discussion:
+    max_members: 6
     max_rounds: 3      # Default maximum scheduling rounds per discussion
     max_messages: 10   # Default total visible bot replies across all members
 ```
 
-Both keys are optional; omitted keys retain the backward-compatible defaults of
-3 rounds and 10 replies. Values must be positive integers: `0`, negative values,
+All three keys are optional; omitted keys retain the backward-compatible defaults
+of 6 members, 3 rounds and 10 replies. `max_members` accepts integers from 2 through
+24. Round and message values must be positive integers: `0`, negative values,
 `null`, booleans, strings (including quoted numbers or `"unlimited"`), and floats
 are not accepted. An invalid value is ignored with a warning in the gateway log and
 the defaults apply, so a typo never takes group chat offline. For example, set
@@ -2874,6 +2876,19 @@ Set these keys in the `config.yaml` of the Hermes home that holds the room store
 configuration. They apply to rooms served by the gateway and by the Desktop/TUI
 backend alike. Each server process reads them once at startup: restart every
 process sharing that room store after changing them.
+
+To change capacity in the Desktop or web app, open **Settings → Advanced → Runtime**
+and edit `hosted_rooms.discussion.max_members` while the room-owning home is selected.
+Restart its gateway after saving. The group creation picker reads the effective
+capacity advertised by that gateway; an older gateway that omits it keeps the
+six-member picker. Increasing capacity does not increase the reply or round budget.
+For example, `max_members: 8` admits eight-member rooms, but the default discussion
+still stops after at most 10 visible replies.
+
+The capacity controls admission to new rooms. Lowering it does not remove members
+from existing rooms or prevent their stored logs and tasks from being replayed.
+Existing rooms remain structurally bounded to 24 members. This setting does not
+change legacy Desktop-driven room membership or its safety limits.
 
 These are ceilings, not targets or a guarantee of task completion. Discussions
 can settle early, and Stop and approval gates remain in effect. Reaching one pauses

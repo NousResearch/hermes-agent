@@ -438,6 +438,16 @@ describe('threads', () => {
 })
 
 describe('durable projection', () => {
+  it('preserves every seat in an eight-member room through the sync projection', async () => {
+    const { chat } = await loadRoom()
+    const members = Array.from({ length: 8 }, (_, index) => ({ name: `bot-${index}` }))
+
+    const snapshot = chat.groupChatSyncSnapshot({
+      Larger: { roomId: 'eight-member-room', log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'Hello' }], members, watermarks: {} }
+    })
+
+    expect(snapshot.rooms['id:eight-member-room'].members?.map(member => member.name)).toEqual(members.map(member => member.name))
+  })
   it('excludes tombstoned rooms', async () => {
     const { chat } = await loadRoom()
 

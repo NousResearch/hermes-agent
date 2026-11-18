@@ -1537,6 +1537,7 @@ export interface GroupsCapabilitiesResult {
   features: string[]
   methods: string[]
   max_log_limit: number
+  max_members?: number
   seatable_profiles?: string[] | null
 }
 /** ``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``. */

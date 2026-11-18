@@ -171,6 +171,7 @@ class GroupsCapabilitiesResult(Result):
     #: On the canonical gateway, owning requires groups.peer.register; lending requires groups.peer.invite.
     methods: list[str]
     max_log_limit: int
+    max_members: int = Field(default=6, ge=2, le=24)
     #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
     #: bots, minus retiring/unaddressable ones, plus usable ``hosted_rooms.profiles`` entries; only a
     #: host-scoped caller gets served siblings. Absent on gateways that predate it.

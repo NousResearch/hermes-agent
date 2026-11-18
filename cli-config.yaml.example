@@ -1089,6 +1089,7 @@ hosted_rooms:
   discussion:
     max_rounds: 3
     max_messages: 10  # Total visible bot replies, not per member
+    max_members: 6
 
 # =============================================================================
 # Session Storage Retention (state.db)

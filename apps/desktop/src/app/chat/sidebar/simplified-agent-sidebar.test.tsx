@@ -357,7 +357,7 @@ describe('Portal sidebar', () => {
       within(screen.getByRole('group', { name: /^Research ·/ })).getByRole('button', { name: /^Agent actions:/ }),
       { key: 'Enter' }
     )
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open agent' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'View and manage agent' }))
     await waitFor(() => expect($settingsScopeProfile.get()).toBe('research'))
     await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?agentProfile=research'))
     expect(openRosterBot).not.toHaveBeenCalled()
@@ -528,16 +528,29 @@ describe('Portal sidebar', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
-  it('starts a separate chat from an agent row without opening its canonical chat or settings', async () => {
+  it('starts a separate chat from an agent row without opening its canonical chat or settings', () => {
+    mount()
+    fireEvent.click(
+      within(screen.getByRole('group', { name: /^Research ·/ })).getByRole('button', {
+        name: 'New chat with this agent: Research'
+      })
+    )
+    expect(newSessionInProfile).toHaveBeenCalledWith('research')
+    expect(screen.getByTestId('route').textContent).toBe('')
+    expect(openRosterBot).not.toHaveBeenCalled()
+  })
+
+  it('leaves new chats to the row\'s + button: the agent menu manages the agent and its visibility', async () => {
     mount()
     fireEvent.keyDown(
       within(screen.getByRole('group', { name: /^Research ·/ })).getByRole('button', { name: /^Agent actions:/ }),
       { key: 'Enter' }
     )
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'New chat with this agent' }))
-    expect(newSessionInProfile).toHaveBeenCalledWith('research')
-    expect(screen.getByTestId('route').textContent).toBe('')
-    expect(openRosterBot).not.toHaveBeenCalled()
+    await screen.findByRole('menu')
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent?.trim())).toEqual([
+      'View and manage agent',
+      'Hide from chat list'
+    ])
   })
 
   it('offers Unpin under the agent as well as in Pinned, keeping the owning profile', async () => {

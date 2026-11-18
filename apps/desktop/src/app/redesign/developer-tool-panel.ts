@@ -40,7 +40,7 @@ export const DEVELOPER_TOOL_PANEL_WIDTH = `var(${WIDTH_PROPERTY}, var(--portal-t
 const STORE_BOUND = [...TOOLS, CHAT_ITEMS_PANE_ID]
 
 // The chat's items ride the same panel and width as a tool, like a preview tile.
-const isTool = (paneId: string) => STORE_BOUND.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+export const isTool = (paneId: string) => STORE_BOUND.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
 
 /** A tool pane's sizing in the redesign: the shared width, never under the tool's own minimum (the
  *  terminal and the browser need more room than the file tree). Classic keeps each pane's own. */

@@ -4,6 +4,7 @@ interface StableTextProps {
   'aria-hidden'?: boolean
   children: string
   className?: string
+  'data-slot'?: string
 }
 
 /**
@@ -11,9 +12,9 @@ interface StableTextProps {
  * shift the layout as they change (e.g. digits in a ticking timer).
  * Works with any proportional font — no need for font-mono.
  */
-export function StableText({ 'aria-hidden': ariaHidden, children, className }: StableTextProps) {
+export function StableText({ 'aria-hidden': ariaHidden, children, className, 'data-slot': slot }: StableTextProps) {
   return (
-    <span aria-hidden={ariaHidden} className={cn('inline-flex', className)}>
+    <span aria-hidden={ariaHidden} className={cn('inline-flex', className)} data-slot={slot}>
       {children.split('').map((char, i) => (
         <span className="inline-block w-[1ch] text-center" key={i}>
           {char}

@@ -492,6 +492,14 @@ page's panel and a header at the PageHeader geometry), never an empty window; ra
 page on hover and focus. A redesign confirm has one anatomy: no corner X, a bordered Cancel beside the
 solid action, and a destructive confirm opens on Cancel. The developer tool panel (Files, Terminal,
 Review, Browser) has one user-resizable width shared by every tool, never under a tool's own minimum.
+It belongs to the chat on screen (`app/redesign/chat-tool-panel.ts`): a page's right side is its own
+detail, so off a chat the panel and its rail are out of sight (route-collapsed: a running terminal or
+a loaded Browser page stays alive), and each chat comes back with the tools it had open. A chat never
+opened, or a new one, starts closed; a new chat's panel goes with it into the conversation on its
+first send. Browser tabs follow their own session already; the other tools are remembered per stored
+session (`hermes.desktop.chatToolPanels.v1`, the 256 most recently changed). Classic keeps one panel
+for the window. Menus draw no stroke: the floating fill and its shadow raise them; popovers, dialogs
+and toasts keep their hairline. A dialog's text reads at the 14px body size, its field labels too.
 The rail's Settings menu lists the Settings page's destinations, in its order and under its names
 (`settings/redesign-navigation.ts`), with Interface mode and Documentation below a separator.
 
@@ -685,6 +693,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-text-secondary` | `color-mix(in srgb, var(--ui-base) 70%, transparent)` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` |  |
 | `--portal-text-tertiary` | `color-mix(in srgb, var(--ui-base) 60%, transparent)` | `color-mix(in srgb, var(--ui-base) 72%, transparent)` |  |
 | `--portal-text-quaternary` | `color-mix(in srgb, var(--ui-base) 50%, transparent)` | `color-mix(in srgb, var(--ui-base) 64%, transparent)` |  |
+| `--portal-text-quiet-opacity` | `0.5` | `0.64` | The floor as a layer opacity, for a live line that dims as a whole: full-ink regular text quieted by opacity, not a pale ink stacked under a fade (the working row, design review 2026-11-17). |
 | `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's artwork (portal-artwork.css) it is that artwork's ground instead. |
 | `--portal-artwork-ground-vanilla` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 94%, var(--portal-raw-blue)) )` | ″ | The artworks' grounds (Prod - Desktop › Brand 16291:10506, each row's Background fill): brand blue under black .94 and white .05 (Vanilla 16292:10768), black .90 (Wing 16292:13812), black .96 (Angel 16292:17116, Ascend 16292:20301); Karborn lays black .98 on the blue and lightens it with a blue .10 filter (16292:35757). Light paints #f2f2f2 under both of its artworks (16292:26683). |
 | `--portal-artwork-ground-wing` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 90%, var(--portal-raw-blue)) )` | ″ |  |
@@ -779,7 +788,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-type-display-xl-size` | `2.5rem` | ″ | Page H1, agent name (1036:7378). |
 | `--portal-type-display-lg-size` | `1.875rem` | ″ | Panel title, sub-page H2, dialog and drawer title (1036:7476, 1038:7797). |
 | `--portal-type-section-size` | `0.9375rem` | ″ | Section heading, stat value (1036:7481). |
-| `--portal-type-body-size` | `0.875rem` | ″ | Row label, button, tab, input value (label 500, body 400). |
+| `--portal-type-body-size` | `0.875rem` | ″ | Row label, button, tab, input value (label 500, body 400); a dialog's body, its field labels and its lists (design review 2026-11-17: 14px body in the redesign). |
 | `--portal-type-ui-size` | `0.875rem` | ″ | Nav row, sidebar row, menu item, description. Figma draws 13px (1036:7410); the designer asked for 14 after seeing it in the app (2026-11-13). |
 | `--portal-type-meta-size` | `0.75rem` | ″ | Timestamps, row meta, the composer's model row (906:19738). |
 | `--portal-type-micro-size` | `0.6875rem` | ″ | Nav counts, tags, keycaps, the "You" label (1036:7434). |
@@ -1468,6 +1477,10 @@ inline-edit composers.
 It does not resize the sidebar, settings, toolbars, media, or pane geometry.
 Conversation size and line-height tokens are derived inside the transcript/editor
 from their root base tokens; do not multiply the global tokens or nest CSS zoom.
+In the redesign the working row under a running turn ("Working on …", "waiting for the first stream
+chunk") is regular-weight text in full ink, quieted as a whole by `--portal-text-quiet-opacity` (the
+ladder's floor, 50% dark / 64% light), never a pale ink under a second fade; its timer takes the brand
+ink beside the brand pixel.
 
 ## Chat, tools & boot surfaces
 

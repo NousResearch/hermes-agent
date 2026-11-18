@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { $layoutEditMode } from '../../edit-mode'
 import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
 import { $collapsedTreeSides, $treePaneEpochs, paneRootSide } from '../store'
+import { $routeCollapsedPanes } from '../store-route-collapse'
 
 import { paneChrome } from './track-model'
 
@@ -203,8 +204,14 @@ export function KeepAlivePaneSlot({
   const place = useContext(PlacementContext)
   const sides = useStore($collapsedTreeSides)
   const editing = useStore($layoutEditMode)
+  const routeCollapsed = useStore($routeCollapsedPanes)
   const side = paneRootSide(paneId)
-  const shown = visible && (overlay || editing || side === null || !sides.has(side))
+
+  // A route-collapsed zone is display:none while its slot stays mounted, so its anchor is gone: the
+  // live body must hide here, or it falls back to the window's corner over the page.
+  const shown =
+    visible && !routeCollapsed.has(paneId) && (overlay || editing || side === null || !sides.has(side))
+
   const id = useId()
   const anchor = `--pane-${id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 

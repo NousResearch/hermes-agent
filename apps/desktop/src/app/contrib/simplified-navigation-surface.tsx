@@ -8,6 +8,7 @@ import { $focusedSessionIsTile } from '@/store/session-focus'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
+import { setChatToolsOffRoute } from '../redesign/chat-tool-panel'
 import { appViewForPath, isOverlayView } from '../routes'
 import { ShellSheetController } from '../shell/shell-sheet-view'
 import { useTitlebarHeight } from '../shell/use-touch-titlebar'
@@ -42,13 +43,22 @@ function NavigationWithChatSidebar(props: Props) {
 
   // Route visibility is transient: it collapses the sidebar without unmounting it (so returning to
   // a chat is a flip, not a rebuild) and never touches the user's own hide preference.
+  // The chat's tool panel follows the same layout: a page's right side is its own.
   useLayoutEffect(() => {
-    setPaneRouteCollapsed('sessions', covering ? coveredPageLayout : pageLayout)
+    const offChat = covering ? coveredPageLayout : pageLayout
+    setPaneRouteCollapsed('sessions', offChat)
+    setChatToolsOffRoute(offChat)
   }, [covering, coveredPageLayout, pageLayout])
   useLayoutEffect(() => {
     setTreePaneHidden('sessions', userHidden)
   }, [userHidden, hiddenPanes])
-  useLayoutEffect(() => () => setPaneRouteCollapsed('sessions', false), [])
+  useLayoutEffect(
+    () => () => {
+      setPaneRouteCollapsed('sessions', false)
+      setChatToolsOffRoute(false)
+    },
+    []
+  )
 
   return (
     <div className="flex shrink-0" style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}>

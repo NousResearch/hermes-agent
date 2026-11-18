@@ -390,7 +390,7 @@ button.routines-banner-title:focus-visible {
   align-items: center;
   gap: 0.25rem;
   color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-meta-size);
+  font-size: var(--portal-type-ui-size);
   line-height: 1.4;
 }
 
@@ -550,14 +550,20 @@ button.routines-banner-title:focus-visible {
   max-width: 20rem;
 }
 
+/* The list's heading is a field label like "For" above it (design review 2026-11-17: the uppercase
+   caption read small beside the 14px body); the count trails it in the quiet ink. */
 .routines-picker-head {
   display: flex;
   justify-content: space-between;
-  color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-caption-size);
-  letter-spacing: var(--portal-tracking-caption);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
   line-height: 1.4;
-  text-transform: uppercase;
+}
+
+.routines-picker-count {
+  color: var(--ui-text-tertiary);
+  font-weight: 400;
 }
 
 .routines-picker-list {
@@ -574,7 +580,8 @@ button.routines-banner-title:focus-visible {
   align-items: center;
   gap: 0.75rem;
   border-bottom: 1px solid var(--portal-stroke-divider);
-  font-size: var(--portal-type-meta-size);
+  /* The rows move with the dialog's body size, or the list still reads small beside it. */
+  font-size: var(--portal-type-body-size);
   line-height: 1.4;
 }
 

@@ -33,7 +33,8 @@
   --portal-type-display-lg-size: 1.875rem;
   /* Section heading, stat value (1036:7481). */
   --portal-type-section-size: 0.9375rem;
-  /* Row label, button, tab, input value (label 500, body 400). */
+  /* Row label, button, tab, input value (label 500, body 400); a dialog's body, its field labels and
+     its lists (design review 2026-11-17: 14px body in the redesign). */
   --portal-type-body-size: 0.875rem;
   /* Nav row, sidebar row, menu item, description. Figma draws 13px (1036:7410); the designer asked
      for 14 after seeing it in the app (2026-11-13). */

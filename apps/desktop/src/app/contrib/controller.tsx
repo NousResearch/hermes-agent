@@ -14,6 +14,7 @@ import { chatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { bindChatToolPanels, bindChatToolRouteCollapse } from '@/app/redesign/chat-tool-panel'
 import { developerToolSizing, installDeveloperToolPanelWidth } from '@/app/redesign/developer-tool-panel'
 import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
@@ -680,6 +681,10 @@ bindToolPaneCollapse(
   () => setTerminalTakeover(true),
   $terminalCollapsedRail
 )
+// The redesign's tool panel belongs to the chat on screen: off a chat it is out of sight (still
+// mounted), and each chat comes back to the tools it had open (app/redesign/chat-tool-panel.ts).
+bindChatToolPanels()
+bindChatToolRouteCollapse()
 // Without the statusbar, the rail is the only way to switch profiles or gateways.
 $profiles.subscribe(profiles => setModeContext({ profileCount: profiles.length }))
 $connectionsRegistry.subscribe(registry => setModeContext({ connectionCount: registry?.connections.length ?? 0 }))

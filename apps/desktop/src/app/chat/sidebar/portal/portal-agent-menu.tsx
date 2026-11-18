@@ -8,13 +8,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { Tip } from '@/components/ui/tooltip'
-import { Check, Eye, EyeOff, Info, MoreVertical, Plus } from '@/lib/icons'
+import { Check, Eye, EyeOff, Info, MoreVertical } from '@/lib/icons'
 import { setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
-import { recordAction } from '@/store/desktop-metrics'
-import { recordIaAction } from '@/store/ia-metrics'
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
-import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import { agentOwner, type SimplifiedAgent } from '../use-simplified-agents'
 
 function HiddenAgentExplanation() {
@@ -63,19 +60,10 @@ export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentM
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="portal-agent-menu">
-        <DropdownMenuItem
-          onSelect={() => {
-            recordAction('session.new', 'click')
-            recordIaAction('ia.new_session.agent_row')
-            startSimplifiedAgentSession(agent)
-          }}
-        >
-          <Plus aria-hidden />
-          {c.newChat}
-        </DropdownMenuItem>
+        {/* No "New chat" row: the + beside this menu already starts one (design review 2026-11-17). */}
         <DropdownMenuItem disabled={pending} onSelect={onOpen}>
           <FigmaAgentIcon className="portal-agent-menu-icon" color="transparent" variant="outline" />
-          {c.openAgent}
+          {c.manageAgent}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {hidden ? (

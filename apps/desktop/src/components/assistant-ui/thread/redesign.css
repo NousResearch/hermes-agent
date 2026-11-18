@@ -383,8 +383,28 @@
   color: var(--ui-text-primary);
 }
 
-/* Streaming / working indicator: the brand pixel beside caption ink. */
-:root[data-shell='portal'] :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading']) .dither {
+/* Streaming / working indicator: the brand pixel beside caption ink. The line is dim but never
+   thin (design review 2026-11-17): its words are regular weight in full ink and the whole row takes
+   one opacity, the ladder's floor, where the shared scaffold stacked a pale ink under a 67% fade
+   (about 43% ink, under the floor). Pointer or keyboard focus still lifts it, as every scaffold
+   line. */
+:root[data-shell='portal'] :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading']) {
+  --conversation-scaffold-text: var(--portal-text-primary);
+  font-weight: 400;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading'])[data-conversation-scaffold]:not(
+    :hover,
+    :has(:focus-visible)
+  ) {
+  opacity: var(--portal-text-quiet-opacity);
+}
+
+:root[data-shell='portal'] :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading']) .dither,
+:root[data-shell='portal']
+  :is([data-slot='aui_turn-activity'], [data-slot='aui_response-loading'])
+  [data-slot='activity-timer'] {
   color: var(--portal-brand-ink);
 }
 

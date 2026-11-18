@@ -62,7 +62,7 @@ export function RoutinePicker({
       )}
       <div className="routines-picker-head">
         <span>{copy.readyMade}</span>
-        {!loading && <span>{blueprints.length}</span>}
+        {!loading && <span className="routines-picker-count">{blueprints.length}</span>}
       </div>
       <SearchField
         aria-label={copy.searchReadyMade}

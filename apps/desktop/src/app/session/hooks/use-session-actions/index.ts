@@ -9,6 +9,7 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import { adoptDraftToolPanel } from '@/app/redesign/chat-tool-panel'
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
@@ -726,6 +727,8 @@ export function useSessionActions({
           announceNewSessionDraftKey(stored)
           // The draft's preview tabs follow it the same way (#73890).
           adoptDraftPreviewTabs(stored)
+          // ...and so does the tool panel it opened (redesign).
+          adoptDraftToolPanel(stored)
           createOverrides?.onComposerScopeAssigned?.(stored)
           // Hold creatingSessionRef until the route lands on `stored` (release
           // effect above). setTimeout(0) raced use-route-resume back onto the

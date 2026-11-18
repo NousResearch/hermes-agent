@@ -37,6 +37,9 @@
   --portal-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
   --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 60%, transparent);
   --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
+  /* The floor as a layer opacity, for a live line that dims as a whole: full-ink regular text quieted
+     by opacity, not a pale ink stacked under a fade (the working row, design review 2026-11-17). */
+  --portal-text-quiet-opacity: 0.5;
 
   /* Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's
      artwork (portal-artwork.css) it is that artwork's ground instead. */
@@ -279,6 +282,7 @@
   --portal-text-secondary: color-mix(in srgb, var(--ui-base) 80%, transparent);
   --portal-text-tertiary: color-mix(in srgb, var(--ui-base) 72%, transparent);
   --portal-text-quaternary: color-mix(in srgb, var(--ui-base) 64%, transparent);
+  --portal-text-quiet-opacity: 0.64;
   /* A skin without its own canvas gets chrome with 5% ink. */
   --portal-surface-canvas: var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)));
   /* Light veils are white (16292:27185, 16292:28348, 16292:24306): the new chat's stage and a page body

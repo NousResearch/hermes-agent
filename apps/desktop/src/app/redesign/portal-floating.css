@@ -1,8 +1,8 @@
 /* Floating surfaces in the redesign: dropdown/context menus, selects, popovers, pickers, the command
    palette, dialogs and tooltips. Every one of them is body-portalled, so rules gate on the root alone.
    Figma (Overview 878:*, IA quick win 616:* / 623:*) draws them on the solid floating fill (#0d0d1e on
-   dark, the theme's --ui-bg-elevated), a hairline stroke, small radii and one soft drop shadow. No
-   backdrop blur anywhere. Light has no Figma frame: the same stroke over a lighter shadow keeps the
+   dark, the theme's --ui-bg-elevated), a hairline stroke (menus none, review 2026-11-17), small radii
+   and one soft drop shadow. No backdrop blur anywhere. Light has no Figma frame: the same stroke over a lighter shadow keeps the
    surface separated from #f2f2f2 pages without looking heavy. Menus are r4 (row/filter menus 878:6044), popovers and dialogs r8
    (616:1685); tokens in tokens/color.css and tokens/shape.css. */
 
@@ -33,6 +33,9 @@
     [data-slot='context-menu-sub-content'],
     [data-slot='select-content']
   ) {
+  /* Menus draw no stroke (design review 2026-11-17): the solid floating fill and the drop shadow raise
+     them. Popovers, dialogs and toasts hold content and keep their hairline. */
+  border-width: 0;
   border-radius: var(--portal-menu-radius);
   padding: 4px;
 }
@@ -155,11 +158,25 @@
   background-color: var(--portal-surface-scrim);
 }
 
+/* A dialog's text is page text, not chat text: its body reads at the redesign's 14px body size (the
+   owner's standing ruling, restated in the design review of 2026-11-17), not the transcript's 13px. */
 :root[data-shell='portal'] [data-slot='dialog-content'] {
   border-color: var(--portal-floating-stroke);
   border-radius: var(--portal-radius-surface);
   background-color: var(--portal-floating-surface);
   box-shadow: var(--portal-floating-shadow);
+  font-size: var(--portal-type-body-size);
+}
+
+/* Field labels are row labels (body, 500); the optional tag and help under a control are meta. */
+:root[data-shell='portal'] [data-slot='dialog-content'] [data-slot='field-label'] {
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-content'] :is([data-slot='field-optional'], [data-slot='field-hint']) {
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
 }
 
 :root[data-shell='portal'] [data-slot='dialog-description'] {

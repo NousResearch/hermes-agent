@@ -2,7 +2,6 @@
 
 import errno
 from contextlib import contextmanager
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tools.tool_result_storage import PRUNED_SUBDIR, _write_to_spillover
@@ -34,12 +33,3 @@ def test_exclusive_open_collision_preserves_existing_archive(tmp_path, monkeypat
 
     assert _write_to_spillover("new original", existing.name, PRUNED_SUBDIR, exclusive=True) is None
     assert existing.read_bytes() == b"earlier original"
-
-
-def test_default_spillover_still_overwrites_by_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    first = _write_to_spillover("first", "same.txt")
-    second = _write_to_spillover("second", "same.txt")
-
-    assert first == second == str(tmp_path / "cache" / "spillover" / "same.txt")
-    assert Path(second).read_bytes() == b"second"

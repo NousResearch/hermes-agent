@@ -113,3 +113,44 @@ export function shouldReconnectPtyOnPageResume({
 export function shouldBlockPtyInput(ptyState: PtyConnectionState): boolean {
   return ptyState !== 'open'
 }
+
+// Keystrokes typed while the socket is still coming up (the first seconds
+// after a page load, or after a transient drop) are held and delivered once
+// it opens, instead of being dropped (#145511). Bounded so a long outage
+// cannot turn into an unbounded burst on reconnect.
+export const PTY_QUEUED_INPUT_LIMIT = 4096
+
+// Gap between `onopen` and flushing held input, so the server has attached
+// the PTY before the bytes arrive.
+export const PTY_QUEUED_INPUT_FLUSH_DELAY_MS = 150
+
+/** Input blocked in these states is held for the next open socket; in `closed`/`ended` it is dropped. */
+export function shouldQueuePtyInput(ptyState: PtyConnectionState): boolean {
+  return ptyState === 'connecting' || ptyState === 'reconnecting'
+}
+
+/**
+ * Append one terminal `onData` chunk to the held-input queue, dropping the
+ * oldest whole chunks once the total passes `limit` characters. Chunks are
+ * kept intact so an escape sequence (arrow keys, Ctrl combos) is never split
+ * in half; a single chunk larger than the limit (a big paste) is dropped
+ * rather than truncated.
+ */
+export function enqueuePtyInput(
+  queue: readonly string[],
+  data: string,
+  limit: number = PTY_QUEUED_INPUT_LIMIT
+): string[] {
+  if (!data || data.length > limit) {
+    return [...queue]
+  }
+
+  const next = [...queue, data]
+  let total = next.reduce((sum, chunk) => sum + chunk.length, 0)
+
+  while (total > limit) {
+    total -= next.shift()?.length ?? 0
+  }
+
+  return next
+}

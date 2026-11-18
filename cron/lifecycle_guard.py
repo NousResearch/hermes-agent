@@ -395,6 +395,41 @@ def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
     )
 
 
+def _is_remote_segment(segment: list[str]) -> bool:
+    """True when this shell segment runs its command on ANOTHER host (ssh/mosh/tailscale ssh).
+
+    The guard exists because a lifecycle command executed inside the gateway's own process tree
+    gets SIGTERM'd with it (and the supervisor's respawn re-runs the turn → loop). A payload handed
+    to ``ssh`` cannot hit that: the restart runs under a separate sshd session, outside this
+    process's children. Blocking it only broke fleet operations — restarting five nodes from one
+    box was refused, and the refusal cites a mechanism that cannot apply (observed 2026-10-28).
+    """
+    idx = _peel_transparent_prefixes(segment, 0)
+    if idx >= len(segment):
+        return False
+    base = _executable_name(segment[idx])
+    if base == "tailscale":
+        return idx + 1 < len(segment) and segment[idx + 1].lower() == "ssh"
+    return base in ("ssh", "mosh", "slogin")
+
+
+def _strip_remote_segments(normalized: str) -> str:
+    """Drop the segments that run on a remote host, leaving only what this process executes.
+
+    Fails OPEN (returns the input untouched) when the text cannot be tokenized: an unparsed
+    command must keep the conservative reading, exactly like the rest of the guard.
+    """
+    kept: list[str] = []
+    try:
+        for line in _split_logical_lines(normalized.replace("\\\n", "")):
+            for segment in _split_segments(_shlex_tokens(line)):
+                if not _is_remote_segment(segment):
+                    kept.append(" ".join(segment))
+    except ValueError:
+        return normalized
+    return "\n".join(kept)
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
@@ -429,6 +464,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
     text = strip_inert_heredoc_bodies(text, mask_code_consumers=False)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    # Fleet operations run through ssh: those segments execute on another host, so the SIGTERM
+    # mechanism this guard protects against cannot reach them. Everything else in the same input
+    # is still scanned (a local restart after an `ssh` segment stays blocked).
+    normalized = _strip_remote_segments(normalized)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
     # Profile-flag form: blocked only when the named profile IS the one running the guard.

@@ -746,7 +746,6 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         _cancel()
 
     import getpass
-    import secrets
     print()
     try:
         username = line_input("  Username [admin]: ").strip() or "admin"
@@ -760,33 +759,14 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     if password != confirm:
         _cancel("  ✗ Passwords don't match — aborting.")
 
+    # The storage `hermes dashboard password` shares. An operator who deliberately disabled the bundled
+    # basic plugin is told it was unblocked (so discover_plugins below registers it).
+    from hermes_cli.dashboard_password import DashboardPasswordError, store_basic_auth
     try:
-        from plugins.dashboard_auth.basic import hash_password
-    except Exception as exc:
-        _cancel(f"  ✗ Could not load the password provider: {exc}")
-
-    password_hash = hash_password(password)
-    # A stable token-signing secret so sessions survive a dashboard restart.
-    secret = secrets.token_urlsafe(32)
-
-    try:
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
-        cfg = load_config()
-        basic = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
-        basic["username"] = username
-        basic["password_hash"] = password_hash
-        basic["password"] = ""  # never persist plaintext
-        if not str(basic.get("secret", "") or "").strip():
-            basic["secret"] = secret
-        # The bundled basic provider is a backend plugin that honours
-        # plugins.disabled; unblock it so discover_plugins below registers it,
-        # and tell an operator who deliberately disabled it.
-        if ensure_basic_auth_plugin_enabled_in_config(cfg):
-            print("  ✓ Re-enabled the bundled 'basic' auth plugin (was in plugins.disabled)")
-        save_config(cfg)
-    except Exception as exc:
-        _cancel(f"  ✗ Failed to write config.yaml: {exc}")
+        store_basic_auth(username, password, on_reenabled=lambda: print(
+            "  ✓ Re-enabled the bundled 'basic' auth plugin (was in plugins.disabled)"))
+    except DashboardPasswordError as exc:
+        _cancel(f"  ✗ {exc}")
 
     # Re-run plugin discovery so the provider registers before start_server's gate.
     try:

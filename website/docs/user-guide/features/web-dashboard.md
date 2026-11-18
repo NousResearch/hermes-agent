@@ -457,7 +457,9 @@ hermes gateway migrate --backends --dry-run --json   # the same report as JSON
 
 For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
 label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
-`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet. The report never
+`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet; when one of them
+serves this home, the report ends with the command that shows the plan for moving it (see
+[Planning a move to the gateway](#planning-a-move-to-the-gateway-dry-run)). The report never
 stops, restarts or kills anything, never edits or writes a service file, unit, plist or ledger, and opens no network
 connection; it exits 0 even when a scan fails. Normal Hermes startup still runs first, as for any
 `hermes` command: it creates the `HERMES_HOME` layout and a default `SOUL.md` if missing, records the

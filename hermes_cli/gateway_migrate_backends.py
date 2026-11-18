@@ -40,6 +40,9 @@ _ENABLED_STATES = frozenset({"enabled", "enabled-runtime", "linked", "linked-run
                              "generated", "alias", "indirect"})
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "libpod", "kubepods", "/lxc/")
 _NOT_APPLIED = "Report only: changes no service; backend migration is not available yet."
+#: The report's last line when this home has a backend the migration can plan for (never Desktop's own).
+NEXT_STEP = ("To see what moving it to the gateway would do (changes nothing): "
+             "{hermes} gateway migrate --backends --apply --dry-run")
 
 # Present ownership facts, not migration instructions.
 _OWNERSHIP = {
@@ -345,6 +348,10 @@ def format_report(items: list[BackendItem]) -> list[str]:
             lines.append(f"    home:    {item.hermes_home}{mine}")
         lines.append(f"    report:  {item.not_applied}")
         lines.extend(f"    note:    {n}" for n in item.notes)
+    if any(i.this_home and i.supervisor not in ("desktop-ssh", "desktop-local") for i in items):
+        from hermes_cli.gateway_migrate_backends_plan import hermes_command
+        from hermes_constants import get_hermes_home
+        lines += ["", NEXT_STEP.format(hermes=hermes_command(str(get_hermes_home())))]
     return lines
 
 

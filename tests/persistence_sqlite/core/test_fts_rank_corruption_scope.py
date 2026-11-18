@@ -18,6 +18,8 @@ import sqlite3
 
 import pytest
 
+import persistence.sqlite._schema as schema
+
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import FTS_TOOL_CONTENT_PREFIX_CHARS
 from persistence.sqlite._state.health import STORAGE_CORRUPT, STORAGE_OK, reset_storage_state, storage_state
@@ -52,6 +54,13 @@ def _open(path):
     if not holder._fts_enabled:
         holder.close()
         pytest.skip("SQLite FTS5 unavailable")
+    return holder
+
+
+def _reopen(path):
+    """Reopen a store _open accepted: FTS going missing here is a migration failure, not a skip."""
+    holder = StoreHolder(db_path=path)
+    assert holder._fts_enabled
     return holder
 
 
@@ -133,7 +142,7 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
     finally:
         holder.close()
 
-    reopened = _open(path)
+    reopened = _reopen(path)
     try:
         assert reopened.get_meta("fts_tool_full_content_high_water") is None
         trigger_sql = reopened._conn.execute(
@@ -154,7 +163,7 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
 
 
 def test_pre_v3_reopen_of_an_empty_realigned_store_opens(tmp_path):
-    """The realign of an emptied store runs inside a savepoint; its DDL must not commit it away."""
+    """The realign of an emptied store commits its DDL and the marker removal together."""
     path = tmp_path / "state.db"
     holder = _open(path)
     try:
@@ -166,11 +175,50 @@ def test_pre_v3_reopen_of_an_empty_realigned_store_opens(tmp_path):
     finally:
         holder.close()
 
-    reopened = _open(path)
+    reopened = _reopen(path)
     try:
         assert reopened.get_meta("fts_tool_full_content_high_water") is None
         append_message(reopened, "s", role="user", content="indexed after the realign")
         assert search_messages(reopened, "realign")
+    finally:
+        reopened.close()
+
+
+def test_an_interrupted_realign_keeps_the_old_index_and_the_marker(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    holder = _open(path)
+    try:
+        create_session(holder, "s", source="cli")
+        row_id = append_message(holder, "s", role="user", content="survivorword stays searchable")
+        holder._execute_write(lambda conn: conn.execute(
+            "INSERT OR REPLACE INTO state_meta(key, value) "
+            "VALUES('fts_tool_full_content_high_water', ?)", (str(row_id),)))
+    finally:
+        holder.close()
+
+    real_ddl = schema._execute_ddl_script_transactional
+
+    def ddl_then_crash(cursor, ddl):
+        real_ddl(cursor, ddl)
+        raise RuntimeError("interrupted realign")
+
+    monkeypatch.setattr(schema, "_execute_ddl_script_transactional", ddl_then_crash)
+    with pytest.raises(RuntimeError, match="interrupted realign"):
+        StoreHolder(db_path=path)
+    monkeypatch.undo()
+
+    raw = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        assert raw.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'fts_tool_full_content_high_water'").fetchone() is not None
+        assert raw.execute(
+            "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'survivorword'").fetchall() == [(row_id,)]
+    finally:
+        raw.close()
+    reopened = _reopen(path)
+    try:
+        assert reopened.get_meta("fts_tool_full_content_high_water") is None
+        assert search_messages(reopened, "survivorword")
     finally:
         reopened.close()
 

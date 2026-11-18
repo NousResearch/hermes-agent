@@ -412,7 +412,17 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
     def populated() -> bool:
         return cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
-    def do_align(*, has_messages: bool) -> None:
+    def align_locked(*, admitted: bool) -> bool:
+        """False only when, unadmitted, the store turns out to be populated under the lock."""
+        with cursor.connection:
+            cursor.execute("BEGIN IMMEDIATE")
+            has_messages = populated()
+            if has_messages and not admitted:
+                return False
+            _align(has_messages)
+            return True
+
+    def _align(has_messages: bool) -> None:
         started = time.monotonic()
         for name in _FTS_BASE_TRIGGERS:
             cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
@@ -442,18 +452,12 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
                 "write; rebuilt messages_fts from the aligned projection in %.1fs. Downgrading is unsupported.",
                 holder.db_path, FTS_STORAGE_VERSION, time.monotonic() - started)
 
-    def align_locked(*, admitted: bool) -> bool:
-        with cursor.connection:
-            cursor.execute("BEGIN IMMEDIATE")
-            has_messages = populated()
-            if has_messages and not admitted:
-                return False
-            do_align(has_messages=has_messages)
-            return True
+    def align_admitted() -> None:
+        align_locked(admitted=True)
 
     # The unlocked check only routes to admission; the decision to skip a rebuild is always locked.
     if populated() or not align_locked(admitted=False):
-        _run_admitted_startup_rebuild(holder, cursor, lambda: align_locked(admitted=True))
+        _run_admitted_startup_rebuild(holder, cursor, align_admitted)
 
 
 def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:

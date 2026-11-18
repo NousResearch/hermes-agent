@@ -345,3 +345,15 @@ def test_failure_after_a_text_only_prefix_counts_as_an_ordinary_event():
         "discussion_event_id": "send", "thread_id": "thread", "member_id": "a",
         "task_id": "task", "seen_through_seq": 1}}
     assert not active_policy_within_budget([send, failure], capacity=1, retry_limit=1)
+
+
+def test_history_uses_the_first_settled_publication_for_a_task(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    _user(store, "send")
+    coords = {"discussion_event_id": "send", "thread_id": "t1", "member_id": "m1", "task_id": "task"}
+    for message in ("first", "second"):
+        _append(store, message, "message.member", coords, actor=MEMBER)
+        last = _append(store, "settled-" + message, "turn.settled", {**coords, "message_event_id": message})
+    snapshot = _snapshot(store, last)
+    assert [e["event_id"] for e in snapshot.read_messages(thread_id="t1", watermark=0)] == ["send", "first"]

@@ -249,7 +249,9 @@ def _latest_user_message(tables: HostedTables, room_id: str, thread_id: str) -> 
 
 def _read_messages(tables, room_id, through_seq, *, thread_id, watermark):
     events = [event_from_row(row) for row in room_events(tables, room_id) if watermark < row["seq"] <= through_seq]
-    settled = {e["payload"].get("message_event_id"): e for e in events if e["kind"] == "turn.settled"}
+    publications = tables["hosted_room_policy_publications"].get(room_id, {})
+    settled = {e["payload"].get("message_event_id"): e for e in events if e["kind"] == "turn.settled"
+               and publications.get((e["payload"].get("task_id"), "turn.settled", 0), {}).get("seq") == e["seq"]}
     messages = []
     for event in events:
         payload = event["payload"]

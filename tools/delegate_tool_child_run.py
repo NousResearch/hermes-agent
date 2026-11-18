@@ -1015,7 +1015,8 @@ class _ChildRun:
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text, **resume,
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    title_user_message=self.goal, **resume,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)

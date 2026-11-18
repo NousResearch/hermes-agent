@@ -505,7 +505,7 @@ def build_clear_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
             .replace("__NONCE__", json.dumps(nonce)))
 
 
-_VERIFY_JS_TEMPLATE = """(() => {
+_VERIFY_JS_TEMPLATE = r"""(() => {
   const fills = __FILLS__;
   const nonce = __NONCE__;
   const roots = [];

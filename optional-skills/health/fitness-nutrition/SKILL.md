@@ -1,13 +1,9 @@
 ---
 name: fitness-nutrition
-description: >
-  Gym workout planner and nutrition tracker. Search 690+ exercises by muscle,
-  equipment, or category via wger. Look up macros and calories for 380,000+
-  foods via USDA FoodData Central. Compute BMI, TDEE, one-rep max, macro
-  splits, and body fat — pure Python, no pip installs. Built for anyone
-  chasing gains, cutting weight, or just trying to eat better.
+description: "Workout planning, macros, and body metrics via wger/USDA."
 platforms: [linux, macos, windows]
 version: 1.0.0
+author: Hailey Marshall (haileymarshall), Hermes Agent
 authors:
   - haileymarshall
 license: MIT
@@ -16,7 +12,7 @@ metadata:
     tags: [health, fitness, nutrition, gym, workout, diet, exercise]
     category: health
     prerequisites:
-      commands: [curl, python3]
+      commands: [curl, python]
 required_environment_variables:
   - name: USDA_API_KEY
     prompt: "USDA FoodData Central API key (free)"
@@ -114,9 +110,9 @@ Equipment:
 ```bash
 # Search exercises by name
 QUERY="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$QUERY")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$QUERY")
 curl -s "https://wger.de/api/v2/exercise/search/?term=${ENCODED}&language=english&format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 for s in data.get('suggestions',[])[:10]:
@@ -129,7 +125,7 @@ for s in data.get('suggestions',[])[:10]:
 # Get full details for a specific exercise
 EXERCISE_ID="$1"
 curl -s "https://wger.de/api/v2/exerciseinfo/${EXERCISE_ID}/?format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys,html,re
 data=json.load(sys.stdin)
 trans=[t for t in data.get('translations',[]) if t.get('language')==2]
@@ -151,7 +147,7 @@ if imgs: print(f\"Image     : {imgs[0].get('image','')}\")
 # Combine filters as needed: ?muscles=4&equipment=1&language=2&status=2
 FILTER="$1"  # e.g. "muscles=4" or "category=11" or "equipment=3"
 curl -s "https://wger.de/api/v2/exercise/?${FILTER}&language=2&status=2&limit=20&format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 print(f'Found {data.get(\"count\",0)} exercises.')
@@ -169,9 +165,9 @@ DEMO_KEY = 30 requests/hour. Free signup key = 1,000 requests/hour.
 # Search foods by name
 FOOD="$1"
 API_KEY="${USDA_API_KEY:-DEMO_KEY}"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FOOD")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FOOD")
 curl -s "https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${API_KEY}&query=${ENCODED}&pageSize=5&dataType=Foundation,SR%20Legacy" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 foods=data.get('foods',[])
@@ -192,7 +188,7 @@ for f in foods:
 FDC_ID="$1"
 API_KEY="${USDA_API_KEY:-DEMO_KEY}"
 curl -s "https://api.nal.usda.gov/fdc/v1/food/${FDC_ID}?api_key=${API_KEY}" \
-  | python3 -c "
+  | python -c "
 import json,sys
 d=json.load(sys.stdin)
 print(f\"Food: {d.get('description','N/A')}\")
@@ -210,11 +206,11 @@ for x in sorted(d.get('foodNutrients',[]),key=lambda x:x.get('nutrient',{}).get(
 Use the helper scripts in `scripts/` for batch operations,
 or run inline for single calculations:
 
-- `python3 scripts/body_calc.py bmi <weight_kg> <height_cm>`
-- `python3 scripts/body_calc.py tdee <weight_kg> <height_cm> <age> <M|F> <activity 1-5>`
-- `python3 scripts/body_calc.py 1rm <weight> <reps>`
-- `python3 scripts/body_calc.py macros <tdee_kcal> <cut|maintain|bulk>`
-- `python3 scripts/body_calc.py bodyfat <M|F> <neck_cm> <waist_cm> [hip_cm] <height_cm>`
+- `python scripts/body_calc.py bmi <weight_kg> <height_cm>`
+- `python scripts/body_calc.py tdee <weight_kg> <height_cm> <age> <M|F> <activity 1-5>`
+- `python scripts/body_calc.py 1rm <weight> <reps>`
+- `python scripts/body_calc.py macros <tdee_kcal> <cut|maintain|bulk>`
+- `python scripts/body_calc.py bodyfat <M|F> <neck_cm> <waist_cm> [hip_cm] <height_cm>`
 
 See `references/FORMULAS.md` for the science behind each formula.
 
@@ -253,4 +249,4 @@ After calculators: sanity-check outputs (e.g. TDEE should be 1500-3500 for most 
 | List muscles | wger | `GET /api/v2/muscle/` |
 | Search foods | USDA | `GET /fdc/v1/foods/search?query=&dataType=Foundation,SR Legacy` |
 | Food details | USDA | `GET /fdc/v1/food/{fdcId}` |
-| BMI / TDEE / 1RM / macros | offline | `python3 scripts/body_calc.py` |
+| BMI / TDEE / 1RM / macros | offline | `python scripts/body_calc.py` |

@@ -28,22 +28,60 @@ export function readToolsFilter(server: ServerConfig | null | undefined): McpToo
 export function isToolEnabled(server: ServerConfig | null | undefined, name: string): boolean {
   const { exclude, include } = readToolsFilter(server)
 
-  return include?.length ? include.includes(name) : !exclude?.includes(name)
+  // An explicit `include` (even []) is a whitelist — the runtime registers nothing for `[]`
+  // (tools/mcp_tool_registration.py), so the desktop must not show every tool as enabled (#12865).
+  if (include !== undefined) {
+    return include.includes(name)
+  }
+
+  return !exclude?.includes(name)
 }
 
-// Toggle one tool, preserving the config's mode (include if present, else an
-// exclude denylist). Empty lists — and an emptied `tools` — are dropped.
+// Toggle one tool, preserving the config's mode (include if the key is present, even empty, else
+// an exclude denylist). An emptied exclude is dropped; an emptied include is kept (block-all).
 export function toggleToolInServer(server: ServerConfig, name: string): ServerConfig {
   const { exclude, include } = readToolsFilter(server)
-  const key = include?.length ? 'include' : 'exclude'
+  const key = include !== undefined ? 'include' : 'exclude'
   const current = (key === 'include' ? include : exclude) ?? []
   const names = current.includes(name) ? current.filter(n => n !== name) : [...current, name]
   const tools = { ...toolsObject(server) }
 
-  if (names.length) {
-    tools[key] = names
+  if (key === 'include') {
+    tools.include = names
+  } else if (names.length) {
+    tools.exclude = names
   } else {
-    delete tools[key]
+    delete tools.exclude
+  }
+
+  const next = { ...server }
+
+  if (Object.keys(tools).length) {
+    next.tools = tools
+  } else {
+    delete next.tools
+  }
+
+  return next
+}
+
+export function setDisabledTools(server: ServerConfig, disabled: string[], discovered: string[]) {
+  const { exclude, include } = readToolsFilter(server)
+  const off = new Set(disabled)
+  const seen = new Set(discovered)
+  const tools = { ...toolsObject(server) }
+  const kept = (stored: string[] | undefined) => (stored ?? []).filter(name => !seen.has(name))
+
+  if (include !== undefined) {
+    tools.include = [...discovered.filter(name => !off.has(name)), ...kept(include)]
+  } else {
+    const names = [...discovered.filter(name => off.has(name)), ...kept(exclude)]
+
+    if (names.length) {
+      tools.exclude = names
+    } else {
+      delete tools.exclude
+    }
   }
 
   const next = { ...server }

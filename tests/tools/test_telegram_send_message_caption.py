@@ -48,7 +48,13 @@ def _no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None, raising=False)
-    monkeypatch.setattr(sys, "platform", "linux")
+    # Neutralize macOS system-proxy auto-detection at its probe rather than by
+    # claiming the host is Linux: this keeps the test honest on the macOS
+    # runner (and on a developer's Mac), where a real scutil-configured proxy
+    # would otherwise leak into the assertion.
+    monkeypatch.setattr(
+        "gateway.platforms.base._detect_macos_system_proxy", lambda: None
+    )
 
 
 def _tmpfile(suffix: str) -> str:
@@ -59,7 +65,7 @@ def _tmpfile(suffix: str) -> str:
 
 
 def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tools.send_message_tool import _send_telegram
+    from plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = _make_bot()
@@ -79,7 +85,7 @@ def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyP
 
 
 def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tools.send_message_tool import _send_telegram
+    from plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = _make_bot()

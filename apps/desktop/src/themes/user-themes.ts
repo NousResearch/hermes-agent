@@ -13,10 +13,11 @@
 import { atom, computed } from 'nanostores'
 
 import { registry } from '@/contrib/registry'
+import { writeJson } from '@/lib/storage'
 
 import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import { type DesktopTheme, isValidTheme } from './types'
 
 const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
 
@@ -24,27 +25,6 @@ const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
 // (see `convertVscodeColorTheme`). This is the one place that convention is read
 // back out, so every install surface can tell what's already installed.
 const MARKETPLACE_DESC_PREFIX = 'VS Code · '
-
-// The minimal set of color keys a stored theme must carry to be usable. We keep
-// this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
-// theme with no background/foreground/primary is junk and gets dropped.
-const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof DesktopThemeColors> = ['background', 'foreground', 'primary']
-
-function isValidTheme(value: unknown): value is DesktopTheme {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const theme = value as Partial<DesktopTheme>
-
-  if (typeof theme.name !== 'string' || typeof theme.label !== 'string' || !theme.colors) {
-    return false
-  }
-
-  const colors = theme.colors as unknown as Record<string, unknown>
-
-  return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
-}
 
 function readStored(): Record<string, DesktopTheme> {
   try {
@@ -75,12 +55,10 @@ function readStored(): Record<string, DesktopTheme> {
   }
 }
 
+// Through the storage choke point (best-effort, like a direct write) so the
+// machine's shared preferences store sees an install (#145213).
 function persist(record: Record<string, DesktopTheme>) {
-  try {
-    window.localStorage.setItem(USER_THEMES_KEY, JSON.stringify(record))
-  } catch {
-    // Best-effort: a restricted storage context shouldn't break theming.
-  }
+  writeJson(USER_THEMES_KEY, record)
 }
 
 /** Reactive map of installed user themes, keyed by slug. */

@@ -4,11 +4,21 @@ import type { SessionInfo } from '@/hermes'
 
 import { sameCronSignature, sessionMessagesSignature } from './session-signatures'
 
-const session = (id: string, title: string | null): SessionInfo => ({ id, title }) as SessionInfo
+const session = (id: string, title: string | null, extra: Partial<SessionInfo> = {}): SessionInfo =>
+  ({ id, title, ...extra }) as SessionInfo
 
 describe('sameCronSignature', () => {
   it('is false when the lengths differ', () => {
     expect(sameCronSignature([session('a', 't')], [])).toBe(false)
+  })
+
+  it.each(['cwd', 'git_repo_root', 'git_branch'] as const)('compares %s including cleared metadata', field => {
+    const populated = [session('a', 't', { [field]: 'workspace' })]
+    const cleared = [session('a', 't', { [field]: null })]
+    expect(sameCronSignature(populated, cleared)).toBe(false)
+    expect(sameCronSignature(cleared, populated)).toBe(false)
+    expect(sameCronSignature(cleared, [session('a', 't', { [field]: null })])).toBe(true)
+    expect(sameCronSignature(populated, [session('a', 't', { [field]: 'workspace' })])).toBe(true)
   })
 
   it('is true when ids and titles match in order', () => {
@@ -26,6 +36,22 @@ describe('sameCronSignature', () => {
   it('is false when order differs', () => {
     const a = [session('a', 't'), session('b', 't')]
     const b = [session('b', 't'), session('a', 't')]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  // A pin-only page must reach $sessions: session-pin-sync treats the row as
+  // authoritative and releases its write guard when a page confirms the value
+  // it wrote. Gating that page out froze the row and re-pinned what the user
+  // had just unpinned (#76919).
+  it('is false when only the pinned flag changed', () => {
+    const a = [session('a', 't', { pinned: true })]
+    const b = [session('a', 't', { pinned: false })]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  it('is false when only the archived flag changed', () => {
+    const a = [session('a', 't', { archived: false })]
+    const b = [session('a', 't', { archived: true })]
     expect(sameCronSignature(a, b)).toBe(false)
   })
 })

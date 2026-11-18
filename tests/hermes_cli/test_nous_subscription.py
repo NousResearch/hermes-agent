@@ -1,7 +1,11 @@
 """Tests for Nous subscription feature detection."""
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
+from tools import tool_backend_helpers
+from tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
 
 _POOL_COVERAGE = {
@@ -42,7 +46,7 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
         ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
     )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
 
@@ -55,39 +59,93 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     assert features.web.current_provider == "exa"
 
 
+def test_get_nous_subscription_features_recognizes_keyless_tavily_backend(monkeypatch):
+    """Selecting Tavily in setup/tools counts as available with no API key.
 
-
-def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda=False):
-    """Common monkeypatches for local-browser readiness scenarios.
-
-    ``chromium`` / ``lightpanda`` drive the runtime probes that
-    ``_local_browser_runnable`` reuses from ``tools.browser_tool`` (lazy import,
-    so patching the module attributes is enough).
+    Mirrors tools.web_tools._is_backend_available('tavily'): keyless is
+    opt-in via web.backend / search_backend / extract_backend, not a
+    silent empty-install default. The setup summary previously required
+    TAVILY_API_KEY and printed a false 'missing' after a skipped key prompt.
     """
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
     monkeypatch.setattr(
         ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
     )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({"web": {"backend": "tavily"}})
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.managed_by_nous is False
+    assert features.web.direct_override is True
+    assert features.web.current_provider == "tavily"
+    assert features.web.explicit_configured is True
+
+
+def test_keyless_tavily_search_backend_without_shared_backend(monkeypatch):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"search_backend": "tavily"}}
+    )
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.current_provider == "tavily"
+
+
+def test_unconfigured_web_without_keys_is_unavailable(monkeypatch):
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features({})
+
+    assert features.web.available is False
+    assert features.web.active is False
+    assert features.web.explicit_configured is False
+def _stub_browser_probes(monkeypatch, *, harness, chromium):
+    """Common monkeypatches for local-browser readiness scenarios: ``harness`` drives browser_exec's
+    engine lookup, ``chromium`` the launcher's Chromium selection (both lazy imports, so patching the
+    module attributes is enough)."""
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: has_agent_browser)
+    monkeypatch.setattr("tools.browser_use_cli._find_cli", lambda: ["harness"] if harness else None)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
     monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: chromium)
     monkeypatch.setattr(
-        "tools.browser_tool._using_lightpanda_engine", lambda: lightpanda
+        "hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome" if chromium else None
     )
 
 
 def test_local_browser_unavailable_without_chromium(monkeypatch):
-    """agent-browser present but Chromium absent must NOT advertise local browser.
+    """browser-harness present but Chromium absent must NOT advertise local browser.
 
-    The runtime (``check_browser_requirements``) refuses local mode without a
-    Chromium build, so the setup/status surface must report unavailable too —
-    otherwise the user sees "Browser Automation available" and the first real
-    call fails. Regression for the false-positive setup bug.
+    The launcher refuses a local session without a Chromium build, so the setup/status surface
+    must report unavailable too — otherwise the user sees "Browser Automation available" and the
+    first real call fails. Regression for the false-positive setup bug.
     """
-    _stub_browser_probes(monkeypatch, has_agent_browser=True, chromium=False)
+    _stub_browser_probes(monkeypatch, harness=True, chromium=False)
 
     features = ns.get_nous_subscription_features(
         {"browser": {"cloud_provider": "local"}}
@@ -99,10 +157,20 @@ def test_local_browser_unavailable_without_chromium(monkeypatch):
     assert features.browser.current_provider == "Local browser"
 
 
+@pytest.mark.parametrize("harness,chromium,engine,available", [
+    (True, True, "auto", True),
+    (True, False, "lightpanda", True),  # Lightpanda is its own engine: no Chromium needed
+    (False, True, "auto", False),  # browser_exec's engine missing: nothing can drive a browser
+])
+def test_local_browser_availability_follows_engine_and_chromium(monkeypatch, harness, chromium, engine, available):
+    _stub_browser_probes(monkeypatch, harness=harness, chromium=chromium)
 
+    features = ns.get_nous_subscription_features(
+        {"browser": {"cloud_provider": "local", "engine": engine}}
+    )
 
-
-
+    assert features.browser.available is available
+    assert features.browser.current_provider == "Local browser"
 
 
 def _capture_checklist(monkeypatch, *, selected_idx):
@@ -124,6 +192,42 @@ def _capture_checklist(monkeypatch, *, selected_idx):
     return captured
 
 
+def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch):
+    """The logged-in + entitled branch must produce a state for EVERY feature, including
+    those with no config selection field (modal). Regression: the managed-availability
+    table indexed the selection map by every feature key and raised KeyError('modal'),
+    crashing `hermes status`, `hermes tools`, and the dashboard toolsets API."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda gateway: True)
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "_has_browser_harness", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    result = ns.get_nous_subscription_features({"model": {"provider": "nous"}})
+
+    assert set(result.features) == set(ns._FEATURES)
+    assert result.modal.available is True  # entitled + gateway ready → managed modal is offered
+
+
+@pytest.mark.parametrize(
+    "image_cfg, partner",
+    [
+        ({"provider": "nous", "model": "krea-2-medium"}, "Krea"),
+        ({"model": FAL_DEFAULT_MODEL}, "FAL"),
+        ({"provider": "nous", "model": "openai/gpt-image-2"}, "Nous Portal"),
+        ({"model": "openai/gpt-image-2"}, "FAL"),
+        ({"use_gateway": True, "model": "openai/gpt-image-2"}, "FAL"),  # managed-model routing ignores legacy use_gateway
+        ({"provider": "openai", "model": "gpt-image-2"}, None),
+    ],
+)
+def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
+    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    managed_route): the stored model decides under the managed pick, Portal ids only with an
+    explicit ``nous``; a direct vendor owns its model id."""
+    assert ns.managed_image_partner({"image_gen": image_cfg}) == partner
+
+
 def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     """Pool user's checklist lists web/image/tts/browser and never video."""
     monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _pool_account())
@@ -138,19 +242,172 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     ns.prompt_enable_tool_gateway(config)
 
     blob = " ".join(captured["items"]).lower()
-    assert "firecrawl" in blob  # web offered
+    assert "web search & extract" in blob  # web offered
     assert "video" not in blob  # video NOT offered to a pool user
-    # Pool-aware framing, not "subscription".
-    assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
+def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkeypatch):
+    """A keyless local backend (e.g. searxng) has no credentials to detect,
+    but an explicit non-nous selection must still keep it out of
+    'unconfigured' — regression for #92647, where it was pre-checked and a
+    single Enter during `hermes model` overwrote it to `web.backend: nous`.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "web" not in unconfigured
+    assert "web" not in has_direct
+    assert "web" in explicit_configured
+    assert "web" not in already_managed
+
+
+def test_get_gateway_eligible_tools_treats_browser_use_selection_as_explicit(monkeypatch):
+    """An explicit BYOK `browser.cloud_provider: browser-use` selection must
+    land in explicit_configured, not unconfigured/has_direct — the same
+    protection as searxng above. This is distinct from the gateway's own
+    managed selection, which is always stored as `cloud_provider: nous`
+    (see apply_gateway_defaults); "browser-use" only appears here when the
+    user picked it directly, so it must never be treated as up for grabs.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": True},
+    )
+
+    config = {"model": {"provider": "nous"}, "browser": {"cloud_provider": "browser-use"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "browser" not in unconfigured
+    assert "browser" not in has_direct
+    assert "browser" in explicit_configured
+    assert "browser" not in already_managed
+
+
+
+
+def test_prompt_enable_tool_gateway_not_entitled_does_not_crash(monkeypatch):
+    """The unconditional call site in model_setup_flows (no try/except) must
+    not raise when a Nous account is logged in but not entitled to the Tool
+    Gateway (i.e. an ordinary non-paid, non-pool account)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+
+def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
+    """The checklist itself must not list (let alone pre-check) a tool with
+    an explicit non-nous selection, so it can never be silently overwritten
+    by an accidental Enter."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    ns.prompt_enable_tool_gateway(config)
+
+    blob = " ".join(captured["items"]).lower()
+    assert "firecrawl" not in blob  # web (searxng-configured) NOT offered
+    assert "image" in blob  # other unconfigured tools still offered
+
+
+def test_gateway_direct_credentials_honor_env_configured_local_backends(monkeypatch):
+    """SEARXNG_URL / CAMOFOX_URL are env-configured keyless local backends
+    with no stored selection — they must still count as direct credentials
+    so the tool is offered unchecked, never pre-checked (#92647)."""
+    monkeypatch.setattr(
+        ns,
+        "get_env_value",
+        lambda name: "http://localhost:9377" if name in ("SEARXNG_URL", "CAMOFOX_URL") else "",
+    )
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: None)
+
+    direct = ns._get_gateway_direct_credentials()
+
+    assert direct["web"] is True
+    assert direct["browser"] is True
+    assert direct["image_gen"] is False
+
+
+def test_prompt_enable_tool_gateway_persists_decline(monkeypatch):
+    """Submitting the checklist with a tool left unchecked records it in
+    tool_gateway_declined_tools and never pre-checks it again (#92647:
+    acceptance was sticky, refusal was not)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    saved = []
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+    # First offer: everything pre-checked, decline recorded and saved.
+    assert captured["pre_selected"] == list(range(len(captured["items"])))
+    declined = config.get("tool_gateway_declined_tools")
+    assert isinstance(declined, list) and "web" in declined and "browser" in declined
+    assert saved, "decline must be persisted via save_config"
+
+    # Second offer with the recorded declines: nothing is pre-checked.
+    captured2 = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+    ns.prompt_enable_tool_gateway(config)
+    assert captured2["pre_selected"] == []
+
+
+def test_prompt_enable_tool_gateway_choosing_declined_tool_clears_decline(monkeypatch):
+    """Opting in to a previously-declined tool removes it from the decline
+    list, so state tracks the user's latest explicit choice."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[0])
+
+    config = {
+        "model": {"provider": "nous"},
+        "tool_gateway_declined_tools": ["browser", "web"],
+    }
+    ns.prompt_enable_tool_gateway(config)
+
+    # The first offered key was chosen; it must leave the decline list.
+    chosen_key = None
+    for key, label in ns._GATEWAY_TOOL_LABELS.items():
+        if captured["items"][0].startswith(label):
+            chosen_key = key
+            break
+    assert chosen_key is not None
+    assert chosen_key not in config["tool_gateway_declined_tools"]
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
-    """apply_nous_managed_defaults must write video_gen.provider and
-    video_gen.use_gateway when a Nous subscriber selects video_gen
-    without a direct FAL_KEY."""
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda **kw: True)
+    """apply_nous_managed_defaults must store the managed 'nous' selection
+    when a Nous subscriber selects video_gen without a direct FAL_KEY."""
+    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
     monkeypatch.setattr(
@@ -164,70 +421,51 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     )
 
     assert "video_gen" in changed
-    assert config["video_gen"]["provider"] == "fal"
-    assert config["video_gen"]["use_gateway"] is True
+    assert config["video_gen"]["provider"] == "nous"
+    assert "use_gateway" not in config["video_gen"]
+
+
+def _defaults_for(monkeypatch, account, config):
+    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: account)
+    ns.apply_nous_managed_defaults(config, enabled_toolsets=["image_gen"])
+    return config["image_gen"]
+
+
+def test_paid_account_defaults_to_the_krea_image_model(monkeypatch):
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), {"model": {"provider": "nous"}})
+    assert section == {"provider": "nous", "model": ns.MANAGED_IMAGE_DEFAULT_KREA_MODEL}
+
+
+def test_pool_account_keeps_the_fal_image_default(monkeypatch):
+    section = _defaults_for(monkeypatch, _pool_account(), {"model": {"provider": "nous"}})
+    assert section["provider"] == "nous"
+    assert "model" not in section
+
+
+def test_first_run_gateway_acceptance_writes_the_krea_image_model():
+    """`hermes setup --portal` stores selections through apply_gateway_defaults, not the managed-defaults
+    pass, so the Krea default must apply there too; an existing model and the free pool are left on FAL."""
+    paid, pool = _account(logged_in=True, paid=True), _pool_account()
+    fresh = {}
+    ns.apply_gateway_defaults(fresh, ["image_gen"], paid)
+    assert fresh["image_gen"] == {"provider": "nous", "model": ns.MANAGED_IMAGE_DEFAULT_KREA_MODEL}
+    pooled = {}
+    ns.apply_gateway_defaults(pooled, ["image_gen"], pool)
+    assert "model" not in pooled["image_gen"]
+    kept = {"image_gen": {"model": FAL_DEFAULT_MODEL}}
+    ns.apply_gateway_defaults(kept, ["image_gen"], paid)
+    assert kept["image_gen"]["model"] == FAL_DEFAULT_MODEL
+
+
+def test_configured_image_section_is_left_alone(monkeypatch):
+    config = {"model": {"provider": "nous"}, "image_gen": {"provider": "nous", "model": FAL_DEFAULT_MODEL}}
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), config)
+    assert section["model"] == FAL_DEFAULT_MODEL
 
 
 # ---------------------------------------------------------------------------
 # ensure_nous_portal_access — inline login gate for `hermes tools`
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# STT — managed-by-Nous detection (Phase 4 follow-up)
-# ---------------------------------------------------------------------------
-
-
-
-
-
-def _stt_features_stub(*, account_info):
-    return ns.NousSubscriptionFeatures(
-        subscribed=True,
-        nous_auth_present=True,
-        provider_is_nous=True,
-        account_info=account_info,
-        features={
-            key: ns.NousFeatureState(
-                key=key, label=key, included_by_default=True,
-                available=False, active=False, managed_by_nous=False,
-                direct_override=False, toolset_enabled=False,
-                explicit_configured=False,
-            )
-            for key in ("web", "image_gen", "video_gen", "tts", "stt", "browser", "modal")
-        },
-    )
-
-
-
-
-
-
-def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tmp_path):
-    """The managed-Node rung: a runnable agent-browser under the Hermes Node
-    dir must count even when it's absent from the probe process's PATH (the
-    Windows installer shape — install succeeded, GUI still said needs setup)."""
-    import shutil as _shutil
-
-    managed_dir = tmp_path / "node"
-    managed_dir.mkdir()
-    managed_bin = managed_dir / "agent-browser"
-    managed_bin.write_text("#!/bin/sh\nexit 0\n")
-    managed_bin.chmod(0o755)
-
-    monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: str(managed_bin) if path else None)
-    monkeypatch.setattr(
-        "hermes_constants.with_hermes_node_path", lambda: {"PATH": str(managed_dir)}
-    )
-    monkeypatch.setattr(
-        "hermes_constants.agent_browser_runnable",
-        lambda p: bool(p) and str(p) == str(managed_bin),
-    )
-
-    assert ns._has_agent_browser() is True
-
-

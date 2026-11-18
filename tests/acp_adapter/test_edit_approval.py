@@ -1,0 +1,254 @@
+"""Tests for ACP pre-edit approval gating."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from acp_adapter.edit_approval import (
+    EditProposal,
+    build_acp_edit_tool_call,
+    build_edit_proposal,
+    set_edit_approval_requester,
+    should_auto_approve_edit,
+)
+from model_tools import handle_function_call
+
+
+def teardown_function() -> None:
+    set_edit_approval_requester(None)
+
+
+def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
+    proposal = EditProposal(
+        tool_name="write_file",
+        path="demo.txt",
+        old_text="old\n",
+        new_text="new\n",
+        arguments={"path": "demo.txt", "content": "new\n"},
+    )
+
+    tool_call = build_acp_edit_tool_call(proposal)
+
+    assert tool_call.kind == "edit"
+    assert tool_call.status == "pending"
+    assert tool_call.rawInput == {"tool": "write_file", "arguments": proposal.arguments}
+    assert len(tool_call.content) == 1
+    diff = tool_call.content[0]
+    assert diff.path == "demo.txt"
+    assert diff.oldText == "old\n"
+    assert diff.newText == "new\n"
+
+
+
+
+
+
+
+
+def test_requester_exception_denies_and_does_not_mutate(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    def boom(_proposal):
+        raise RuntimeError("zed disconnected")
+
+    set_edit_approval_requester(boom)
+
+    result = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-exception",
+        )
+    )
+
+    assert "error" in result
+    assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_patch_replace_rejection_does_not_mutate(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: False)
+
+    result = json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "replace",
+                "path": str(target),
+                "old_string": "beta\n",
+                "new_string": "gamma\n",
+            },
+            task_id="acp-patch-reject",
+        )
+    )
+
+    assert "error" in result
+    assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
+
+
+
+
+
+
+def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_path):
+    workspace_file = tmp_path / "src.py"
+    # Use tempfile.gettempdir() so this test exercises the same code path on
+    # Linux (`/tmp`), macOS (`/private/var/folders/...`) and Windows
+    # (`%LOCALAPPDATA%\Temp`). Before the fix this branch only worked on Linux.
+    tmp_file = Path(tempfile.gettempdir()) / "hermes-acp-auto-approve-test.txt"
+    env_file = tmp_path / ".env"
+
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(workspace_file), None, "x", {}),
+        "workspace_session",
+        str(tmp_path),
+    )
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(tmp_file), None, "x", {}),
+        "workspace_session",
+        str(tmp_path),
+    )
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(env_file), None, "SECRET=x", {}),
+        "session",
+        str(tmp_path),
+    )
+
+
+def test_multifile_v4a_patch_checks_every_real_path_not_the_joined_display_string(tmp_path):
+    """Multi-file V4A proposals carry a comma-joined ``path`` for the dialog; the auto-approve
+    checks must run per real target so a sensitive or escaping file cannot hide in the join (#115213)."""
+    hidden_env = "*** Update File: .env\n@@\n+SECRET=x\n*** Update File: src/ok.py\n@@\n+ok\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": hidden_env})
+    assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+    # Escape target sits outside BOTH allowed roots (tempdir + session cwd).
+    escape = Path.home() / ".hermes-acp-escape-test.txt"
+    hidden_escape = f"*** Update File: {tmp_path}/src/ok.py\n@@\n+ok\n*** Update File: {escape}\n@@\n+evil\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": hidden_escape})
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+    # Control: every target inside the workspace still auto-approves.
+    all_safe = f"*** Update File: {tmp_path}/a.py\n@@\n+a\n*** Update File: {tmp_path}/b.py\n@@\n+b\n"
+    proposal = build_edit_proposal("patch", {"mode": "patch", "patch": all_safe})
+    assert should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_multifile_v4a_env_write_reaches_permission_prompt_e2e(tmp_path):
+    """Pre-fix, ``session`` policy auto-approved the ``.env`` hidden in the join."""
+    env_target = tmp_path / ".env"
+    ok_target = tmp_path / "ok.py"
+    patch = (
+        f"*** Update File: {env_target}\n@@\n+SECRET=x\n"
+        f"*** Update File: {ok_target}\n@@\n+ok\n"
+    )
+
+    prompted = []
+
+    def requester(proposal):
+        if should_auto_approve_edit(proposal, "session", str(tmp_path)):
+            return True
+        prompted.append(proposal.path)
+        return False
+
+    set_edit_approval_requester(requester)
+    result = json.loads(
+        handle_function_call("patch", {"mode": "patch", "patch": patch}, task_id="acp-v4a-e2e")
+    )
+
+    assert prompted, "multi-file .env patch must reach the prompt, not auto-approve"
+    assert "denied" in result["error"].lower()
+    assert not env_target.exists()
+    assert not ok_target.exists()
+
+
+def _symlink(link, target):
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
+@pytest.mark.parametrize("error", [OSError("ELOOP"), RuntimeError("Symlink loop")])
+def test_unresolvable_path_fails_closed(tmp_path, monkeypatch, error):
+    """A target resolve() can't settle asks instead of auto-approving."""
+    def unresolvable(self, strict=False):
+        raise error
+    monkeypatch.setattr(Path, "resolve", unresolvable)
+    proposal = EditProposal("write_file", str(tmp_path / "src.py"), None, "y", {})
+    for policy in ("session", "workspace_session"):
+        assert not should_auto_approve_edit(proposal, policy, str(tmp_path)), policy
+
+
+def test_symlink_to_sensitive_file_is_not_auto_approved(tmp_path):
+    """An innocuously named symlink must not launder a write to a secret file (#55367)."""
+    secret = tmp_path / ".env"
+    secret.write_text("SECRET=x\n", encoding="utf-8")
+    env_link = tmp_path / "link.txt"
+    _symlink(env_link, secret)
+
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    authorized_keys = ssh_dir / "authorized_keys"
+    authorized_keys.write_text("", encoding="utf-8")
+    ssh_link = tmp_path / "notes.txt"
+    _symlink(ssh_link, authorized_keys)
+    dir_link = tmp_path / "cfg"  # symlinked parent directory
+    _symlink(dir_link, ssh_dir)
+
+    # Every link resolves inside the workspace, so containment alone would approve.
+    for path in (env_link, ssh_link, dir_link / "authorized_keys"):
+        for policy in ("session", "workspace_session"):
+            proposal = EditProposal("write_file", str(path), None, "attacker\n", {})
+            assert not should_auto_approve_edit(proposal, policy, str(tmp_path)), (path, policy)
+
+    plain = tmp_path / "src.py"
+    plain.write_text("x", encoding="utf-8")
+    assert should_auto_approve_edit(EditProposal("write_file", str(plain), None, "y", {}), "session", str(tmp_path))
+
+
+def test_literal_git_symlink_to_innocuous_dir_still_asks(tmp_path):
+    """Proposal builders canonicalize the target, so ``.git -> gitdir`` would otherwise reach
+    ``gitdir/hooks/pre-commit`` with no sensitive component left. The literal path still counts."""
+    gitdir = tmp_path / "gitdir" / "hooks"
+    gitdir.mkdir(parents=True)
+    _symlink(tmp_path / ".git", tmp_path / "gitdir")
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+
+    write = build_edit_proposal("write_file", {"path": str(hook), "content": "#!/bin/sh\n"})
+    v4a = build_edit_proposal("patch", {"mode": "patch", "patch": f"*** Add File: {hook}\n+#!/bin/sh\n"})
+    # A stray ``patch`` key the tool ignores must not shadow the real ``path``.
+    decoy = "*** Update File: harmless.py\n"
+    (gitdir / "pre-commit").write_text("a", encoding="utf-8")  # replace mode reads the file
+    stray_write = build_edit_proposal("write_file", {"path": str(hook), "content": "#!/bin/sh\n", "patch": decoy})
+    stray_empty = build_edit_proposal("write_file", {"path": str(hook), "content": "#!/bin/sh\n", "patch": ""})
+    stray_replace = build_edit_proposal(
+        "patch", {"mode": "replace", "path": str(hook), "old_string": "a", "new_string": "b", "patch": decoy}
+    )
+    for proposal in (write, v4a, stray_write, stray_empty, stray_replace):
+        assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
+        assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_v4a_header_without_space_after_stars_still_asks(tmp_path):
+    """The patch tool parses ``***Add File:`` (no space); approval must see that target too."""
+    ok = tmp_path / "ok.py"
+    ok.write_text("a\n", encoding="utf-8")
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    outside = Path(tempfile.gettempdir()).parent / "outside.txt"
+    for target, policy in ((hook, "session"), (outside, "workspace_session")):
+        body = f"*** Update File: {ok}\n@@\n-a\n+b\n***Add File: {target}\n+x\n"
+        proposal = build_edit_proposal("patch", {"mode": "patch", "patch": body})
+        assert not should_auto_approve_edit(proposal, policy, str(tmp_path)), (target, policy)

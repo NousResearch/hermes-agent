@@ -1,5 +1,6 @@
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
+import { singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import type { GatewayRequest } from './utils'
 
 /**
@@ -7,7 +8,7 @@ import type { GatewayRequest } from './utils'
  *
  * Both prompt pipelines need this answer and they must agree: `submit.ts`
  * sends the user's text into it, and `slash.ts` runs backend commands against
- * it. Per-session backend state — `/goal` (persisted in SessionDB `state_meta`
+ * it. Per-session backend state — `/goal` (persisted in the session store's `state_meta`
  * under `goal:<session_id>`), usage, status, yolo — is keyed by that id, so a
  * pipeline that resolves it differently reads and writes a DIFFERENT session's
  * state than the one the user is looking at.
@@ -89,12 +90,28 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
 
   if (storedTarget) {
     try {
-      const profile = await resolveSessionProfile(storedTarget)
+      // Reuse a runtime an aborted recovery already minted for this stored
+      // session; otherwise resume once, shared across concurrent callers.
+      const cachedRuntimeId = takeRecoveredRuntime(storedTarget)
 
-      const resumed = await requestGateway<{ session_id?: string }>('session.resume', {
-        session_id: storedTarget,
-        source: 'desktop',
-        ...(profile ? { profile } : {})
+      if (cachedRuntimeId) {
+        return cachedRuntimeId
+      }
+
+      const resumed = await singleFlightSessionResume(storedTarget, async () => {
+        const profile = await resolveSessionProfile(storedTarget)
+
+        return requestGateway<{ session_id?: string }>('session.resume', {
+          session_id: storedTarget,
+          source: 'desktop',
+          // Same contract as every other desktop resume: the response must
+          // not inline a full compression lineage (deep ones exceed
+          // max_resume_messages and fail assert_resume_safe). Only the
+          // resolved tip session_id is consumed here; the gateway follows
+          // mid → tip itself (#125041).
+          omit_messages: true,
+          ...(profile ? { profile } : {})
+        })
       })
 
       return resumed?.session_id || null

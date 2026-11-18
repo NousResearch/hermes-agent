@@ -1,0 +1,70 @@
+name: Canary E2E red tracker
+
+# Someone hears about a red canary E2E run. After every Canary E2E run that a
+# canary started, tests/install/e2e-assets/red-tracker.mjs keeps ONE issue
+# labelled install-e2e-red in step with it: a red run opens it (or rewrites the
+# open one's body in place with the current red jobs grouped by failure class),
+# a green run closes it. No comment per red run, no second issue. A dispatched
+# Canary E2E run never touches it.
+#
+# A separate workflow on purpose: canary-e2e.yml's own last job would read its
+# run while that run is still in progress, with no conclusion yet.
+#
+# Dispatch it by hand to preview (dry-run, the default) or replay any run.
+
+on:
+  workflow_run:
+    workflows: ['Canary E2E']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Run id to report on.'
+        required: true
+        type: string
+      dry-run:
+        description: 'Print the planned issue change instead of making it.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# GitHub keeps one pending run per group, and every Canary E2E completion starts
+# this workflow. Every run that can change the issue shares one group, so two
+# never both see "no open issue" and create one each: a tracking automatic run
+# and a live replay (dry-run false). A dispatched or skipped Canary E2E run, and
+# a dry-run preview, get their own group so they can't replace a queued result.
+concurrency:
+  group: >-
+    install-e2e-red-tracker-${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run == false ||
+    github.event_name == 'workflow_run' &&
+    github.event.workflow_run.event == 'workflow_run' &&
+    github.event.workflow_run.conclusion != 'skipped') &&
+    'auto' || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Update the install-e2e-red tracker
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run-id || github.event.workflow_run.id }}
+          DRY_RUN: ${{ inputs.dry-run == true && '--dry-run' || '' }}
+        run: node tests/install/e2e-assets/red-tracker.mjs --run-id "$RUN_ID" $DRY_RUN

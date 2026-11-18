@@ -10,16 +10,20 @@ servers still accept the request.  This is the programmatic equivalent of:
 
     curl --resolve api.telegram.org:443:149.154.167.220 https://api.telegram.org/bot<token>/getMe
 
-The TelegramFallbackTransport implements this: try the primary (DNS-resolved)
-path first, and on ConnectTimeout / ConnectError fall through to configured
-fallback IPs in order, then "stick" to whichever IP works.
+The TelegramFallbackTransport implements this: try known IPv4 Telegram API
+IPs first (so a blackholed IPv6 AAAA for the hostname cannot hang
+initialize — #87015), then fall through to the dual-stack hostname last,
+and "stick" to whichever path works.
 """
+
+import contextlib
+import logging
 
 import httpx
 import pytest
+import socket
 
 import plugins.platforms.telegram.telegram_network as tnet
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,7 +58,6 @@ class FakeTransport(httpx.AsyncBaseTransport):
     async def aclose(self) -> None:
         self.closed = True
 
-
 def _fake_transport_factory(calls, behavior):
     """Returns a factory that creates FakeTransport instances."""
     instances = []
@@ -67,32 +70,20 @@ def _fake_transport_factory(calls, behavior):
     factory.instances = instances
     return factory
 
-
 def _telegram_request(path="/botTOKEN/getMe"):
     return httpx.Request("GET", f"https://api.telegram.org{path}")
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # IP parsing & validation
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestParseFallbackIpEnv:
-    def test_filters_invalid_and_ipv6(self, caplog):
+    def test_filters_invalid_and_ipv6(self):
         ips = tnet.parse_fallback_ip_env("149.154.167.220, bad, 2001:67c:4e8:f004::9,149.154.167.220")
         assert ips == ["149.154.167.220", "149.154.167.220"]
-        assert "Ignoring invalid Telegram fallback IP" in caplog.text
-        assert "Ignoring non-IPv4 Telegram fallback IP" in caplog.text
 
     def test_none_returns_empty(self):
         assert tnet.parse_fallback_ip_env(None) == []
-
-
-class TestNormalizeFallbackIps:
-    def test_deduplication_happens_at_transport_level(self):
-        """_normalize does not dedup; TelegramFallbackTransport.__init__ does."""
-        raw = ["149.154.167.220", "149.154.167.220"]
-        assert tnet._normalize_fallback_ips(raw) == ["149.154.167.220", "149.154.167.220"]
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Request rewriting
@@ -108,16 +99,15 @@ class TestRewriteRequestForIp:
         assert rewritten.extensions["sni_hostname"] == "api.telegram.org"
         assert rewritten.url.path == "/botTOKEN/getMe"
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Fallback transport – core behavior
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestFallbackTransport:
-    """Primary path fails → try fallback IPs → stick to whichever works."""
+    """IPv4 literals first → hostname last → stick to whichever works."""
 
     @pytest.mark.asyncio
-    async def test_falls_back_on_connect_timeout_and_becomes_sticky(self, monkeypatch):
+    async def test_ipv4_literal_tried_before_hostname_and_becomes_sticky(self, monkeypatch):
         calls = []
         behavior = {"api.telegram.org": "timeout", "149.154.167.220": "ok"}
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
@@ -127,18 +117,15 @@ class TestFallbackTransport:
 
         assert resp.status_code == 200
         assert transport._sticky_ip == "149.154.167.220"
-        # First attempt was primary (api.telegram.org), second was fallback
-        assert calls[0]["url_host"] == "api.telegram.org"
-        assert calls[1]["url_host"] == "149.154.167.220"
-        assert calls[1]["host_header"] == "api.telegram.org"
-        assert calls[1]["sni_hostname"] == "api.telegram.org"
+        assert [c["url_host"] for c in calls] == ["149.154.167.220"]
+        assert calls[0]["host_header"] == "api.telegram.org"
+        assert calls[0]["sni_hostname"] == "api.telegram.org"
 
         # Second request goes straight to sticky IP
         calls.clear()
         resp2 = await transport.handle_async_request(_telegram_request())
         assert resp2.status_code == 200
         assert calls[0]["url_host"] == "149.154.167.220"
-
 
     @pytest.mark.asyncio
     async def test_sticky_ip_tried_first_but_falls_through_if_stale(self, monkeypatch):
@@ -153,7 +140,7 @@ class TestFallbackTransport:
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
 
-        # First request: primary fails → .220 works → becomes sticky
+        # First request: .220 works immediately (IPv4-first) → becomes sticky
         await transport.handle_async_request(_telegram_request())
         assert transport._sticky_ip == "149.154.167.220"
 
@@ -163,12 +150,131 @@ class TestFallbackTransport:
 
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
-        # After #24511: when sticky fails the transport also resets and
-        # re-tries the primary DNS path before falling through to other IPs.
-        # Path: sticky (.220) → primary (api.telegram.org) → .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org", "149.154.167.221"]
+        # Sticky .220 fails → remaining IPv4 .221 works. Hostname is last
+        # and is never needed.
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
+    @pytest.mark.asyncio
+    async def test_hostname_tried_last_when_ipv4_fails(self, monkeypatch):
+        """IPv6-only / seed-IP-blocked hosts still reach the hostname last."""
+        calls = []
+        behavior = {"149.154.167.220": "timeout", "api.telegram.org": "ok"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
+        assert transport._sticky_ip is None
+
+    @pytest.mark.asyncio
+    async def test_recovered_request_logs_failures_at_info_not_warning(self, monkeypatch, caplog):
+        """A pinned-IP failure that recovers on the next IP in the same
+        request must not log WARNING; WARNING is reserved for all-paths
+        exhaustion (#152898)."""
+        calls = []
+        behavior = {
+            "api.telegram.org": "timeout",
+            "149.154.167.220": "ok",
+            "149.154.167.221": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+
+        await transport.handle_async_request(_telegram_request())
+        assert transport._sticky_ip == "149.154.167.220"
+
+        behavior["149.154.167.220"] = "timeout"
+        calls.clear()
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        assert transport._sticky_ip == "149.154.167.221"
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(
+            "149.154.167.220" in r.getMessage() and r.levelno == logging.INFO
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_paths_failing_logs_one_warning(self, monkeypatch, caplog):
+        """When every path fails, the walk logs a single WARNING naming all
+        of them (#152898)."""
+        calls = []
+        behavior = {
+            "149.154.167.220": "timeout",
+            "149.154.167.221": "timeout",
+            "api.telegram.org": "timeout",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            with pytest.raises(httpx.ConnectTimeout):
+                await transport.handle_async_request(_telegram_request())
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "149.154.167.220" in warnings[0].getMessage()
+        assert "149.154.167.221" in warnings[0].getMessage()
+        assert "api.telegram.org" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_error_after_a_failed_path_still_logs_the_warning(self, monkeypatch, caplog):
+        """IP 1 times out on connect, IP 2 read-times out: the request fails, so the earlier
+        connect failure (INFO so far) must reach the WARNING too (#153448 review)."""
+        calls = []
+        behavior = {"149.154.167.220": "timeout", "149.154.167.221": httpx.ReadTimeout("read timed out")}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            with pytest.raises(httpx.ReadTimeout):
+                await transport.handle_async_request(_telegram_request())
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "149.154.167.220" in warnings[0] and "149.154.167.221" in warnings[0]
+        assert "all paths" not in warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_budget_exhaustion_does_not_claim_untried_paths_failed(self, monkeypatch, caplog):
+        """A slow pool reset consumes the stock 15s connect budget, leaving later
+        pinned IPs and the hostname untried (#152898)."""
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+        clock = Clock()
+        monkeypatch.setattr(tnet, "time", clock)
+        calls = []
+        behavior = {"149.154.167.220": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220", "149.154.167.221"],
+            connect_budget=tnet._WALK_CONNECT_BUDGET_S,
+        )
+
+        async def slow_pool_reset(_ip, _transport):
+            clock.now = tnet._WALK_CONNECT_BUDGET_S + 1.0
+
+        monkeypatch.setattr(transport, "_reset_fallback", slow_pool_reset)
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            with pytest.raises(httpx.ConnectTimeout):
+                await transport.handle_async_request(_telegram_request())
+
+        assert [call["url_host"] for call in calls] == ["149.154.167.220"]
+        warnings = [
+            record for record in caplog.records
+            if record.name == tnet.__name__ and record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "connect budget exhausted before all paths were tried" in message
+        assert "149.154.167.220" in message
+        assert "149.154.167.221" not in message
+        assert "api.telegram.org" not in message
 
 class TestFallbackTransportPassthrough:
     """Requests that don't need fallback behavior."""
@@ -185,11 +291,9 @@ class TestFallbackTransportPassthrough:
 
         assert resp.status_code == 200
         assert calls[0]["url_host"] == "example.com"
-        assert transport._sticky_ip is None
-
+        assert transport._sticky_ip is tnet._UNSET
 
 class TestFallbackTransportInit:
-
 
     def test_uses_proxy_env_for_primary_and_fallback_transports(self, monkeypatch):
         seen_kwargs = []
@@ -275,7 +379,13 @@ class TestFallbackTransportInit:
             assert "limits" in kw
             # Caller-supplied limits must win over the setdefault default.
             assert kw["limits"] is custom_limits
-
+            assert "socket_options" in kw
+            assert any(
+                opt[0] == socket.SOL_SOCKET
+                and opt[1] == socket.SO_KEEPALIVE
+                and opt[2] == 1
+                for opt in kw["socket_options"]
+            )
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
@@ -294,7 +404,6 @@ class TestFallbackTransportClose:
         assert len(factory.instances) == 3
         assert all(t.closed for t in factory.instances)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Config layer – TELEGRAM_FALLBACK_IPS env → config.extra
 # ═══════════════════════════════════════════════════════════════════════════
@@ -310,7 +419,6 @@ class TestConfigFallbackIps:
         assert config.platforms[Platform.TELEGRAM].extra["fallback_ips"] == [
             "149.154.167.220", "149.154.167.221",
         ]
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Adapter layer – _fallback_ips() reads config correctly
@@ -349,7 +457,6 @@ class TestAdapterFallbackIps:
         adapter = self._make_adapter(extra={"fallback_ips": "149.154.167.220,149.154.167.221"})
         assert adapter._fallback_ips() == ["149.154.167.220", "149.154.167.221"]
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # DoH auto-discovery
 # ═══════════════════════════════════════════════════════════════════════════
@@ -357,7 +464,6 @@ class TestAdapterFallbackIps:
 def _doh_answer(*ips: str) -> dict:
     """Build a minimal DoH JSON response with A records."""
     return {"Answer": [{"type": 1, "data": ip} for ip in ips]}
-
 
 class FakeDoHClient:
     """Mock httpx.AsyncClient for DoH queries."""
@@ -369,26 +475,27 @@ class FakeDoHClient:
 
     @staticmethod
     def _make_response(status, body, url):
-        """Build an httpx.Response with a request attached (needed for raise_for_status)."""
-        request = httpx.Request("GET", url)
-        return httpx.Response(status, json=body, request=request)
+        """A streamed httpx.Response with a request attached (needed for raise_for_status)."""
+        import json as _json
+        return httpx.Response(status, stream=httpx.ByteStream(_json.dumps(body).encode()), request=httpx.Request("GET", url))
 
-    async def get(self, url, *, params=None, headers=None, **kwargs):
+    @contextlib.asynccontextmanager
+    async def stream(self, method, url, *, params=None, headers=None, **kwargs):
         self.requests_made.append({"url": url, "params": params, "headers": headers})
         for prefix, action in self._responses.items():
             if url.startswith(prefix):
                 if isinstance(action, Exception):
                     raise action
                 status, body = action
-                return self._make_response(status, body, url)
-        return self._make_response(200, {}, url)
+                yield self._make_response(status, body, url)
+                return
+        yield self._make_response(200, {}, url)
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *args):
         pass
-
 
 class TestDiscoverFallbackIps:
     """Tests for discover_fallback_ips() — DoH-based auto-discovery."""
@@ -442,26 +549,19 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
-
+        assert ips == ["149.154.167.220", "149.154.166.110"]
 
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
-        """DoH agrees with system DNS — keep that IP instead of seed list (#14520).
-
-        Previous behavior fell through to ``_SEED_FALLBACK_IPS`` here, but the
-        seed addresses are not routable on every network.  When DoH confirms
-        the system IP, that IP is the best candidate we have and should be
-        used as the fallback target.
-        """
+        """DoH agrees with system DNS — that IP stays first (#14520); the seeds
+        follow it so a dead lone edge cannot strand the fallback path."""
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.166.110")),
             "https://cloudflare-dns.com": (200, _doh_answer("149.154.166.110")),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.166.110"]
-
+        assert ips == ["149.154.166.110", "149.154.167.220"]
 
     @pytest.mark.asyncio
     async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
@@ -486,6 +586,5 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         elapsed = _time.monotonic() - start
 
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.167.220", "149.154.166.110"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
-

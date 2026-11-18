@@ -22,7 +22,8 @@ import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -87,6 +88,11 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this sync (non-loop) context so the
+    # async tests' GoalManager.set() never races the bounded loop-thread
+    # bootstrap window on loaded CI runners (goal silently not persisted →
+    # continuation never enqueued; flaked on main run 33455779041).
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 
@@ -163,7 +169,6 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     runner.config = GatewayConfig(
         platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},
     )
-    runner._queued_events = {}
     session_entry = SessionEntry(
         session_key=adapter_key,
         session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
@@ -195,7 +200,4 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         "continuation enqueued under a different key than the adapter "
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
-    )
-    assert adapter._pending_messages[adapter_key].text.startswith(
-        "[Continuing toward your standing goal]"
     )

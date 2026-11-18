@@ -1,0 +1,14 @@
+name: gondola-provider
+repo: https://github.com/Gondola-Market/hermes-gondola-provider
+sha: ad3f352b6a9814f1b550c819bee5ef2fb92a1851
+description: Gondola, a USDC-settled marketplace API for Venice AI inference
+maintainer: Gondola-Market
+tier: community
+category: models
+docs_url: https://github.com/Gondola-Market/hermes-gondola-provider#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GONDOLA_API_KEY

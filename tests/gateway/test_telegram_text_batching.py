@@ -6,14 +6,14 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
-from gateway.session import build_session_key
+from gateway.platforms.base import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
+from tests.waiting import async_wait_until
 
 
 def _make_adapter():
@@ -46,6 +46,21 @@ def _make_adapter():
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    # Hold-queue state (preserve inbound across reconnect)
+    adapter._held_inbound_events = []
+    adapter._held_inbound_redispatch_task = None
+    adapter.HELD_INBOUND_MAX = 64
+    return adapter
+
+
+def _make_default_adapter(monkeypatch):
+    """Construct an adapter with the production text-batch defaults."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter.handle_message = AsyncMock()
     return adapter
 
@@ -96,24 +111,42 @@ class TestTextBatching:
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
 
+
     @pytest.mark.asyncio
-    async def test_three_way_split_aggregated(self):
-        """Three rapid messages should all merge."""
-        adapter = _make_adapter()
+    async def test_long_burst_survives_observed_delivery_gap(self, monkeypatch):
+        """A jittered client-side split is emitted as one MessageEvent."""
+        adapter = _make_default_adapter(monkeypatch)
+        first = "a" * 2566
+        second = "b" * 3955
 
-        adapter._enqueue_text_event(_make_event("chunk 1"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 2"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 3"))
+        observed_gap = 1.177  # a real client split delivered this far apart
+        real_sleep, real_delay_for, timers = asyncio.sleep, adapter._text_batch_delay_for, []
+        parked = 9876.5  # stands in for the flush delay so only the batch timer's sleep is driven
 
-        await asyncio.sleep(0.2)
+        def delay_for(pending):
+            timers.append([real_delay_for(pending), asyncio.Event()])
+            return parked
+
+        async def batch_clock(delay, *a, **k):
+            if delay != parked:
+                return await real_sleep(delay, *a, **k)
+            await timers[-1][1].wait()  # parks until the test advances the clock past the window
+        adapter._text_batch_delay_for = delay_for
+        monkeypatch.setattr(asyncio, "sleep", batch_clock)
+
+        adapter._enqueue_text_event(_make_event(first))
+        await async_wait_until(lambda: timers, what="the first flush timer")
+        assert timers[0][0] > observed_gap  # the window outlasts the gap, so it is still open
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event(second))  # re-arms the timer, cancelling the first
+        await async_wait_until(lambda: len(timers) == 2, what="the re-armed flush timer")
+        timers[1][1].set()
+        await async_wait_until(lambda: adapter.handle_message.called, what="the batch flush")
 
         adapter.handle_message.assert_called_once()
-        text = adapter.handle_message.call_args[0][0].text
-        assert "chunk 1" in text
-        assert "chunk 2" in text
-        assert "chunk 3" in text
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.text == f"{first}\n{second}"
 
 
     @pytest.mark.asyncio
@@ -159,3 +192,496 @@ class TestTextBatching:
         assert adapter._media_group_events == {}
         assert adapter._media_group_tasks == {}
         assert adapter._polling_error_task is None
+
+
+class TestHoldInboundAcrossReconnect:
+    """Inbound events must not be destroyed when the disconnect drop-guard fires.
+
+    #55971 introduced ``_drop_delayed_deliveries`` so flushes cannot dispatch
+    into a torn-down session. That is correct. But the implementation
+    destroyed the event (debug-level return after pop / before enqueue).
+    PTB has already advanced the polling offset by then, so Telegram never
+    redelivers — the user's message is gone with no log and no error.
+
+    Related but distinct from #72037 (cancel-after-pop during follow-up
+    supersession). This covers the disconnect/reconnect path only.
+
+    Timing: no wall-clock races. Flush paths under test use delay=0 and/or
+    entered/release ``asyncio.Event`` sync (teknium review rule on #72037).
+    """
+
+    @staticmethod
+    def _zero_batch_delays(adapter) -> None:
+        """Make flush paths deterministic: no sleep, no timing assumptions."""
+        adapter._text_batch_delay_seconds = 0
+        adapter._text_batch_split_delay_seconds = 0
+        adapter._TEXT_BATCH_FAST_DELAY_S = 0
+        adapter._TEXT_BATCH_SHORT_DELAY_S = 0
+        adapter._TEXT_BATCH_FAST_LEN = 10**9
+        adapter._TEXT_BATCH_SHORT_LEN = 10**9
+        adapter._SPLIT_THRESHOLD = 10**9
+        adapter._media_batch_delay_seconds = 0
+
+    @pytest.mark.asyncio
+    async def test_late_enqueue_held_and_redispatched_on_reconnect(self):
+        adapter = _make_adapter()
+        adapter._mark_disconnected()
+
+        adapter._enqueue_text_event(_make_event("should survive disconnect"))
+
+        # Must NOT dispatch into torn-down session
+        adapter.handle_message.assert_not_called()
+        assert len(adapter._held_inbound_events) == 1
+        assert adapter._held_inbound_events[0].text == "should survive disconnect"
+
+        adapter._mark_connected()
+        task = adapter._held_inbound_redispatch_task
+        assert task is not None
+        await task
+
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "should survive disconnect"
+        assert adapter._held_inbound_events == []
+
+    @pytest.mark.asyncio
+    async def test_late_teardown_salvage_on_retired_adapter_reaches_replacement(self):
+        """Teardown of a rebuilt-away adapter can salvage a batch after the replacement drained (#132829)."""
+        from contextvars import ContextVar
+        from plugins.platforms.telegram.update_admission import _Claim
+
+        old, new = _make_adapter(), _make_adapter()
+        from telegram import Update
+        old._update_admission = ContextVar("claim", default=_Claim("1:1", None, Update(update_id=1)))
+        old._mark_disconnected()
+        new.adopt_held_inbound(old)
+        old._pending_text_batches["k"] = _make_event("late-salvage")
+
+        await old._cancel_pending_delivery_tasks()
+        await new._held_inbound_redispatch_task
+
+        old.handle_message.assert_not_called()
+        assert [c.args[0].text for c in new.handle_message.call_args_list] == ["late-salvage"]
+        assert old._held_inbound_events == []
+        assert old._update_admission.get().accepted  # receipt recorded: no replay after restart
+
+    @pytest.mark.asyncio
+    async def test_flush_during_disconnect_holds_popped_event(self):
+        """After pop, drop-guard must hold — not destroy — the event.
+
+        Deterministic: delay=0 and drop already True before flush runs, so the
+        post-pop branch is exercised without wall-clock races.
+        """
+        adapter = _make_adapter()
+        self._zero_batch_delays(adapter)
+        event = _make_event("popped then held")
+        adapter._pending_text_batches["k"] = event
+        adapter._drop_delayed_deliveries = True
+
+        await adapter._flush_text_batch("k")
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
+        assert [e.text for e in adapter._held_inbound_events] == ["popped then held"]
+
+    @pytest.mark.asyncio
+    async def test_flush_cancel_after_pop_holds_event(self):
+        """Cancel after pop (before handle_message returns) must hold, not lose.
+
+        Uses entered/release Events — no sleep timing (teknium #72037 rule).
+        Connected path then schedules redispatch (#83878).
+        """
+        adapter = _make_adapter()
+        self._zero_batch_delays(adapter)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        seen: list[str] = []
+
+        async def _blocking_handle(event):
+            seen.append(event.text or "")
+            entered.set()
+            await release.wait()
+
+        adapter.handle_message = _blocking_handle
+        adapter._pending_text_batches["k"] = _make_event("in-flight cancel")
+        task = asyncio.create_task(adapter._flush_text_batch("k"))
+        adapter._pending_text_batch_tasks["k"] = task
+
+        await entered.wait()  # past pop, inside handle_message
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+
+        drain = adapter._held_inbound_redispatch_task
+        assert drain is not None
+        await asyncio.wait_for(drain, timeout=1.0)
+
+        # Recoverable: held and/or delivered via redispatch (seen may include
+        # the original in-flight attempt plus the redispatch).
+        held_texts = [e.text for e in adapter._held_inbound_events]
+        assert "in-flight cancel" in seen or "in-flight cancel" in held_texts
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_salvages_batches_into_held_queue(self):
+        """Teardown must salvage map contents before clear — not discard them."""
+        adapter = _make_adapter()
+        adapter._pending_text_batches["text"] = _make_event("text-salvage")
+        adapter._pending_photo_batches["photo"] = _make_event("photo-salvage")
+        adapter._media_group_events["media"] = _make_event("media-salvage")
+        t1 = asyncio.create_task(asyncio.sleep(60))
+        t2 = asyncio.create_task(asyncio.sleep(60))
+        t3 = asyncio.create_task(asyncio.sleep(60))
+        adapter._pending_text_batch_tasks["text"] = t1
+        adapter._pending_photo_batch_tasks["photo"] = t2
+        adapter._media_group_tasks["media"] = t3
+
+        adapter._mark_disconnected()
+        await adapter._cancel_pending_delivery_tasks()
+
+        held = {e.text for e in adapter._held_inbound_events}
+        assert held == {"text-salvage", "photo-salvage", "media-salvage"}
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_photo_batches == {}
+        assert adapter._media_group_events == {}
+        assert adapter._held_inbound_redispatch_task is None
+
+    @pytest.mark.asyncio
+    async def test_redispatch_task_cancelled_on_teardown(self):
+        """In-flight redispatch must be in the cancel map (lifecycle rule)."""
+        adapter = _make_adapter()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _blocking_handle(event):
+            entered.set()
+            await release.wait()
+
+        adapter.handle_message = _blocking_handle
+        adapter._held_inbound_events = [_make_event("during-redispatch")]
+        adapter._drop_delayed_deliveries = False
+        task = asyncio.create_task(adapter._redispatch_held_inbound())
+        adapter._held_inbound_redispatch_task = task
+
+        await entered.wait()
+        adapter._mark_disconnected()
+        await adapter._cancel_pending_delivery_tasks()
+
+        assert task.done()
+        # Cancel during handle → re-held
+        assert any(e.text == "during-redispatch" for e in adapter._held_inbound_events)
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_photo_and_media_group_enqueue_held_during_disconnect(self):
+        adapter = _make_adapter()
+        adapter._mark_disconnected()
+
+        photo = _make_event("photo caption")
+        photo.media_urls = ["u1"]
+        photo.media_types = ["image"]
+        adapter._enqueue_photo_event("k", photo)
+
+        album = _make_event("album caption")
+        album.media_urls = ["u2"]
+        album.media_types = ["image"]
+        await adapter._queue_media_group_event("mg1", album)
+
+        adapter.handle_message.assert_not_called()
+        texts = {e.text for e in adapter._held_inbound_events}
+        assert texts == {"photo caption", "album caption"}
+
+    @pytest.mark.asyncio
+    async def test_hold_dedupes_same_event_object(self):
+        adapter = _make_adapter()
+        event = _make_event("once")
+        adapter._hold_inbound_event(event, where="a")
+        adapter._hold_inbound_event(event, where="b")
+        assert len(adapter._held_inbound_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_held_queue_cap_drops_oldest(self):
+        adapter = _make_adapter()
+        adapter.HELD_INBOUND_MAX = 2
+        adapter._mark_disconnected()
+        adapter._enqueue_text_event(_make_event("first"))
+        adapter._enqueue_text_event(_make_event("second"))
+        adapter._enqueue_text_event(_make_event("third"))
+
+        texts = [e.text for e in adapter._held_inbound_events]
+        assert texts == ["second", "third"]
+
+    @pytest.mark.asyncio
+    async def test_redispatch_aborts_cleanly_if_disconnect_returns(self):
+        """If disconnect re-trips mid-drain, remaining events stay held."""
+        adapter = _make_adapter()
+        adapter._held_inbound_events = [
+            _make_event("a"),
+            _make_event("b"),
+            _make_event("c"),
+        ]
+
+        call_count = 0
+
+        async def _handle(event):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                adapter._drop_delayed_deliveries = True
+
+        adapter.handle_message = _handle
+        adapter._drop_delayed_deliveries = False
+        await adapter._redispatch_held_inbound()
+
+        assert call_count == 1
+        held_texts = [e.text for e in adapter._held_inbound_events]
+        assert held_texts == ["b", "c"]
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_fatal_discards_held_with_warning(self):
+        adapter = _make_adapter()
+        adapter._held_inbound_events = [_make_event("doomed")]
+        from gateway.platforms.base import BasePlatformAdapter
+
+        def _base_fatal(self, code, message, *, retryable):
+            self._fatal_error_code = code
+            self._fatal_error_message = message
+            self._fatal_error_retryable = retryable
+            self._running = False
+
+        with patch.object(BasePlatformAdapter, "_set_fatal_error", _base_fatal):
+            adapter._set_fatal_error("auth", "revoked", retryable=False)
+
+        assert adapter._held_inbound_events == []
+        assert adapter._drop_delayed_deliveries is True
+        assert adapter._is_permanent_fatal() is True
+
+    @pytest.mark.asyncio
+    async def test_retryable_fatal_preserves_held_for_reconnect_drain(self):
+        """Retryable fatals must NOT clear the hold queue.
+
+        OOF-156's connect-failure classification keeps the common network
+        path ``retryable=True`` (``telegram_connect_error``) — reconnect is
+        precisely what must drain a hold queue populated during the outage.
+        Only non-retryable fatals may discard (covered above).
+        """
+        adapter = _make_adapter()
+        adapter._held_inbound_events = [_make_event("survives-network-fatal")]
+        adapter._drop_delayed_deliveries = True  # fatal/disconnect already set
+
+        from gateway.platforms.base import BasePlatformAdapter
+
+        def _base_fatal(self, code, message, *, retryable):
+            self._fatal_error_code = code
+            self._fatal_error_message = message
+            self._fatal_error_retryable = retryable
+
+        with patch.object(BasePlatformAdapter, "_set_fatal_error", _base_fatal):
+            adapter._set_fatal_error(
+                "telegram_connect_error", "connect timed out", retryable=True
+            )
+
+        assert [e.text for e in adapter._held_inbound_events] == [
+            "survives-network-fatal"
+        ]
+        assert adapter._is_permanent_fatal() is False
+
+        # Reconnect drains what the retryable fatal preserved.
+        adapter._mark_connected()
+        await adapter._held_inbound_redispatch_task
+        adapter.handle_message.assert_called_once()
+        assert (
+            adapter.handle_message.call_args[0][0].text == "survives-network-fatal"
+        )
+
+    @pytest.mark.asyncio
+    async def test_production_text_handler_terminal_step_holds_when_disconnected(self):
+        """Production path: ``_handle_text_message`` ends in ``_enqueue_text_event``.
+
+        Sweeper rejects helper-only coverage. This pins the call site that
+        PTB invokes after the update is already acked (offset advanced).
+        """
+        adapter = _make_adapter()
+        adapter._mark_disconnected()
+        # Terminal step of _handle_text_message after event construction.
+        adapter._enqueue_text_event(_make_event("acked-by-ptb-then-held"))
+        adapter.handle_message.assert_not_called()
+        assert [e.text for e in adapter._held_inbound_events] == ["acked-by-ptb-then-held"]
+
+        adapter._mark_connected()
+        await adapter._held_inbound_redispatch_task
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "acked-by-ptb-then-held"
+
+    @pytest.mark.asyncio
+    async def test_permanent_fatal_teardown_discards_pending_not_rehold(self):
+        """#83878: permanent fatal must not re-populate hold via teardown salvage."""
+        adapter = _make_adapter()
+        adapter._fatal_error_code = "auth"
+        adapter._fatal_error_retryable = False
+        adapter._drop_delayed_deliveries = True
+        adapter._pending_text_batches["t"] = _make_event("pending-text")
+        adapter._pending_photo_batches["p"] = _make_event("pending-photo")
+        adapter._media_group_events["m"] = _make_event("pending-media")
+
+        await adapter._cancel_pending_delivery_tasks()
+
+        assert adapter._held_inbound_events == []
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_photo_batches == {}
+        assert adapter._media_group_events == {}
+
+    @pytest.mark.asyncio
+    async def test_permanent_fatal_late_enqueue_discards(self):
+        """#83878: late enqueue after permanent fatal must discard, not hold."""
+        adapter = _make_adapter()
+        adapter._fatal_error_code = "auth"
+        adapter._fatal_error_retryable = False
+        adapter._drop_delayed_deliveries = True
+
+        adapter._enqueue_text_event(_make_event("too-late"))
+        adapter.handle_message.assert_not_called()
+        assert adapter._held_inbound_events == []
+
+    @pytest.mark.asyncio
+    async def test_connected_hold_schedules_redispatch(self):
+        """#83878: hold while connected must drain, not orphan until reconnect."""
+        adapter = _make_adapter()
+        adapter._drop_delayed_deliveries = False
+        adapter.handle_message = AsyncMock()
+
+        adapter._hold_inbound_event(
+            _make_event("orphan-without-drain"), where="text-flush-cancelled"
+        )
+
+        drain = adapter._held_inbound_redispatch_task
+        assert drain is not None
+        await asyncio.wait_for(drain, timeout=1.0)
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "orphan-without-drain"
+        assert adapter._held_inbound_events == []
+
+    @pytest.mark.asyncio
+    async def test_redispatch_exception_reholds_current_and_remainder(self):
+        """#83878: handle_message failure must not drop current/remainder."""
+        adapter = _make_adapter()
+        adapter._drop_delayed_deliveries = False
+        adapter._held_inbound_events = [
+            _make_event("boom"),
+            _make_event("after"),
+        ]
+
+        async def _handle(event):
+            if event.text == "boom":
+                raise RuntimeError("dispatch failed")
+
+        adapter.handle_message = _handle
+        # Direct drain (no auto follow-up on failure)
+        await adapter._redispatch_held_inbound()
+        held_texts = [e.text for e in adapter._held_inbound_events]
+        assert held_texts == ["boom", "after"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_chunk", [0, 1])
+async def test_typed_voice_note_reply_answers_a_clarify_with_every_merged_chunk(reply_chunk):
+    """Two merged chunks, either one a typed reply to a person's voice note, answer a pending
+    clarify with the whole typed text: never the replied-to speech or its attachment note."""
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+    adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+    chunks = [_make_event("option B"), _make_event("and keep the logs")]
+    reply_to = SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), from_user=SimpleNamespace(is_bot=False))
+    await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), chunks[reply_chunk])
+
+    for chunk in chunks:
+        adapter._enqueue_text_event(chunk)
+    await async_wait_until(lambda: adapter.handle_message.called, timeout=2.0)
+
+    merged = adapter.handle_message.call_args[0][0]
+    assert "saved at:" in merged.text  # the note still reaches the agent as context
+    from gateway.session_envelope import _native_metadata
+    assert _native_metadata(merged) is not None  # an unknown metadata key refuses the message
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    assert await runner._prepare_clarify_reply_text(merged) == "option B\nand keep the logs"
+
+
+_VOICE = ("voice", "cache/audio/voice.ogg", "audio")
+_PHOTO = ("photo", "cache/images/p.jpg", "image")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replies", [
+    (_VOICE, _PHOTO), (_PHOTO, _VOICE), (_PHOTO, None, _VOICE), (None, _PHOTO, _VOICE)])
+async def test_merged_replies_answer_a_clarify_with_typed_text_and_pass_native_admission(replies):
+    """Chunks replying to a voice note, a photo, or nothing merge into one turn: the clarify answer
+    is every chunk's typed text, no replied-to note joins it, and the event still clears native
+    admission (an unknown ``metadata`` key there refuses the whole message)."""
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+    from gateway.session_envelope import _native_metadata
+
+    adapter = _make_adapter()
+    texts = ["option B", "and keep the logs", "and the cache"][:len(replies)]
+    chunks = [_make_event(text) for text in texts]
+    for chunk, reply in zip(chunks, replies):
+        if reply is None:
+            continue
+        kind, path, media_kind = reply
+        cached = SimpleNamespace(path=path, media_type="x/y", kind=media_kind, display_name=path.rsplit("/", 1)[1])
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        reply_to = SimpleNamespace(voice=SimpleNamespace() if kind == "voice" else None,
+                                   from_user=SimpleNamespace(is_bot=False))
+        await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), chunk)
+
+    for chunk in chunks:
+        adapter._enqueue_text_event(chunk)
+    await async_wait_until(lambda: adapter.handle_message.called, timeout=2.0)
+
+    merged = adapter.handle_message.call_args[0][0]
+    assert "cache/images/p.jpg" in merged.text  # the agent still sees the photo
+    assert _native_metadata(merged) is not None
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    assert await runner._prepare_clarify_reply_text(merged) == "\n".join(texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("hook_result", "answer"), [
+    ({"action": "rewrite", "text": "3"}, "3"), ({"action": "rewrite", "text": None}, "2"), (None, "2")])
+async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_result, answer, monkeypatch):
+    """A typed reply to a voice note passes ``pre_gateway_dispatch`` before it answers a clarify: a
+    plugin's rewritten text is the answer, otherwise the typed text, never the replied-to speech."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway
+
+    adapter = _make_adapter()
+    cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+    adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+    event = _make_event("2")
+    reply_to = SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), from_user=SimpleNamespace(is_bot=False))
+    await adapter._cache_replied_media(SimpleNamespace(reply_to_message=reply_to), event)
+    if hook_result is not None and hook_result["text"] is None:
+        hook_result = {**hook_result, "text": event.text}  # a plugin returning the text unchanged
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", AsyncMock(return_value=[hook_result] if hook_result else []))
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True)})
+    runner._delivery_adapter_for = lambda _source: None
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+    event = await runner._hm_pre_gateway_dispatch_hook(event, event.source)
+    session = "agent:main:telegram:dm:12345"
+    entry = clarify_gateway.register("cl-rewrite", session, "Which one?", None, authority={})
+    try:
+        assert await runner._hm_clarify_reply(event, event.source, session) == ""
+        assert entry.response == answer
+    finally:
+        clarify_gateway.clear_session(session)

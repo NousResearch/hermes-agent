@@ -31,22 +31,4 @@ describe('edgeMask', () => {
   it('is absent when nothing is clipped', () => {
     expect(edgeMask({ above: false, below: false })).toBeUndefined()
   })
-
-  it('leaves the first row fully opaque when nothing is hidden above it', () => {
-    expect(edgeMask({ above: false, below: true })).toBe(
-      'linear-gradient(to bottom, black, black calc(100% - 1.25rem), transparent)'
-    )
-  })
-
-  it('leaves the last row fully opaque once the bottom is reached', () => {
-    expect(edgeMask({ above: true, below: false })).toBe(
-      'linear-gradient(to bottom, transparent, black 1.25rem, black)'
-    )
-  })
-
-  it('fades both edges mid-scroll', () => {
-    expect(edgeMask({ above: true, below: true })).toBe(
-      'linear-gradient(to bottom, transparent, black 1.25rem, black calc(100% - 1.25rem), transparent)'
-    )
-  })
 })

@@ -29,6 +29,8 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +101,48 @@ class TestPathResolution:
 
 
     def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+        """``HERMES_KANBAN_DB`` pins the file regardless of ``board=`` arg for every
+        execution the dispatcher fences (the 5ec6baa multi-boards isolation: workers
+        physically cannot see other boards): its dispatched workers (``HERMES_KANBAN_TASK``)
+        and delegated children / descendants (``HERMES_DELEGATED_CHILD_CONTEXT``). An
+        explicit board that outranked the pin would also escape
+        ``kanban_path_is_fenced``, which checks the pinned path / fenced root. Outside
+        those fences an explicit board is the caller's own intent and wins (see
+        ``test_explicit_board_trumps_env_var_db_override`` below)."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
+        assert kb.kanban_db_path(board=None) == forced
+        # Dispatched worker identity: the pin still fences explicit board intent.
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
         assert kb.kanban_db_path(board="ignored") == forced
+        # Delegated children / spawned descendants are fenced the same way.
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+        monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+        assert kb.kanban_db_path(board="ignored") == forced
+
+    def test_env_var_db_override_wins_when_board_not_passed(self, fresh_home, tmp_path, monkeypatch):
+        """``HERMES_KANBAN_DB`` pins the file when no explicit ``board=`` is given
+        (back-compat for dispatcher-spawned workers with no board override)."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        assert kb.kanban_db_path() == forced
+        assert kb.kanban_db_path(board=None) == forced
+
+    def test_explicit_board_trumps_env_var_db_override(self, fresh_home, tmp_path, monkeypatch):
+        """Documented priority (module docstring, predates this test): explicit
+        ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` > current >
+        default — for UNFENCED callers. An explicit ``board=`` must resolve to that
+        board's own path even when ``HERMES_KANBAN_DB`` pins a different file: this is
+        what makes cross-board ``kanban_create(board=...)`` / ``kanban_show(board=...)``
+        work from a user-facing session instead of silently landing on the pinned board
+        (t_3f1c63a5). Fenced callers (dispatched workers, delegated children) keep the
+        pinned path — see ``test_env_var_db_override_still_wins`` above."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        p = kb.kanban_db_path(board="atm10-server")
+        assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
+        assert p != forced
 
 
 # ---------------------------------------------------------------------------
@@ -146,14 +185,18 @@ class TestBoardCRUD:
 
     @pytest.mark.parametrize("archive", [True, False])
     def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
-        # Regression for #23833: poll loops that call connect(board=slug) right
-        # after remove_board() recreate an empty kanban.db at the same path
-        # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
-        # contains the resolved path, the CREATE TABLE pass is skipped and
-        # downstream readers hit `no such table: task_events`.
+        # Regression for #23833: a poll loop that re-creates a just-removed
+        # board must get a fresh schema-init pass — if _INITIALIZED_PATHS
+        # still contained the resolved path, the CREATE TABLE pass would be
+        # skipped and downstream readers hit `no such table: task_events`.
+        # (Since #43243 connect() itself refuses to recreate a removed board,
+        # so the re-creation goes through create_board, as it should.)
         kb.create_board("recycle")
-        # First connect populates _INITIALIZED_PATHS for this DB.
-        with kb.connect(board="recycle") as conn:
+        # First connect populates _INITIALIZED_PATHS for this DB.  Use
+        # connect_closing: `with connect() as conn` does NOT close the fd, and
+        # on Windows an open connection locks kanban.db so remove_board's
+        # rename below fails with WinError 5/32.
+        with kbc.connect_closing(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
@@ -163,9 +206,10 @@ class TestBoardCRUD:
         # connect() gets a fresh schema-init pass.
         assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
 
-        # Simulate the event-stream poll: re-open the same slug. connect()
-        # recreates the directory + empty .db; the schema must be re-applied.
-        with kb.connect(board="recycle") as conn:
+        # Simulate the board being re-created at the same slug: the schema
+        # must be re-applied on the fresh DB file.
+        kb.create_board("recycle")
+        with kbc.connect_closing(board="recycle") as conn:
             tables = {
                 row[0]
                 for row in conn.execute(
@@ -175,12 +219,6 @@ class TestBoardCRUD:
         assert "task_events" in tables
         assert "tasks" in tables
 
-    def test_rename_updates_metadata(self, fresh_home):
-        kb.create_board("slug-immutable")
-        kb.write_board_metadata("slug-immutable", name="New Display Name")
-        assert kb.read_board_metadata("slug-immutable")["name"] == "New Display Name"
-        # Slug must not change.
-        assert kb.board_exists("slug-immutable")
 
 
 # ---------------------------------------------------------------------------
@@ -192,18 +230,18 @@ class TestConnectionIsolation:
         kb.create_board("alpha")
         kb.create_board("beta")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             kb.create_task(conn, title="alpha-task-1", assignee="dev")
             kb.create_task(conn, title="alpha-task-2", assignee="dev")
 
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             kb.create_task(conn, title="beta-only", assignee="dev")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             a = kb.list_tasks(conn)
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             b = kb.list_tasks(conn)
-        with kb.connect(board="default") as conn:
+        with kbc.connect(board="default") as conn:
             d = kb.list_tasks(conn)
 
         assert {t.title for t in a} == {"alpha-task-1", "alpha-task-2"}
@@ -213,9 +251,9 @@ class TestConnectionIsolation:
     def test_connect_without_args_uses_current(self, fresh_home):
         kb.create_board("curr")
         kb.set_current_board("curr")
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             kb.create_task(conn, title="implicit", assignee="x")
-        with kb.connect(board="curr") as conn:
+        with kbc.connect(board="curr") as conn:
             tasks = kb.list_tasks(conn)
         assert [t.title for t in tasks] == ["implicit"]
 
@@ -224,11 +262,11 @@ class TestConnectionIsolation:
         kb.create_board("envwin")
         kb.set_current_board("persist")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "envwin")
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             kb.create_task(conn, title="via-env", assignee="x")
-        with kb.connect(board="envwin") as conn:
+        with kbc.connect(board="envwin") as conn:
             assert [t.title for t in kb.list_tasks(conn)] == ["via-env"]
-        with kb.connect(board="persist") as conn:
+        with kbc.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
 
 
@@ -275,7 +313,7 @@ class TestWorkerSpawnEnv:
             tenant=None,
         )
 
-        kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
+        kbd._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
@@ -304,18 +342,11 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
         text=True,
         cwd=str(_WORKTREE),
         timeout=30,
+        check=False,
     )
 
 
 class TestCLI:
-    def test_boards_list_default_only(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        res = _cli(["boards", "list", "--json"], env_extra=env)
-        assert res.returncode == 0, res.stderr
-        data = json.loads(res.stdout)
-        slugs = [b["slug"] for b in data]
-        assert slugs == ["default"]
-        assert data[0]["is_current"] is True
 
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
@@ -344,3 +375,58 @@ class TestCLI:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Archived / deleted board resurrection (#43243)
+# ---------------------------------------------------------------------------
+
+class TestBoardResurrection:
+    """Read/watch paths must not resurrect archived or deleted boards.
+
+    Stale dashboard tabs, gateway notifiers and event-stream pollers can hand
+    ``connect(board=<slug>)`` a slug whose board was archived (moved to
+    ``_archived/`` with an ``archived`` tombstone) or hard-deleted
+    (``rmtree``).  ``connect`` must refuse to recreate the directory/DB, and
+    ``list_boards`` must not surface a DB-only stub as an active board.
+    """
+
+    def test_connect_does_not_recreate_archived_board(self, fresh_home):
+        kb.create_board("gone")
+        kb.remove_board("gone", archive=True)
+        tombstone = kb.board_metadata_path("gone")
+        assert tombstone.exists() and kb.read_board_metadata("gone")["archived"] is True
+        with pytest.raises(ValueError, match="archived"):
+            kbc.connect(board="gone")
+        assert not (kb.board_dir("gone") / "kanban.db").exists()
+
+    def test_connect_does_not_recreate_deleted_board(self, fresh_home):
+        kb.create_board("nuked")
+        kb.remove_board("nuked", archive=False)
+        assert not kb.board_dir("nuked").exists()
+        with pytest.raises(ValueError, match="does not exist"):
+            kbc.connect(board="nuked")
+        assert not kb.board_dir("nuked").exists()
+
+    def test_connect_still_opens_live_board(self, fresh_home):
+        kb.create_board("live")
+        with kbc.connect_closing(board="live") as conn:
+            conn.execute("SELECT 1").fetchone()
+        assert kb.board_exists("live")
+
+    def test_list_boards_ignores_db_only_stub(self, fresh_home):
+        # Simulate the historical stub shape: kanban.db with no board.json.
+        stub = kb.board_dir("ghost")
+        stub.mkdir(parents=True)
+        (stub / "kanban.db").touch()
+        assert "ghost" not in [b["slug"] for b in kb.list_boards()]
+        assert "ghost" not in [b["slug"] for b in kb.list_boards(include_archived=True)]
+
+    def test_archive_tombstone_keeps_name(self, fresh_home):
+        kb.create_board("keepname", name="My Board")
+        kb.remove_board("keepname", archive=True)
+        meta = kb.read_board_metadata("keepname")
+        assert meta["archived"] is True
+        assert meta["name"] == "My Board"
+        assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
+        assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]

@@ -1,0 +1,25 @@
+name: progress-squash
+repo: https://github.com/pierrenode/hermes-progress-squash
+sha: 044e6f1128037a58a76d5f6ff71df1607b4c1c63
+subdir: progress-squash
+description: >-
+  Collapses carriage-return progress bars (tqdm, git clone --progress and similar) in terminal
+  output to the frame a terminal would show, so the model reads one line instead of every redraw:
+  a 300-step tqdm loop goes from 17,396 characters to about 120. Other text written between
+  redraws, CRLF line endings and output without a carriage return are left as they are.
+  Disclosure — register() adds one transform_terminal_output hook that rewrites the output string
+  in memory; no tools, network access, subprocesses, files, settings or environment variables.
+maintainer: pierrenode
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/pierrenode/hermes-progress-squash
+version: "1.0.0"
+image: https://raw.githubusercontent.com/pierrenode/hermes-progress-squash/044e6f1128037a58a76d5f6ff71df1607b4c1c63/docs/card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - transform_terminal_output
+  provides_middleware: []
+  requires_env: []

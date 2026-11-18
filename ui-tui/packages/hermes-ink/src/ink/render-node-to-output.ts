@@ -12,6 +12,7 @@ import type { Screen } from './screen.js'
 import { squashTextNodesToSegments, type StyledSegment } from './squash-text-nodes.js'
 import type { Color } from './styles.js'
 import { isXtermJs } from './terminal.js'
+import { sanitizeOsc8Url } from './termio/osc.js'
 import { widestLine } from './widest-line.js'
 import wrapText from './wrap-text.js'
 
@@ -242,8 +243,11 @@ function drainProportional(node: DOMElement, pending: number, innerHeight: numbe
 const OSC = '\u001B]'
 const BEL = '\u0007'
 
+// Only the URL is sanitized here: `text` already carries this run's SGR. Plain text
+// is NOT scrubbed by the renderer (an unknown ESC sequence tokenizes as a style code);
+// message text containing ESC is routed to the display sanitizer before it reaches <Md>.
 function wrapWithOsc8Link(text: string, url: string): string {
-  return `${OSC}8;;${url}${BEL}${text}${OSC}8;;${BEL}`
+  return `${OSC}8;;${sanitizeOsc8Url(url)}${BEL}${text}${OSC}8;;${BEL}`
 }
 
 /**
@@ -624,7 +628,14 @@ function renderNodeToOutput(
     // can give a box h=0 while still leaving a row for it (next sibling at
     // y+1, not y). HelpV2's third shortcuts column hits this — skipping
     // unconditionally drops "ctrl + z to suspend" from /help output.
-    if (height === 0 && siblingSharesY(node, yogaNode)) {
+    //
+    // So is the absolute-descendant check: a squeezed box still HOSTS
+    // overlays that escape its bounds (`bottom: 100%` floats above it), and
+    // those can't ghost the shared row because they never write it. The
+    // composer's relative Box hits this every time a floating panel opens —
+    // the input rows unmount, the host collapses to h=0, and skipping it
+    // would take the panel down with it (blank /resume, /model, /skills).
+    if (height === 0 && siblingSharesY(node, yogaNode) && !hasAbsoluteDescendant(node)) {
       nodeCache.set(node, { x, y, width, height, top: yogaTop })
       node.dirty = false
 
@@ -1679,6 +1690,27 @@ function siblingSharesY(node: DOMElement, yogaNode: LayoutNode): boolean {
     }
 
     return sib.getComputedTop() === myTop
+  }
+
+  return false
+}
+
+// Does this subtree contain a position:absolute node? Such a node paints
+// outside its host's layout bounds, so the host's own rect being empty says
+// nothing about whether the subtree has something to draw. Only consulted
+// from the h=0 ghost guard — already a rare shape — so the walk never runs
+// on the hot path.
+function hasAbsoluteDescendant(node: DOMElement): boolean {
+  for (const child of node.childNodes) {
+    if (child.nodeName === '#text') {
+      continue
+    }
+
+    const elem = child as DOMElement
+
+    if (elem.style.position === 'absolute' || hasAbsoluteDescendant(elem)) {
+      return true
+    }
   }
 
   return false

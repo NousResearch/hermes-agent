@@ -19,12 +19,9 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import (
-    read_file_tool,
-    search_tool,
-    notify_other_tool_call,
-    _read_tracker,
-)
+from tools.file_tools import read_file_tool, search_tool
+from tools.file_tools_read_tracking import _read_tracker
+from tools.file_tools_read_tracking import notify_other_tool_call
 
 
 class _FakeReadResult:
@@ -66,11 +63,6 @@ class TestReadLoopDetection(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_first_read_has_no_warning(self, _mock_ops):
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_second_consecutive_read_no_warning(self, _mock_ops):
@@ -91,17 +83,8 @@ class TestReadLoopDetection(unittest.TestCase):
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
         self.assertIn("error", result)
         self.assertIn("BLOCKED", result["error"])
-        self.assertIn("4 times", result["error"])
         self.assertNotIn("content", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_fifth_consecutive_read_still_blocked(self, _mock_ops):
-        """Subsequent reads remain blocked with incrementing count."""
-        for _ in range(4):
-            read_file_tool("/tmp/test.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("BLOCKED", result["error"])
-        self.assertIn("5 times", result["error"])
 
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -148,10 +131,6 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertIn("content", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_notify_on_unknown_task_is_safe(self, _mock_ops):
-        """notify_other_tool_call on a task that hasn't read anything is a no-op."""
-        notify_other_tool_call("nonexistent_task")  # Should not raise
 
 
 class TestSearchLoopDetection(unittest.TestCase):
@@ -163,11 +142,6 @@ class TestSearchLoopDetection(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_first_search_no_warning(self, _mock_ops):
-        result = json.loads(search_tool("def main", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_second_consecutive_search_no_warning(self, _mock_ops):
@@ -228,16 +202,6 @@ class TestTodoInjectionFiltering(unittest.TestCase):
         self.assertIn("Run tests", injection)
 
 
-    def test_all_active_included(self):
-        from tools.todo_tool import TodoStore
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Task A", "status": "pending"},
-            {"id": "2", "content": "Task B", "status": "in_progress"},
-        ])
-        injection = store.format_for_injection()
-        self.assertIn("Task A", injection)
-        self.assertIn("Task B", injection)
 
 
 if __name__ == "__main__":

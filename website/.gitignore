@@ -7,6 +7,8 @@
 # Generated files
 .docusaurus
 .cache-loader
+# READMEs fetched from pinned commits by plugins/plugin-catalog-pages (keyed by sha)
+.cache/
 src/data/skills.json
 src/data/skills-meta.json
 static/llms.txt

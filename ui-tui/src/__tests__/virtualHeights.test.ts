@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
 import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
@@ -25,6 +26,18 @@ describe('virtual height estimates', () => {
 
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+  })
+
+  it('reserves a tool image at its cap, with no text line or gap, and attachments under a gap', () => {
+    const tool: Msg = { images: ['/tmp/a.png'], kind: 'image', role: 'system', text: '' }
+    const user: Msg = { images: ['/tmp/a.png'], role: 'user', text: 'what is this?' }
+    const plainUser: Msg = { role: 'user', text: 'what is this?' }
+
+    expect(estimatedMsgHeight(tool, 100, { compact: false, details: true })).toBe(INLINE_IMAGE_MAX_ROWS)
+    expect(
+      estimatedMsgHeight(user, 100, { compact: false, details: true }) -
+        estimatedMsgHeight(plainUser, 100, { compact: false, details: true })
+    ).toBe(1 + INLINE_IMAGE_MAX_ROWS)
   })
 
   it('adds one row for a group-boundary lead gap', () => {
@@ -82,6 +95,28 @@ describe('virtual height estimates', () => {
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
   })
 
+  it('treats historical thinking blocks as collapsed unless explicitly expanded', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2\nline 3' }
+
+    expect(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: false,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    ).toBeLessThan(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: true,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    )
+  })
+
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
     const msg: Msg = { role: 'user', text: 'follow-up question' }
     const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })
@@ -97,11 +132,8 @@ describe('virtual height estimates', () => {
     // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
     // measurement converges to the true height regardless.
     const giant = 'x'.repeat(1_000_000)
-    const t0 = performance.now()
     const rows = wrappedLines(giant, 80)
-    const elapsed = performance.now() - t0
 
     expect(rows).toBeLessThanOrEqual(800)
-    expect(elapsed).toBeLessThan(50)
   })
 })

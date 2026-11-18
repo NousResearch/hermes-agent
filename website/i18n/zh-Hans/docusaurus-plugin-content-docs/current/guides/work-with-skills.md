@@ -8,7 +8,7 @@ description: "查找、安装、使用和创建 skills——按需加载的知�
 
 Skills（技能）是按需加载的知识文档，用于教会 Hermes 如何处理特定任务——从生成 ASCII 艺术到管理 GitHub PR。本指南介绍日常使用方法。
 
-完整技术参考请见 [Skills 系统](/user-guide/features/skills)。
+完整技术参考请见 [Skills 系统](../user-guide/features/skills.md)。
 
 ---
 
@@ -135,7 +135,7 @@ skill_view("writing-plans")
 
 插件 skills **不会**列在系统 prompt 中，也不出现在 `skills_list` 中。它们是按需加载的——当你知道某个插件提供了某个 skill 时，显式加载它。加载后，agent 会看到一个横幅，列出同一插件的其他 skills。
 
-关于如何在自己的插件中捆绑 skills，请参见 [构建 Hermes 插件 → 捆绑 skills](/developer-guide/plugins#bundle-skills)。
+关于如何在自己的插件中捆绑 skills，请参见 [构建 Hermes 插件 → 捆绑 skills](../developer-guide/plugins/index.md#bundle-skills)。
 
 ---
 
@@ -287,4 +287,4 @@ hermes skills
 
 ---
 
-*完整的 skills 参考——frontmatter 字段、条件激活、外部目录等——请见 [Skills 系统](/user-guide/features/skills)。*
+*完整的 skills 参考——frontmatter 字段、条件激活、外部目录等——请见 [Skills 系统](../user-guide/features/skills.md)。*

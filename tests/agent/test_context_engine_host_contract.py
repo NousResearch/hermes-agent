@@ -26,11 +26,12 @@ engine plugins (e.g. hermes-lcm) rely on:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import time
 
 from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _bare_agent() -> AIAgent:
@@ -85,11 +86,11 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
 
 def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):
     """Reset-only session switches must rebind durable cooldown state to the new session."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("old-sid", source="cli")
-    db.create_session("new-sid", source="cli")
-    db.record_compression_failure_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
-    db.set_compression_fallback_streak("old-sid", 2)
+    db = storage_handle(tmp_path)
+    seed_session(db, "old-sid", "cli")
+    seed_session(db, "new-sid", "cli")
+    db.messages.record_compression_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
+    db.lineage.set_compression_fallback_streak("old-sid", 2)
 
     monkeypatch.setattr(
         "agent.context_compressor.get_model_context_length",
@@ -102,7 +103,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
         protect_last_n=2,
         quiet_mode=True,
     )
-    compressor.bind_session_state(db, "old-sid")
+    compressor.bind_session_state(db, "old-sid", persistence=db)
 
     agent = _bare_agent()
     agent._session_db = db
@@ -114,50 +115,15 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
     assert compressor._session_id == "new-sid"
     assert compressor.get_active_compression_failure_cooldown() is None
     assert compressor._fallback_compression_streak == 0
-    assert db.get_compression_failure_cooldown("old-sid") is not None
-    assert db.get_compression_fallback_streak("old-sid") == 2
+    assert db.messages.read_compression_cooldown("old-sid", time.time()) is not None
+    assert db.lineage.compression_fallback_streak("old-sid") == 2
 
     compressor._record_compression_failure_cooldown(30.0, "new-timeout")
 
-    assert db.get_compression_failure_cooldown("new-sid") is not None
-    assert db.get_compression_failure_cooldown("old-sid")["error"] == "old-timeout"
+    assert db.messages.read_compression_cooldown("new-sid", time.time()) is not None
+    assert db.messages.read_compression_cooldown("old-sid", time.time()).error == "old-timeout"
 
 
-def test_update_from_response_forwards_canonical_cache_buckets():
-    """conversation_loop passes cache_read/write/reasoning tokens to engine."""
-    # Test the contract directly: a usage_dict built from CanonicalUsage must
-    # contain the canonical buckets in addition to the legacy keys. We don't
-    # spin up the full conversation loop; we just verify the dict shape.
-    from agent.usage_pricing import CanonicalUsage
-
-    canonical = CanonicalUsage(
-        input_tokens=1000,
-        output_tokens=500,
-        cache_read_tokens=800,
-        cache_write_tokens=200,
-        reasoning_tokens=50,
-    )
-    usage_dict = {
-        "prompt_tokens": canonical.prompt_tokens,
-        "completion_tokens": canonical.output_tokens,
-        "total_tokens": canonical.total_tokens,
-        "input_tokens": canonical.input_tokens,
-        "output_tokens": canonical.output_tokens,
-        "cache_read_tokens": canonical.cache_read_tokens,
-        "cache_write_tokens": canonical.cache_write_tokens,
-        "reasoning_tokens": canonical.reasoning_tokens,
-    }
-
-    # Legacy keys present
-    assert usage_dict["prompt_tokens"] == canonical.prompt_tokens
-    assert usage_dict["completion_tokens"] == 500
-    assert usage_dict["total_tokens"] == canonical.total_tokens
-    # Canonical cache + reasoning buckets present
-    assert usage_dict["cache_read_tokens"] == 800
-    assert usage_dict["cache_write_tokens"] == 200
-    assert usage_dict["reasoning_tokens"] == 50
-    assert usage_dict["input_tokens"] == 1000
-    assert usage_dict["output_tokens"] == 500
 
 
 

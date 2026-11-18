@@ -36,7 +36,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.transports import get_transport
-from agent.anthropic_adapter import convert_messages_to_anthropic
+from agent.anthropic_message_convert import convert_messages_to_anthropic
 
 
 def _thinking_block(text: str, signature: str) -> SimpleNamespace:
@@ -115,17 +115,6 @@ def _replayed_block_order(assistant_content) -> list:
 
 
 class TestInterleavedThinkingBlockOrder:
-    def test_normalize_response_loses_interleaving(self):
-        """Confirm the lossy split: normalize_response stores thinking and
-        tool_use in independent fields with no positional linkage."""
-        transport = get_transport("anthropic_messages")
-        normalized = transport.normalize_response(_interleaved_response())
-
-        # Both thinking blocks are captured...
-        details = (normalized.provider_data or {}).get("reasoning_details")
-        assert details is not None and len(details) == 2
-        # ...and both tool calls...
-        assert normalized.tool_calls is not None and len(normalized.tool_calls) == 2
         # ...but they live in separate fields. There is no single ordered
         # structure recording that thinking_2 sat between the two tool calls.
         # (This is the structural precondition for the reorder bug.)

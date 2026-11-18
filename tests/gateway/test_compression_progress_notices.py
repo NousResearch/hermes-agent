@@ -18,6 +18,7 @@ import pytest
 import gateway.run as gateway_run
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
 from gateway.run import _prepare_gateway_status_message
@@ -43,6 +44,8 @@ NON_COMPRESSION_NOISE = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # The anti-growth refusal is not routine progress: the opt-in must not release it.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 
@@ -59,7 +62,7 @@ def progress_notices_enabled(monkeypatch):
 @pytest.fixture
 def progress_notices_default(monkeypatch):
     """Gateway config without the key — the silent-by-design default."""
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
@@ -78,23 +81,20 @@ def test_enabled_still_suppresses_non_compression_noise(
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "default"])
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_compaction_completion_notice_reaches_chat(monkeypatch, platform, enabled):
-    """The #69546 'compacted' lifecycle edge is deliverable on chat surfaces.
-
-    COMPACTION_DONE_STATUS already flows through the status callback on
-    compaction completion and is not matched by the noise regex — the opt-in
-    gate must not change that in either mode, so users who enable
-    progress_notices see the completion stat notice paired with the start.
-    """
+def test_compaction_completion_notice_respects_progress_notices_gate(
+    monkeypatch, platform, enabled
+):
+    """The completion edge follows the same opt-in gate as the start edge."""
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
         lambda: {"compression": {"progress_notices": enabled}},
     )
-    assert (
-        _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
-        == COMPACTION_DONE_STATUS
-    )
+    result = _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
+    if enabled:
+        assert result == COMPACTION_DONE_STATUS
+    else:
+        assert result is None
 
 
 def test_enabled_gate_does_not_leak_to_raw_platforms(progress_notices_enabled):

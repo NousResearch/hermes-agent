@@ -1,0 +1,12 @@
+# Blocklist for plugins pulled from the catalog for security or policy
+# reasons. The installer refuses to install anything whose name or repo URL
+# matches an entry here (unless the caller explicitly bypasses the check).
+# Each entry: {name, repo, reason, date}. Removals land via reviewed PRs,
+# same as additions.
+#
+# Name only. Do not set repo: the replacement entry is the same repository,
+# and a repo match would refuse that install too.
+removed:
+- name: or-picker
+  reason: "Folded into openrouter-picker. Installing the provider alone left the picker broken. Install openrouter-picker."
+  date: "2026-09-28"

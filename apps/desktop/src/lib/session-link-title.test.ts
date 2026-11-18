@@ -84,9 +84,11 @@ describe('fetchSessionLinkTitle', () => {
   })
 
   it('keeps separate cache entries per profile', async () => {
-    vi.mocked(getSession).mockImplementation(async (id, profile) =>
-      makeSession({ id, profile: profile ?? 'default', title: profile === 'work' ? 'Work chat' : 'Home chat' })
-    )
+    vi.mocked(getSession).mockImplementation(async (id, scope) => {
+      const profile = typeof scope === 'string' ? scope : scope?.profile || 'default'
+
+      return makeSession({ id, profile, title: profile === 'work' ? 'Work chat' : 'Home chat' })
+    })
 
     await expect(fetchSessionLinkTitle('default/20260101_abc123')).resolves.toBe('Home chat')
     await expect(fetchSessionLinkTitle('work/20260101_abc123')).resolves.toBe('Work chat')

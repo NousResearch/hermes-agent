@@ -15,15 +15,19 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import profile_scope
 
 
 @pytest.fixture(autouse=True)
 def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     yield
 
 
@@ -59,10 +63,22 @@ def _event(text="hello agent"):
     )
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
+def _execute(sql, params=()):
+    _holder()._execute_write(lambda conn: conn.execute(sql, params))
+
+
 def _rows():
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         return conn.execute(
-            "SELECT obligation_id, state, content FROM delivery_obligations"
+            """SELECT obligation_id, state, content, adapter_profile
+               FROM delivery_obligations"""
         ).fetchall()
 
 
@@ -122,6 +138,33 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "failed"
 
+    @pytest.mark.asyncio
+    async def test_late_transient_failure_signals_reconnected_runner(self):
+        """A replacement installed mid-send must trigger another ledger sweep."""
+        adapter = _Adapter()
+        adapter._owner_profile = "reviewer"
+        replacement = _Adapter()
+        replacement._owner_profile = "reviewer"
+        runner = MagicMock()
+        runner._delivery_adapter_for.side_effect = [adapter, replacement]
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
+        adapter.gateway_runner = runner
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        )
+
+        await _run(adapter, _event())
+
+        assert _rows()[0][1] == "failed"
+        assert _rows()[0][3] == "reviewer"
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.SLACK, profile="reviewer"
+        )
+
 
     @pytest.mark.asyncio
     async def test_slow_ledger_record_does_not_block_event_loop(self):
@@ -175,10 +218,9 @@ class TestProducerHook:
         # Row is stuck in 'attempting' (or failed if retry wrapper caught it):
         # either way it is non-delivered and recoverable.
         assert rows[0][1] in ("attempting", "failed")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1"
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1"
+        )
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is True

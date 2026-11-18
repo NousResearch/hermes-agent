@@ -1,0 +1,41 @@
+name: hermes-trove
+repo: https://github.com/misterdas/hermes-trove
+sha: 69c673eeb2fcbaf12e9b88451ad1f627a88bc930
+description: >-
+  DAG-based context engine that never loses a message — full-text search, semantic recall,
+  assertion-backed evidence compilation, and pre-answer sufficiency gating Disclosure — replaces
+  the context engine and stores every turn's full raw transcript in HERMES_HOME/trove.db with
+  secret redaction OFF by default; with TROVE_EMBEDDING_PROVIDER=voyage, transcript text is sent
+  to Voyage AI for embeddings; as a fallback it reads private AIAgent attributes read-only via
+  frame inspection. No other network egress.
+maintainer: misterdas
+tier: community
+category: general
+requires_hermes: '>=0.20'
+docs_url: https://github.com/misterdas/hermes-trove#readme
+version: 1.1.4
+platforms: []
+capabilities:
+  provides_tools:
+    - trove_grep
+    - trove_recall
+    - trove_query_state
+    - trove_compute
+    - trove_compile_evidence
+    - trove_evidence_pack
+    - trove_retrieve
+    - trove_recent
+    - trove_load_session
+    - trove_describe
+    - trove_expand
+    - trove_expand_query
+    - trove_status
+    - trove_inspect
+    - trove_doctor
+  provides_hooks:
+    - pre_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env:
+    - TROVE_ENABLE_SLASH_COMMAND

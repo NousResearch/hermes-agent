@@ -31,6 +31,11 @@ type TokenizerOptions = {
    * output streams, and enabling this there swallows display text. Default false.
    */
   x10Mouse?: boolean
+  /**
+   * Treat ESC followed by CR or LF as one legacy Alt+Enter key sequence.
+   * Only enable for keyboard input; output streams must preserve line endings.
+   */
+  legacyAltEnter?: boolean
 }
 
 /**
@@ -53,13 +58,14 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
   // buffer it kept last time (the continuation never arrived), we drop it.
   let lastFlushedBuffer = ''
   const x10Mouse = options?.x10Mouse ?? false
+  const legacyAltEnter = options?.legacyAltEnter ?? false
 
   return {
     feed(input: string): Token[] {
       // Real bytes arrived — any kept partial is no longer stale.
       lastFlushedBuffer = ''
 
-      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse)
+      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse, legacyAltEnter)
 
       currentState = result.state.state
       currentBuffer = result.state.buffer
@@ -68,7 +74,7 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
     },
 
     flush(): Token[] {
-      const result = tokenize('', currentState, currentBuffer, true, x10Mouse)
+      const result = tokenize('', currentState, currentBuffer, true, x10Mouse, legacyAltEnter)
       currentState = result.state.state
       currentBuffer = result.state.buffer
 
@@ -109,7 +115,8 @@ function tokenize(
   initialState: State,
   initialBuffer: string,
   flush: boolean,
-  x10Mouse: boolean
+  x10Mouse: boolean,
+  legacyAltEnter: boolean
 ): { tokens: Token[]; state: InternalState } {
   const tokens: Token[] = []
 
@@ -177,6 +184,13 @@ function tokenize(
           // 'O' - SS3
           result.state = 'ss3'
           i++
+        } else if (legacyAltEnter && (code === C0.CR || code === C0.LF)) {
+          // Legacy terminals encode Alt+Enter as ESC followed by CR or LF.
+          // Keep both bytes in one token so the key parser can preserve Alt.
+          // A standalone Escape is emitted by flush() before a later Enter;
+          // without that timing boundary the legacy encoding is ambiguous.
+          i++
+          emitSequence(data.slice(seqStart, i))
         } else if (isCSIIntermediate(code)) {
           // Intermediate byte (e.g., ESC ( for charset) - continue buffering
           result.state = 'escapeIntermediate'

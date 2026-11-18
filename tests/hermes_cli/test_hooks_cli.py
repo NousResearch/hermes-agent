@@ -43,10 +43,6 @@ def _run(sub_args: SimpleNamespace) -> str:
 
 
 class TestHooksList:
-    def test_empty_config(self, tmp_path):
-        with patch("hermes_cli.config.load_config", return_value={}):
-            out = _run(SimpleNamespace(hooks_action="list"))
-        assert "No shell hooks or outbound webhooks configured" in out
 
     def test_shows_configured_and_consent_status(self, tmp_path):
         script = _hook_script(
@@ -79,6 +75,7 @@ class TestHooksList:
 # ── test ──────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 class TestHooksTest:
     def test_synthetic_payload_matches_production_shape(self, tmp_path):
         """`hermes hooks test` must feed the script stdin in the same
@@ -102,7 +99,7 @@ class TestHooksTest:
         # Same top-level keys _serialize_payload produces at runtime
         assert set(seen.keys()) == {
             "hook_event_name", "tool_name", "tool_input",
-            "session_id", "cwd", "extra",
+            "session_id", "cwd", "extra", "profile",
         }
         # parent_session_id was routed to top-level session_id (matches runtime)
         assert seen["session_id"] == "parent-sess"
@@ -203,3 +200,63 @@ class TestHooksDoctor:
         )
         assert "not allowlisted" in out.lower()
         assert "skipped JSON smoke test" in out
+
+
+def test_print_run_result_shows_decision_for_error_and_timeout():
+    """A failing hook's decision must be printed, not hidden by early returns (#115968).
+
+    run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so `hooks test` must show
+    it even when the hook errored or timed out. Before this fix the ``return`` on error/timeout skipped
+    the parsed tail, so a fail-closed blocker rendered identically to a fail-open pass-through.
+    """
+    parsed = {"action": "block", "message": "hook failed closed: command not found"}
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result(
+            {"error": "command not found", "parsed": parsed}
+        )
+    out = buf.getvalue()
+    assert "✗ error: command not found" in out
+    assert '"action": "block"' in out
+    assert '"message": "hook failed closed: command not found"' in out
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        hooks_cli._print_run_result(
+            {"timed_out": True, "elapsed_seconds": 2.33, "parsed": parsed}
+        )
+    out = buf.getvalue()
+    assert "✗ timed out after 2.33s" in out
+    assert '"action": "block"' in out
+
+
+def test_hooks_test_distinguishes_fail_closed_from_fail_open(tmp_path):
+    """`hermes hooks test` on a missing command shows the dispatcher's decision (#115968).
+
+    Drives the real CLI subcommand: a fail_closed hook whose command does not exist
+    must print the block decision, while the fail-open twin prints the "contributed
+    nothing" line — the two must not render identically.
+    """
+    cfg = {
+        "hooks": {
+            "pre_tool_call": [
+                {"matcher": "terminal", "command": "/nonexistent/hook-closed.sh",
+                 "fail_closed": True},
+                {"matcher": "terminal", "command": "/nonexistent/hook-open.sh"},
+            ],
+        },
+        "hooks_auto_accept": True,
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        out = _run(SimpleNamespace(
+            hooks_action="test", event="pre_tool_call",
+            for_tool="terminal", payload_file=None,
+        ))
+
+    closed, open_ = out.split("/nonexistent/hook-open.sh", 1)
+    assert "✗ error:" in closed and "✗ error:" in open_
+    assert '"action": "block"' in closed
+    assert "failed closed" in closed
+    assert '"action": "block"' not in open_
+    assert "contributed nothing" in open_

@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { normalize } from '@/lib/text'
 import {
   $petInfo,
@@ -64,12 +65,6 @@ const petRpc = <T>(request: GatewayRequest, method: string, params: Record<strin
   request<T>(method, { ...params, profile: petProfile() })
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
-function isMissingMethod(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-
-  return /method not found|-32601|unknown method|no such method/i.test(message)
-}
-
 export const $petGallery = atom<PetGallery | null>(null)
 export const $petGalleryStatus = atom<PetGalleryStatus>('idle')
 export const $petGalleryError = atom<string | null>(null)
@@ -148,7 +143,7 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         localOk = true
       }
     } catch (e) {
-      if (isMissingMethod(e)) {
+      if (isMissingRpcMethod(e)) {
         $petGalleryStatus.set('stale')
       } else if (!$petGallery.get()) {
         // Only surface a hard error when we have nothing to show; a transient
@@ -188,7 +183,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
     try {
       meta = await petRpc<PetInfoMeta>(request, 'pet.info.meta')
     } catch (e) {
-      if (!isMissingMethod(e)) {
+      if (!isMissingRpcMethod(e)) {
         throw e
       }
 
@@ -308,7 +303,7 @@ async function mutate(
 
     return true
   } catch (e) {
-    if (isMissingMethod(e)) {
+    if (isMissingRpcMethod(e)) {
       $petGalleryStatus.set('stale')
     } else {
       $petGalleryError.set(e instanceof Error ? e.message : fallback)

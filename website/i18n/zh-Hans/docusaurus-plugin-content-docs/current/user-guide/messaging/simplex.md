@@ -5,7 +5,7 @@
 ## 前提条件
 
 - 已安装并以守护进程方式运行的 **simplex-chat** CLI
-- Python 包 **websockets**（`pip install websockets`）
+- Python 包 **websockets**（`hermes pm repair`）
 
 ## 安装 simplex-chat
 
@@ -57,7 +57,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 
 ## 查找联系人 ID
 
-启动守护进程后，与你的 Agent 联系人开启一段对话。联系人 ID 将出现在会话日志中，或通过 `hermes send_message action=list` 查看。
+启动守护进程后，与你的 Agent 联系人开启一段对话。联系人 ID 将出现在会话日志中（或在守护进程中运行 `/contacts`）。
 
 ## 授权
 
@@ -93,6 +93,6 @@ send_message(target="simplex:<contact-id>", message="Done!")
 
 **"Cannot reach daemon"** — 确保 `simplex-chat -p 5225` 正在运行，且端口与 `SIMPLEX_WS_URL` 一致。
 
-**"websockets not installed"** — 运行 `pip install websockets`。
+**"websockets not installed"** — 运行 `hermes pm repair`。
 
 **消息未收到** — 检查该联系人的 ID 是否已加入 `SIMPLEX_ALLOWED_USERS`，或通过 DM 配对方式批准该联系人。

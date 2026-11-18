@@ -1,9 +1,13 @@
+import { hermesApi, sessionFileOwnerScope } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
+  HermesReadFileErrorResult,
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { translateNow } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -21,6 +25,13 @@ function connectionCacheKey(connection: HermesConnection | null) {
     return 'local:'
   }
 
+  // A profile belongs to a registry connection, not the whole Desktop. The
+  // registry id is the isolation boundary, including for SSH connections; the
+  // stable host identity below is only the fallback for legacy connections.
+  if (connection.connectionId) {
+    return `connection:${connection.connectionId}:${connection.profile || ''}`
+  }
+
   const target =
     connection.remoteKind === 'ssh'
       ? connection.remoteIdentity || connection.remoteHost || ''
@@ -34,7 +45,7 @@ export function desktopFsCacheKey(connection: HermesConnection | null = $connect
 }
 
 export function isDesktopFsRemoteMode() {
-  return $connection.get()?.mode === 'remote'
+  return $connection.get()?.mode === 'remote' || !hostHas('nativeHostFiles')
 }
 
 // Active profile for FS/git REST calls. Without it the Electron api bridge
@@ -43,8 +54,31 @@ export function desktopFsProfile(): string | undefined {
   return $connection.get()?.profile || undefined
 }
 
-function fsPath(endpoint: string, filePath: string) {
-  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
+/** The chat a gateway file belongs to. A Docker agent's `/workspace` is that session's own
+ *  sandbox, so a gateway read names it; a local (native) read has no use for it. */
+export interface DesktopFsSessionScope {
+  sessionId?: null | string
+}
+
+interface FsRoute {
+  owner: { connectionId?: string; profile?: string }
+  sessionId?: string
+}
+
+/** Where a gateway file request goes. A session id travels only with the profile (and
+ *  connection) that owns it: a Bot or pooled chat's owner can differ from the window's. With
+ *  no known owner the request names no session and goes to the window's profile. */
+function fsRoute(scope?: DesktopFsSessionScope): FsRoute {
+  const sessionId = scope?.sessionId || undefined
+  const owner = sessionId ? sessionFileOwnerScope(sessionId) : null
+
+  return owner ? { owner, sessionId } : { owner: { profile: desktopFsProfile() } }
+}
+
+function fsPath(endpoint: string, filePath: string, sessionId?: string) {
+  const session = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''
+
+  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}${session}`
 }
 
 function bridge() {
@@ -57,10 +91,36 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, owner = fsRoute().owner): Promise<T> {
+  return hermesApi<T>(body ? { ...owner, body, method: 'POST', path } : { ...owner, path })
+}
+
+/** True when a bridge read returned the main process's structured "file is not
+ *  on disk" answer (the main process returns this instead of rejecting, so a
+ *  restored preview tab or transcript reference to a deleted/moved file does
+ *  not spam Electron's console with a stack trace per probe). Callers that
+ *  already try/catch their read get the same behavior as a rejection: throw
+ *  with the original message. */
+export function isReadFileErrorResult(value: unknown): value is HermesReadFileErrorResult {
+  return !!value && typeof value === 'object' && (value as { ok?: unknown }).ok === false
+}
+
+function throwForReadErrorResult(result: HermesReadFileErrorResult): never {
+  throw new DesktopFileMissingError(result)
+}
+
+/** Thrown by the facade when the main process answered that the file is simply
+ *  not on disk (the structured `{ ok:false }` result). Callers that need to
+ *  tell expected absence apart from real failures check `instanceof`; everyone
+ *  else sees an ordinary error whose message matches the old rejection. */
+export class DesktopFileMissingError extends Error {
+  readonly code: string
+
+  constructor(result: HermesReadFileErrorResult) {
+    super(result.message || `File read failed: ${result.error}`)
+    this.name = 'DesktopFileMissingError'
+    this.code = result.error
+  }
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
@@ -71,19 +131,35 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
+export async function readDesktopFileText(
+  path: string,
+  scope?: DesktopFsSessionScope
+): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileText(path)
+    const result = await bridge().readFileText(path)
+
+    if (isReadFileErrorResult(result)) {
+      throwForReadErrorResult(result)
+    }
+
+    return result
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  const route = fsRoute(scope)
+
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path, route.sessionId), undefined, route.owner)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
 // IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
 // hardening, parent-must-exist, size cap) so the editor behaves identically in
 // both modes. Stale-on-disk detection is the caller's job (re-read before save).
-export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+// A gateway save names the session the file was read for, so it lands where that read did.
+export async function writeDesktopFileText(
+  path: string,
+  content: string,
+  scope?: DesktopFsSessionScope
+): Promise<{ path: string }> {
   const desktop = bridge()
 
   if (!isDesktopFsRemoteMode()) {
@@ -94,19 +170,72 @@ export async function writeDesktopFileText(path: string, content: string): Promi
     return desktop.writeTextFile(path, content)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const route = fsRoute(scope)
+
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>(
+    '/api/fs/write-text',
+    { content, path, ...(route.sessionId ? { session_id: route.sessionId } : {}) },
+    route.owner
+  )
 
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+// Create a folder on the connected backend (POST /api/files/mkdir). Remote-only:
+// in local mode the picker is the native dialog, which creates folders itself.
+export async function createRemoteDir(path: string): Promise<string> {
+  const result = await remoteFsApi<{ path?: string }>('/api/files/mkdir', { path })
+
+  return result.path || path
+}
+
+export async function readDesktopFileDataUrl(path: string, scope?: DesktopFsSessionScope): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileDataUrl(path)
+    const result = await bridge().readFileDataUrl(path)
+
+    if (isReadFileErrorResult(result)) {
+      throwForReadErrorResult(result)
+    }
+
+    return result
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const route = fsRoute(scope)
+
+  const result = await remoteFsApi<string | { dataUrl?: string }>(
+    fsPath('read-data-url', path, route.sessionId),
+    undefined,
+    route.owner
+  )
 
   return typeof result === 'string' ? result : result.dataUrl || ''
+}
+
+/**
+ * Read a composer image local-shell first, even when the active agent is
+ * remote. Picker, clipboard, and OS-drop paths belong to this machine; in-app
+ * project-tree paths may belong only to the gateway and fall back there.
+ */
+export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(path)
+
+    if (local && !isReadFileErrorResult(local)) {
+      return local
+    }
+
+    // A structured missing-file result from local is the same outcome as a
+    // rejection: fall through to the remote fallback below (or throw in local
+    // mode via readDesktopFileDataUrl's own guard).
+  } catch (error) {
+    if (!isDesktopFsRemoteMode()) {
+      throw error
+    }
+
+    // Not on this machine (or unreadable locally) — try the active gateway.
+  }
+
+  return readDesktopFileDataUrl(path)
 }
 
 export async function desktopGitRoot(path: string): Promise<string | null> {
@@ -128,8 +257,14 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
 }
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
+// The bridge answers `false` when the path is not on this computer (a remote
+// backend's workspace) — surface it instead of a silent no-op.
 export async function revealDesktopPath(path: string): Promise<void> {
-  await bridge().revealPath?.(path)
+  const revealed = await bridge().revealPath?.(path)
+
+  if (revealed === false) {
+    throw new Error(translateNow('fileMenu.revealMissing'))
+  }
 }
 
 // Rename a file/folder in place; returns the new absolute path. Local only.
@@ -178,13 +313,15 @@ export async function desktopFileDiff(repoRoot: string, filePath: string): Promi
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
+  const profile = desktopFsProfile()
+  const localOptions = profile ? { ...options, profile } : options
 
   if (!isDesktopFsRemoteMode()) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   if (!options?.directories) {
-    return desktop.selectPaths(options)
+    return desktop.selectPaths(localOptions)
   }
 
   return remotePicker ? remotePicker.selectPaths({ ...options, multiple: false }) : []

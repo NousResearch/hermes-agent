@@ -1,8 +1,8 @@
 import { atom, computed } from 'nanostores'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $busy } from '@/store/session'
 
 /**
  * Petdex mascot state for the desktop floating pet.
@@ -186,7 +186,7 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
 
 /**
  * Resolve the live activity state from the dedicated activity atom, falling back
- * to the always-present `$busy` chat signal so the pet reacts out of the box.
+ * to the primary session view's turn-busy so the pet reacts out of the box.
  *
  * `awaitingInput` (a clarify/approval blocking on the user) is an explicit flag
  * on `$petActivity` — set by the controller from `$attentionSessionIds` and
@@ -242,8 +242,12 @@ export const $petRoamDir = atom<-1 | 0 | 1>(0)
  * on this — never on `$petState` itself, which would feed back on its own
  * `$petMotion`-driven pose and stall the wander.
  */
+// Turn-busy comes from the active runtime's own slice (`$primaryBusy` in
+// session-view.tsx explains why the global `$busy` mirror can't be trusted:
+// #84434 / #84438). The pop-out overlay push reads the same atom so both
+// surfaces derive the pose from one signal.
 export const $petAtRest = computed(
-  [$petActivity, $busy],
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy],
   (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
 )
 
@@ -252,8 +256,11 @@ export const $petAtRest = computed(
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
  * reads as deliberate movement.
  */
-export const $petState = computed([$petActivity, $busy, $petMotion], (activity, busy, motion): PetState => {
-  const base = deriveLivePetState(activity, busy)
+export const $petState = computed(
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy, $petMotion],
+  (activity, busy, motion): PetState => {
+    const base = deriveLivePetState(activity, busy)
 
-  return base === 'idle' && motion ? motion : base
-})
+    return base === 'idle' && motion ? motion : base
+  }
+)

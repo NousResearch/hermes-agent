@@ -3,30 +3,27 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-// Default / floor / ceiling for Desktop's data-URL file load (composer attach,
-// image preview, etc.). The whole file is base64-buffered in main, so this is
-// a memory guard — not a model limit. Settings → Chat takes a free-form MB
-// value; 16 MB ships as default. The ceiling is only a typo guard (very large
-// values can OOM / crash the app).
-const DATA_URL_READ_DEFAULT_MAX_MB = 16
-const DATA_URL_READ_MIN_MAX_MB = 1
-const DATA_URL_READ_MAX_MAX_MB = 4096
+// Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
+// no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
+// specifier would typecheck and then fail to bundle.
+import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from '../../shared/src/data-url-read-max'
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
-
-function clampDataUrlReadMaxMb(value) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return DATA_URL_READ_DEFAULT_MAX_MB
-  }
-
-  return Math.min(DATA_URL_READ_MAX_MAX_MB, Math.max(DATA_URL_READ_MIN_MAX_MB, Math.round(parsed)))
-}
+// Renderer-supplied composer writes (pasted/dropped images, large text pastes)
+// land on disk under userData/HERMES_HOME; cap them like the attach reader so
+// one IPC call can't allocate or write unbounded bytes in the main process.
+const COMPOSER_IMAGE_MAX_BYTES = ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES
+const COMPOSER_PASTE_MAX_BYTES = TEXT_PREVIEW_SOURCE_MAX_BYTES
 
 function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
@@ -34,6 +31,141 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+
+// Credential stores under a Hermes home or a profile home, relative POSIX paths.
+// Mirrors agent/file_safety.py _CREDENTIAL_FILE_NAMES / _READ_DENIED_DIRS (the
+// canonical read guard) plus hermes_cli/home_data_layout.py SECRET_CACHE_STORES.
+const HERMES_CREDENTIAL_FILES = new Set([
+  '.env',
+  'auth.json',
+  'auth.lock',
+  '.anthropic_oauth.json',
+  'webhook_subscriptions.json',
+  'auth/google_oauth.json',
+  'bws_cache.json',
+  'bws_cache.enc.json',
+  'op_cache.json',
+  'photon-sidecar.json',
+  'cache/bws_cache.json',
+  'cache/bws_cache.enc.json',
+  'cache/op_cache.json',
+  'runtime/photon-sidecar.json'
+])
+
+const HERMES_CREDENTIAL_DIRS = ['mcp-tokens', 'browser-profile', 'vault', 'webapp']
+
+// Owner-only mode for userData files that carry credentials (the encrypted
+// gateway token in connection.json, and the URL/SSH fields alongside it).
+// connection.json was the odd one out: its two credential-bearing neighbours
+// under userData are already 0600 — desktop-installation.json
+// (desktop-installation.ts) and native-oauth-tokens.json (main.ts
+// `_nativeTokenStoreIo`) — while connection.json was written with no mode at
+// all and landed at the 0644 umask default. This makes the three consistent.
+const SECRET_FILE_MODE = 0o600
+
+// The encoding tag that marks a payload as OS-encrypted. One constant because
+// the writer (encryptDesktopSecret, here) and the reader
+// (decryptDesktopSecret, in main.ts) have to agree on the exact string across
+// a file boundary, and the native-token store round-trips the same shape.
+const SAFE_STORAGE_ENCODING = 'safeStorage'
+
+interface SecretFileFs {
+  chmodSync: typeof fs.chmodSync
+  lstatSync: typeof fs.lstatSync
+  renameSync: typeof fs.renameSync
+  rmSync: typeof fs.rmSync
+  writeFileSync: typeof fs.writeFileSync
+}
+
+interface SecretFileOptions {
+  encoding?: BufferEncoding
+  fs?: SecretFileFs
+  platform?: string
+}
+
+/**
+ * Tighten an existing credential file to owner-only (0600), returning whether
+ * the file now has that mode.
+ *
+ * Exists because `fs.writeFileSync(path, data, { mode })` only applies `mode`
+ * when it CREATES the file — rewriting an existing path silently keeps the old
+ * bits. So a file already on disk at 0644 (every connection.json written
+ * before this change, since that write passed no mode at all) needs an explicit
+ * chmod; a fresh `mode:` alone would never tighten it.
+ *
+ * Guards match `readInstallationId` in desktop-installation.ts, which does the
+ * same job for the sibling userData credential file: only ever chmod a regular
+ * file we own, never a symlink and never another user's file. Without them a
+ * symlink planted at the path would send the chmod to whatever it resolves to.
+ *
+ * POSIX only. Windows has no meaningful chmod (Node maps it to the read-only
+ * bit), and userData there is already ACL'd to the user profile, so we report
+ * success without touching the file rather than flipping it read-only and
+ * breaking the next write.
+ *
+ * Never throws: a chmod can legitimately fail (read-only mount, file owned by
+ * another user), and failing to tighten a file is not a reason to lose the
+ * user's configured gateway.
+ */
+function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const platform = options.platform || process.platform
+
+  if (platform === 'win32') {
+    return true
+  }
+
+  try {
+    const stat = fsImpl.lstatSync(filePath)
+
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return false
+    }
+
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      return false
+    }
+
+    if ((stat.mode & 0o777) === SECRET_FILE_MODE) {
+      return true
+    }
+
+    fsImpl.chmodSync(filePath, SECRET_FILE_MODE)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Atomically write a credential file, owner-only wherever the OS expresses
+ * permissions as mode bits.
+ *
+ * On POSIX the file is owner-only from the moment it exists. On Windows this
+ * only gets the atomic rename: `tightenSecretFileMode` no-ops there (Node maps
+ * chmod to the read-only bit), so the file inherits the userData directory's
+ * ACL rather than an explicit owner-only one. Tightening Windows ACLs is being
+ * handled once, for the Python `_secure_file`, in PR #77527 — the desktop
+ * should follow that rather than start a second ACL story here.
+ *
+ * The temp-then-rename dance is what makes the mode subtle: `renameSync` keeps
+ * the TEMP file's permissions, so writing the temp at the default umask (0644)
+ * hands those bits to the target — and a crashed earlier write can leave a
+ * stale temp file whose existing loose bits `mode:` will not correct. Hence the
+ * unlink of any stale temp (which also drops a planted symlink, so the write
+ * cannot be redirected), the create-time `mode`, and the chmod before the
+ * rename.
+ */
+function writeSecretFileAtomic(targetPath, data, options: SecretFileOptions = {}) {
+  const fsImpl = options.fs || fs
+  const tmp = targetPath + '.tmp'
+
+  fsImpl.rmSync(tmp, { force: true })
+  fsImpl.writeFileSync(tmp, data, { encoding: options.encoding, mode: SECRET_FILE_MODE })
+  tightenSecretFileMode(tmp, options)
+  fsImpl.renameSync(tmp, targetPath)
+}
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
@@ -48,12 +180,17 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   return fallback
 }
 
-function encryptDesktopSecret(value, safeStorageApi) {
+function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?: boolean } = {}) {
   const raw = String(value || '')
 
   if (!raw) {
     return null
   }
+
+  // Opt-in escape hatch for keyring-less Linux (e.g. Hyprland/Sway with no
+  // GNOME Keyring or KWallet): the renderer sets this once the user confirms
+  // the plain-text storage prompt in Settings → Gateway.
+  const allowPlainText = options?.allowPlainText === true
 
   let encryptionAvailable = false
 
@@ -64,15 +201,24 @@ function encryptDesktopSecret(value, safeStorageApi) {
   }
 
   if (!encryptionAvailable) {
+    // Only downgrade to plain text when the user has explicitly opted in;
+    // decryptDesktopSecret returns the raw value for any non-'safeStorage'
+    // encoding, so this round-trips without any decrypt-side change.
+    if (allowPlainText) {
+      return { encoding: 'plain', value: raw }
+    }
+
     throw new Error(
-      'Secure token storage is unavailable, so Hermes Desktop cannot save remote gateway tokens. ' +
-        'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment, or enable OS keychain access and try again.'
+      'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
+        'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
+        'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
+        'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }
 
   try {
     return {
-      encoding: 'safeStorage',
+      encoding: SAFE_STORAGE_ENCODING,
       value: safeStorageApi.encryptString(raw).toString('base64')
     }
   } catch (error) {
@@ -84,10 +230,198 @@ function encryptDesktopSecret(value, safeStorageApi) {
   }
 }
 
-function sensitiveFileBlockReason(filePath) {
-  const normalized = String(filePath || '')
+// Keyring-less Linux (e.g. Hyprland/Sway with no GNOME Keyring or KWallet):
+// `--password-store=basic` selects Electron's built-in "basic" backend, but
+// Electron only counts it as available once setUsePlainTextEncryption(true) is
+// called. The caller runs this on whenReady, before createWindow() and anything
+// that could touch safeStorage, so the switch takes effect for the whole run.
+//
+// Semantics are deliberately narrow: only linux, only the exact 'basic' switch
+// value (never 'gnome-libsecret', 'kwallet', '', etc.), and only when the
+// method exists (older/mocked safeStorage may lack it) and does not throw.
+// Anything else is a no-op. Returns true only when it actually flipped the flag,
+// so the caller (and tests) can distinguish "enabled" from "left untouched".
+// Never throws: a failure here is non-fatal — encryption simply stays
+// unavailable and the user can fall back to the plain-text opt-in or the
+// HERMES_DESKTOP_REMOTE_* env vars.
+function enableBasicPasswordStoreEncryption({ platform, passwordStoreSwitch, safeStorageApi }: any = {}) {
+  if (platform !== 'linux' || passwordStoreSwitch !== 'basic') {
+    return false
+  }
+
+  try {
+    if (typeof safeStorageApi?.setUsePlainTextEncryption === 'function') {
+      safeStorageApi.setUsePlainTextEncryption(true)
+
+      return true
+    }
+  } catch {
+    // Non-fatal: fall through and report that encryption was not enabled.
+  }
+
+  return false
+}
+
+// The token-persistence seam shared by the connection-config save/apply IPC
+// path. Given the incoming edit, decide what token block to persist:
+//   - No incoming token: keep the existing block's token untouched (edits that
+//     don't retype the token must not clear it).
+//   - persistToken false (the transient test-connection path): store the raw
+//     value as a plain block WITHOUT touching secure storage — it is never
+//     written to disk, so there is nothing to protect.
+//   - Otherwise: run the incoming token through the injected encryptSecret
+//     (encryptDesktopSecret in production), forwarding the plain-text opt-in.
+//
+// The plain-text opt-in is coerced with `=== true` HERE so the strictness lives
+// in one place: a truthy-but-not-true value (1, 'yes', etc.) must NOT silently
+// enable plain-text storage. Callers pass `allowPlainText` through raw.
+function resolvePersistedRemoteToken({
+  incomingToken,
+  persistToken,
+  existingToken,
+  allowPlainText,
+  encryptSecret
+}: any = {}) {
+  if (!incomingToken) {
+    return existingToken
+  }
+
+  if (!persistToken) {
+    return { encoding: 'plain', value: incomingToken }
+  }
+
+  return encryptSecret(incomingToken, { allowPlainText: allowPlainText === true })
+}
+
+// The renderer-facing "the saved token is in plain text" warning signal for the
+// connection-config IPC path. Plain text is the CHOSEN mode while keychain
+// encryption is opted out — probeSecureTokenStorage reports availability in
+// that mode on purpose — so the warning fires only for the genuinely degraded
+// state: the token is plain AND the machine cannot secure it (the keyring-less
+// opt-in path). The env override supplies its token from the environment, not
+// the saved block, so it never warns; `secureTokenStorage === false` is matched
+// strictly so an absent signal never manufactures a warning.
+function resolveRemoteTokenPlainText({ envOverride, token, secureTokenStorage }: any = {}) {
+  if (envOverride) {
+    return false
+  }
+
+  return token?.encoding === 'plain' && secureTokenStorage === false
+}
+
+function normalizeSensitivePath(filePath) {
+  return String(filePath || '')
     .replace(/\\/g, '/')
     .toLowerCase()
+}
+
+let hermesHomes: string[] = []
+// Store targets only move when a home, profile or store is re-linked, so the
+// realpath sweep runs at most once per window instead of on every preview,
+// media-stream and image read (~17 realpaths per home and profile).
+const RELOCATED_STORES_TTL_MS = 1000
+let relocatedStoresCache: null | { at: number; stores: string[] } = null
+
+/** Register the Hermes home whose credential stores (and every profile's under
+ *  `profiles/<name>/`) preview reads must refuse. Both the given spelling and
+ *  its realpath are kept, since callers check the requested and the real path. */
+function setSensitiveHermesHome(hermesHome: null | string | undefined) {
+  relocatedStoresCache = null
+
+  if (!hermesHome) {
+    hermesHomes = []
+
+    return
+  }
+
+  const homes = [path.resolve(hermesHome)]
+  const real = realpathOrNull(hermesHome)
+
+  if (real) {
+    homes.push(real)
+  }
+
+  hermesHomes = [...new Set(homes)]
+}
+
+function realpathOrNull(filePath: string): null | string {
+  try {
+    return fs.realpathSync.native(filePath)
+  } catch {
+    return null
+  }
+}
+
+function credentialStoreRel(normalized: string, root: string): null | string {
+  if (!normalized.startsWith(`${root}/`)) {
+    return null
+  }
+
+  const fromRoot = normalized.slice(root.length + 1)
+
+  return fromRoot.match(/^profiles\/[^/]+\/(.+)$/)?.[1] ?? fromRoot
+}
+
+function isCredentialStoreRel(rel: string): boolean {
+  return HERMES_CREDENTIAL_FILES.has(rel) || HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+}
+
+// Where each home's and profile's stores really live: a symlinked profile home,
+// vault/ or auth.json puts the secret outside every registered root, so the
+// lexical match alone would let its real path through (Python's read guard
+// resolves the same targets).
+function relocatedCredentialStores(): string[] {
+  const now = Date.now()
+
+  if (relocatedStoresCache && now - relocatedStoresCache.at < RELOCATED_STORES_TTL_MS) {
+    return relocatedStoresCache.stores
+  }
+
+  const stores: string[] = []
+
+  for (const home of hermesHomes) {
+    let profiles: string[] = []
+
+    try {
+      profiles = fs.readdirSync(path.join(home, 'profiles')).map(name => path.join(home, 'profiles', name))
+    } catch {
+      // No profiles directory.
+    }
+
+    for (const base of [home, ...profiles]) {
+      for (const rel of [...HERMES_CREDENTIAL_FILES, ...HERMES_CREDENTIAL_DIRS]) {
+        const real = realpathOrNull(path.join(base, rel))
+
+        if (real) {
+          stores.push(normalizeSensitivePath(real).replace(/\/+$/, ''))
+        }
+      }
+    }
+  }
+
+  relocatedStoresCache = { at: now, stores }
+
+  return stores
+}
+
+function hermesCredentialStoreReason(normalized: string): null | string {
+  const reason = 'Hermes credential stores are blocked.'
+
+  for (const home of hermesHomes) {
+    const rel = credentialStoreRel(normalized, normalizeSensitivePath(home).replace(/\/+$/, ''))
+
+    if (rel !== null && isCredentialStoreRel(rel)) {
+      return reason
+    }
+  }
+
+  return relocatedCredentialStores().some(store => normalized === store || normalized.startsWith(`${store}/`))
+    ? reason
+    : null
+}
+
+function sensitiveFileBlockReason(filePath) {
+  const normalized = normalizeSensitivePath(filePath)
 
   const basename = path.basename(normalized)
   const ext = path.extname(basename)
@@ -132,7 +466,7 @@ function sensitiveFileBlockReason(filePath) {
     return `${basename} is blocked because it may include auth credentials.`
   }
 
-  return null
+  return hermesCredentialStoreReason(normalized)
 }
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
@@ -141,6 +475,44 @@ function ipcPathError(code: any, message: string): Error & { code: any } {
   ;(error as any).code = code
 
   return error
+}
+
+/** Validate saveImageBuffer's payload: raw bytes only, non-empty, size-capped. */
+function composerImageBufferFromIpc(data: unknown, maxBytes = COMPOSER_IMAGE_MAX_BYTES): Buffer {
+  let buffer: Buffer | null = null
+
+  if (Buffer.isBuffer(data)) {
+    buffer = data
+  } else if (ArrayBuffer.isView(data)) {
+    buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  } else if (data instanceof ArrayBuffer) {
+    buffer = Buffer.from(data)
+  }
+
+  if (!buffer || buffer.byteLength === 0) {
+    throw ipcPathError('invalid-image-data', 'saveImageBuffer: missing data')
+  }
+
+  if (buffer.byteLength > maxBytes) {
+    throw ipcPathError('EFBIG', `saveImageBuffer: image is too large (${buffer.byteLength} bytes; limit ${maxBytes}).`)
+  }
+
+  return buffer
+}
+
+/** Validate savePastedText's payload: a non-empty string under the paste cap. */
+function composerPasteTextFromIpc(text: unknown, maxBytes = COMPOSER_PASTE_MAX_BYTES): string {
+  if (typeof text !== 'string' || !text) {
+    throw ipcPathError('invalid-text', 'savePastedText: missing text')
+  }
+
+  const size = Buffer.byteLength(text, 'utf8')
+
+  if (size > maxBytes) {
+    throw ipcPathError('EFBIG', `savePastedText: text is too large (${size} bytes; limit ${maxBytes}).`)
+  }
+
+  return text
 }
 
 function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
@@ -170,6 +542,34 @@ function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
   }
 
   return raw
+}
+
+/**
+ * Stat a resolved path before handing an `open` to the OS. The OS gives the
+ * miss and the unclaimable file the SAME answer (macOS LaunchServices returns
+ * `kLSApplicationNotFoundErr` for a non-existent path, so a deleted file is
+ * reported as "No application found to open URL"; Electron's `shell.openPath`
+ * resolves with an error for a miss and the caller then "reveals in folder" a
+ * folder that isn't there). Only ENOENT/ENOTDIR count as missing — a path that
+ * stats-fails for any other reason (EACCES on an existing file, root-owned
+ * trees) must still reach the OS, so a stat failure here never fabricates a
+ * miss.
+ */
+function assertExistingPathForOpen(resolvedPath: string, purpose = 'Open file') {
+  try {
+    fs.statSync(resolvedPath)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined
+
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw ipcPathError(
+        'missing-file',
+        `${purpose} failed: the file does not exist — it may have been deleted or moved, or it lives on another machine.`
+      )
+    }
+
+    throw error
+  }
 }
 
 function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseDir?: fs.PathOrFileDescriptor } = {}) {
@@ -211,6 +611,29 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
   rejectUnsafePathSyntax(resolvedPath, purpose)
 
   return resolvedPath
+}
+
+/**
+ * Candidate absolute paths to retry when a preview/download target could not
+ * be resolved against the agent's working directory. Attachment references
+ * stored in chat history are frequently HOME-relative (e.g.
+ * "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+ * ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to cwd
+ * (#115609). Pure and DI-testable: takes `home`/`hermesHome` as arguments
+ * instead of reaching for `app.getPath('home')` / a module-level constant.
+ * Returns an empty array for absolute paths, `file:` URLs, and empty input —
+ * those already had their one real resolution attempt upstream.
+ */
+function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
+  const trimmed = String(raw || '').trim()
+
+  if (!trimmed || /^file:/i.test(trimmed) || path.isAbsolute(trimmed)) {
+    return []
+  }
+
+  const normalized = trimmed.replace(/\\/g, '/')
+
+  return [path.join(home, normalized), path.join(hermesHome, 'attachments', path.basename(normalized))]
 }
 
 async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {
@@ -346,21 +769,68 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+/** True when a read failed because the file (or its parent) is not on disk.
+ *  Preview reads routinely race a file's lifecycle — a restored preview tab or
+ *  a transcript reference can point at something that was deleted, moved, or
+ *  lived in a cleared /tmp. Those are expected outcomes, not crashes: IPC
+ *  handlers should answer them with a structured error result instead of
+ *  rejecting (Electron logs every rejected handler as a stack trace even when
+ *  the renderer handles the rejection gracefully). Everything else still
+ *  throws as before. */
+function isMissingFileError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const code = (error as { code?: unknown }).code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** The structured "file is not on disk" IPC answer built from a caught read
+ *  error. Shared by every handler that converts expected absence into data
+ *  (preview text/image reads, attachment reads, file watches) so all of them
+ *  answer with the same shape. */
+function missingFileResult(requestedPath: unknown, error: unknown) {
+  return {
+    ok: false as const,
+    error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+    message: error instanceof Error ? error.message : 'File does not exist.',
+    path: String(requestedPath ?? '')
+  }
+}
+
 export {
+  assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
+  COMPOSER_IMAGE_MAX_BYTES,
+  COMPOSER_PASTE_MAX_BYTES,
+  composerImageBufferFromIpc,
+  composerPasteTextFromIpc,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  SAFE_STORAGE_ENCODING,
+  SECRET_FILE_MODE,
   sensitiveFileBlockReason,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES
+  setSensitiveHermesHome,
+  TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  tightenSecretFileMode,
+  writeSecretFileAtomic
 }

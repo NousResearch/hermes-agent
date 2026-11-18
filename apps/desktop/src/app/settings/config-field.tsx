@@ -1,8 +1,7 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { prettyName } from '@/lib/text'
@@ -13,8 +12,15 @@ import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { ListRow } from './primitives'
+import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+export function parseListFieldDraft(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
 
 /**
  * One generic config row: label + description resolved from the i18n field
@@ -49,7 +55,11 @@ export function ConfigField({
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)
 
-  const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const normalize = (v: string) =>
+    v
+      .toLowerCase()
+      .normalize('NFC')
+      .replace(/[^\p{L}\p{M}\p{N}]+/gu, '')
 
   const rawDescription = (
     fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
@@ -74,22 +84,43 @@ export function ConfigField({
     description
   )
 
-  const row = (action: ReactNode, wide = false) => (
-    <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
+  // Every config row is addressable by its canonical schema key, so a tour can
+  // point at one setting (`[data-tour="field-model"]`) without hunting through
+  // the section for an nth-child path. See lib/tour.
+  const dataTour = `field-${schemaKey}`
+
+  const row = (action: ReactNode) => (
+    <ListRow action={action} data-tour={dataTour} description={descriptionNode} title={label} />
+  )
+
+  // Editors too big for the control column (textareas, structured lists) take
+  // the full width under the description.
+  const wideRow = (editor: ReactNode) => (
+    <ListRow
+      below={<div className="mt-3">{editor}</div>}
+      data-tour={dataTour}
+      description={descriptionNode}
+      title={label}
+      wide
+    />
   )
 
   // `fallback_providers` is a list of {provider, model} objects; the generic
   // `list` branch below would stringify them to "[object Object]". Render the
   // dedicated structured editor instead.
   if (schemaKey === 'fallback_providers') {
-    return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+    return wideRow(<FallbackModelsField onChange={onChange} value={value} />)
   }
 
   if (schema.type === 'boolean') {
-    return row(
-      <div className="flex items-center justify-end">
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} />
-      </div>
+    return (
+      <ToggleRow
+        checked={Boolean(value)}
+        data-tour={dataTour}
+        description={descriptionNode}
+        label={label}
+        onChange={onChange}
+      />
     )
   }
 
@@ -176,25 +207,11 @@ export function ConfigField({
   }
 
   if (schema.type === 'list') {
-    return row(
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e =>
-          onChange(
-            e.target.value
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-          )
-        }
-        placeholder={c.commaSeparated}
-        value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
-      />
-    )
+    return row(<ListField onChange={onChange} placeholder={c.commaSeparated} value={value} />)
   }
 
   if (typeof value === 'object' && value !== null) {
-    return row(
+    return wideRow(
       <Textarea
         className={cn('min-h-28 resize-y bg-background font-mono', CONTROL_TEXT)}
         onChange={e => {
@@ -207,29 +224,74 @@ export function ConfigField({
         placeholder={c.notSet}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
-      />,
-      true
+      />
     )
   }
 
   const isLong = schema.type === 'text' || String(value ?? '').length > 100
 
-  return row(
-    isLong ? (
-      <Textarea
-        className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
-        onChange={e => onChange(e.target.value)}
-        placeholder={c.notSet}
-        value={String(value ?? '')}
-      />
-    ) : (
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e => onChange(e.target.value)}
-        placeholder={c.notSet}
-        value={String(value ?? '')}
-      />
-    ),
-    isLong
+  return isLong
+    ? wideRow(
+        <Textarea
+          className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
+          onChange={e => onChange(e.target.value)}
+          placeholder={c.notSet}
+          value={String(value ?? '')}
+        />
+      )
+    : row(
+        <Input
+          className={CONTROL_TEXT}
+          onChange={e => onChange(e.target.value)}
+          placeholder={c.notSet}
+          value={String(value ?? '')}
+        />
+      )
+}
+
+function ListField({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: unknown
+  onChange: (value: unknown) => void
+  placeholder: string
+}) {
+  const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value ?? '')
+  const [draft, setDraft] = useState(normalizedValue)
+  const focusedRef = useRef(false)
+
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setDraft(normalizedValue)
+    }
+  }, [normalizedValue])
+
+  const commitDraft = () => {
+    const parsed = parseListFieldDraft(draft)
+    setDraft(parsed.join(', '))
+    onChange(parsed)
+  }
+
+  return (
+    <Input
+      className={CONTROL_TEXT}
+      onBlur={() => {
+        focusedRef.current = false
+        commitDraft()
+      }}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => {
+        focusedRef.current = true
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur()
+        }
+      }}
+      placeholder={placeholder}
+      value={draft}
+    />
   )
 }

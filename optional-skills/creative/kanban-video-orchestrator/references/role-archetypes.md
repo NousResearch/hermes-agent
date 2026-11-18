@@ -117,7 +117,7 @@ instead of overloading one. Each loads a different creative skill.
 | `renderer-p5js` | `p5js` | Generative art, particles, shaders, organic motion, web-canvas content |
 | `renderer-comfyui` | `comfyui` | AI-generated stills + video using local ComfyUI workflows (img-to-img, img-to-video, etc.) |
 | `renderer-touchdesigner` | `touchdesigner-mcp` | Real-time, audio-reactive, installation art, VJ-style content |
-| `renderer-3d` | `blender-mcp` *(optional)* | 3D modeling, animation, photoreal environments, character animation |
+| `renderer-3d` | Blender (`blender -b` scripting) | 3D modeling, animation, photoreal environments, character animation |
 | `renderer-pixel` | `pixel-art` | Retro game aesthetic with era-correct palettes |
 | `renderer-comic` | `baoyu-comic` | Knowledge-comic style narrative scenes |
 | `renderer-meme` | `meme-generation` *(optional)* | Meme-style stills for satirical/social content |

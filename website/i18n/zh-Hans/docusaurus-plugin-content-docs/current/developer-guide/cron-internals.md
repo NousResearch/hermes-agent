@@ -180,7 +180,7 @@ Cron 任务结果可投递到任何受支持的平台。
 | Email | `email`、`email:<address>` | `email:alerts@example.com` |
 | Weixin | `weixin`、`weixin:<wxid>` | `weixin:wxid_abc123` |
 | Mattermost | `mattermost` 或 `mattermost:<channel_id>` | 裸名投递到 Mattermost 主频道 |
-| Home Assistant | `homeassistant` 或 `homeassistant:<conversation>` | 裸名投递到 HA 对话 |
+| Home Assistant（插件） | `homeassistant` 或 `homeassistant:<notify target>` | 裸名投递到 `HASS_HOME_CHANNEL`；需要插件目录中的 `homeassistant` 插件 |
 | DingTalk | `dingtalk` 或 `dingtalk:<chat_id>` | 裸名投递到钉钉 |
 | WeCom | `wecom` 或 `wecom:<chat_id>` | 裸名投递到企业微信 |
 | BlueBubbles | `bluebubbles` 或 `bluebubbles:<chat_guid>` | 裸名通过 BlueBubbles 投递到 iMessage |
@@ -231,6 +231,6 @@ hermes cron remove <job_id>         # 删除任务
 
 ## 相关文档
 
-- [Cron 功能指南](/user-guide/features/cron)
+- [Cron 功能指南](../user-guide/features/cron.md)
 - [Gateway 内部机制](./gateway-internals.md)
 - [Agent 循环内部机制](./agent-loop.md)

@@ -29,9 +29,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.codex_runtime import run_codex_app_server_turn
-from hermes_state import SessionDB
+from persistence.conversation.messages import TranscriptRead, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
-
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 def _make_turn():
     return SimpleNamespace(
@@ -45,12 +47,12 @@ def _make_turn():
         should_retire=False,
     )
 
-
 def _make_agent(session_db=None, session_id="sess-codex"):
     agent = MagicMock()
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    agent._codex_session_prompt = None  # seeded session: no recorded composition to compare
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
@@ -59,7 +61,6 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent._session_db_created = True
     agent.session_id = session_id
     return agent
-
 
 def test_codex_success_flushes_and_reports_persisted():
     """Codex success turn must self-persist and return agent_persisted=True."""
@@ -72,9 +73,9 @@ def test_codex_success_flushes_and_reports_persisted():
         effective_task_id="task-1",
     )
     assert result["completed"] is True
+    assert isinstance(result["messages"][-1]["timestamp"], float)
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
-
 
 def test_codex_user_interrupt_is_reported_and_cleared():
     agent = _make_agent(session_db=None)
@@ -103,17 +104,17 @@ def test_codex_user_interrupt_is_reported_and_cleared():
     agent.clear_interrupt.assert_called_once_with()
     assert agent._interrupt_requested is False
 
-
 def test_codex_turn_persists_each_message_exactly_once():
     """The user turn (flushed at turn start) must not be duplicated; the
-    projected assistant message must land once.  Uses a real SessionDB and the
+    projected assistant message must land once.  Uses a real store and the
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
     tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = None
     try:
-        db = SessionDB(Path(tmp) / "state.db")
+        db = open_persistence(profile_scope(home=Path(tmp)))
         sid = "sess-codex-once"
-        db.create_session(session_id=sid, source="telegram", model="codex")
+        seed_session(db, sid, "telegram", model="codex")
 
         # Real agent bound to this DB/session, minimal construction.
         agent = AIAgent(
@@ -122,7 +123,7 @@ def test_codex_turn_persists_each_message_exactly_once():
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id=sid,
         )
         agent._session_db_created = True
@@ -147,48 +148,21 @@ def test_codex_turn_persists_each_message_exactly_once():
         )
         assert result["agent_persisted"] is True
 
-        rows = db.get_messages(sid, include_inactive=True)
+        rows = transcript_rows(db, sid, TranscriptRead(view=TranscriptView.ALL))
         contents = [r["content"] for r in rows]
         # Exactly one user turn, exactly one assistant turn — no duplicates.
         assert contents.count("USER_TURN") == 1, contents
         assert contents.count("CODEX_ASSISTANT") == 1, contents
+        assistant_row = next(
+            row for row in rows if row["content"] == "CODEX_ASSISTANT"
+        )
+        assert isinstance(assistant_row["timestamp"], float)
         # session_search can now see the codex conversation.
-        hits = {r["session_id"] for r in db.search_messages("CODEX_ASSISTANT")}
+        hits = {hit.session_id for hit in db.search.search_messages("CODEX_ASSISTANT")}
         assert sid in hits
     finally:
         import shutil
 
-        shutil.rmtree(tmp)
-
-
-class TestGatewayPersistedResolution:
-    """The gateway default must preserve standard-runtime skip-db behaviour."""
-
-    @staticmethod
-    def _resolve_persistence_block(agent_result, session_db_present):
-        # gateway/run.py persistence block:
-        #   agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
-        return agent_result.get("agent_persisted", session_db_present)
-
-    @staticmethod
-    def _resolve_passthrough(result_holder0):
-        # gateway/run.py result_holder passthrough:
-        #   result_holder[0].get("agent_persisted", True) if result_holder[0] else True
-        return result_holder0.get("agent_persisted", True) if result_holder0 else True
-
-    def test_codex_result_keeps_gateway_skip(self):
-        # Codex now self-persists → gateway must SKIP (agent_persisted True).
-        codex = {"agent_persisted": True}
-        assert self._resolve_persistence_block(codex, True) is True
-        assert self._resolve_persistence_block(codex, False) is True
-        assert self._resolve_passthrough(codex) is True
-
-    def test_standard_runtime_preserves_skip_db(self):
-        # Standard runtime omits the key → old behaviour: skip iff DB present.
-        standard = {"final_response": "ok"}
-        assert self._resolve_persistence_block(standard, True) is True
-        assert self._resolve_persistence_block(standard, False) is False
-        assert self._resolve_passthrough(standard) is True
-
-    def test_missing_result_holder_defaults_persisted(self):
-        assert self._resolve_passthrough(None) is True
+        if db is not None:
+            db.close()
+        shutil.rmtree(tmp, ignore_errors=True)

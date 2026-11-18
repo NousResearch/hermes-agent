@@ -1,0 +1,342 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
+import { en } from '@/i18n/en'
+import type { UpdateApplyState } from '@/store/updates'
+import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus } from '@/store/updates'
+
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
+
+// VersionHero is the shared About/overlay hero. Its module imports the real
+// updates store graph; mock it shallowly — these tests exercise the hero's
+// own rendering, not the store.
+vi.mock('@/store/updates', async () => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $backendUpdateApply: atom<UpdateApplyState | null>(null),
+    $backendUpdateChecking: atom<boolean>(false),
+    $backendUpdateStatus: atom<DesktopUpdateStatus | null>(null),
+    $updateApply: atom<UpdateApplyState | null>(null),
+    $updateChecking: atom<boolean>(false),
+    $updateStatus: atom<DesktopUpdateStatus | null>(null),
+    checkBackendUpdates: vi.fn(),
+    checkUpdates: vi.fn(),
+    openUpdateOverlayFor: vi.fn(),
+    startActiveUpdate: vi.fn()
+  }
+})
+
+const IDLE_APPLY: UpdateApplyState = {
+  applying: false,
+  stage: 'idle',
+  message: '',
+  percent: null,
+  error: null,
+  command: null,
+  log: []
+}
+
+function derive(status: DesktopUpdateStatus | null, apply: UpdateApplyState = IDLE_APPLY, checking = false) {
+  return deriveUpdateStatus({ apply, checking, status, target: 'client', u: en.updates })
+}
+
+describe('deriveUpdateStatus', () => {
+  it('names the stable release only when the checkout is on it', () => {
+    const latestRelease = en.settings.about.channel.latestRelease
+
+    const stable = {
+      supported: true,
+      behind: 0,
+      channel: 'stable',
+      sourceVersion: '0.21.6',
+      targetSha: 'a'.repeat(40),
+      aheadOfRelease: false
+    }
+
+    const on = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, currentSha: 'a'.repeat(40) },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(on.line).toBe('You’re on the latest stable release (v0.21.6).')
+
+    // Ahead of the release (forward-only): the check pins the target to HEAD, so
+    // targetSha === currentSha; aheadOfRelease keeps it from claiming the release.
+    const ahead = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, targetSha: 'b'.repeat(40), currentSha: 'b'.repeat(40), aheadOfRelease: true },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(ahead.line).toBe(en.updates.latestBody)
+
+    // An older checker omits the field and may also pin an ahead checkout to HEAD: never name the release.
+    const older = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      latestRelease,
+      status: { ...stable, currentSha: 'a'.repeat(40), aheadOfRelease: undefined },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(older.line).toBe(en.updates.latestBody)
+    expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
+  })
+
+  it('names a stable release the updater refuses as held, never an update', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      held: en.settings.about.channel.heldBody,
+      latestRelease: en.settings.about.channel.latestRelease,
+      status: {
+        supported: true,
+        behind: 0,
+        updateAvailable: false,
+        held: 'downgrade',
+        channel: 'stable',
+        sourceVersion: '0.22.2',
+        targetSha: 'd'.repeat(40),
+        currentSha: 'e'.repeat(40),
+        aheadOfRelease: false,
+        rollback: false
+      },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(false)
+    expect(view.tone).toBe('idle')
+    expect(view.line).toBe(en.settings.about.channel.heldBody('v0.22.2'))
+  })
+
+  it('names a stable release the checkout already contains as a rollback, never a new update', () => {
+    const status = {
+      supported: true,
+      behind: -1,
+      channel: 'stable',
+      sourceVersion: '0.21.7',
+      updateAvailable: true,
+      aheadOfRelease: false
+    }
+
+    const view = (rollback: boolean) =>
+      deriveUpdateStatus({
+        apply: IDLE_APPLY,
+        checking: false,
+        rollback: en.settings.about.channel.rollbackBody,
+        status: { ...status, rollback },
+        target: 'client',
+        u: en.updates
+      }).line
+
+    expect(view(true)).toBe(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(view(true)).not.toBe(en.updates.updateReadyUnknown)
+    expect(view(false)).toBe(en.updates.updateReadyUnknown)
+  })
+
+  it('never-checked: idle tone, invites a check', () => {
+    const view = derive(null)
+
+    expect(view.tone).toBe('idle')
+    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(en.updates.tapCheck)
+  })
+
+  it('unsupported wins over everything else and keeps the backend message', () => {
+    const view = derive({ supported: false, message: 'managed install', behind: 5, updateAvailable: true })
+
+    expect(view.tone).toBe('unsupported')
+    expect(view.line).toBe('managed install')
+    expect(view.supported).toBe(false)
+  })
+
+  it('check error shows one plain line and keeps the transport message with the error', () => {
+    const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
+
+    expect(view.tone).toBe('error')
+    expect(view.line).toBe(en.updates.cantReach)
+    expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
+  })
+
+  it.each([undefined, ''])('keeps the error when the transport message is %s', message => {
+    const view = derive({ supported: true, error: 'check-failed', message })
+
+    expect(view.error).toBe('check-failed')
+  })
+
+  it('applying beats available so the card cannot offer a second install', () => {
+    const view = derive({ supported: true, behind: 3 }, { ...IDLE_APPLY, applying: true, stage: 'update' })
+
+    expect(view.applying).toBe(true)
+    expect(view.tone).toBe('available')
+    expect(view.line).toBe(en.updates.installing)
+  })
+
+  it('restart stage counts as applying even when the applying flag already dropped', () => {
+    const view = derive({ supported: true }, { ...IDLE_APPLY, applying: false, stage: 'restart' })
+
+    expect(view.applying).toBe(true)
+  })
+
+  it('behind count renders counted copy; count-free updateAvailable falls back', () => {
+    expect(derive({ supported: true, behind: 4 }).line).toBe(en.updates.updateReady(4))
+
+    // Shallow clone: exact count unknowable, flagged via updateAvailable.
+    const unknown = derive({ supported: true, behind: 0, updateAvailable: true })
+
+    expect(unknown.line).toBe(en.updates.updateReadyUnknown)
+    expect(unknown.updateAvailable).toBe(true)
+  })
+
+  it('up to date: idle tone with the latest-version line', () => {
+    const view = derive({ supported: true, behind: 0 })
+
+    expect(view.tone).toBe('idle')
+    expect(view.updateAvailable).toBe(false)
+    expect(view.line).toBe(en.updates.latestBody)
+  })
+
+  it('hides the client status card while a bundle restart is pending', () => {
+    $updateApply.set(IDLE_APPLY)
+    $updateStatus.set({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
+    const version = { appVersion: '0.19.0', bundleSwapPending: false } as DesktopVersionInfo
+    const { rerender, unmount } = render(<UpdateStatusCard target="client" version={version} />)
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    rerender(<UpdateStatusCard target="client" version={{ ...version, bundleSwapPending: true }} />)
+    expect(screen.queryByText(en.updates.cantReach)).toBeNull()
+    expect(screen.queryByText('ECONNREFUSED', { exact: false })).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<UpdateStatusCard target="client" version={version} />)
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.updates.checkNow })).toBeTruthy()
+    unmount()
+    $updateStatus.set(null)
+  })
+
+  it('keeps the independent backend status visible during a client restart', () => {
+    $backendUpdateApply.set(IDLE_APPLY)
+    $backendUpdateStatus.set({ supported: true, error: 'backend-check-failed' })
+
+    const { unmount } = render(
+      <UpdateStatusCard target="backend" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />
+    )
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    unmount()
+    $backendUpdateStatus.set(null)
+  })
+
+  it('backend target says the backend is current, not "you"', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      status: { supported: true, behind: 0 },
+      target: 'backend',
+      u: en.updates
+    })
+
+    expect(view.line).toBe(en.updates.latestBodyBackend)
+  })
+})
+
+describe('VersionHero bundle banners', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  const version = (over: Partial<DesktopVersionInfo>): DesktopVersionInfo =>
+    ({ appVersion: '0.19.0', ...over }) as DesktopVersionInfo
+
+  const stubRelaunch = () => {
+    const relaunchApp = vi.fn().mockResolvedValue(undefined)
+    const original = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { ...original, openExternal: vi.fn(), relaunchApp }
+    })
+
+    return relaunchApp
+  }
+
+  it('shows an R2 channel name that is not a built-in translated label', (): void => {
+    render(<VersionHero version={version({ channel: 'pm-preview' })} />)
+
+    expect(screen.getByText(`${en.updates.version('0.19.0')} · pm-preview`)).toBeTruthy()
+  })
+
+  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+    'localizes version channels in %s',
+    (locale: Locale, copy: Translations): void => {
+      for (const channel of ['stable', 'canary'] as const) {
+        const label: string = copy.updates.channels[channel]
+
+        expect(label).toBeTypeOf('string')
+
+        const { unmount }: { unmount: () => void } = render(
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <VersionHero version={version({ channel })} />
+          </I18nProvider>
+        )
+
+        expect(screen.getByText(`${copy.updates.version('0.19.0')} · ${label}`)).toBeTruthy()
+        unmount()
+      }
+    }
+  )
+
+  // FAIL-BEFORE (C19): the shared About extraction dropped the swap-pending
+  // restart affordance even though main still produces bundleSwapPending and
+  // exposes the relaunchApp IPC — users could no longer finish an applied
+  // update from the UI.
+  it('swap-pending: restart banner wired to relaunchApp, not the installer link', () => {
+    const relaunchApp = stubRelaunch()
+
+    render(<VersionHero version={version({ bundleSwapPending: true })} />)
+
+    expect(screen.getByText(en.updates.bundleSwapPending)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: en.updates.bundleSwapPendingAction }))
+    expect(relaunchApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('out-of-sync without a pending swap: keeps the get-installer banner', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true })} />)
+
+    expect(screen.getByText(en.updates.bundleOutOfSync)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
+    expect(screen.queryByRole('button', { name: en.updates.bundleSwapPendingAction })).toBeNull()
+  })
+
+  it('a pending swap wins over the out-of-sync banner — restart, not reinstall', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true, bundleSwapPending: true })} />)
+
+    expect(screen.getByText(en.updates.bundleSwapPending)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+  })
+
+  it('no flags: no banner at all', () => {
+    render(<VersionHero version={version({})} />)
+
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+    expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
+  })
+})

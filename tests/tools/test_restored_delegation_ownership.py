@@ -1,6 +1,11 @@
 """Regression coverage for #64484 — durable-restored delegation completions
 must never be adopted by a session that cannot positively prove ownership.
 
+Fixture timestamps are recent (now-based): restore_undelivered_completions
+terminally drops pending completions older than _MAX_COMPLETION_REPLAY_AGE_S,
+so epoch-era toy timestamps would exercise the staleness cap instead of the
+restored-flag contract under test here.
+
 Layers under test:
 1. ``restore_undelivered_completions`` stamps every restored event with
    ``restored=True`` (in-memory only).
@@ -13,8 +18,12 @@ Layers under test:
 
 import json
 import queue
+import sqlite3
+import time
+from contextlib import closing
 
 from tools.process_registry import ProcessRegistry
+from persistence_assembly import profile_scope, store_location
 
 
 def _make_registry():
@@ -41,8 +50,8 @@ def _delegation_event(session_key="", restored=False, delegation_id="d1"):
         "summary": "SECRET RESULT",
         "api_calls": 3,
         "duration_seconds": 1.5,
-        "dispatched_at": 1.0,
-        "completed_at": 2.0,
+        "dispatched_at": time.time() - 2.0,
+        "completed_at": time.time() - 1.0,
     }
     if restored:
         evt["restored"] = True
@@ -53,7 +62,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     """Every durable completion re-enqueued at startup carries restored=True."""
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "async_delegations.db")
+    monkeypatch.setattr(ad, "_scope", lambda: profile_scope(home=tmp_path))
     record = {
         "delegation_id": "d-old",
         "goal": "old goal",
@@ -65,7 +74,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
         "origin_ui_session_id": "",
         "parent_session_id": "OLD_SESSION_A",
         "status": "running",
-        "dispatched_at": 1.0,
+        "dispatched_at": time.time() - 2.0,
         "completed_at": None,
         "interrupt_fn": None,
     }
@@ -81,7 +90,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert got["session_key"] == "OLD_SESSION_A"
 
     # The stamp is in-memory only — the durable payload is unchanged.
-    with ad._connect() as conn:
+    with closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         row = conn.execute(
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-old'"
         ).fetchone()

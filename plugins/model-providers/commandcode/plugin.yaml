@@ -1,0 +1,5 @@
+name: commandcode-provider
+kind: model-provider
+version: 1.0.0
+description: CommandCode — unified multi-model API (OpenAI chat completions + Anthropic Messages)
+author: Nous Research

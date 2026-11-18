@@ -18,20 +18,20 @@ Test patterns for the marker emit checks adapted from PR #32375
 (@LeonSGP43) with credit.
 """
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
-    _collect_protected_skill_names,
+    _collect_ghosted_skill_names,
     _extract_pruned_skill_names,
-    _MAX_PRUNED_SKILL_MARKERS,
     _reinject_pruned_skill_markers,
     _skill_pruned_marker,
     _summarize_tool_result,
 )
-
 
 def _make_compressor(**overrides):
     kwargs = dict(
@@ -45,7 +45,6 @@ def _make_compressor(**overrides):
         "agent.context_compressor.get_model_context_length", return_value=100000
     ):
         return ContextCompressor(**kwargs)
-
 
 def _skill_view_pair(call_id, skill_name, size=6000):
     return [
@@ -68,7 +67,6 @@ def _skill_view_pair(call_id, skill_name, size=6000):
         },
     ]
 
-
 class TestSkillPrunedMarkerEmit:
     """Marker emit — patterns adapted from PR #32375 (@LeonSGP43)."""
 
@@ -80,13 +78,25 @@ class TestSkillPrunedMarkerEmit:
         assert _skill_pruned_marker("docker-management") in summary
         assert "reload with skill_view(name='docker-management')" in summary
 
-    def test_small_skill_view_summary_not_marked(self):
+    def test_every_loaded_skill_view_is_marked_failed_views_are_not(self):
+        """Small skills lose their body to the stub too, so they get the marker; a failed view loaded nothing."""
         summary = _summarize_tool_result(
             "skill_view", '{"name":"docker-management"}', "x" * 1234
         )
-        assert summary == "[skill_view] name=docker-management (1,234 chars)"
-        assert SKILL_PRUNED_MARKER_PREFIX not in summary
-
+        assert summary == "[skill_view] name=docker-management (1,234 chars) " + _skill_pruned_marker("docker-management")
+        failed = json.dumps({"success": False, "error": "Skill 'nope' not found. " + "Available: a, b. " * 30})
+        failed_stub = _summarize_tool_result("skill_view", '{"name":"nope"}', failed)
+        assert SKILL_PRUNED_MARKER_PREFIX not in failed_stub
+        # Neither the raw failure nor its stub is listed for reload later, by the collector or the fallback summary.
+        for content in (failed, failed_stub):
+            turns = _skill_view_pair("call_nope", "nope")
+            turns[1]["content"] = content
+            assert _collect_ghosted_skill_names(turns) == []
+            assert "skill_view(name='nope')" not in _make_compressor()._build_static_fallback_summary(turns)
+        # Parallel loads on one assistant row are each listed under their own name.
+        pair_one, pair_two = _skill_view_pair("call_1", "one", 300), _skill_view_pair("call_2", "two", 300)
+        row = {**pair_one[0], "tool_calls": pair_one[0]["tool_calls"] + pair_two[0]["tool_calls"]}
+        assert _collect_ghosted_skill_names([row, pair_one[1], pair_two[1]]) == ["one", "two"]
 
     def test_marker_extractor_round_trips_the_emitted_marker(self):
         """Emit and check sides share one canonical string.
@@ -98,7 +108,6 @@ class TestSkillPrunedMarkerEmit:
         summary = _summarize_tool_result("skill_view", '{"name":"pdf"}', "x" * 6000)
         assert _extract_pruned_skill_names(summary) == ["pdf"]
         assert _skill_pruned_marker("pdf") in summary
-
 
 class TestReinjectPrunedSkillMarkers:
 
@@ -116,13 +125,10 @@ class TestReinjectPrunedSkillMarkers:
         assert out.count(_skill_pruned_marker("alpha")) == 1
         assert out.count(_skill_pruned_marker("beta")) == 1
 
-
-
     def test_reinjected_summary_still_classifies_standalone(self):
         body = _reinject_pruned_skill_markers("## Goal\nwork\n", ["pdf"])
         full = SUMMARY_PREFIX + "\n\n" + body
         assert ContextCompressor.classify_summary_content(full) == "standalone"
-
 
 class TestProtectedSkillPrune:
     """Phase-1 prune must not demote a just-loaded skill (#32106)."""
@@ -133,7 +139,6 @@ class TestProtectedSkillPrune:
             role = "user" if (start + i) % 2 == 0 else "assistant"
             out.append({"role": role, "content": f"filler {start + i} " + "y" * 400})
         return out
-
 
     def test_recently_loaded_skill_survives_prune(self):
         c = _make_compressor()
@@ -148,7 +153,6 @@ class TestProtectedSkillPrune:
         skill_row = result[11]
         assert skill_row["content"].startswith("# fresh-skill instructions")
         assert SKILL_PRUNED_MARKER_PREFIX not in skill_row["content"]
-
 
     def test_pressure_demotion_overrides_skill_protection(self):
         """Pass-4 must still demote protected skill bodies (#61932 guard)."""
@@ -166,7 +170,6 @@ class TestProtectedSkillPrune:
         skill_row = result[3]
         assert pruned >= 1
         assert _skill_pruned_marker("fresh-skill") in skill_row["content"]
-
 
 class TestMarkerSurvivesRealCompress:
     """P2 layer: markers survive a real compress() with a mocked aux LLM."""
@@ -220,7 +223,7 @@ class TestMarkerSurvivesRealCompress:
             "1. Loaded some skills and worked on the report."
         )
         with (
-            patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=9),
             patch(
                 "agent.context_compressor.call_llm", return_value=drop_response
             ) as mock_call,
@@ -231,9 +234,6 @@ class TestMarkerSurvivesRealCompress:
         assert _skill_pruned_marker("pdf") in summary_text
         # Stored iterative-update state carries the marker too.
         assert _skill_pruned_marker("pdf") in c._previous_summary
-
-
-
 
     def test_marker_survives_iterative_recompression(self):
         """Markers in a rehydrated handoff summary survive iterative rewrites.
@@ -264,12 +264,51 @@ class TestMarkerSurvivesRealCompress:
         summary_text = self._summary_text_of(result)
         assert _skill_pruned_marker("pdf") in summary_text
 
+    def test_slash_invoked_skill_is_marked_and_quoted_as_typed(self):
+        """A /skill turn carries its body inline: compaction lists the skill for reload and quotes only what
+        the user typed, never the skill body as "the user's actual words"."""
+        from agent.skill_commands import _build_skill_message
+        note = ('[IMPORTANT: The user has invoked the "probe-inv" skill, indicating they want '
+                "you to follow its instructions. The full skill content is loaded below.]")
+        body = "RULE: include INV-HERON.\n" + "skill body prose. " * 600
+        invocation = _build_skill_message({"name": "probe-inv", "content": body}, Path("/skills/probe-inv"), note,
+                                          user_instruction="remember PLUM-77")
+        # A gateway auto-load turn whose skill lists supporting files: the request follows those blocks.
+        auto = _build_skill_message(
+            {"name": "gw-skill", "content": "gateway skill body", "linked_files": {"references": ["references/gw.md"]},
+             "setup_needed": True, "setup_note": "First setup step.\nSecond setup step."},
+            Path("/skills/gw-skill"),
+            '[IMPORTANT: The "gw-skill" skill is auto-loaded. Follow its instructions for this session.]',
+        ) + "\n\nhello from the gateway"
+        c = _make_compressor(protect_first_n=1, protect_last_n=2, tail_mode="lean")
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": auto},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": invocation},
+            {"role": "assistant", "content": "INV-HERON noted. " + "w" * 400},
+            {"role": "user", "content": "continue " + "c" * 400},
+            {"role": "assistant", "content": "more work " + "z" * 500},
+            {"role": "user", "content": "latest ask"},
+            {"role": "assistant", "content": "ack"},
+        ]
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=9),
+            patch("agent.context_compressor.call_llm", return_value=self._mock_response("## Goal\nWork.")),
+        ):
+            result = c.compress(msgs, force=True)
+        summary_text = self._summary_text_of(result)
+        assert _skill_pruned_marker("probe-inv") in summary_text
+        assert "/probe-inv remember PLUM-77" in summary_text
+        assert "skill body prose" not in summary_text
+        assert "scripts/foo.js" not in summary_text  # the scaffold footer's example path is not session work
+        assert _skill_pruned_marker("gw-skill") in summary_text
+        assert "> hello from the gateway" in summary_text and "references/gw.md" not in summary_text
+
 
 class TestReinjectionBoundsAndRedaction:
-    def test_marker_list_is_capped(self):
-        names = [f"skill-{i}" for i in range(_MAX_PRUNED_SKILL_MARKERS + 15)]
-        out = _reinject_pruned_skill_markers("body", names)
-        assert out.count(SKILL_PRUNED_MARKER_PREFIX) == len(names)
         # The cap is applied at the collection sites in _generate_summary /
         # _build_static_fallback_summary; the helper itself is mechanical.
 
@@ -281,18 +320,3 @@ class TestReinjectionBoundsAndRedaction:
         secret = "ghp_" + "a1B2" * 6
         out = _reinject_pruned_skill_markers("body", [f"x {secret}"])
         assert secret not in out
-
-
-class TestSkillsGuidanceSafetyRule:
-    def test_safety_rule_present_with_real_newlines(self):
-        from agent.prompt_builder import SKILLS_GUIDANCE
-
-        assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
-        assert "skill_view(name='...')" in SKILLS_GUIDANCE
-        # The rule list must use REAL newlines — the original PR hunk risked
-        # literal backslash-n escape text rendering into the system prompt.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
-        for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE

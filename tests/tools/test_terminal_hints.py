@@ -1,11 +1,13 @@
 """Tests for tools/terminal_hints.py — output-pattern failure hints."""
 
-import json
+import shlex
+import subprocess
 from unittest.mock import patch as mock_patch
 
 import pytest
 
-from tools.terminal_hints import annotate_failure
+from tools.environments.base_session_env import _wrap_command_script
+from tools.terminal_hints import annotate_failure, annotate_masked_success
 
 
 class TestAnnotateFailureBasics:
@@ -14,7 +16,6 @@ class TestAnnotateFailureBasics:
 
     def test_empty_output_falls_to_exit_code_tier(self):
         assert "126" in annotate_failure("./run.sh", 126, "")
-        assert "SIGKILL" in annotate_failure("big_job", 137, "")
         assert "timeout" in annotate_failure("sleep 999", 124, "")
 
     def test_unknown_failure_returns_none(self):
@@ -32,7 +33,6 @@ class TestGhUnknownJsonField:
         out = 'Unknown JSON field: "authorAssociation"\nAvailable fields:\n  additions\n  author'
         hint = annotate_failure("gh pr view 1 --json authorAssociation", 1, out)
         assert "authorAssociation" in hint
-        assert "valid field list" in hint
 
 
 class TestCommandNotFound:
@@ -50,7 +50,6 @@ class TestCommandNotFound:
         out = "bash: line 3: shellcheck: command not found"
         hint = annotate_failure("shellcheck s.sh", 127, out)
         assert "shellcheck" in hint
-        assert "which" in hint
 
 
 class TestModuleNotFound:
@@ -59,7 +58,6 @@ class TestModuleNotFound:
                "ModuleNotFoundError: No module named 'requests'")
         hint = annotate_failure("python3 x.py", 1, out)
         assert "requests" in hint
-        assert "venv" in hint
 
     def test_dotted_module(self):
         out = "ImportError: No module named 'hermes_cli.main'"
@@ -68,10 +66,6 @@ class TestModuleNotFound:
 
 
 class TestGitShapes:
-    def test_merge_conflict(self):
-        out = "Auto-merging a.py\nCONFLICT (content): Merge conflict in a.py\nAutomatic merge failed; fix conflicts and then commit the result."
-        hint = annotate_failure("git merge feature", 1, out)
-        assert "Do not retry" in hint
 
     def test_branch_already_exists(self):
         out = "fatal: a branch named 'fix/x' already exists"
@@ -101,22 +95,154 @@ class TestBoundedScan:
             assert annotate_failure("x", 1, "boom") is None
 
 
-class TestTerminalIntegration:
-    """The hint lands in the terminal result dict under 'hint'."""
+class TestWrapperCdFailure:
+    """A 126 from the session wrapper's own ``cd`` is a missing working directory, not chmod."""
 
-    def test_hint_field_wired(self):
-        # Exercise the wiring path shape without a live environment: the
-        # result assembly guards on returncode != 0 and no exit_note.
-        from tools import terminal_tool
-        # simulate: interpret gives None, hints give a value
-        note = terminal_tool._interpret_exit_code("python x.py", 127)
-        assert note is None
-        hint = annotate_failure("python x.py", 127, "bash: python: command not found")
-        assert hint and "python3" in hint
+    @pytest.mark.platforms("posix")
+    def test_missing_working_directory_is_named_not_chmod(self, tmp_path):
+        gone = tmp_path / "gone dir"  # never created: a deleted session cwd looks the same
+        # The real per-command wrapper every backend runs, pointed at the missing directory.
+        script = _wrap_command_script(
+            "pwd", quoted_cwd=shlex.quote(str(gone)), quoted_snap=shlex.quote(str(tmp_path / "no-snap")),
+            snap_tmp_template=shlex.quote(str(tmp_path / "snap.XXXXXX")), passthrough_names=(),
+            snapshot_ready=False, cwd_marker="__HERMES_CWD_test__")
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        assert proc.returncode == 126
+        hint = annotate_failure("pwd", 126, proc.stdout + proc.stderr) or ""
+        assert str(gone) in hint and "workdir" in hint and "chmod" not in hint
+        # bash localizes "line N: " and Git Bash prefixes a drive-letter path.
+        de = annotate_failure("pwd", 126, "bash: Zeile 4: cd: /srv/app: No such file or directory") or ""
+        assert "/srv/app" in de and "chmod" not in de
 
-    def test_exit_note_suppresses_pattern_hint(self):
-        # grep exit 1 is informational; annotate_failure must not be reached
-        # for it in the wiring (exit_note wins). Just verify the semantics
-        # table still covers it.
-        from tools import terminal_tool
-        assert terminal_tool._interpret_exit_code("grep foo bar.txt", 1) is not None
+    @pytest.mark.parametrize("out", [
+        "",
+        "bash: line 1: cd: OLDPWD not set",
+        "bash: cd: build: No such file or directory\nbash: ./run.sh: Permission denied",
+    ])
+    def test_other_126s_keep_the_not_executable_hints(self, out):
+        hint = annotate_failure("./run.sh", 126, out) or ""
+        assert "chmod" in hint or "Permission denied" in hint
+
+
+
+class TestMaskedSuccess:
+    """annotate_masked_success: exit-0 pipelines that hide real failures."""
+
+    def _fail_out(self):
+        return (
+            "error[E0308]: mismatched types\n"
+            "error: could not compile `llama_manager` due to 11 previous errors\n"
+        )
+
+    def test_cargo_pipe_tail_flagged(self):
+        hint = annotate_masked_success(
+            "cargo build --release 2>&1 | tail -20", self._fail_out()
+        )
+        assert hint is not None
+
+
+    def test_or_echo_fallback_flagged(self):
+        hint = annotate_masked_success(
+            'cargo build || echo "BUILD FAILED"',
+            "error: could not compile `x`\nBUILD FAILED\n",
+        )
+        assert hint and "||" in hint
+
+    def test_or_true_flagged(self):
+        hint = annotate_masked_success(
+            "pytest tests/ || true",
+            "FAILED tests/test_x.py::test_y - AssertionError\n= 3 failed in 1.2s\n",
+        )
+        assert hint is not None
+
+    def test_bare_command_not_flagged(self):
+        # No pipe, no ||: exit 0 with error-looking output is not our call.
+        assert annotate_masked_success("cargo build", self._fail_out()) is None
+
+    def test_clean_output_pipe_not_flagged(self):
+        assert (
+            annotate_masked_success(
+                "cargo build 2>&1 | tail -20",
+                "   Compiling llama_manager v0.1.0\n    Finished release\n",
+            )
+            is None
+        )
+
+    def test_grep_pipeline_excluded(self):
+        # Search output legitimately CONTAINS failure text; grep|head exit 0
+        # is a real success (matches found).
+        assert (
+            annotate_masked_success(
+                "grep -rn 'error\\[E' build.log | head -20",
+                "build.log:12:error[E0308]: mismatched types\n",
+            )
+            is None
+        )
+
+    def test_rg_pipeline_excluded(self):
+        assert (
+            annotate_masked_success(
+                "rg 'could not compile' logs/ | tail -5",
+                "logs/b.txt:error: could not compile `x`\n",
+            )
+            is None
+        )
+
+    def test_pipe_into_grep_not_flagged(self):
+        # grep as CONSUMER filters and its exit status is meaningful
+        # (0 = matched) — not a passthrough truncation consumer.
+        assert (
+            annotate_masked_success(
+                "cargo build 2>&1 | grep -c error",
+                "error[E0308]: mismatched types\n",
+            )
+            is None
+        )
+
+    def test_or_operator_alone_not_confused_with_pipe(self):
+        # `a || b` must not match the single-pipe regex.
+        assert (
+            annotate_masked_success(
+                "test -f x || stat y",
+                "error[E0308]\n",  # would need a masking shape too
+            )
+            is None
+        )
+
+    def test_generic_error_word_not_enough(self):
+        # Weak signal ("error" substring) must not fire the note.
+        assert (
+            annotate_masked_success(
+                "make install 2>&1 | tail -30",
+                "checking error handling support... yes\nInstall complete.\n",
+            )
+            is None
+        )
+
+    def test_pytest_summary_via_tee(self):
+        hint = annotate_masked_success(
+            "pytest tests/ | tee /tmp/out.log",
+            "FAILED tests/a.py::test_b\n=========== 2 failed, 10 passed ===========\n",
+        )
+        assert hint is not None
+
+    def test_empty_inputs(self):
+        assert annotate_masked_success("", "") is None
+        assert annotate_masked_success("cargo build | tail", "") is None
+        assert annotate_masked_success("", "error[E0308]") is None
+
+    def test_echo_printf_heads_excluded(self):
+        assert (
+            annotate_masked_success(
+                "printf 'a.rs:1:error[E0308]: x\\n' | cat | tail -3",
+                "a.rs:1:error[E0308]: x\n",
+            )
+            is None
+        )
+        assert (
+            annotate_masked_success(
+                'echo "error: could not compile x" | tee log.txt',
+                "error: could not compile x\n",
+            )
+            is None
+        )

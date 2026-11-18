@@ -955,7 +955,9 @@ class StoreHolder:
         rescope: Optional[Callable[[sqlite3.DatabaseError], sqlite3.DatabaseError]] = None,
     ) -> list[sqlite3.Row]:
         """``fetchall()`` of one read-only statement via ``_read_ctx``; *rescope*: see ``_read_retrying_ioerr``."""
-        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall(), rescope=rescope)
+        def read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(sql, params).fetchall()
+        return self._read_retrying_ioerr(read) if rescope is None else self._read_retrying_ioerr(read, rescope=rescope)
 
     def _read_retrying_ioerr(
         self, fn: Callable[[sqlite3.Connection], T], *,

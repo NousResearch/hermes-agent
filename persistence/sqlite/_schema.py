@@ -423,7 +423,11 @@ def _migrate_misaligned_fts_source(holder: StoreHolder, cursor: sqlite3.Cursor, 
         if stale_view:
             # CREATE VIEW IF NOT EXISTS never replaces a differing view; the index is rebuilt from it below.
             cursor.execute("DROP VIEW messages_fts_src")
-        _ensure_fts_schema(holder, cursor, "messages_fts", FTS_SQL)
+        if has_messages:
+            _ensure_fts_schema(holder, cursor, "messages_fts", FTS_SQL)
+        else:
+            # Runs inside SAVEPOINT fts_align_empty, which executescript's implicit COMMIT would end.
+            _execute_ddl_script_transactional(cursor, FTS_SQL)
         if has_messages:
             cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             # The cleared markers below are shared with the trigram backfill: finish that index too, or rows

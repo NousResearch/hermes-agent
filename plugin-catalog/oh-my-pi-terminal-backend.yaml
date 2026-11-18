@@ -1,11 +1,11 @@
-name: omp
+name: oh-my-pi-terminal-backend
 repo: https://github.com/Thaeland/hermes-omp-backend
-sha: 5a1fbf6200791cbc9a302c0b56aed1b4b71e89e8
+sha: f3a105f9a788b508a2a6713900be1093d582b7c4
 description: >
   oh-my-pi (omp) terminal backend for Hermes Agent: Hermes's terminal, file
   and code tools run each task's commands through one long-lived
   `omp --mode rpc` session shell on this host, with lossless output transfer
-  past omp's inline caps. Select with `terminal.backend: omp`.
+  past omp's inline caps. Select with `terminal.backend: oh-my-pi-terminal-backend`.
   Disclosure — no Python dependencies and no network calls of its own (the
   spawned omp CLI may reach the model provider you configured for omp): it
   drives the `omp` CLI you install yourself

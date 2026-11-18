@@ -108,9 +108,9 @@ def test_two_matching_startup_entries_name_none_and_the_steps_ask_the_operator(t
 
 
 _H = "hermes -p default"  # a bare `hermes` would follow a sticky `hermes profile use` choice
-_TAIL = [f"{_H} gateway status", f"# then by what it prints: 'Gateway service not installed' -> {_H} gateway "
-         f"install; 'No gateway process detected' -> {_H} gateway start; 'Gateway process running' -> {_H} gateway "
-         "restart", "# the gateway takes a few seconds to serve the address: if the next line prints 'The gateway is "
+_TAIL = [f"{_H} gateway status", f"# then by what it prints: 'Gateway is not running' (no service installed) -> "
+         f"{_H} gateway install; 'No gateway process detected' -> {_H} gateway start; 'Gateway process running' or "
+         f"'Running manually' -> {_H} gateway restart", "# the gateway takes a few seconds to serve the address: if the next line prints 'The gateway is "
          "not running', wait 5 seconds and run it again", f"{_H} webapp --status"]
 
 

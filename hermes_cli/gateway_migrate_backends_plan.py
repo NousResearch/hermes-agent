@@ -301,7 +301,10 @@ _STATUS_LINES = {
     "posix": ("'Gateway is not running' (no service installed)",
               "'service is stopped', 'service is not loaded' or 'registered with launchd'",
               "'service is running', 'supervised by launchd' or 'Running manually'"),
-    "windows": ("'Gateway service not installed'", "'No gateway process detected'", "'Gateway process running'"),
+    # `hermes gateway status` on Windows: with no Scheduled Task or Startup entry it prints the shared
+    # "Gateway is not running" / "Running manually" lines; with one, gateway_windows.status() prints the rest.
+    "windows": ("'Gateway is not running' (no service installed)", "'No gateway process detected'",
+                "'Gateway process running' or 'Running manually'"),
 }
 # A gateway just installed, started or restarted takes a few seconds to bind before `webapp --status` sees it.
 WEBAPP_STATUS_WAIT = ("# the gateway takes a few seconds to serve the address: if the next line prints "

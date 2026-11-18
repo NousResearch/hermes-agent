@@ -1373,21 +1373,13 @@ class TestAdversarialEdgeCases:
         assert result.reason == FailoverReason.billing
         assert result.billing_unverified is True
 
-    def test_400_anthropic_console_spend_limit(self):
-        """Anthropic Console monthly spend cap arrives as HTTP 400
-        ("You have reached your specified API usage limits. You will regain
-        access on ..."). Must classify as billing — not format_error — so the
-        eager billing path and billing guidance engage; a spend cap was
-        previously surfaced as a malformed-request error, hiding a month-long
-        provider switch. (#80553)"""
-        e = MockAPIError(
-            "You have reached your specified API usage limits. You will regain access on 2026-09-01",
-            status_code=400,
-            body={"error": {
-                "type": "invalid_request_error",
-                "message": "You have reached your specified API usage limits. You will regain access on 2026-09-01",
-            }},
-        )
+    @pytest.mark.parametrize("scope", ["", "workspace "])
+    def test_400_anthropic_console_spend_limit(self, scope):
+        """Anthropic Console spend cap (account or workspace) arrives as HTTP 400
+        invalid_request_error. Must classify as billing, not format_error, so the
+        key rotates and fallback engages instead of retrying a month-long wall. (#80553)"""
+        msg = f"You have reached your specified {scope}API usage limits. You will regain access on 2026-09-01"
+        e = MockAPIError(msg, status_code=400, body={"error": {"type": "invalid_request_error", "message": msg}})
         result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
         assert result.reason == FailoverReason.billing
         assert result.should_fallback is True

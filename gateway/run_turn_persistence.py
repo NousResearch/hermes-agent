@@ -625,7 +625,10 @@ class GatewayTurnPersistenceMixin:
                         event.message_id, sid,
                     )
                 else:
-                    await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                    refused_before_model = agent_result.get("failure_reason") == "launch_credentials_unavailable"
+                    await store.append_to_transcript(
+                        sid, _user_row, skip_db=agent_persisted and not refused_before_model,
+                    )
                 # Close the failed turn: a user-only tail lets alternation repair merge this request
                 # into an unrelated future message and replay stale side effects (#107070).
                 await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))

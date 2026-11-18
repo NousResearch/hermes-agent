@@ -3,10 +3,8 @@ import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
-import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { ComposerSurfaceBacking } from '@/app/redesign/composer-surface-backing'
-import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
@@ -53,13 +51,15 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls, ComposerModelRow } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
+import { useComposerBusyInput } from './hooks/use-composer-busy-input'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
+import { useComposerImageRequests } from './hooks/use-composer-image-requests'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
@@ -190,16 +190,7 @@ export function ChatBar({
   const statusDrawer = useStatusDrawer(activeQueueSessionKey)
   const { codingDrawerId, collapsed: statusDrawerCollapsed, statusDrawerId, toggle: toggleStatusDrawer } = statusDrawer
 
-  const requestBusyConfig = useCallback<GatewayRequester>(
-    (method, params) => (gateway ? gateway.request(method, params) : Promise.reject(new Error('Gateway unavailable'))),
-    [gateway]
-  )
-
-  const busyInputMode = useBusyInputMode({
-    sessionId: sessionId ?? null,
-    storedSessionId: queueSessionKey ?? null,
-    requestGateway: requestBusyConfig
-  })
+  const { busyInputMode, requestBusyConfig } = useComposerBusyInput({ gateway, queueSessionKey, sessionId })
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
@@ -310,26 +301,7 @@ export function ChatBar({
     syncDraftFromEditor
   })
 
-  // Paste-to-focus: clipboard images from an unfocused ⌘V ride the bus (the
-  // window dispatcher has no handle on this composer's attachment scope).
-  // Same ingestion as a focused paste's image branch.
-  useEffect(() => {
-    if (!onAttachImageBlob) {
-      return undefined
-    }
-
-    return onComposerAttachImagesRequest(({ blobs, target }) => {
-      if (target !== scope.target) {
-        return
-      }
-
-      triggerHaptic('selection')
-
-      for (const blob of blobs) {
-        void onAttachImageBlob(blob)
-      }
-    })
-  }, [onAttachImageBlob, scope.target])
+  useComposerImageRequests(scope.target, onAttachImageBlob)
 
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.

@@ -63,7 +63,7 @@ import {
   newSessionInProfile,
   normalizeProfileKey
 } from '@/store/profile'
-import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -188,6 +188,7 @@ import {
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { useDesktopMetrics } from './hooks/use-desktop-metrics'
+import { useNewProjectSessionRequest } from './hooks/use-new-project-session-request'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
@@ -741,30 +742,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useFirstRunOnboarding(requestGateway, adoptSessionRoute, gatewayState === 'open')
 
-  // "New project" DRAG completion: the dialog created a project that was
-  // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
-  // its fresh session draft exactly there — the same `openNewSessionTile`
-  // create path the new-session drags use — so the project starts, and stays,
-  // where it was dropped. Consume-once: drop the request after handling.
-  const newProjectSessionRequest = useStore($newProjectSessionRequest)
-
-  useEffect(() => {
-    if (!newProjectSessionRequest) {
-      return
-    }
-
-    const { path, placement } = newProjectSessionRequest
-
-    $newProjectSessionRequest.set(null)
-    void openNewSessionTile(placement.dir, {
-      anchor: placement.anchor,
-      before: placement.before,
-      cwd: path,
-      // Same draft-tab contract as onNewSessionSplit: a center/strip drop is
-      // an unlisted draft tab until its first turn; an edge split lists.
-      listed: placement.dir === 'center' ? false : undefined
-    })
-  }, [newProjectSessionRequest, openNewSessionTile])
+  useNewProjectSessionRequest(openNewSessionTile)
 
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 

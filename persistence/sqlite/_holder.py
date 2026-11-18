@@ -275,11 +275,6 @@ class StoreHolder:
     _reopen_notice = False
     # Set by the registry's ``close_all`` (gateway shutdown) on every holder it closes.
     _closed_by_close_all = False
-    # The store keys (``ProfileScope.store_key``) this file is served under besides its own folder's: each backend
-    # handle adds the key it opened the holder for (``serve_fence_key``). A claimed turn issued by one of them fences
-    # every write here (``_turn_fence``).
-    _fence_keys: frozenset = frozenset()
-    _own_fence_key: Optional[str] = None
 
     @staticmethod
     def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
@@ -817,20 +812,6 @@ class StoreHolder:
             ) from exc
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
             self._wal_lock_guard = _lockguard.hold(self.db_path)
-
-    def serve_fence_key(self, key: str) -> None:
-        """Record that this file is served under store key ``key``: a claimed turn that store issued fences the writes
-        made here."""
-        if key not in self._fence_keys:
-            self._fence_keys = self._fence_keys | {key}
-
-    def fence_store_keys(self) -> frozenset:
-        """Every store key a claimed turn fencing this file's writes may carry: the keys it is served under and its
-        own profile folder's (``<home>/state.db``)."""
-        if self._own_fence_key is None:
-            from persistence.core.context import canonical_home_key
-            self._own_fence_key = canonical_home_key(Path(self.db_path).parent)
-        return self._fence_keys | {self._own_fence_key}
 
     def _execute_write(  # health: allow CC -- lock retry, rollback and repair share one deadline
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,

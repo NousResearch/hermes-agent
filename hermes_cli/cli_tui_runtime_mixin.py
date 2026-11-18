@@ -5,6 +5,7 @@ Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import os
@@ -482,6 +483,26 @@ class CLITuiRuntimeMixin:
                 _signal.signal(_signal.SIGINT, lambda signum, frame: None)
         except Exception:
             pass  # restricted environments
+
+    def _tui_run_application(self, app) -> None:
+        """Run the built prompt_toolkit app under this CLI's own loop exception handler.
+
+        ``Application.run()`` installs ``Application._handle_exception`` on the loop and restores
+        the handler it found on the way out. The subagent dock's Application
+        (``cli_subagent_monitor.open_monitor``) runs nested on that same loop; when it is cancelled
+        during ``asyncio.run`` shutdown it restores the *outer* app's handler, after that app has
+        already restored the original. The loop being closed is then owned by prompt_toolkit, so a
+        task destroyed while pending reaches ``ensure_future(in_term())`` with no current event
+        loop and logs ``RuntimeError: There is no current event loop in thread 'MainThread'``.
+
+        ``set_exception_handler=False`` keeps prompt_toolkit out of the handler slot, and
+        ``pre_run`` installs ours from inside the running loop -- setting it before ``app.run()``
+        can never work, because there is no running loop to attach it to yet.
+        """
+        def _claim_exception_handler() -> None:
+            asyncio.get_running_loop().set_exception_handler(self._tui_suppress_closed_loop_errors)
+
+        app.run(pre_run=_claim_exception_handler, set_exception_handler=False)
 
     def _tui_stdin_usable(self) -> bool:
         """Validate fd 0 before prompt_toolkit starts; on macOS fall back to a select() loop when kqueue can't watch it (uv-managed Python)."""

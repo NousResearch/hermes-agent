@@ -259,6 +259,14 @@ class SystemHost:
             return f"{self.home / 'config.yaml'} cannot be read or parsed ({type(exc).__name__})"
         return None
 
+    def dotenv_exists(self) -> bool:
+        return (self.home / ".env").exists()
+
+    def managed_env(self) -> dict[str, str]:
+        """The administrator-managed ``.env`` the backend applies last (read only)."""
+        from hermes_cli import managed_scope
+        return dict(managed_scope.load_managed_env() or {})
+
     def dotenv(self) -> dict[str, str]:
         return _dotenv_file(str(self.home / ".env"))
 

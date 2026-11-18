@@ -996,3 +996,52 @@ def test_a_unit_whose_default_home_cannot_be_told_blocks(home, capsys):
 
     assert code == engine.EXIT_BLOCKED
     assert any("sets HOME to something other than a plain absolute path" in b for b in out["plan"]["blockers"])
+
+
+# --- review round 2: the public URL as the old backend's process has it after load_hermes_dotenv
+
+
+def _dotenv_url(home, value):
+    with (home / ".env").open("a", encoding="utf-8") as f:
+        f.write(f"HERMES_DASHBOARD_PUBLIC_URL={value}\n")
+
+
+def test_the_homes_env_file_url_beats_the_launcher_env_and_config(home, capsys, monkeypatch):
+    """hermes_cli/main.py loads the home's .env over the launch environment (override), before YAML."""
+    _dotenv_url(home, "https://dotenv.example")
+
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: https://yaml.example\n",
+                          env={"HERMES_DASHBOARD_PUBLIC_URL": "https://launcher.example"})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://dotenv.example"
+
+
+def test_a_blank_env_file_url_overrides_the_launcher_and_falls_back_to_config(home, capsys, monkeypatch):
+    _dotenv_url(home, "")
+
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: https://yaml.example\n",
+                          env={"HERMES_DASHBOARD_PUBLIC_URL": "https://launcher.example"})
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://yaml.example"
+
+
+def test_the_managed_env_url_wins(home, capsys, monkeypatch):
+    from hermes_cli import managed_scope
+    monkeypatch.setattr(managed_scope, "load_managed_env", lambda: {"HERMES_DASHBOARD_PUBLIC_URL": "https://managed.example"})
+    _dotenv_url(home, "https://dotenv.example")
+
+    code, out = _url_plan(home, capsys, monkeypatch, "dashboard:\n  public_url: https://yaml.example\n")
+
+    assert code == engine.EXIT_OK and out["plan"]["public_url"] == "https://managed.example"
+
+
+@pytest.mark.parametrize("webapp_url", [False, True])
+def test_an_enabled_secret_source_blocks_unless_webapp_public_url_is_set(home, capsys, monkeypatch, webapp_url):
+    config = "secrets:\n  vault:\n    enabled: true\ndashboard:\n  public_url: https://yaml.example\n"
+    if webapp_url:
+        config += "webapp:\n  public_url: https://chosen.example\n"
+
+    code, out = _url_plan(home, capsys, monkeypatch, config)
+
+    blocked = any("external secret source is enabled" in b for b in out["plan"]["blockers"])
+    assert blocked is not webapp_url and (code == engine.EXIT_BLOCKED) is not webapp_url

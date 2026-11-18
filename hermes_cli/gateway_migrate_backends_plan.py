@@ -412,7 +412,8 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
         if item is not None and item.pid and (turns := host.running_turns(item.pid, host.start_time(item.pid))):
             why += f" {turns} turn(s) are running on it now: stopping it interrupts them, so let them finish first."
         return item, why, windows_steps(old_host, old_port, item, env_keys=keys, home=str(host.home),
-                                        public_url=resolve_public_url(host.effective_config(), env))
+                                        public_url=resolve_public_url(host.effective_config(),
+                                                                      backend_url_env(host, env)))
     keys: list[str] = []
     env: dict = {}
     if item is not None and item.supervisor == "systemd" and item.unit and item.scope:
@@ -421,7 +422,7 @@ def _unsupported_entry(item: Optional[BackendItem], kind: str, host) -> tuple:
         keys = [k for k, v in env.items() if k.startswith(_AUTH_PREFIX) and v and dotenv.get(k) != v]
     elif item is not None and item.pid:
         env = host.process_env(item.pid) or {}
-    url = resolve_public_url(host.effective_config(), env)
+    url = resolve_public_url(host.effective_config(), backend_url_env(host, env))
     return item, why, manual_steps(old_host, old_port, item, env_keys=keys, home=str(host.home), public_url=url)
 
 
@@ -518,6 +519,44 @@ def resolve_public_url(cfg: dict, env: Optional[dict]) -> tuple[Optional[str], O
     source = "HERMES_DASHBOARD_PUBLIC_URL" if from_env else "dashboard.public_url"
     url = accepted_public_url(value)
     return (url, None) if url else (None, f"The old backend's public URL ({source})")
+
+
+_URL_KEY = "HERMES_DASHBOARD_PUBLIC_URL"
+
+
+def backend_url_env(host, launch_env: Optional[dict]) -> dict:
+    """``{HERMES_DASHBOARD_PUBLIC_URL: value}`` as the old backend's process has it after startup, from the
+    environment it was launched with: ``load_hermes_dotenv`` (hermes_cli/main.py) loads the home's ``.env``
+    over it (override), clears a profile-managed key the ``.env`` lacks, and applies the managed ``.env``
+    last. External secret sources are not modelled: ``secret_source_blocker`` stops the plan when one is on.
+    Empty when the backend has no such variable."""
+    from hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
+    managed = host.managed_env()
+    if _URL_KEY in managed:
+        return {_URL_KEY: managed[_URL_KEY]}
+    dotenv = host.dotenv()
+    if _URL_KEY in dotenv:
+        return {_URL_KEY: dotenv[_URL_KEY]}
+    if host.dotenv_exists() and _URL_KEY in _PROFILE_MANAGED_ENV_KEYS:
+        return {}
+    value = (launch_env or {}).get(_URL_KEY)
+    return {_URL_KEY: value} if value is not None else {}
+
+
+def secret_source_blocker(host) -> Optional[str]:
+    """An enabled external secret source (``secrets:``) may set or override HERMES_DASHBOARD_PUBLIC_URL
+    after the ``.env`` loads, so which public URL the old backend serves cannot be told, unless
+    ``webapp.public_url`` is already set (the plan then copies none)."""
+    cfg = host.effective_config()
+    webapp, secrets = cfg.get("webapp"), cfg.get("secrets")
+    if isinstance(webapp, dict) and webapp.get("public_url"):
+        return None
+    if not (isinstance(secrets, dict) and any(isinstance(v, dict) and v.get("enabled") is True
+                                                for v in secrets.values())):
+        return None
+    return ("An external secret source is enabled (secrets: in config.yaml), and it may set the old backend's "
+            "HERMES_DASHBOARD_PUBLIC_URL, so the public URL it serves cannot be told. Set webapp.public_url to "
+            "the address the Webapp should be reached at, then re-run. Nothing changed.")
 
 
 def _public_url(plan: BackendPlan, cfg: dict, env: Optional[dict]) -> None:
@@ -676,6 +715,8 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         plan.unsupported = [(item, why, []) for item, why, _steps in plan.unsupported]
         plan.candidates = []
         return plan
+    if (plan.unsupported or plan.candidates) and (problem := secret_source_blocker(host)):
+        plan.blockers.append(problem)
     if plan.unsupported:
         _manual_target(plan, host, keep_webapp)
         return plan
@@ -690,7 +731,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
     if plan.old_host is None:
         return plan
     _credentials(plan, env, host, cfg)
-    _public_url(plan, cfg, env)
+    _public_url(plan, cfg, backend_url_env(host, env))
     if plan.new_host is not None:
         _proposed_webapp(plan, host)
     _gateway(plan, host)

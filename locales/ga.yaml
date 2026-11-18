@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "úsáid an tsoláthraí + teachtaireachtaí nua measta"
     source_line: "Foinse: {source}; is meastacháin áitiúla iad na comhairimh chatagóire."
     hint_all: "Úsáid /context all le haghaidh costas de réir scile agus de réir tacar uirlisí."
+    cache_warm: "Taisce an phrompta: te go dtí {until} ({remaining} fágtha; {ttl}, {confidence})."
+    cache_expired: "Taisce an phrompta: chuaigh in éag {ago} ó shin ({ttl}, {confidence}); athphróiseálfaidh an chéad teachtaireacht eile an prompta iomlán."
+    cache_maybe_warm: "Taisce an phróimpte: d'fhéadfadh sí a bheith te go dtí {until} ({remaining} eile ar a mhéad; {ttl}, {confidence})."
+    cache_unknown_moved: "Taisce an phrompta: anaithnid (d'athraigh an bealach, an seisiún nó an comhthéacs ón iarratas taisce deireanach)."
+    cache_unknown_route: "Taisce an phrompta: anaithnid (ní fhoilsíonn an soláthraí seo a choinneáil taisce)."
+    cache_unknown_runtime: "Taisce an phróimpte: anaithnid (socraíonn an timpeallacht rite seo a roghanna taisce féin, nach féidir le Hermes a fheiceáil)."
+    cache_unknown_storage: "Taisce an phróimpte: anaithnid (níorbh fhéidir stór an tseisiúin a léamh)."
+    cache_confidence:
+      proven: "cruthaithe"
+      declared: "fógartha"
+      assumed: "glactha leis"
   status:
     header: "📊 **Stádas Hermes Gateway**"
     matrix_scope_header: "**Scóip Matrix:**"
@@ -3328,6 +3339,10 @@ cli:
     total: "📚 {count} scil(eanna) ar fáil"
     added_header: "➕ Scileanna Curtha leis:"
     removed_header: "➖ Scileanna Bainte:"
+  gateway_restart:
+    waiting: "Tá Hermes ag atosú chun nuashonrú nó atosú a chríochnú; ag fanacht go dtiocfaidh sé ar ais…"
+    timed_out: "Níor tháinig Hermes ar ais óna atosú in am. Seiceáil `hermes gateway status`, ansin tosaigh `hermes` arís."
+    stopped: "Stopadh ag fanacht le hatosú Hermes; níor tosaíodh aon rud."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Níl stór na seisiún ar fáil[/bold yellow] — [bold]NÍ shábhálfar[/bold] an comhrá seo agus ní féidir é a atosú níos déanaí. Tá cuardach seisiún roimhe seo díchumasaithe freisin.\n  Cúis: {reason}.\n  {action}\n  [dim]Sonraí: {details}[/dim]"
     unavailable_plain: "RABHADH: Níl stór na seisiún ar fáil — NÍ shábhálfar an comhrá seo agus ní féidir é a atosú níos déanaí. Cúis: {reason}. {action}"
@@ -4006,7 +4021,7 @@ plan_usage:
   large_notice_limit_stops: "Samhail mhór: tá do theorainn {name} bainte amach ({resets}), mar sin ní rithfidh sí go dtí sin."
   large_notice_percent: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta. Teorainn mhíosúil na samhlacha móra: {percent} úsáidte."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Rith /rollback chun seicphointí a liostú agus ceann a athchóiriú."
     more: "+{count} eile"

@@ -314,14 +314,14 @@ class TestDaemonOneshotTurns:
     def test_unattended_finite_turn_approves_execute_code_but_plain_finite_stays_single_query(self, monkeypatch):
         from unittest.mock import patch as mock_patch
         from gateway.session_finite import admit_finite, finite_turn_scope
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
 
         for key in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
             monkeypatch.delenv(key, raising=False)
         assert admit_finite({"finite": True, "unattended": True}) == {"finite": True, "unattended": True}
         assert admit_finite({"finite": True, "unattended": False}) == {"finite": True}
         for bad in ({"unattended": True}, {"finite": False, "unattended": True}, {"finite": True, "unattended": 1}):
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 admit_finite(bad)
         with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             with finite_turn_scope(True, unattended=True):

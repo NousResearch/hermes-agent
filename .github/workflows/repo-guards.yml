@@ -138,9 +138,13 @@ jobs:
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI
       # accepted it and ~1500 files' `git blame` collapsed onto its parent-less root commit.
+      # Judges the PR head, not HEAD: HEAD is the synthetic merge commit, whose first parent is
+      # main's tip, so it always shares an ancestor with main (#128930).
       - id: merge-base-check
         name: Reject PRs with no common ancestor on main
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' }}
+        env:
+          _HERMES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/check_common_ancestor.py
 
       - name: Upload review status artifact (history check)

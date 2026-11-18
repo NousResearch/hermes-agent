@@ -4,7 +4,7 @@ _DB_PERSISTED_MARKER on the committed dicts.
 ``compress()`` returns marker-swept COPIES (``_strip_persistence_markers``,
 #57491 — the sweep protects the ROTATION flush to a child session). The
 in-place branch commits those copies durably via
-``SessionDB.archive_and_compact()`` and hands the SAME dict instances back
+the store's ``messages.compact()`` and hands the SAME dict instances back
 as the live message list. Without a post-commit stamp, the next
 ``_persist_session`` → ``_flush_messages_to_session_db_unlocked`` walk sees
 every compacted row as unpersisted and re-INSERTs the whole post-compaction
@@ -17,12 +17,15 @@ stamps after its ``archive_and_compact`` call; both now share
 """
 
 import os
-from contextlib import closing
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _make_agent(session_db, session_id):
@@ -34,7 +37,7 @@ def _make_agent(session_db, session_id):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -58,33 +61,32 @@ def _make_agent(session_db, session_id):
 
 
 def _seed(db, sid, n=8):
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     for i in range(n):
-        db.append_message(
-            session_id=sid,
-            role="user" if i % 2 == 0 else "assistant",
-            content=f"seed msg {i}",
-        )
+        seed_messages(db, sid, {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"seed msg {i}",
+        })
 
 
 def _row_counts(db, sid):
-    total = db._conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
-    ).fetchone()[0]
-    active = db._conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1", (sid,)
-    ).fetchone()[0]
+    with raw_holder(db)._read_ctx() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+        active = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1", (sid,)
+        ).fetchone()[0]
     return total, active
 
 
 class TestInPlaceCommitPersistMarker:
     def test_post_commit_persist_does_not_reinsert_compacted_rows(self):
         """In-place commit → persist walk: row counts stay stable (#98450)."""
-        from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
-        with tempfile.TemporaryDirectory() as tmp, closing(SessionDB(db_path=Path(tmp) / "t.db")) as db:
+        with tempfile.TemporaryDirectory() as tmp, open_persistence(profile_scope(home=Path(tmp))) as db:
             sid = "20260830_120000_marker"
             _seed(db, sid, n=8)
             agent = _make_agent(db, sid)
@@ -105,10 +107,11 @@ class TestInPlaceCommitPersistMarker:
             total, active = _row_counts(db, sid)
             assert active == len(compressed) == 4
             assert total == 8 + len(compressed)  # archived seeds + active set
-            archived = db._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0",
-                (sid,),
-            ).fetchone()[0]
+            with raw_holder(db)._read_ctx() as conn:
+                archived = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0",
+                    (sid,),
+                ).fetchone()[0]
             assert archived == 8
 
             # ── The fix: every committed dict instance carries the marker.
@@ -127,12 +130,13 @@ class TestInPlaceCommitPersistMarker:
             agent._persist_session(compressed, conversation_history=None)
             agent._persist_session(compressed, conversation_history=None)
             total2, active2 = _row_counts(db, sid)
-            dup_groups = db._conn.execute(
-                "SELECT content, COUNT(*) c FROM messages "
-                "WHERE session_id = ? AND active = 1 "
-                "GROUP BY content HAVING c > 1",
-                (sid,),
-            ).fetchall()
+            with raw_holder(db)._read_ctx() as conn:
+                dup_groups = conn.execute(
+                    "SELECT content, COUNT(*) c FROM messages "
+                    "WHERE session_id = ? AND active = 1 "
+                    "GROUP BY content HAVING c > 1",
+                    (sid,),
+                ).fetchall()
             assert (total2, active2) == (total, active), (
                 f"post-commit persist re-INSERTed compacted rows: "
                 f"total {total}->{total2}, active {active}->{active2}"
@@ -144,17 +148,16 @@ class TestInPlaceCommitPersistMarker:
         via the shared helper (class-of-bug guard, not a change detector:
         asserts the behavioral outcome — dicts stamped after a successful
         archive_and_compact — for the sibling call path)."""
-        from hermes_state import SessionDB
         from agent.context_compressor import (
             ContextCompressor,
             _DB_PERSISTED_MARKER,
         )
 
-        with tempfile.TemporaryDirectory() as tmp, closing(SessionDB(db_path=Path(tmp) / "m.db")) as db:
+        with tempfile.TemporaryDirectory() as tmp, open_persistence(profile_scope(home=Path(tmp))) as db:
             sid = "20260830_120001_micro0"
             _seed(db, sid, n=4)
             compressor = ContextCompressor.__new__(ContextCompressor)
-            compressor._session_db = db
+            compressor._session_db = compressor._persistence = db
             compressor._session_id = sid
             compacted = [
                 {"role": "user", "content": "u"},

@@ -987,15 +987,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """
         if chat_id is None or thread_id is None:
             return
-        db = getattr(getattr(self, "_session_store", None), "_db", None)
-        if db is None or not hasattr(db, "delete_telegram_topic_binding"):
+        persistence = getattr(getattr(self, "_session_store", None), "persistence", None)
+        if persistence is None:
             return
         try:
             profile_name = (metadata or {}).get("hermes_profile") or getattr(self, "_hermes_profile_name", None) or "default"
-            removed = db.delete_telegram_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
+            removed = persistence.routing.delete_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
         except Exception:
             logger.debug(
-                "[%s] delete_telegram_topic_binding failed for chat=%s thread=%s — skipping prune",
+                "[%s] delete_topic_binding failed for chat=%s thread=%s — skipping prune",
                 self.name, chat_id, thread_id, exc_info=True)
             return
         if removed:
@@ -5103,7 +5103,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             asyncio.get_running_loop().time() + max(0.0, budget))
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
+        """Send typing indicator.
+
+        ``typing_indicator: false`` is checked here, at the one ``sendChatAction`` call: the turn's
+        progress, proxy and follow-up paths call this directly, not through ``_keep_typing`` (#40885)."""
+        if not getattr(getattr(self, "config", None), "typing_indicator", True):
+            return
         if not self._bot or not typing_may_fire(self, chat_id):
             return
         _is_dm_topic: bool = False
@@ -6187,7 +6192,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self.handle_message(self._apply_telegram_group_observe_attribution(event))
             return
         event = self._apply_telegram_group_observe_attribution(event)
-        claim_pending_text(self, msg, event)  # before the first await: the question typed just before waits for us
+        claim_pending_text(self, msg, event)  # before the first await: the comment typed just before waits for us
         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
         if msg.photo:
             try:
@@ -6209,6 +6214,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4")
         elif msg.document and await self._cache_inbound_document(msg, event):
             return
+        absorb_claimed_text(self, msg, event)  # the comment sent just before this attachment joins its turn
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             await self._queue_media_group_event(str(media_group_id), event)
@@ -6261,11 +6267,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             from hermes_cli.config import load_config  # deep-copied: _setup_dm_topics writes thread_ids into it
             dm_topics = load_config().get("platforms", {}).get("telegram", {}).get("extra", {}).get("dm_topics", [])
-            if not dm_topics:
-                self._dm_topics_config = []
+            if not dm_topics:  # config.extra too: session keys read declared topics there (dm_threads)
+                self._dm_topics_config = self.config.extra["dm_topics"] = []
                 self._dm_topic_chat_ids = set()
                 return
-            self._dm_topics_config = dm_topics
+            self._dm_topics_config = self.config.extra["dm_topics"] = dm_topics
             self._dm_topic_chat_ids = {str(chat_entry["chat_id"]) for chat_entry in dm_topics if "chat_id" in chat_entry}
             for chat_entry in dm_topics:
                 cid = chat_entry.get("chat_id")

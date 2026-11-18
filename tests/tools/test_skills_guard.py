@@ -685,7 +685,7 @@ class TestScanSkill:
         assert [(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "broken.py"] == [
             (1, "provider_key_env_read")]
         assert result.verdict == "caution"
-        # The rules are skill-only: a plain file scan (what plugin_guard uses) keeps the medium read.
+        # The rules are skill-only: a plain file scan (what plugins_install_scan uses) keeps the medium read.
         plain = {fi.line: fi.pattern_id for fi in scan_file(skill_dir / "run.py", "run.py")}
         assert plain == {1: "python_getenv_secret", 2: "python_environ_get_secret", 3: "python_getenv_secret",
                          4: "python_getenv_secret", 5: "python_getenv_secret", 6: "python_environ_get_secret",
@@ -933,6 +933,24 @@ def test_relaxed_rule_attack_still_blocks(tmp_path, case):
 class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
+    def test_chmod_skipped_warning_is_not_suid(self, tmp_path):
+        script = tmp_path / "builder.py"
+        script.write_text('warnings.append(f"chmod skipped for {output_path}: {exc}")\n', encoding="utf-8")
+
+        assert not any(
+            f.category == "privilege_escalation" and f.severity == "critical" for f in scan_file(script, script.name)
+        )
+
+    @pytest.mark.parametrize(
+        "line", ["chmod u+s /bin/tool", "chmod +s /bin/tool", "chmod g+s /bin/tool", "chmod 4755 /bin/tool"]
+    )
+    def test_chmod_setting_suid_bit_still_fires_once(self, tmp_path, line):
+        script = tmp_path / "install.sh"
+        script.write_text(line + "\n", encoding="utf-8")
+
+        critical = [f for f in scan_file(script, script.name) if f.severity == "critical"]
+        assert [f.pattern_id for f in critical] == ["setuid_setgid"]
+
     def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
         # #110974: a 3-level relative doc link in a README is documentation structure, not
         # filesystem access, yet it scored `high` and hard-blocked community installs.
@@ -1046,7 +1064,7 @@ class TestFalsePositiveReductions:
 
         # Production entry point: the read inside a plugin directory flips plugin admission to
         # `dangerous` (the "safe" verdict on main is what let the plugin install).
-        from tools.plugin_guard import scan_plugin
+        from hermes_cli.plugins_install_scan import scan_plugin
 
         plugin = tmp_path / "steal-plugin"
         plugin.mkdir()

@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "Anbieter-Nutzung + geschätzte neue Nachrichten"
     source_line: "Quelle: {source}; Kategoriewerte sind lokale Schätzungen."
     hint_all: "Verwenden Sie /context all für Kosten pro Skill und pro Toolset."
+    cache_warm: "Prompt-Cache: warm bis {until} (noch {remaining}; {ttl}, {confidence})."
+    cache_expired: "Prompt-Cache: vor {ago} abgelaufen ({ttl}, {confidence}); die nächste Nachricht verarbeitet den gesamten Prompt neu."
+    cache_maybe_warm: "Prompt-Cache: möglicherweise noch warm bis {until} (höchstens noch {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt-Cache: unbekannt (Route, Sitzung oder Kontext haben sich seit der letzten gecachten Anfrage geändert)."
+    cache_unknown_route: "Prompt-Cache: unbekannt (dieser Anbieter veröffentlicht seine Cache-Aufbewahrung nicht)."
+    cache_unknown_runtime: "Prompt-Cache: unbekannt (diese Laufzeit setzt eigene Cache-Optionen, die Hermes nicht sehen kann)."
+    cache_unknown_storage: "Prompt-Cache: unbekannt (der Sitzungsspeicher konnte nicht gelesen werden)."
+    cache_confidence:
+      proven: "belegt"
+      declared: "angefordert"
+      assumed: "angenommen"
   status:
     header: "📊 **Hermes-Gateway-Status**"
     matrix_scope_header: "**Matrix-Geltungsbereich:**"
@@ -3328,6 +3339,10 @@ cli:
     total: "📚 {count} Skill(s) verfügbar"
     added_header: "➕ Hinzugefügte Skills:"
     removed_header: "➖ Entfernte Skills:"
+  gateway_restart:
+    waiting: "Hermes startet neu, um ein Update oder einen Neustart abzuschließen; warte, bis es zurück ist…"
+    timed_out: "Hermes ist nicht rechtzeitig vom Neustart zurückgekehrt. Prüfe `hermes gateway status` und starte `hermes` erneut."
+    stopped: "Warten auf den Hermes-Neustart abgebrochen; nichts wurde gestartet."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Sitzungsspeicher nicht verfügbar[/bold yellow] — diese Konversation wird [bold]NICHT gespeichert[/bold] und kann später nicht fortgesetzt werden. Die Suche in früheren Sitzungen ist ebenfalls deaktiviert.\n  Grund: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNUNG: Sitzungsspeicher nicht verfügbar — diese Konversation wird NICHT gespeichert und kann später nicht fortgesetzt werden. Grund: {reason}. {action}"
@@ -4006,7 +4021,7 @@ plan_usage:
   large_notice_limit_stops: "Großes Modell: {name} erreicht ({resets}), es läuft bis dahin nicht."
   large_notice_percent: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan. Monatslimit für große Modelle: {percent} genutzt."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ In den rückgängig gemachten Turns geänderte Dateien: {files}. Führe /rollback aus, um Checkpoints aufzulisten und einen wiederherzustellen."
     more: "+{count} weitere"

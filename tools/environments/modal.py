@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def _snapshot_store() -> Path:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
+    return read_json_or_empty(_snapshot_store())
 
 
 def _update_snapshots(update: Callable[[dict], None]) -> None:

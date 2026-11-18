@@ -9,12 +9,14 @@ import re
 from typing import Any, List
 from tools.ansi_strip import strip_tool_metadata_text
 from tools.mcp_tool_common import mcp_field
-from tools.threat_patterns import _FILLER
 
 logger = logging.getLogger("tools.mcp_tool")
 
 # Prompt-injection indicators in MCP tool descriptions. WARNING-level only: log but never
 # block, since false positives would break legitimate servers.
+# Descriptions are scanned raw, with no whitespace collapse, so the filler keeps unbounded
+# runs (threat_patterns' _FILLER is width-bounded for its chunked scan).
+_FILLER = r"(?:\w+\s+){0,8}"
 _MCP_INJECTION_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in (

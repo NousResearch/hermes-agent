@@ -475,6 +475,17 @@ gateway:
       provider_usage_plus_estimate: "consommation fournisseur + estimation des nouveaux messages"
     source_line: "Source : {source} ; les comptes par catégorie sont des estimations locales."
     hint_all: "Utilisez /context all pour les coûts par skill et par ensemble d'outils."
+    cache_warm: "Cache du prompt : actif jusqu'à {until} (reste {remaining} ; {ttl}, {confidence})."
+    cache_expired: "Cache du prompt : expiré il y a {ago} ({ttl}, {confidence}) ; le prochain message retraitera tout le prompt."
+    cache_maybe_warm: "Cache du prompt : peut-être encore actif jusqu'à {until} (au plus {remaining} de plus ; {ttl}, {confidence})."
+    cache_unknown_moved: "Cache du prompt : inconnu (la route, la session ou le contexte a changé depuis la dernière requête mise en cache)."
+    cache_unknown_route: "Cache du prompt : inconnu (ce fournisseur ne publie pas sa durée de rétention)."
+    cache_unknown_runtime: "Cache du prompt : inconnu (ce runtime fixe ses propres options de cache, que Hermes ne peut pas observer)."
+    cache_unknown_storage: "Cache du prompt : inconnu (le stockage de la session n'a pas pu être lu)."
+    cache_confidence:
+      proven: "prouvé"
+      declared: "déclaré"
+      assumed: "supposé"
   status:
     header: "📊 **État de Hermes Gateway**"
     matrix_scope_header: "**Portée Matrix :**"
@@ -3638,6 +3649,10 @@ cli:
     total: "📚 {count} skill(s) disponible(s)"
     added_header: "➕ Skills ajoutées :"
     removed_header: "➖ Skills supprimées :"
+  gateway_restart:
+    waiting: "Hermes redémarre pour terminer une mise à jour ou un redémarrage ; en attente de son retour…"
+    timed_out: "Hermes n'est pas revenu de son redémarrage à temps. Vérifiez `hermes gateway status`, puis relancez `hermes`."
+    stopped: "Attente du redémarrage de Hermes interrompue ; rien n'a été lancé."
   session_store:
     unavailable_rich: |-
       [bold yellow]⚠ Stockage des sessions indisponible[/bold yellow] — cette conversation ne sera [bold]PAS enregistrée[/bold] et ne pourra pas être reprise plus tard. La recherche dans les sessions passées est aussi désactivée.
@@ -4328,7 +4343,7 @@ plan_usage:
   large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
   large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
     more: "+{count} de plus"

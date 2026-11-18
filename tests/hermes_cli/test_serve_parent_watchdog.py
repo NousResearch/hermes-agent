@@ -208,12 +208,21 @@ def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeyp
 
     from hermes_cli import web_server_lifecycle
 
-    def fake_run(stderr):
-        return lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=2, stdout="", stderr=stderr)
+    def fake_run(stderr, returncode=2):
+        return lambda *a, **k: subprocess.CompletedProcess(
+            args=a, returncode=returncode, stdout="", stderr=stderr
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run("ps: 4242: No such process"))
     with pytest.raises(ProcessLookupError):
         web_server_lifecycle._process_start_marker(4242)
+
+    monkeypatch.setattr(
+        subprocess, "run", fake_run("ps: lstart: keyword not found", returncode=1)
+    )
+    with pytest.raises(OSError) as excinfo:
+        web_server_lifecycle._process_start_marker(4242)
+    assert not isinstance(excinfo.value, ProcessLookupError)
 
     monkeypatch.setattr(subprocess, "run", fake_run("ps: temporary process table failure"))
     with pytest.raises(OSError) as excinfo:

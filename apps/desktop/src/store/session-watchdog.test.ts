@@ -78,6 +78,20 @@ describe('session watchdog', () => {
     expect($workingSessionIds.get()).toContain('s2')
   })
 
+  it('extends the busy deadline when activity arrives before the first timeout', () => {
+    const working = state({ busy: true })
+    publishSessionState('rt1', working)
+    const elapsed = Math.floor(WATCHDOG_MS / 2)
+    vi.advanceTimersByTime(elapsed)
+    publishSessionState('rt1', { ...working, awaitingResponse: true })
+
+    vi.advanceTimersByTime(WATCHDOG_MS - elapsed)
+    expect($stalledSessionIds.get()).not.toContain('s1')
+    vi.advanceTimersByTime(elapsed)
+    expect($stalledSessionIds.get()).toContain('s1')
+    expect($workingSessionIds.get()).toContain('s1')
+  })
+
   it('clears both running and stalled on an authoritative terminal transition', () => {
     const working = state({ busy: true, storedSessionId: 's3' })
     publishSessionState('rt3', working)

@@ -64,19 +64,19 @@ class TestCheckWatchPatterns:
 
     def test_basic_match(self, registry):
         """Single matching line triggers a notification."""
-        session = _make_session(watch_patterns=["ERROR"])
-        registry._check_watch_patterns(session, "INFO: ok\nERROR: disk full\n")
+        session = _make_session(watch_patterns=["ERROR disk"])
+        registry._check_watch_patterns(session, "INFO: ok\nERROR disk full\n")
         assert not registry.completion_queue.empty()
         evt = registry.completion_queue.get_nowait()
         assert evt["type"] == "watch_match"
-        assert evt["pattern"] == "ERROR"
+        assert evt["pattern"] == "ERROR disk"
         assert "disk full" in evt["output"]
         assert evt["session_id"] == "proc_test_watch"
 
 
     def test_output_truncation(self, registry):
         """Very long matched output is truncated."""
-        session = _make_session(watch_patterns=["X"])
+        session = _make_session(watch_patterns=["X line"])
         # Generate 30 matching lines (more than the 20-line cap)
         text = "\n".join(f"X line {i}" for i in range(30)) + "\n"
         registry._check_watch_patterns(session, text)
@@ -92,7 +92,7 @@ class TestCheckWatchPatterns:
 class TestPerSessionRateLimit:
     def test_first_match_delivers(self, registry):
         """A fresh session with no prior cooldown delivers the first match."""
-        session = _make_session(watch_patterns=["E"])
+        session = _make_session(watch_patterns=["E first"])
         registry._check_watch_patterns(session, "E first\n")
         assert registry.completion_queue.qsize() == 1
         evt = registry.completion_queue.get_nowait()
@@ -104,10 +104,10 @@ class TestPerSessionRateLimit:
 
     def test_suppressed_count_in_next_delivery(self, registry):
         """Suppressed count from a strike window is reported in the next emit."""
-        session = _make_session(watch_patterns=["E"])
-        registry._check_watch_patterns(session, "E emit\n")
+        session = _make_session(watch_patterns=["E marker"])
+        registry._check_watch_patterns(session, "E marker emit\n")
         for _ in range(4):
-            registry._check_watch_patterns(session, "E drop\n")
+            registry._check_watch_patterns(session, "E marker drop\n")
         assert session._watch_suppressed == 4
 
         # Fast-forward past cooldown.
@@ -116,7 +116,7 @@ class TestPerSessionRateLimit:
         while not registry.completion_queue.empty():
             registry.completion_queue.get_nowait()
 
-        registry._check_watch_patterns(session, "E back\n")
+        registry._check_watch_patterns(session, "E marker back\n")
         evt = registry.completion_queue.get_nowait()
         assert evt["type"] == "watch_match"
         assert evt["suppressed"] == 4
@@ -168,13 +168,13 @@ class TestLifetimeCap:
         (they never forced an agent turn)."""
         from tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
-        session = _make_session(watch_patterns=["E"])
-        registry._check_watch_patterns(session, "E emit\n")
+        session = _make_session(watch_patterns=["E marker"])
+        registry._check_watch_patterns(session, "E marker emit\n")
         assert session._watch_hits == 1
 
         # Flood inside the cooldown: all suppressed, none delivered.
         for _ in range(WATCH_LIFETIME_MAX_HITS * 3):
-            registry._check_watch_patterns(session, "E drop\n")
+            registry._check_watch_patterns(session, "E marker drop\n")
         assert session._watch_hits == 1  # unchanged
         # Strike-limit disable may or may not have tripped depending on
         # WATCH_STRIKE_LIMIT vs the single window here; assert it did NOT,
@@ -188,16 +188,16 @@ class TestLifetimeCap:
         watch_disabled summary queued right after the final match."""
         from tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
-        session = _make_session(watch_patterns=["ready"])
+        session = _make_session(watch_patterns=["job ready"])
         for i in range(WATCH_LIFETIME_MAX_HITS - 1):
             session._watch_cooldown_until = 0.0
-            registry._check_watch_patterns(session, "ready\n")
+            registry._check_watch_patterns(session, "job ready\n")
             assert session._watch_disabled is False
             assert session.notify_on_complete is False
 
         # Nth delivery trips the cap.
         session._watch_cooldown_until = 0.0
-        registry._check_watch_patterns(session, "ready\n")
+        registry._check_watch_patterns(session, "job ready\n")
         assert session._watch_disabled is True
         assert session.notify_on_complete is True
 
@@ -308,13 +308,38 @@ class TestSuppressAfterExit:
 
     def test_match_still_delivered_while_session_running(self, registry):
         """Sanity: while the process is still running, matches still deliver."""
-        session = _make_session(watch_patterns=["ERROR"])
+        session = _make_session(watch_patterns=["ERROR disk"])
         session.exited = False
-        registry._check_watch_patterns(session, "ERROR: oh no\n")
+        registry._check_watch_patterns(session, "ERROR disk: oh no\n")
         assert not registry.completion_queue.empty()
         evt = registry.completion_queue.get_nowait()
         assert evt["type"] == "watch_match"
 
+
+# =========================================================================
+# Single-word pattern guard: poll loops print their own per-iteration lines
+# ("minute 1", "tick", ...) which match a bare word on every cycle and force
+# a billed turn each time. Watch patterns must be multi-word phrases.
+# =========================================================================
+
+class TestSingleWordGuard:
+    def test_single_word_pattern_rejected_immediately(self, registry):
+        session = _make_session(watch_patterns=["tick"])
+        registry._check_watch_patterns(session, "minute 1: tick\n")
+        assert session._watch_disabled is True
+        assert session.notify_on_complete is True
+        assert session._watch_hits == 0
+        evt = registry.completion_queue.get_nowait()
+        assert evt["type"] == "watch_disabled"
+        assert "single-word" in evt["message"]
+        assert "tick" in evt["message"]
+
+    def test_multi_word_pattern_still_allowed(self, registry):
+        session = _make_session(watch_patterns=["merge complete"])
+        registry._check_watch_patterns(session, "merge complete at 09:12\n")
+        assert session._watch_disabled is False
+        evt = registry.completion_queue.get_nowait()
+        assert evt["type"] == "watch_match"
 
 # =========================================================================
 # Mutual exclusion: notify_on_complete wins over watch_patterns
@@ -356,7 +381,7 @@ class TestGlobalCircuitBreaker:
     def test_trips_after_global_threshold(self, registry):
         """When >N matches fire across sessions in the window, breaker trips."""
         sessions = [
-            _make_session(sid=f"proc_s{i}", watch_patterns=["E"])
+            _make_session(sid=f"proc_s{i}", watch_patterns=["E hit"])
             for i in range(WATCH_GLOBAL_MAX_PER_WINDOW + 3)
         ]
         # Each session fires exactly one match — individually well under the
@@ -381,7 +406,7 @@ class TestGlobalCircuitBreaker:
         """After trip, further events are suppressed; cooldown expiry emits release."""
         # Spawn enough fresh sessions to trip the global breaker.
         sessions = [
-            _make_session(sid=f"proc_t{i}", watch_patterns=["E"])
+            _make_session(sid=f"proc_t{i}", watch_patterns=["E hit"])
             for i in range(WATCH_GLOBAL_MAX_PER_WINDOW + 1)
         ]
         for s in sessions:
@@ -390,8 +415,8 @@ class TestGlobalCircuitBreaker:
 
         # Further matches from BRAND-NEW sessions during cooldown are dropped.
         q_size_before = registry.completion_queue.qsize()
-        extra1 = _make_session(sid="proc_extra1", watch_patterns=["E"])
-        extra2 = _make_session(sid="proc_extra2", watch_patterns=["E"])
+        extra1 = _make_session(sid="proc_extra1", watch_patterns=["E hit"])
+        extra2 = _make_session(sid="proc_extra2", watch_patterns=["E hit"])
         registry._check_watch_patterns(extra1, "E hit\n")
         registry._check_watch_patterns(extra2, "E hit\n")
         assert registry.completion_queue.qsize() == q_size_before  # no new events
@@ -401,7 +426,7 @@ class TestGlobalCircuitBreaker:
         registry._global_watch_tripped_until = time.time() - 1
 
         # Next call admits AND emits the release summary.
-        released_session = _make_session(sid="proc_after", watch_patterns=["E"])
+        released_session = _make_session(sid="proc_after", watch_patterns=["E hit"])
         registry._check_watch_patterns(released_session, "E hit\n")
         released = False
         admitted = False

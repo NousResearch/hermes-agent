@@ -1,0 +1,142 @@
+name: Main validation
+
+# Full-suite validation of a named revision of main, on its own schedule.
+#
+# Why this exists
+# ---------------
+# `ci.yaml` runs the whole pipeline on every push to main because a push used
+# to have no diff to classify. That is the expensive half of CI: measured on
+# 2026-11-17, 69 push runs allocated runners in one day, each costing ~1,220
+# vCPU-min -- more than a PR run, because every lane is on.
+#
+# Moving that work here is only honest if the broad coverage is still *taken*.
+# This workflow is the replacement, not a way to stop looking:
+#
+#   * it validates a NAMED revision (the run's `head_sha` is recorded in the
+#     job summary, so an old green run is never mistaken for proof about a
+#     newer commit);
+#   * it fails loudly, and the failure names the commit to repair;
+#   * it re-runs on the same cadence whether or not anyone memory-holes it.
+#
+# The per-push path keeps its own ladder of small guards (see
+# `classify_changes.py:PUSH_ALWAYS_ON`), so an immediate main-push regression
+# is still caught within minutes. This workflow is the deeper net behind it.
+#
+# Enabled alongside the repository variable HERMES_CI_PUSH_DIFF=1. With the
+# variable unset, `ci.yaml` keeps running every lane on every push and this
+# workflow is redundant-but-harmless.
+
+on:
+  schedule:
+    - cron: "23 3 * * *" # daily, 03:23 UTC -- off-peak, clear of canary at 06:41
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # the summary links the dispatched run
+
+concurrency:
+  # Never cancel a validation run: a half-finished full suite proves nothing and
+  # still costs its compute.
+  group: main-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Full-suite validation of main
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Note the revision under test
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Main validation"
+            echo
+            echo "Validating commit \`${HEAD_SHA}\`."
+            echo "A green run here is evidence about THIS revision only."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "validating ${HEAD_SHA}"
+
+      # A full run is exactly `ci.yaml` with `release` unset but every lane
+      # forced: dispatching the real orchestrator (rather than a parallel copy
+      # of its jobs) is what keeps this honest -- one definition of what the
+      # suite is, so this net can never drift from the PR path.
+      #
+      # `workflow_dispatch` on ci.yaml fails open (an empty diff turns every
+      # lane on), and its detect gate allows the E2E suites for a dispatch --
+      # that is the point: this is the broad pass.
+      #
+      # The dispatch goes to the default branch; the exact revision is pinned
+      # through ci.yaml's own `commit` input, which every job already honors
+      # (`ref: ${{ inputs.commit }}`). `workflow_dispatch`'s `--ref` must be a
+      # branch or tag, so a SHA cannot ride there -- the input is the pin.
+      - name: Dispatch the full CI pipeline for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          WORKFLOW: ci.yaml
+        run: |
+          set -euo pipefail
+          if ! gh workflow run "$WORKFLOW" \
+                --repo "$REPO" \
+                --field release=false \
+                --field commit="$HEAD_SHA"; then
+            echo "::error::could not dispatch $WORKFLOW for ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "dispatched $WORKFLOW pinned to ${HEAD_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the dispatched run tested this revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ci.yaml
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The dispatched run is created asynchronously; poll briefly for it.
+          run_id=""
+          for _ in $(seq 1 12); do
+            sleep 5
+            run_id="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" \
+                        --event workflow_dispatch --limit 1 \
+                        --json databaseId,headSha \
+                        --jq '.[0] | select(.headSha != null) | .databaseId' 2>/dev/null || true)"
+            [ -n "$run_id" ] && break
+          done
+          if [ -z "$run_id" ]; then
+            echo "::warning::dispatched $WORKFLOW but could not confirm the run yet"
+            exit 0
+          fi
+
+          tested="$(gh run view "$run_id" --repo "$REPO" --json headSha --jq '.headSha' 2>/dev/null || true)"
+          {
+            echo
+            echo "Dispatched run: https://github.com/${REPO}/actions/runs/${run_id}"
+            echo "Revision under test: \`${tested:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$tested" ] && [ "$tested" != "$HEAD_SHA" ]; then
+            # A newer commit landed between this run starting and the dispatch.
+            # Say so instead of implying this revision was validated.
+            echo "::warning::dispatched run tested ${tested}, not ${HEAD_SHA}; the newer commit is what was validated"
+          fi
+
+      - name: Report where to look
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "Full pipeline dispatched. Its result is the validation for this revision:"
+            echo "https://github.com/${REPO}/actions/workflows/ci.yaml"
+            echo
+            echo "A failure there is a real main-branch failure: repair it or revert the"
+            echo "commit named above. Do not treat an older green run as proof about a"
+            echo "newer commit."
+          } >> "$GITHUB_STEP_SUMMARY"

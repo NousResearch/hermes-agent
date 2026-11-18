@@ -19,6 +19,7 @@ import zipfile
 from argparse import Namespace
 from pathlib import Path
 
+import psutil
 import pytest
 
 from hermes_cli import backup
@@ -102,8 +103,6 @@ def _kill(proc: subprocess.Popen[str]) -> None:
     A Windows venv ``python.exe`` is a launcher whose child is the real interpreter, so killing
     ``proc`` alone left the backup running: it then read EOF on stdin and unwound normally,
     deleting the stage (and its ``owner.lock``) this test is about to inspect as abandoned."""
-    import psutil
-
     targets = []
     with contextlib.suppress(psutil.Error):
         launcher = psutil.Process(proc.pid)

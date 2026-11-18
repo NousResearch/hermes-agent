@@ -576,6 +576,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch.object(browser_vault_tool, "_payment_frames", return_value=[]), \
                  patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
                 declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
             assert declined["success"] is False and declined["error_type"] == "payment_declined"
@@ -584,6 +585,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+                 patch.object(browser_vault_tool, "_payment_frames", return_value=[]), \
                  patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
             out = json.loads(raw)

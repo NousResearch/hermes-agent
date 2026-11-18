@@ -114,8 +114,10 @@ def version_needs(path: Path) -> set[str] | None:
     """Every version name the file needs from its libraries, or None for a non-ELF file."""
     with path.open("rb") as handle:
         ident = handle.read(16)
-        if len(ident) < 16 or ident[:4] != b"\x7fELF":
+        if ident[:4] != b"\x7fELF":
             return None
+        if len(ident) < 16:
+            raise ValueError("truncated ELF file")
         order, sections = _sections(handle, ident)
         names: set[str] = set()
         for section in sections:

@@ -1113,6 +1113,9 @@ def cmd_backends(args) -> None:
     host = SystemHost(get_hermes_home())
     if getattr(args, "status", False):
         sys.exit(print_status(host, bool(getattr(args, "json", False))))
+    if not getattr(args, "dry_run", False):
+        from hermes_cli.gateway_migrate_backends_lock import prune_stale_acks
+        prune_stale_acks(host.home)
     if (getattr(args, "restore", False) and not getattr(args, "detach", False)
             and not getattr(args, "detached_run", False) and not manifest_path(host.home).exists()):
         sys.exit(restore(host, yes=True))  # nothing to restore: refused without creating the run lock

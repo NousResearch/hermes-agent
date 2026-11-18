@@ -19,6 +19,7 @@ status.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -126,6 +127,16 @@ def write_ack(home: Path, token: str, *, locked: bool) -> None:
     _dir(home)
     atomic_json_write(_ack_path(home, token), {"locked": locked, "pid": os.getpid(),
                                                "holder_pid": None if locked else holder_pid(home)}, mode=0o600)
+
+
+def prune_stale_acks(home: Path, now: Optional[float] = None) -> None:
+    """Delete acknowledgements no caller waits for any more: a caller that stopped waiting (exit 7,
+    unconfirmed) never reads the one its background run wrote later. Older than the wait: abandoned."""
+    cutoff = (time.time() if now is None else now) - ACK_WAIT_SECONDS
+    for path in (Path(home) / "backend_migration").glob("detach-ack-*.json"):
+        with contextlib.suppress(OSError):
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
 
 
 def wait_ack(home: Path, token: str, seconds: Optional[float] = None) -> Optional[dict]:

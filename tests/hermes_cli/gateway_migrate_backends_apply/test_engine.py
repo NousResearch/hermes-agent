@@ -9,6 +9,7 @@ import dataclasses
 import json
 import os
 import stat
+import time
 
 import pytest
 
@@ -1245,3 +1246,19 @@ def test_detach_checks_a_stale_token_before_it_prints_the_manual_steps(home, cap
 
     assert json.loads(capsys.readouterr().out)["plan_changed"] is True
     assert host.spawned == [] and host.calls == [] and engine.status_payload(host)["state"] == "none"
+
+
+def test_an_acknowledgement_no_caller_waits_for_is_removed_by_the_next_run(home, capsys):
+    from hermes_cli import gateway_migrate_backends_lock as run_lock
+    folder = home / "backend_migration"
+    folder.mkdir()
+    abandoned, fresh = folder / "detach-ack-0123456789abcdef.json", folder / "detach-ack-fedcba9876543210.json"
+    for path in (abandoned, fresh):
+        path.write_text('{"locked": true, "pid": 3428}', encoding="utf-8")
+    old = time.time() - run_lock.ACK_WAIT_SECONDS - 5  # written after its caller stopped waiting (exit 7)
+    os.utime(abandoned, (old, old))
+
+    with pytest.raises(SystemExit):
+        engine.cmd_backends(_args(apply=False, restore=True))
+
+    assert not abandoned.exists() and fresh.exists()  # a caller may still be waiting for the fresh one

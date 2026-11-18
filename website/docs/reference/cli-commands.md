@@ -1999,6 +1999,26 @@ Launch the web dashboard to manage configuration, API keys, and sessions. For a 
 | `--stop` | — | Stop the running `hermes dashboard` / `hermes serve` backend **of this Hermes home** and exit (`-p <profile>` / `HERMES_HOME` select which; backends of other profiles, other installs on the machine, and the shell you typed the command into are never touched — a backend whose owner cannot be read is left alone). SIGTERM, a 10s grace, then SIGKILL; a hosted Chat TUI that outlives its backend is stopped too (it would otherwise keep the deleted `state.db-wal` open and block the next start). Messaging-gateway bots started from the dashboard are not touched. |
 | `--status` | — | List running `hermes dashboard` / `hermes serve` processes and exit (always exit code 0). The `hermes` launcher it runs under is not listed, even when the port it names (`--port`, default `9119`) is held; when this profile's gateway serves the Webapp on that port, a line names the gateway and the Webapp's address. |
 
+### `hermes dashboard password`
+
+Set or change the username and password the dashboard sign-in asks for, without the interactive prompt `hermes dashboard --host 0.0.0.0` offers. It stores exactly what that prompt stores, in this Hermes home's `config.yaml` under `dashboard.basic_auth`: the username, an scrypt hash of the password (never the password itself), and a signing secret when there is none yet, so sign-ins survive restarts. It also re-enables the bundled `basic` sign-in plugin when `plugins.disabled` lists it. `-p <profile>` sets the sign-in of that profile.
+
+The same sign-in works on `hermes dashboard` / `hermes serve` and on the gateway's Webapp. Each reads it when it starts, so restart a running one; the command says which one is running. A listener started with a new password ends every sign-in made with the old one. `HERMES_DASHBOARD_BASIC_AUTH_USERNAME`, `_PASSWORD` and `_PASSWORD_HASH` override `config.yaml`: the command removes them from this home's `.env` (it names them, never their values). It refuses, before changing anything, when your administrator pins one in the managed `.env`. When the environment the command runs in sets one, it warns: a gateway or backend started from that environment still signs in with that value, so unset it there too.
+
+| Option | Description |
+|--------|-------------|
+| `--username` | Username to sign in with (default: the configured one, else `admin`). Spaces are refused. |
+| `--password-stdin` | Read the password from standard input, for scripts and UIs. Standard input must be a pipe or a file, not a terminal (typed text would show; leave the option out to get the hidden prompt). Only the first line counts, without its `\n` or `\r\n`; it must be UTF-8 text of at most 1024 bytes and not empty. Without this option the command asks twice on the terminal, and exits 2 when there is no terminal. |
+
+The password is never accepted as an argument, so it never appears in the process list or the shell history. Pipe it from a file or a secret store instead of typing it into a command line:
+
+```bash
+hermes dashboard password --username admin --password-stdin < /run/secrets/dashboard_password
+hermes gateway restart
+```
+
+Exit codes: `0` stored, `2` refused (no password; an empty, overlong or non-UTF-8 one; `--password-stdin` on a terminal; prompts that don't match; a username with spaces; nothing is changed), `1` the prompt was cancelled, an administrator-pinned key overrides the sign-in (nothing is changed), `config.yaml` could not be written, an overriding key could not be removed from `.env` after `config.yaml` was updated (the message names the key and the file), or the install is managed (Nix or a package manager owns its configuration).
+
 ### `hermes dashboard register`
 
 Register this install as a self-hosted dashboard with your Nous Portal account. Creates an OAuth client, writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` into `~/.hermes/.env`, and prints how to engage the login gate. Requires being logged in (`hermes setup`).

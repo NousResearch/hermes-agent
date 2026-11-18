@@ -443,6 +443,13 @@ def _resolve_dotenv_assignments(
     return resolved
 
 
+def environ_before_dotenv(name: str) -> str | None:
+    """*name* as the environment this process was started with set it: ``os.environ`` with what this
+    process's dotenv passes published peeled back. None when it was not set there."""
+    with _DOTENV_LOCK:
+        return _dotenv_lookup_env(None).get(name)
+
+
 def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the

@@ -10,7 +10,6 @@ vi.mock('@/themes/context', () => ({
 import { useKeybinds } from '@/app/hooks/use-keybinds'
 import { $historyPosition } from '@/app/shell/history-position'
 import { resetBinding, setBinding } from '@/store/keybinds'
-import { $shellChoice } from '@/store/shell-variant'
 
 import { $workspaceIsPage, NEW_CHAT_ROUTE } from '../routes'
 
@@ -37,9 +36,6 @@ const pressBack = (target: EventTarget) =>
       new KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'BracketLeft', ctrlKey: true, key: '[' })
     )
   })
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 beforeEach(() => {
   // Ctrl+[ off macOS is ⌘[ on it: the code editor's indentLess.

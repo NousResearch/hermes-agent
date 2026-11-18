@@ -3,6 +3,7 @@ import { computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
 
+import { DESKTOP_BUTTON_ACTIONS, recordAction, recordFeatureToggle } from './desktop-metrics'
 import { providePortalPresentation } from './shell-presentation'
 import { isBrowserWindow } from './windows'
 
@@ -12,14 +13,14 @@ export const $shellChoice = persistentAtom<boolean | null>('hermes.desktop.agent
   encode: value => (value === null ? null : String(value))
 })
 
-/** The user's redesign preference (off until they opt in). Window-independent: read it for
+/** The user's redesign preference (on unless rolled back). Window-independent: read it for
  *  behaviour every window must agree on — `shell-policy.ts` names each such behaviour. */
-export const $portalPreferred = computed($shellChoice, choice => choice === true)
+export const $portalPreferred = computed($shellChoice, choice => choice !== false)
 
 /** Whether THIS window renders the portal shell for a stored choice. The HUD does: it is the same
  *  composer and transcript, so it takes the redesign's look (app/redesign/portal-hud.css) while its
  *  own layout stands. The popped-out Browser keeps the classic look; it was never redesigned. */
-export const rendersPortalShell = (choice: boolean | null): boolean => choice === true && !isBrowserWindow()
+export const rendersPortalShell = (choice: boolean | null): boolean => choice !== false && !isBrowserWindow()
 
 /** Whether THIS window renders the redesigned (portal) shell — the one presentation read, mirrored
  *  to `<html data-shell="portal">` for CSS. */
@@ -30,6 +31,20 @@ providePortalPresentation($portalShell)
 
 export function usePortalShell(): boolean {
   return useStore($portalShell)
+}
+
+export function setPortalPreferred(enabled: boolean): void {
+  const previous = $portalPreferred.get()
+
+  if (previous === enabled) {
+    return
+  }
+
+  $shellChoice.set(enabled)
+  const actions = DESKTOP_BUTTON_ACTIONS
+
+  recordAction(enabled ? actions.sidebarEnableSettings : actions.sidebarDisable, 'click')
+  recordFeatureToggle('simplified_sidebar', previous, enabled)
 }
 
 /** Mirrors `$portalShell` onto `<html data-shell>`; called once at boot, before the first render, so

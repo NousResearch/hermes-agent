@@ -38,10 +38,6 @@ const registerPane = (id: string, title: string, data: Record<string, unknown>, 
   )
 }
 
-// The redesign is opt-in until it is turned on: the stored choice is the redesign from module load on, as the default
-// will be (layout persistence is scoped by shell, so it must hold before imports).
-vi.hoisted(() => window.localStorage.setItem('hermes.desktop.agentShell.v1', 'true'))
-
 beforeEach(() => {
   window.localStorage.clear()
   $hiddenTreePanes.set(new Set())
@@ -107,7 +103,7 @@ describe('narrow overlay in native Desktop', () => {
     asNativeDesktop()
     // Classic's native overlay; the redesign draws a sheet with a scrim on every host (below).
     $shellChoice.set(false)
-    onTestFinished(() => $shellChoice.set(true))
+    onTestFinished(() => $shellChoice.set(null))
     $narrowViewport.set(true)
     render(<NarrowOverlays />)
     revealPane('sessions')
@@ -183,7 +179,7 @@ describe('narrow overlay of a stacked zone', () => {
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     // Classic's pointer band is the compact one; the redesign's 60px band already fits touch.
     $shellChoice.set(false)
-    onTestFinished(() => $shellChoice.set(true))
+    onTestFinished(() => $shellChoice.set(null))
     // The shell flip re-homes the layout; declare the zone again for the classic shell.
     declareDefaultTree(split('row', [group(['sessions', 'bots']), group(['workspace'])]))
 

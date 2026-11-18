@@ -11,9 +11,6 @@ import { $hiddenTreePanes, $layoutTree } from '../store'
 
 import { TreeSplit } from './tree-split'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const observers: ((entries: unknown[]) => void)[] = []
 
 class TestResizeObserver {
@@ -86,7 +83,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   $layoutTree.set(null)
   $paneStates.set({})
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   disposers.splice(0).forEach(dispose => dispose())
 })
 

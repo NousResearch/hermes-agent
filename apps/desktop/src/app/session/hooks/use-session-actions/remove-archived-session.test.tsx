@@ -11,15 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
 import { setSessions } from '@/store/session'
-import { $shellChoice } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
 import type { ClientSessionState } from '../../../types'
 
 import { useSessionActions } from './index'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

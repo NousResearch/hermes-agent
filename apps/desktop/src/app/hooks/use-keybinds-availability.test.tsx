@@ -10,7 +10,6 @@ vi.mock('@/themes/context', () => ({
 beforeEach(() => {
   vi.resetModules()
   localStorage.clear()
-  localStorage.setItem('hermes.desktop.agentShell.v1', 'true') // the redesign is opt-in until it is turned on
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
 })
 

@@ -30,9 +30,6 @@ import { $shellSheet } from './shell-sheet'
 import { TITLEBAR_CHROME_CHANGED_EVENT } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
 
 let navigateTo: (to: string) => void = () => {}
@@ -97,7 +94,7 @@ describe('TitlebarControls fixed clusters', () => {
 
     expect(windowControls()).toBeNull()
     expect(appControls()).toBeNull()
-    $shellChoice.set(true)
+    $shellChoice.set(null)
   })
 
   it('parks the redesign’s clusters on its overlay destinations, keeping titleBar slots mounted', () => {
@@ -139,7 +136,7 @@ describe('TitlebarControls fixed clusters', () => {
       expect(life).toEqual({ cleanups: 0, mounts: 1 })
     } finally {
       act(disposeRight)
-      $shellChoice.set(true)
+      $shellChoice.set(null)
     }
   })
 
@@ -230,7 +227,7 @@ describe('TitlebarControls fixed clusters', () => {
       $shellChoice.set(true)
       renderControls('/settings')
       expect(pluginChrome()?.closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
-      $shellChoice.set(true)
+      $shellChoice.set(null)
     })
 
     it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
@@ -268,7 +265,7 @@ describe('titlebar app-action cluster', () => {
     $narrowOverlayPaneIds.set(new Set())
     setTitlebarAppActionsSide('right')
     cleanup()
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     vi.unstubAllGlobals()
     delete window.document.documentElement.dataset.hermesDesktopHost
   })
@@ -397,11 +394,11 @@ it('keeps settings only in the global rail when simplified mode is enabled', () 
   act(() => $shellChoice.set(false))
   expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 it('offers the Advanced band only the way back to a hidden sidebar: the open Chats destination folds it', () => {
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   setSidebarOpen(true)
   renderControls('/')
   expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
@@ -416,7 +413,7 @@ it('offers the Advanced band only the way back to a hidden sidebar: the open Cha
 
 it('brings a hidden sidebar back in Simple mode from one floating button at the stage, not the band', () => {
   const previousMode = $interfaceMode.get()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   $interfaceMode.set('simple')
   setSidebarOpen(false)
   renderControls('/')

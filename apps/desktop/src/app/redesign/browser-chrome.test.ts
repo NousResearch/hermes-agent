@@ -4,9 +4,6 @@ import { $shellChoice } from '@/store/shell-variant'
 
 import { installPortalBrowserChrome } from './browser-chrome'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const CLASSIC_VIEWPORT = 'width=device-width, initial-scale=1.0, interactive-widget=resizes-content'
 const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve(undefined)))
 
@@ -17,7 +14,7 @@ beforeEach(() => {
 afterEach(() => {
   delete document.documentElement.dataset.hermesDesktopHost
   document.head.innerHTML = ''
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 const viewport = () => document.querySelector<HTMLMetaElement>('meta[name="viewport"]')!.content
@@ -33,7 +30,7 @@ it('lays the redesign under the safe areas in the browser, and gives classic its
   expect(viewport()).toBe(CLASSIC_VIEWPORT)
   expect(theme()).toBe('#0a0a0a')
 
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   await frame()
   expect(viewport()).toContain('viewport-fit=cover')
   stop()

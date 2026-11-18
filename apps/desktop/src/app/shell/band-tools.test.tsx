@@ -14,10 +14,9 @@ import { useBandHiddenTools } from './band-tools'
 
 let previousMode: InterfaceMode
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
 beforeEach(() => {
   previousMode = $interfaceMode.get()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   $interfaceMode.set('advanced')
   $widthClass.set('wide')
   $narrowViewport.set(false)

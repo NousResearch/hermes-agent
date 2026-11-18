@@ -12,9 +12,6 @@ import {
 } from '@/store/statusbar-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 beforeAll(() => {
   stubResizeObserver()
   stubMenuDomApis()
@@ -25,7 +22,7 @@ beforeEach(() => $shellChoice.set(false))
 
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT])
   $statusbarVisible.set(true)
 })
@@ -163,7 +160,7 @@ describe('whole-bar visibility', () => {
   })
 
   it('leaves the classic preference untouched when toggled from the redesign, which has no strip', () => {
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     toggleStatusbarVisible()
     expect($statusbarVisible.get()).toBe(true)
   })

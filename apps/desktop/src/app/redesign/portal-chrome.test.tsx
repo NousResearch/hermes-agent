@@ -26,13 +26,10 @@ import { PortalAgentSettingsButton, PortalBandAgentSettings } from './portal-age
 import { PortalConversationHeader, usePortalConversation } from './portal-conversation-header'
 import { PortalStatusMenu } from './portal-status-menu'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 beforeEach(() => {
   stubResizeObserver()
   stubMenuDomApis()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   $workspaceIsPage.set(false)
   $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
   $activeGatewayProfile.set('default')

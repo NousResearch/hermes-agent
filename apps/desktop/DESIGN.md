@@ -57,6 +57,10 @@ one-off at the call site.
 - **Panes are working context.** Preview, files, review, and terminal remain
   attached to the current task. Their state survives temporary hiding and chat
   switches where the underlying tool is meant to persist.
+  Activating a tool tab also restores its open state; hiding a stacked terminal
+  must not leave a visible tab pointing at an inert shell.
+  Review follows the focused chat's worktree and sends agent-ship actions back
+  to that same conversation, including when focus moves into tool chrome.
 - **One action, one home.** A command may have keyboard, palette, and visible
   affordances, but they invoke the same action and state. Do not fork behavior
   per entry point.
@@ -76,6 +80,440 @@ selections remain authoritative for new chats unless a desktop default is set.
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
+
+The boxed conversation sidebar follows Figma Desktop 10 (`147:7470`, machine
+box `143:6270`), not the alternate crowded-agent card mockup. Each expanded
+machine has a 6px container, 5% neutral body fill, and a brighter 7% selected
+heading; the heading's lower corners join the body and round when collapsed.
+Agent rows are transparent, 45px tall, with 10px horizontal padding, 7px between
+groups, and 20px colored robot tiles using the exported Figma artwork. Do not
+replace them with blue selection cards or large antenna-outline avatars.
+Selected/hovered names brighten without painting an agent-row background.
+Names, descriptions, colors, and connection status use actual owner metadata;
+never invent team names, sharing counts, or connection state.
+
+The agent name/avatar opens that owner's canonical chat without a redundant
+child row. Its menu offers **New chat with this agent**, **Open agent**, and
+**Hide from chat list**. Collapse remains a separate keyboard/touch control:
+reserve a 16px leading gutter so its 24px target stays inside the machine card
+without overlapping the avatar. Nested 31px session rows have a 1px, 20% neutral
+indentation guide centered beneath the avatar, 36px from the machine's edge.
+Titles align with agent names at 54px. Empty and collapsed agents have no
+dangling guide. Session hover and selection brighten only the name, like agent
+rows; the click target still includes the guide gutter. Reveal actions for
+hover, visible keyboard focus, or an open menu, not lingering mouse focus;
+touch controls remain visible. Only truncated titles need a tooltip.
+Screen is a tool rather than a conversation: use **Open Screen** in the command
+palette for the focused owner; classic/Bot Mode entry points remain available.
+
+**Hidden agents** stays outside the agent list's scroll viewport so its count
+and attention dot remain reachable in crowded installations. Its expanded rows
+have their own bounded scroll area. **Show** restores an agent; a row needing
+attention opens the source conversation when its owner-qualified route is known.
+Hiding affects presentation only: chats remain searchable, work and notifications
+continue, and the current conversation is not closed or replaced. Hidden agents'
+pinned rows disappear from the ordinary list but remain available in search.
+Visibility and expansion persist by `(connectionId, targetProfile)`; local/null
+owners normalize identically. Renaming migrates preferences and deletion clears
+them. Scroll position and the Hidden agents disclosure survive navigation/reload.
+
+Attention priority is approval, input, failure, running, then unread. Use existing
+owned runtime/session signals and owner-tagged schedule snapshots, not guessed
+state or extra polling. Same-name agents and colliding session IDs on different
+machines must not borrow each other's signals. Display elapsed time only when
+the source supplies a real timestamp. An unobserved remote failure cannot be
+inferred from a reachable roster entry.
+
+Finished settings and management frames use bundled, OFL-licensed Oswald for
+display headings and Mona Sans for body text. The Figma trial navigation font
+is not redistributed. Redesigned geometry is root-scoped because route
+overlays render outside the shell: rails, the panel width and the page columns are the layout
+tokens in `tokens/space.css`. Chat uses the wide layout described below. Native titlebar sizing,
+user-controlled panes, themes, and the classic layout remain functional.
+
+Appearance starts with working Light/Dark/System previews, text size,
+language, and tips controls. Advanced retains the full settings and theme
+gallery, including deep links. Agent management uses owner-scoped Overview,
+History, and Settings tabs. Settings has its own grouped, agent-only navigation:
+184px navigation, 32px gap, and a 584px body at full width. Model selection,
+fallbacks, and collapsed Advanced controls share one page; provider setup stays
+available inside the model picker. Reuse the existing editors and save paths.
+Auxiliary-model deep links reveal enclosing Advanced disclosures before
+focusing the target or consuming the link. Activating a settings owner preserves
+the requested page rather than redirecting to a new chat.
+Navigation and editor bodies scroll independently; changing section/subpage resets
+only the editor scroll. Instructions use a 322px card including the Save footer.
+Classic dispatch preserves the same semantic destination and owner. Retained
+instruction revisions and config draft/baseline/save queues live above the
+presentation branch, not in duplicate hidden editors; a pending save cannot erase
+a newer draft after switching presentation.
+The overview header uses a 40px light Mona Sans title and the outline avatar.
+**Open chat** sits beside the action menu: duplicate, set default, hide/show in
+the chat list, copy the actual profile path, and a hint directing deletion to
+Settings → General. Menu rows have 44px targets. Disconnection warnings reflect
+the backend's actual failed/retrying/stopped states for configured, enabled channels.
+Overview cards use 436:300 columns with a 24px gap, 16px section-title spacing,
+44px rows, 64px activity rows, and 4px corners; narrow layouts collapse to one column.
+Global desktop settings remain available outside the agent editor. New agent
+opens creation directly on the captured machine rather than another management page.
+
+### Terminology: classic vs redesign
+
+The redesign renames five product nouns; classic keeps `main`'s wording verbatim, so turning
+the **Redesigned interface** preference off restores exactly what `main` ships.
+
+| Classic (base catalog, `main`'s wording) | Redesign |
+|---|---|
+| Sessions | Chats |
+| Artifacts | Library |
+| Profiles / bots (Hermes agents) | Agents |
+| Cron / cron jobs / scheduled jobs | Routines |
+| Gateways (and "host" meaning a Hermes machine) | Machines |
+
+The swap is a wording layer, not a fork: `resolveTranslations(locale)`
+(`src/i18n/registry.ts`) reads the shell from the presentation leaf
+(`src/store/shell-presentation.ts`, i.e. `$portalShell`) and, in the redesigned shell,
+merges `src/i18n/redesign/<locale>.ts` over the base catalog — before backend/plugin
+language packs, which still win. Each overlay holds ONLY the keys whose wording differs,
+typed against `Translations`; a locale inherits the English overlay where its base still
+shows English. Call sites keep reading `t.x.y` / `translateNow(...)`; never branch a string on
+the shell. The popped-out Browser always renders classic, so it reads classic
+wording; the HUD follows the shell. **New shell wording goes in the overlay, never in the base catalog.** Redesign-only
+surfaces with their own copy modules (`src/i18n/simplified-agents.ts`, `src/app/**/*-copy.ts`)
+use the redesign terms directly. `src/i18n/redesign/terminology-guard.test.ts` fails on a
+classic noun left in the redesign and on a redesign-only word reaching classic.
+
+Rulings: a routine *has* a schedule ("schedule" stays the word for its timing; "cron
+expression" stays the input syntax's name). Service operations say **Restart Hermes**, not
+“restart the machine,” which would imply rebooting the computer. "host" stays only for a
+literal hostname or SSH host; skill/plugin "library" is "catalog", so Library means only the
+artifacts destination. Team Gateway and Tool Gateway remain product names; Group chats and
+Channels keep their names. Actual Telegram/Discord bots, subagents, browser profiles, the
+memory "user profile", sign-in sessions and session tokens, and user-authored names retain
+their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands, cron
+expressions, plugin IDs, and the exact stored `Bot Chat` title are technical contracts, not
+copy to rename.
+
+Drift coverage exercises navigation into Agent and Routine editors, cancellation,
+and return to the current view with the redesign enabled and disabled. Component
+tests use canonical translated controls while checking ownership, routing, and
+mutations; avoid source scans or snapshots that freeze incidental sentences.
+
+Owner actions preserve the roster's backend `targetProfile`, including aliases
+before Bot Mode has mounted. History uses bounded 25-row requests with offsets,
+deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessions.
+Source/archive filters are server-side; explicit text search and cleanup walk
+remaining bounded pages. Read-only previews expose Open chat, Archive, and Delete.
+Cleanup previews its candidates before confirmation and rechecks owner, running
+state, and eligibility before each fenced deletion. Protected/running sessions
+are skipped; failed writes are never counted as deleted. Selection and confirmation
+belong to one gateway/profile and are discarded when that owner changes.
+History dialogs use a dimmed, unblurred backdrop, 24px content padding, display
+headings, and semantic destructive colors for confirmed deletion.
+Bulk pin/archive operations retain failed selections and report partial success.
+Search, independent filter chips, and pagination reuse the same owner-scoped queries.
+The read-only History preview is a right-edge drawer below the real titlebar,
+not a centered dialog. It explicitly resets both shared-dialog translation axes;
+at narrow widths it fills the available viewport without hiding its actions.
+Session lists capture their serving connection before awaiting the response;
+cached rows never inherit a newly selected foreground gateway. Selection follows
+the focused conversation's owner. Explicit owners survive tab and window opens.
+Primary-local project rows retain their legacy profile-door shape; deletion
+normalizes both lookup claims and project-only targets using the tree's captured
+source. Never infer that source from the newly foregrounded machine.
+Conversation settings links resolve profile-only chats through the primary source,
+not the ambient connection; unresolved owners cannot open another agent's settings.
+The current per-window runtime caches cannot host identical stored IDs from two
+owners simultaneously: conflicting opens fail visibly without reassigning the
+existing chat; use separate windows for those conversations.
+Tile identity comparisons live in `src/store/session-tile-identity.ts`; strip
+ordering and close-to-next selection live in `src/store/session-tile-order.ts`.
+
+Agent-profile settings use `agentProfile` in the URL; the plugin settings
+contract keeps `agent` for the plugin key. Settings pin the complete gateway and
+profile on entry, including links that omit an explicit connection.
+Config, credentials, messaging, memory, and plugin operations retain this owner
+through asynchronous work. Same-name agents on another gateway keep their own
+configuration, plugin cache, conversations, and open tiles.
+
+Keep section resolution, visibility, and model-default derivation separate from
+editor composition. Refactoring these boundaries must preserve owner checks and
+must not mount inactive capability editors or pending inventory content.
+The agent header uses the Figma robot and display type. The directory count and
+default badge come from the owning machine's actual metadata, never sample data
+or a same-named agent on another machine. Each settings page supplies its own
+localized description. Instructions keeps the SOUL.md heading, proportional
+editor text, character count, and Save footer without changing draft ownership.
+Voice groups Conversation, Listening, and Speaking; the mode selector exposes
+only backend-supported values, while detailed provider/pricing help stays under
+Advanced. Schema/config availability still determines which provider fields exist.
+
+Page toolbars occupy the native titlebar band on the window canvas so open
+chat/tool tabs cannot bleed through; Back is a 30px chrome button and controls
+remain outside the drag region.
+
+The redesigned shell is a window canvas with panels laid on it
+(`app/redesign/portal-shell.css`; every colour, radius and size comes from the tokens in
+"Portal design language" below). The titlebar band and the 60px rails show the canvas; zones
+touching the window top become panels starting below the band, together one workspace frame:
+a card on the canvas between the rails (`--portal-workspace-inset-start` past the global rail and
+before the developer rail, `-end` and `-bottom` to the window edge: x 65–1265, y 60–865 of Figma's
+1280×880) with 15px outer corners (`--portal-radius-frame`), a soft shadow
+(`--portal-shadow-workspace`) and a top highlight (`--portal-shadow-workspace-highlight`). Its
+panels, the developer tool panes among them, meet square inside it with no hairlines (Content
+`16292:14463`; a phone keeps the full window). Behind it all lies the launch's artwork (see "Artwork" below), which the canvas
+shows at full strength and every panel veils. Window Glass (macOS default) never switches the redesign off: its
+rules are unlayered and beat the `@layer base` Glass rules, and only the canvas (rails, band) takes
+the native material, tinted with the portal canvas at the user's Glass intensity. Titlebar, rail and
+pane header buttons are chrome buttons (`--portal-surface-chrome*`); the open destination or shown
+pane wears the brand selection with a brand ring. The titlebar band is a shell property: 60px in the
+redesign (Figma's header; content starts at y 60), 34px classic (44px browser
+touch). Electron reads the shell choice from the shared UI preferences before
+creating a window and re-seats the macOS traffic lights (centred, in the rail
+column) and the Windows/Linux caption overlay when it flips
+(`electron/window-chrome.ts`); the popped-out Browser keeps the classic band.
+The band carries the leading cluster past the rail (Back and Forward through the window's own router
+history on every screen, `app/shell/history-position.ts`; a page with nothing behind it closes to the
+chat), the open session's title pill with "+" at the stage's leading edge, and the panel toggles at
+the end. Pages cover the chat, they do not replace it (`contrib/route-cover.tsx`): a route overlay or
+workspace page paints over a chat that stays mounted, skipped by style, layout and paint
+(`content-visibility: hidden`), inert and aria-hidden, so returning to Chats is a flip with its
+scroll, draft and focus intact. Toasts of every kind stack at the stage's end corner, resting on a
+docked composer, clear of page headers. Page content columns sit centred in their stage (the frame past a
+page's sidebar panel), never closer to its edges than `--portal-frame-inset`, and Routines lists every
+agent's routines in the shared page sidebar panel like Agents (see Routines below).
+Workspace pages (Capabilities, Library, …) and the overlay pages lie in the same
+workspace frame as the chat. Without an explicit skin pick, the redesign paints the
+Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
+shell never writes a pick.
+
+Redesigned surfaces use neutral foreground-derived fills and strokes, not
+accent-tinted greys (the colour roles below). Global settings cards and agent settings cards wear
+the one card role. Settings-navigation selection is the neutral selection role;
+sub-pages reveal under the active row, without per-row carets. Settings pages compose
+`SettingsOverview` / `SettingsCard` / `SettingsDisclosure` (`settings-card.tsx`), which fall back to
+the classic wrapper. The global rail marks its open destination with a brighter navy tile. Agent-management navigation
+tiles stay translucent; agent rows and the overview header use the Figma robot with the real
+owner's color.
+The global rail tracks the owning agent even inside its settings editor.
+Shared rail/sidebar geometry lives at the document root while the redesign is
+enabled. Sibling route overlays reserve the rail with logical inline offsets
+in both LTR and RTL layouts.
+Checked switches use the brand-blue track and light thumb across settings
+and the capability catalog; unchecked tracks are neutral 14% fills.
+
+The global rail (rail 16292:15233) carries no brand badge: Figma hides that layer and draws the
+window's traffic lights at the top of the column, so the destinations start 90px down on every host
+(clear of macOS lights), 30px navy tiles with 16px glyphs at .4 ink on a 50px pitch, the open one a
+brighter tile with its glyph in full ink; the foot (usage, Settings) carries 20px glyphs 40px off the
+floor, and Routines draws a clock. The rail never moves between states and has no edge of its own. The redesigned chat sidebar
+(340px, "Prod - Desktop" Panel 16292:15497) opens with its header (Top 16292:15498): the "Hermes"
+wordmark in Oswald Light 30 over a mono "// NOUS RESEARCH" caption (brand marks, never translated),
+and at its end a 30px search button. Search lives behind that button: it brings out a rimmed field
+under New chat with the session-search shortcut's keycaps (hidden on touch), and the shortcut or the
+command palette bring it out too; Escape on an empty field or the button again puts it away and ends
+the search. New chat (16292:15511) is a 40px radius-3 slab with rimless mono keycaps and keeps its
+agent picker at the end. The open destination's rail button folds its panel and brings it back: Chats folds the chat sidebar
+("Hide chats" / "Show chats", `aria-expanded`), Agents, Schedules and Settings their page panel
+("Hide panel" / "Show panel"); it stays the open destination either way, and ⌘B does the same. Picking
+a destination with a panel from elsewhere shows it whole; a destination without one leaves a folded
+panel alone. Page panels carry no fold button of their own. While a panel is folded on a wide window,
+Simple mode brings it back from one floating 44×40 button at the stage's top-leading corner, under the
+band (1061:7816, `app/shell/panel-reveal.tsx`), and Advanced from the band's sidebar button; below wide
+the band's button is the sheet's menu in both. Dragging the sidebar's sash 72px under its 280px minimum
+(`--sessions-pane-collapse-width`) folds it live as the pointer crosses and on release, writing no
+width, so it returns at the width it had; a drag that stops short rests at the minimum. Classic defines
+no fold width, so its sash never folds.
+
+Below New chat the sidebar follows the same panel (Centre 16292:15509): sections under sentence-case
+mono captions with the disclosure chevron right after the label (Agents keeps its brand count badge at
+the end), separated by whitespace only, on a 32px text inset with row fills bleeding 12px past it.
+Pinned and group-chat rows are 20px of SemiBold title on a 36px pitch after a 5px leading dot (row ink
+at rest, full ink for the open chat, brand for unread news, the status tones while a turn runs or
+waits), their tags, ages and statuses in the mono font, 10px uppercase. A machine is one radius-12
+card at 2% ink (set 16292:15581) under a 52px header, its dot in the machine's status tone and the status
+label at the end. Closing it folds the card down to that header at the same width and height; open, the
+header sticks to the top of the list while its agents scroll under it. Agents are cards inside it (16292:15592): radius 9, the agent's 32px colour tile (in its
+snapped Figma primary, `lib/portal-profile-color.ts`; Figma's character avatars are not adopted) over
+the name and a mono second line (roster description, else the chat count), the caret at the end and the
+CRT texture dodged into the fill. The open agent is the brand slab (white .10 / black .40 / blue), the
+others a navy card; light draws both as a pale brand card under a 1px brand rule, solid for the open
+one. An agent's chats are 40px rows across the machine card with the dot 30px in; no fill marks the
+open chat, its title and dot take full ink while the agent's other chats sit at the ladder's floor.
+An agent's card lists its three most recent chats (plus the open one and any running or unread)
+over a "Show all (N)" / "Show less" row remembered per agent; search lists every match. A row under
+the pointer or keyboard focus takes a 4% fill. Figma's "Recent" list is not built: it would repeat the
+chats the agent cards already list. A chat row resolves the click and its title is the one focusable button, as in classic, so
+plugin row decorations (`sessionRow.leading` before the title, `.trailing` before the age) and an
+agent card's `sidebar.profileGroup.header` contributions sit beside that button, never in it. Row and
+agent actions (ellipsis, caret, kebab) are bare glyphs that appear on hover, keyboard
+focus or an open menu; touch keeps them visible. Arrow keys, Home and End walk the
+visible rows; right-click opens the row menu. Captions and meta keep the AA ladder
+where Figma's inks fail 4.5:1. The band's leading cluster (Back/Forward on the native app) starts at
+`--portal-band-start` (x 150 past macOS traffic lights, navigation 16292:15284; else 80) and the
+session pill is anchored 25px past the stage's leading edge (tab 16292:15297) with CSS anchor
+positioning, so it tracks a sash drag in the same frame. Band buttons and the pill are navy tiles
+(white .05 / black .60 / blue .20) with glyphs at .4. The main chat's Agent settings is the band's
+trailing sliders button (settings-2 16292:15304), present wherever a conversation holds the stage;
+an extra tile keeps its own in its header. The stage keeps its "machine // agent" line at its top end
+in the mono caption style, though Figma draws none.
+The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
+sharing its peers' inactive, hover, and selected tones in both light and dark themes;
+rail destinations rest at .4 ink on navy tiles and the open one takes the brighter tile with its glyph in
+full ink.
+The Hermes Portal skin supplies only the seeds the roles read (`--ui-base`, `--ui-bg-chrome`, the
+floating `--ui-bg-elevated`, the canvas `--portal-skin-window`: navy `#0a0a1a` / `#07071a` /
+`#0d0d1e` on dark); the shell's panels derive from them. Custom theme choices and classic styling
+stay available.
+The **Redesigned interface** preference gates the setup guide, catalog/agent
+controls, composer layout, machine menu, and hidden-agent presentation as well as
+the shell. One seam owns it (`src/store/shell-variant.ts`): `usePortalShell()` /
+`$portalShell` say whether this window renders the redesign; `installShellAttribute()`
+(main.tsx, before first render) mirrors it to `<html data-shell="portal">` and follows
+every toggle (absent in classic). Every redesign selector is gated
+`:root[data-shell='portal'] …`, or `:where(:root[data-shell='portal']) …` where a rule on a class
+only the redesign emits must keep that class's own specificity; never gate on a mounted component
+(`:has(.portal-sidebar)`) or on a shell ancestor. The popped-out Browser
+window stays classic in both modes. The chromeless HUD renders the redesign with it: the same
+composer and transcript, so their look carries over, and `redesign/portal-hud.css` restates only
+what its floating layout needs (a navy transcript sheet, its own turn rhythm, the model kept on the
+one bar, Send as its glyph). `$portalPreferred`, the
+window-independent preference, is only for behaviour every window must agree on
+(setup flow, metrics, session scope, the plugin SDK). Brand marks, floating
+surfaces (`app/redesign/portal-floating.css`) and the control scale (`portal-controls.css`, 36px
+inside pages and dialogs) belong to the redesign, not to the Hermes Portal theme, which carries
+palette and typography only.
+Turning it off restores classic onboarding and all classic agent rows without
+migrating conversations or destroying the redesign's saved visibility.
+Chat chrome leaves the keyboard tab order when covered by a route overlay, without
+remounting the draft-owning host. The session-search shortcut reopens and focuses
+the redesigned sidebar. Global settings keep seven primary destinations; extra
+configuration remains under Advanced, with active deep links revealed.
+An unqualified Settings entry opens Account & Plan (billing) in the redesign rather
+than a legacy Model page tucked under Advanced; explicit destinations and the classic
+default remain unchanged. The redesigned rail follows Figma 823:15804 ("does this
+change anything for another agent?" → global, else Agent settings): Account & Plan,
+Appearance, Notifications, Keyboard Shortcuts, Gateways & Machines, Sessions & History,
+About & Updates, Advanced (device-level and remaining global pages), and an Agent
+settings card. Provider accounts and keys live under Agent › Providers & Keys.
+A page's list panel (Agents, Routines; `PageSidebarPanel`) wears the chat sidebar's and the
+Settings column's header: its title 30px in and 30px down on a 36px line, its start row (New agent,
+New routine) 122px under the panel's top where New chat starts, as New chat's borderless light/5 slab
+with rimless mono keycaps, and its open row a light/5 fill with no stroke.
+Every rail page keeps one page frame, laid by one rule: the page stage contract in
+`redesign/portal-pages.css`. A page marks the element its content hangs off `page-stage` (plus
+`data-scrolls` when that element scrolls) and sizes nothing itself; the contract centres the one
+page column, `--portal-column-page` (980), in the stage, as the chat column is centred. Beside a
+sidebar panel the stage is what lies past the panel's divider. Figma left-anchors the column and
+draws forms at 840; the owner centres it and keeps one width, so no heading moves between Agents,
+Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree, or between a page's tabs.
+A stage narrower than the column keeps `--page-content-inset` (24px, 16 on a phone) on both sides.
+`scripts/check_desktop_design_tokens.py` fails any stylesheet outside `tokens/` and the contract
+that reads the column token (`page-column`), so a new page cannot lay its own.
+Every H1 (or agent hero) tops out at the same y; header actions end
+at the column's right edge. Global Settings is the exception ("Prod - Desktop" 06 · Settings/Account,
+16292:16447): a 640px column centred in the stage, its H1 (Oswald Light 40/48, -1px) 104px under the
+stage's top with a mono description; the column's content box is its text column, 32px inside
+the 640 (the header and the scroller pad to it), so the header, section heads (14 SemiBold at .8),
+forms and every page's own content start at one x, and only the card primitives (SettingsCard,
+SettingsDisclosure, the empty block) bleed out to the column's edges with their rows padded back in; cards are radius 15, borderless, white .02 / black .50 / blue .10, 16px over
+and under their rows, rows 12px with 16px Regular labels and mono descriptions. Its panel (16292:16359)
+titles "Settings" on a 30px inset with the settings search at its end (the band's pill is gone; typing
+and ⌘K still open the palette), 40px rows 4px apart in SemiBold with no stroke on the selected one, and
+the Agent settings card 20px under them: radius 9, borderless, the lattice art masked in from its
+leading edge. Figma's "// META INFO" caption (placeholder copy) and its Help & Feedback entry (no
+destination yet) are not built; Advanced and the Documentation link stay, though Figma omits them.
+An agent's page has one vertical menu (Figma 1036:7189). On Overview and History the
+page sidebar panel lists the agents; on the Settings tab the same panel swaps to
+"← Back to agents" (a history step back to the Overview), the agent's own row, and the
+settings sections (10px group labels, 32px rows, counts at the row end), while the stage
+holds the agent header, the tabs and the selected page at full width. When the panel is
+folded away (the Agents rail button, ⌘B) or the window is too narrow for panels, the sections menu leads the
+page in the stage instead, so every section stays reachable.
+
+Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
+following the Figma conversation (`491:40346`; width from "Prod - Desktop" chat 16292:16175): one
+centred 640px column shared with the docked composer (`--portal-column-conversation`, read as
+`--portal-conversation-*` in `app/chat/stage.css`), prose flush with the composer's edges
+(`--portal-column-conversation-inset`), 30px turn gaps and 20px output gaps. User bubbles hug their text at
+the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
+fill and no border; their time and restore actions sit beside the bubble. Base text
+is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of clearance
+below its bubble so clipped reply lines never touch it. Retain the current branded
+body font, timestamp preference, and working message actions; enabled timestamps
+use caption ink and sit above the bubble. Collapsed tool runs, including
+single-tool runs, use the dashed [2,4] summary frame with a status dot. The stage is a
+veil over the launch's artwork, lighter behind a new chat than behind a conversation. The composer has no ring: its static 2px spectrum edge
+is full strength while it holds focus and dims when focus leaves; its native base
+text is 14px before the
+user's scale, retaining the browser minimum. Floating dialogs inherit redesigned padding, display typography, and
+brand-blue primary actions and the shell's corner radius through root-scoped
+rules; their classic defaults remain unchanged. Route overlays and body-portalled dialogs are siblings of the
+chat shell, so their redesign styles must not require the shell as an ancestor.
+
+Redesigned setup is a sessionless preferences/model guide. It resumes from
+root `onboarding.run` / `onboarding.step`, retains a working provider, and offers
+the free model only when the backend reports eligibility. Finishing settles setup
+without replacing the existing draft, attachments, owner, or route; no setup
+transcript is created. Explicit sessionless migration retires legacy setup
+metadata/cards without deleting conversation history and
+broadcasts the end once so connected classic clients leave setup immediately.
+Resuming an existing guide is read-only; the first-start latch preserves newer
+peer progress and cannot reopen completed setup. A completed/skipped guide with a
+persisted step stays settled after a fresh renderer launch; this does not
+acknowledge unrelated account-level model notices. Older runtimes show an explicit
+upgrade/retry offer rather than silently dropping setup or creating a setup chat.
+Local-model configuration releases the modal and leaves a **Resume setup** action.
+
+Global Capabilities is the inventory/catalog entry; agent settings owns
+enablement. Agent Tools groups On/Off switches with per-tool configuration
+disclosures; the page-level Advanced disclosure retains Keys and Config.
+Installations and tool enablement retain their actual agent and machine scopes.
+Hosted connector accounts belong to the Nous identity: agents
+sharing that identity share those accounts, and removing one affects them all.
+Read-only command search must not replace an agent editor's writable inventory.
+
+Usage collection belongs to a consenting connection/profile, not merely the
+foreground UI. Changing scope revokes the old metrics binding immediately;
+events during rebinding are discarded, never replayed under later consent.
+
+The redesigned composer is 640 × 148 on an empty landing (msg 16292:15670). In a populated native
+conversation it keeps the 148px base height, spans the shared 640px column and
+docks 30px above the stage floor. Its card is navy, white .05 / blue .10 / black .80 flattened onto
+the stage (white on light), with no shadow, and its resting prompt is the card's heading line in
+full ink (16292:15681); Figma's dim second line ("Prompt suggestions or processing...") is template
+copy and is not built, with model/effort as quiet right-aligned text above the input and attachment, microphone, and labeled Send
+controls below. Browser touch targets keep their larger accessibility sizing.
+Gateway menus distinguish connection from inference
+readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds
+system/restart/logs, with 28px icon controls and destructive restart styling at rest.
+A routed page waits for its code inside its own frame (`overlays/page-frame-fallback.tsx`: the
+page's panel and a header at the PageHeader geometry), never an empty window; rail buttons warm their
+page on hover and focus. A redesign confirm has one anatomy: no corner X, a bordered Cancel beside the
+solid action, and a destructive confirm opens on Cancel. The developer tool panel (Files, Terminal,
+Review, Browser) has one user-resizable width shared by every tool, never under a tool's own minimum.
+It belongs to the chat on screen (`app/redesign/chat-tool-panel.ts`): a page's right side is its own
+detail, so off a chat the panel and its rail are out of sight (route-collapsed: a running terminal or
+a loaded Browser page stays alive), and each chat comes back with the tools it had open. A chat never
+opened, or a new one, starts closed; a new chat's panel goes with it into the conversation on its
+first send. Browser tabs follow their own session already; the other tools are remembered per stored
+session (`hermes.desktop.chatToolPanels.v1`, the 256 most recently changed). Classic keeps one panel
+for the window. Menus draw no stroke: the floating fill and its shadow raise them; popovers, dialogs
+and toasts keep their hairline. A dialog's text reads at the 14px body size, its field labels too.
+The rail's Settings menu lists the Settings page's destinations, in its order and under its names
+(`settings/redesign-navigation.ts`), with Interface mode and Documentation below a separator.
+
+The redesign's status bar (Figma "status bar", rev 11/16) stands in the canvas under the workspace
+frame, ending at the frame's end: the readouts that describe the chat being worked in (workspace, turn
+timer, context, cache hit rate, tokens per second, focus timer, approvals) and what plugins add, as
+20px mono chips, then a toggle. A readout with nothing to report stays off it. Open, the frame's floor
+gap grows from 15px to 40px; collapsed, the toggle floats in the frame's end corner and the bar's
+items join the rest of the classic bar's as rows in the rail's System popover. It is open by default
+with developer chrome only: Simple rests it collapsed, and its toggle there opens it for the session.
+Open, it rests at half ink and comes to full when the pointer reaches the floor around it, the
+keyboard is in it or one of its menus is open (a touch screen keeps it full).
+A phone has neither bar nor toggle. It lives in `app/redesign/portal-status-bar.*` and
+`store/portal-status-bar.ts`.
 
 ## Portal design language (the redesign)
 
@@ -687,6 +1125,25 @@ inset focus rings), the sidebar keeps those values as its own named roles in `to
 (`--portal-sidebar-*`) instead of the page roles. That is deliberate, not drift: change the sidebar there, and never point
 page components at `--portal-sidebar-*`.
 
+### Still to unify
+
+Phase B unified cards (U1: 2% fill, 5% hairline, r4), page rhythm (U2: 32), page tabs (U3), in-card
+dividers (U4: ink 3, light ink 5), row hover outside the sidebar (U5), danger (U10), display-lg (U11),
+the text ladder outside the sidebar (U12), dialogs and drawers (U13: 24 padding and gap, 44px footer
+actions), page focus rings (U16), brand selection (U17: 25% / light 12%) and control and floating
+states (U18). What remains, one reviewable change per row:
+
+| # | Role | Today: value · where | Winner (Figma) |
+|---|---|---|---|
+| U6 | Neutral selection | the pane tab-strip's active tab (ink 5, no stroke) | ink 5 + 0.5px ink 5 stroke (1036:7409) |
+| U7 | Caption | new-session picker label 0.08em/500/brand ink; gateway menu `tracking-[0.08em]` | 10/1.4, `--portal-tracking-caption` 0.06em, 400, tertiary (1036:7408) |
+| U8 | Chip and Count | new-session tag 0.06em/500/r3; RUNNING/EMPTY chip line boxes | Chip h14 9/0.04em r2, Count h14 10/500 r2 (1036:7318, 856:3474) |
+| U9 | Keycap | New agent row keycaps (0.5px ink 5 rim, ink 5 fill, `portal-pages.css`) vs `[data-slot=kbd]` field ink 4 + 1px control stroke | ink 4 fill, 1px ink 14, r3, 11px (1038:7401) |
+| U14 | Small text in mixed TSX | 14 sizes between 0.6 and 0.82rem and 0.07–0.2em tracking in the classic/portal branches | caption / micro / meta / ui sizes |
+| U15 | Radius by role | `0.5rem` / `0.375rem` (agent overview menu and items), Tailwind `rounded-*` in redesign TSX (G2 warnings) | the seven `--portal-radius-*` roles |
+| U19 | Units | px font sizes, line heights and radii in `agent-settings.css`, `history.css`, capabilities `page.css` (the guard's baseline lists them) | rem through the type tokens |
+| U20 | Spacing drift | 3/5/7/9/11/13/15/17/22/23px insets (catalog, history, settings editor) | the 4px scale; Figma optical offsets keep `/* token-exempt */` |
+
 ### Rules of thumb
 
 - A new colour must be a role in `color.css`. A new alpha is not allowed: pick
@@ -1225,6 +1682,10 @@ long transcript or a busy terminal.
 - **Sparse locales** (`ar`, `ru`) override the English base through
   `defineLocale()`. Large catalogs are split by topic: the Arabic source lives
   in `src/i18n/ar_<topic>.ts`, recomposed by `src/i18n/ar.ts`.
+- **Shell wording** — the base catalog is classic's wording. Wording that differs only
+  in the redesigned shell goes in `src/i18n/redesign/<locale>.ts` for every locale
+  (see Terminology above), never in the base catalog and never as a `portal ? a : b`
+  string at the call site.
 
 ## State (TypeScript)
 

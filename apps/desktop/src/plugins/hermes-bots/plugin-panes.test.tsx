@@ -28,9 +28,8 @@ import { bindBotsPaneToShell } from '@/app/contrib/bots-pane-shell'
 // The app provider the plugin's tab label renders under; a plugin test may reach it.
 // eslint-disable-next-line no-restricted-imports
 import { I18nProvider } from '@/i18n'
-// setPortalPreferred arrives with the Settings toggle; until then these cases set the stored choice.
 // eslint-disable-next-line no-restricted-imports
-import { $shellChoice } from '@/store/shell-variant'
+import { $shellChoice, setPortalPreferred } from '@/store/shell-variant'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -176,7 +175,7 @@ afterEach(() => {
 describe('the Bots pane dock', () => {
   it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()
-    $shellChoice.set(false)
+    setPortalPreferred(false)
 
     const harness = recordingContext()
 
@@ -354,14 +353,14 @@ describe('a desktop without host.paneVisibility', () => {
 
 it('removes only the Bots sidebar tab while the redesign is on and restores it when rolled back', () => {
   const unbind = bindBotsPaneToShell()
-  $shellChoice.set(false)
+  setPortalPreferred(false)
   paneStores()
   const harness = recordingContext()
   plugin.register(harness.ctx)
   expect(harness.find('pane')).toBeDefined()
-  $shellChoice.set(true)
+  setPortalPreferred(true)
   expect(harness.find('pane')).toBeUndefined()
-  $shellChoice.set(false)
+  setPortalPreferred(false)
   expect(harness.find('pane')).toMatchObject({ data: { dock: { pane: 'sessions', pos: 'center', enforce: true } } })
   harness.dispose()
   unbind()

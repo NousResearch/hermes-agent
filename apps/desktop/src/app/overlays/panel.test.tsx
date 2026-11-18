@@ -1,17 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { Panel, PanelHeader, PanelListRow, PanelRowMenu } from './panel'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 beforeAll(() => {
@@ -39,7 +36,7 @@ describe('PanelRowMenu', () => {
 })
 
 it('uses a default Portal page heading and preserves row selection when returning to classic', () => {
-  $shellChoice.set(true)
+  $shellChoice.set(null)
   const select = vi.fn()
   render(
     <Panel onClose={vi.fn()}>
@@ -64,7 +61,7 @@ it('keeps the default Portal heading for an empty page without changing classic 
   $shellChoice.set(false)
   const { rerender } = render(<PanelHeader hideInClassic title="Agents" />)
   expect(screen.queryByRole('heading')).toBeNull()
-  act(() => $shellChoice.set(true))
+  act(() => $shellChoice.set(null))
   expect(screen.getByRole('heading', { level: 1, name: 'Agents' })).toBeTruthy()
   rerender(<PanelHeader hideInClassic={false} title="Agents" />)
   expect(screen.getAllByRole('heading')).toHaveLength(1)

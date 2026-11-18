@@ -1,14 +1,11 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { NEW_SESSION_DRAFT_KEY } from '@/store/composer'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { useComposerPlaceholder } from './use-composer-placeholder'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 const starters: readonly string[] = en.composer.newSessionPlaceholders
 const followUps: readonly string[] = en.composer.followUpPlaceholders
@@ -28,7 +25,7 @@ function renderPlaceholder(initialProps: Props = { scope: fresh, sessionId: null
   )
 }
 
-afterEach(() => $shellChoice.set(true))
+afterEach(() => $shellChoice.set(null))
 
 it('re-rolls to a follow-up as soon as the landing routes to an existing chat, before its runtime binds', () => {
   const { rerender, result } = renderPlaceholder()

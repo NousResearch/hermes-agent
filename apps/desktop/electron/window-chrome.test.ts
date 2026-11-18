@@ -11,9 +11,9 @@ import {
   windowTitlebarHeight
 } from './window-chrome'
 
-test('the redesign is off until the user opts in', () => {
-  assert.equal(portalShellPreferred(null), false)
-  assert.equal(portalShellPreferred({}), false)
+test('the redesign is on until the user rolls it back', () => {
+  assert.equal(portalShellPreferred(null), true)
+  assert.equal(portalShellPreferred({}), true)
   assert.equal(portalShellPreferred({ [SHELL_CHOICE_KEY]: 'true' }), true)
   assert.equal(portalShellPreferred({ [SHELL_CHOICE_KEY]: 'false' }), false)
 })

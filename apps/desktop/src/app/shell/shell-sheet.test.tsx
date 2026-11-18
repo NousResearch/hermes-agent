@@ -20,9 +20,6 @@ import {
 } from './shell-sheet'
 import { ShellSheetController, ShellSheetScrim } from './shell-sheet-view'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 beforeEach(() => {
   $widthClass.set('compact')
 })
@@ -32,7 +29,7 @@ afterEach(() => {
   $shellSheet.set(null)
   $narrowOverlayPaneIds.set(new Set())
   $widthClass.set('wide')
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 describe('the open sheet', () => {
@@ -52,7 +49,7 @@ describe('the open sheet', () => {
     expect($openSheet.get()).toBeNull()
     expect($shellSheet.get()).toBeNull()
 
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     openShellSheet('page')
     $widthClass.set('wide')
     expect($shellSheet.get()).toBeNull()

@@ -13,7 +13,6 @@ vi.mock('@/themes/context', () => ({
 beforeEach(() => {
   vi.resetModules()
   localStorage.clear()
-  localStorage.setItem('hermes.desktop.agentShell.v1', 'true') // the redesign is opt-in until it is turned on
   window.document.documentElement.dataset.hermesDesktopHost = 'browser'
   closeTab.mockClear()
 })

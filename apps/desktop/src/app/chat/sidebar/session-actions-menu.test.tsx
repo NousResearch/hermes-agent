@@ -1,18 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { refreshProjectTree } from '@/store/projects'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so

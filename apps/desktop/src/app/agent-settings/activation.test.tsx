@@ -18,15 +18,11 @@ import {
   setRememberedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
-import { $shellChoice } from '@/store/shell-variant'
 import { deferred } from '@/test/deferred'
 
 import { useFreshSessionRequest } from '../contrib/wiring-effects'
 
 import { AgentSettingsView } from './index'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 vi.mock('@tanstack/react-query', async importOriginal => ({
   ...(await importOriginal<typeof ReactQuery>()),

@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 import { $touchPointer } from '@/lib/touch-interaction'
@@ -24,9 +24,6 @@ import {
   windowLightsInRail
 } from './titlebar'
 import { installTitlebarBandProperty, titlebarHeightNow, useTitlebarHeight } from './use-touch-titlebar'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 describe('titlebarControlsPosition', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -113,7 +110,7 @@ describe('titlebarBandHeight', () => {
     expect(result.current).toBe(PORTAL_TITLEBAR_HEIGHT)
     act(() => $shellChoice.set(false))
     expect(result.current).toBe(TITLEBAR_HEIGHT)
-    act(() => $shellChoice.set(true))
+    act(() => $shellChoice.set(null))
     expect(result.current).toBe(PORTAL_TITLEBAR_HEIGHT)
   })
 
@@ -125,7 +122,7 @@ describe('titlebarBandHeight', () => {
     expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
     $shellChoice.set(false)
     expect(band()).toBe(`${TITLEBAR_HEIGHT}px`)
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
     stop()
   })
@@ -141,7 +138,7 @@ describe('titlebarBandHeight', () => {
     expect(root.style.getPropertyValue('--titlebar-band-height')).toBe(`${TITLEBAR_HEIGHT}px`)
     expect(titlebarHeightNow()).toBe(TITLEBAR_HEIGHT)
 
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     expect(titlebarHeightNow()).toBe(PORTAL_TITLEBAR_HEIGHT)
     stop()
     $touchPointer.set(false)

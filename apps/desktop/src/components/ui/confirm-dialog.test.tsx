@@ -1,17 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { act } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $shellChoice } from '@/store/shell-variant'
 
 import { ConfirmDialog } from './confirm-dialog'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 describe('ConfirmDialog secondary action', () => {

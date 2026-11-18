@@ -13,8 +13,7 @@ import * as notifications from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, $sessions, _resetSessionOwnerHintsForTests, mergeSessionPage } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
-// setPortalPreferred arrives with the Settings toggle; until then these cases set the stored choice.
-import { $shellChoice } from '@/store/shell-variant'
+import { setPortalPreferred } from '@/store/shell-variant'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { SidebarSessionRow } from './session-row'
@@ -27,7 +26,7 @@ const noop = () => {}
 const originalBridge = window.hermesDesktop
 
 function mountRow(redesign: boolean) {
-  $shellChoice.set(redesign)
+  setPortalPreferred(redesign)
 
   return render(
     <MemoryRouter><StableNavigateProvider><RootTooltipProvider>
@@ -60,7 +59,7 @@ afterEach(() => {
   noteActiveTreeGroup(null)
   window.hermesDesktop = originalBridge
   $apiRequestScope.set({ connectionId: null, profile: null })
-  $shellChoice.set(false)
+  setPortalPreferred(false)
   vi.restoreAllMocks()
 })
 

@@ -1,18 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $widthClass } from '@/app/redesign/breakpoints'
 import { $historyPosition } from '@/app/shell/history-position'
 import { $shellSheet } from '@/app/shell/shell-sheet'
 import { $interfaceMode } from '@/store/interface-mode'
 import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
-import { $shellChoice } from '@/store/shell-variant'
 
 import { usePageSidebarOpen } from './page-sidebar'
 import { PageToolbar } from './page-toolbar'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 afterEach(() => {
   cleanup()

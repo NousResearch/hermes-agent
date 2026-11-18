@@ -93,6 +93,29 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
 
 
 @pytest.mark.parametrize(
+    "model,effort,level,budget",
+    [
+        ("gemini-4-hydrogen", "medium", "medium", None),
+        ("gemini-4-hydrogen", "high", "high", None),
+        ("gemini-4-hydrogen", "xhigh", "xhigh", 262_144),
+        ("google/gemini-4-hydrogen", "max", "xhigh", 1_048_576),
+        ("gemini-4-carbon", "xhigh", "high", 262_144),  # Argon and Carbon answer 400 to xhigh
+    ],
+)
+def test_gemini_provider_sends_xhigh_only_to_the_models_that_take_it(model, effort, level, budget):
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("gemini")
+    native = profile.build_extra_body(model=model, reasoning_config={"enabled": True, "effort": effort},
+                                      base_url="https://generativelanguage.googleapis.com/v1beta")
+    assert native["thinking_config"] == {"includeThoughts": True, "thinkingLevel": level}
+    assert native.get("max_output_tokens") == budget
+    hidden = profile.build_extra_body(model=model, reasoning_config={"enabled": False, "effort": effort},
+                                      base_url="https://generativelanguage.googleapis.com/v1beta")
+    assert hidden["thinking_config"] == {"includeThoughts": False, "thinkingLevel": "low"}
+
+
+@pytest.mark.parametrize(
     "model,effort,level",
     [
         # Argon documents low/medium/high and 400s on "minimal" — clamp, never forward it.

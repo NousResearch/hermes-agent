@@ -260,7 +260,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
       <Tip label={k.rebind}>
         <button
           aria-label={k.rebind}
-          className="flex shrink-0 items-center gap-1 rounded-lg outline-none"
+          className="flex shrink-0 items-center gap-1 rounded-lg"
           onClick={() => (capturing ? endCapture() : beginCapture(action.id))}
           type="button"
         >

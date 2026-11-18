@@ -18,7 +18,8 @@ import asyncio
 import dataclasses
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from storage_user_copy import error_type_name
+from persistence.core.errors import AuthorityRefusal
 
 _CALLS = {
     "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
@@ -123,7 +124,7 @@ def invoke(runner, kind, target, call, args, kwargs) -> dict:
             value = getattr(mgr, call)(*args, **kwargs)
         out = {"value": _wire(value)}
     except _ERRORS as exc:
-        out = {"error": {"type": type(exc).__name__, "message": str(exc)}}
+        out = {"error": {"type": error_type_name(exc), "message": str(exc)}}
     state = mgr.state
     out["state"] = state.to_json() if state is not None else None
     return out
@@ -131,19 +132,19 @@ def invoke(runner, kind, target, call, args, kwargs) -> dict:
 
 def _parse(params):
     if set(params) - _FIELDS:
-        raise RuntimeStoreError("invalid_params")
+        raise AuthorityRefusal("invalid_params")
     kind, call = params.get("kind"), params.get("call")
     args, kwargs = params.get("args") or [], params.get("kwargs") or {}
     if (kind not in _CALLS or call not in _CALLS[kind] or not isinstance(args, list)
             or not isinstance(kwargs, dict) or not all(isinstance(k, str) and not k.startswith("_") for k in kwargs)):
-        raise RuntimeStoreError("invalid_params")
+        raise AuthorityRefusal("invalid_params")
     return kind, call, args, kwargs
 
 
 async def automation(connection, ref, params):
     kind, call, args, kwargs = _parse(params)
     if not isinstance(ref.session_id, str) or not ref.session_id:
-        raise RuntimeStoreError("invalid_params")
+        raise AuthorityRefusal("invalid_params")
     from gateway.session_busy_controls import authorize
     authorize(connection, ref, params, "session:control")
     authority = connection.authority
@@ -161,7 +162,9 @@ async def automation(connection, ref, params):
         from gateway.session_commands import _session_workspace
         with _profile_runtime_scope(home), _session_workspace(runner, live.source):
             return invoke(runner, kind, target, call, args, kwargs)
-    rows = lambda: tuple(authority.db.get_meta(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
+    from gateway.session_persistence import authority_persistence
+    meta = authority_persistence(authority).state_meta
+    rows = lambda: tuple(meta.get(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
     # A "read" can still write: is_waiting / goal_blocks_tick clear a satisfied goal barrier.
     before = rows() if call in _READS else None
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).

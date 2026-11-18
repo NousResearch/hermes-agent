@@ -640,7 +640,7 @@ B105: =B88/(1+(E48-0.07))      // Doesn't recalculate full DCF
 
 **Why it's wrong:**
 - Can't verify where data came from
-- Fails xlsx skill requirements
+- Fails `microsoft-office` skill requirements
 - Not audit-ready
 - Wastes time fixing later
 
@@ -705,7 +705,7 @@ This vertical layout makes it hard to see the progression across years within ea
 **Why it's wrong:**
 - Can't distinguish inputs from formulas
 - Auditing becomes impossible
-- Violates xlsx skill requirements
+- Violates `microsoft-office` skill requirements
 
 **Instead:** Blue text for ALL hardcoded inputs, black text for ALL formulas, green for sheet links
 
@@ -765,13 +765,13 @@ In addition, be aware of these errors:
 
 ## Excel File Creation
 
-**This skill uses the `xlsx` skill for all spreadsheet operations.** The xlsx skill provides:
+**This skill uses the `microsoft-office` skill for all spreadsheet operations.** It provides:
 - Standardized formula construction rules
 - Number formatting conventions
 - Automated formula recalculation via `recalc.py` script
 - Comprehensive error checking and validation
 
-All Excel files created by this skill must follow xlsx skill requirements, including zero formula errors and proper recalculation.
+All Excel files created by this skill must follow `microsoft-office` skill requirements, including zero formula errors and proper recalculation.
 
 ## Quality Rubric
 
@@ -852,11 +852,11 @@ The script will:
 
 ### Formatting Standards
 
-**IMPORTANT**: Follow the xlsx skill for formula construction rules and number formatting conventions. The DCF skill adds specific visual presentation standards.
+**IMPORTANT**: Follow the `microsoft-office` skill for formula construction rules and number formatting conventions. The DCF skill adds specific visual presentation standards.
 
 **Color Scheme - Two Layers**:
 
-**Layer 1: Font Colors (MANDATORY from xlsx skill)**
+**Layer 1: Font Colors (MANDATORY from `microsoft-office` skill)**
 - **Blue text (RGB: 0,0,255)**: ALL hardcoded inputs (stock price, shares, historical data, assumptions)
 - **Black text (RGB: 0,0,0)**: ALL formulas and calculations
 - **Green text (RGB: 0,128,0)**: Links to other sheets (WACC sheet references)
@@ -902,7 +902,7 @@ The script will:
 
 **Borders are mandatory** - models without professional borders are not client-ready.
 
-**Number Formats** (follows xlsx skill standards):
+**Number Formats** (follows `microsoft-office` skill standards):
 - **Years**: Format as text strings (e.g., "2024" not "2,024")
 - **Percentages**: `0.0%` (one decimal place)
 - **Currency**: `$#,##0` for millions; `$#,##0.00` for per-share - ALWAYS specify units in headers ("Revenue ($mm)")
@@ -912,7 +912,7 @@ The script will:
 
 **Cell Comments (MANDATORY for all hardcoded inputs)**:
 
-Per the xlsx skill, ALL hardcoded values must have cell comments documenting the source. Format: "Source: [System/Document], [Date], [Reference], [URL if applicable]"
+Per the `microsoft-office` skill, ALL hardcoded values must have cell comments documenting the source. Format: "Source: [System/Document], [Date], [Reference], [URL if applicable]"
 
 **CRITICAL**: Add comments AS CELLS ARE CREATED. Do not defer to the end.
 
@@ -1217,7 +1217,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 ### During Model Construction
 
 1. **Build Excel model** using openpyxl with formulas (not hardcoded values)
-2. **Follow xlsx skill conventions** for formula construction and formatting
+2. **Follow `microsoft-office` skill conventions** for formula construction and formatting
 3. **Apply fill colors only if requested** by user or if specific brand guidelines are provided
 
 ### Before Delivering Model (MANDATORY)

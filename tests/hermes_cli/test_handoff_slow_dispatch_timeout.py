@@ -11,7 +11,7 @@ fail_handoff() on the RUNNING row (stomping the gateway's claim), and claimed
 session. The gateway later overwrote failed -> completed: split-brain.
 
 Fix under test:
-  1. SessionDB.fail_handoff(only_states=...) — CAS: waiters can only fail
+  1. coordination.fail_handoff(only_states=...) is a CAS: waiters can only fail
      rows still in the given states.
   2. CLI _handle_handoff_command: 60s deadline applies only to PENDING;
      a RUNNING row gets a long (15 min) wait and is never failed by the CLI.
@@ -27,16 +27,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.i18n import t
-
-from hermes_state import SessionDB
+from hermes_cli.gateway_session_store import GatewaySessionStore, SurfaceLabelReader
+from persistence.authority.coordination import HandoffStatus
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture()
-def db(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    d = SessionDB(db_path=tmp_path / "state.db")
-    yield d
-    d.close()
+def store(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return storage_handle(home)
+
+
+def _state(store, session_id):
+    return store.coordination.get_handoff(session_id=session_id).state.value
 
 
 # ---------------------------------------------------------------------------
@@ -44,46 +49,55 @@ def db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestFailHandoffCAS:
-    def test_cas_fails_pending_row(self, db):
-        db.ensure_session("s1", "cli")
-        assert db.request_handoff("s1", "discord")
-        assert db.fail_handoff("s1", "timed out", only_states=("pending",)) is True
-        assert db.get_handoff_state("s1")["state"] == "failed"
+    def test_cas_fails_pending_row(self, store):
+        seed_session(store, "s1", "cli")
+        assert store.coordination.request_handoff(session_id="s1", platform="discord")
+        assert store.coordination.fail_handoff(
+            session_id="s1", error="timed out", only_states=(HandoffStatus.PENDING,)) is True
+        assert _state(store, "s1") == "failed"
 
-    def test_cas_refuses_running_row(self, db):
+    def test_cas_refuses_running_row(self, store):
         """A waiter timeout must NOT stomp a row the gateway has claimed."""
-        db.ensure_session("s2", "cli")
-        assert db.request_handoff("s2", "discord")
-        assert db.claim_handoff("s2")  # gateway claimed: pending -> running
-        assert db.fail_handoff("s2", "timed out", only_states=("pending",)) is False
-        assert db.get_handoff_state("s2")["state"] == "running"
+        seed_session(store, "s2", "cli")
+        assert store.coordination.request_handoff(session_id="s2", platform="discord")
+        assert store.coordination.claim_handoff(session_id="s2")  # gateway claimed: pending -> running
+        assert store.coordination.fail_handoff(
+            session_id="s2", error="timed out", only_states=(HandoffStatus.PENDING,)) is False
+        assert _state(store, "s2") == "running"
         # gateway still reaches its own terminal state
-        db.complete_handoff("s2")
-        assert db.get_handoff_state("s2")["state"] == "completed"
+        store.coordination.complete_handoff(session_id="s2")
+        assert _state(store, "s2") == "completed"
 
-    def test_unconditional_fail_still_available_to_owner(self, db):
+    def test_unconditional_fail_still_available_to_owner(self, store):
         """The gateway watcher (owner of a claimed row) fails unconditionally."""
-        db.ensure_session("s3", "cli")
-        assert db.request_handoff("s3", "discord")
-        assert db.claim_handoff("s3")
-        assert db.fail_handoff("s3", "dispatch raised") is True
-        assert db.get_handoff_state("s3")["state"] == "failed"
+        seed_session(store, "s3", "cli")
+        assert store.coordination.request_handoff(session_id="s3", platform="discord")
+        assert store.coordination.claim_handoff(session_id="s3")
+        assert store.coordination.fail_handoff(session_id="s3", error="dispatch raised") is True
+        assert _state(store, "s3") == "failed"
 
-    def test_cas_refuses_terminal_rows(self, db):
-        db.ensure_session("s4", "cli")
-        assert db.request_handoff("s4", "discord")
-        assert db.claim_handoff("s4")
-        db.complete_handoff("s4")
-        assert db.fail_handoff("s4", "late timeout", only_states=("pending",)) is False
-        assert db.get_handoff_state("s4")["state"] == "completed"
+    def test_cas_refuses_terminal_rows(self, store):
+        seed_session(store, "s4", "cli")
+        assert store.coordination.request_handoff(session_id="s4", platform="discord")
+        assert store.coordination.claim_handoff(session_id="s4")
+        store.coordination.complete_handoff(session_id="s4")
+        assert store.coordination.fail_handoff(
+            session_id="s4", error="late timeout", only_states=(HandoffStatus.PENDING,)) is False
+        assert _state(store, "s4") == "completed"
 
 
 # ---------------------------------------------------------------------------
 # 2. CLI wait loop
 # ---------------------------------------------------------------------------
 
-def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
-    """Drive the real _handle_handoff_command against a real SessionDB.
+def _offline_store():
+    """The classic CLI's session store once its gateway connection is final: falsy, so the handoff
+    runs on a local writer handle on the current home's store."""
+    return GatewaySessionStore(types.SimpleNamespace(final=True))
+
+
+def _run_handoff(session_db, session_id, monkeypatch, time_budget=30.0):
+    """Drive the real _handle_handoff_command with ``session_db`` as the CLI's session store.
 
     Gateway config / platform plumbing is stubbed; the poll loop, state
     transitions, and fail semantics are exercised for real. time.sleep is
@@ -97,7 +111,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     class Host(CLICommandsMixin):
         def __init__(self):
             self.session_id = session_id
-            self._session_db = db
+            self._session_db = session_db
             self._agent_running = False
             self._should_exit = False
 
@@ -135,78 +149,84 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
 
 
 class TestCLIWaitLoop:
-    def test_pending_timeout_still_reports_gateway_down(self, db, monkeypatch):
+    def test_pending_timeout_still_reports_gateway_down(self, store, monkeypatch):
         """No watcher ever claims the row -> 60s pending timeout, row failed."""
-        db.ensure_session("cli-sess-a", "cli")
-        keep, printed, _ = _run_handoff(db, "cli-sess-a", monkeypatch)
+        seed_session(store, "cli-sess-a", "cli")
+        keep, printed, _ = _run_handoff(_offline_store(), "cli-sess-a", monkeypatch)
         out = "\n".join(printed)
         assert keep is True
         assert t("cli.commands.handoff.timed_out") in out
-        assert db.get_handoff_state("cli-sess-a")["state"] == "failed"
+        assert _state(store, "cli-sess-a") == "failed"
 
-    def test_running_row_is_never_failed_by_cli(self, db, monkeypatch):
+    def test_without_a_session_store_the_handoff_runs_on_the_home_store(self, tmp_path, monkeypatch):
+        """No session store on the CLI: the handoff is armed and CAS-failed on the current home's store."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        local = storage_handle(home)
+        seed_session(local, "cli-sess-local", "cli")
+        keep, printed, _ = _run_handoff(None, "cli-sess-local", monkeypatch)
+        assert keep is True
+        assert t("cli.commands.handoff.timed_out") in "\n".join(printed)
+        assert _state(local, "cli-sess-local") == "failed"
+
+    def test_running_row_is_never_failed_by_cli(self, store, monkeypatch):
         """Row claimed (running) and never finishing: CLI gives up eventually
         but must NOT fail the row and must NOT print the gateway-down line."""
-        db.ensure_session("cli-sess-b", "cli")
+        seed_session(store, "cli-sess-b", "cli")
         # Pre-claim: by the time the CLI polls, the gateway owns the row.
         # request_handoff happens inside the command; claim it from a fake
         # watcher the instant it lands via a get_handoff_state side hook.
-        real_get = db.get_handoff_state
+        real_get = SurfaceLabelReader.get_handoff_state
 
-        def claiming_get(sid):
-            row = real_get(sid)
+        def claiming_get(reader, sid):
+            row = real_get(reader, sid)
             if row and row.get("state") == "pending":
-                db.claim_handoff(sid)
-                row = real_get(sid)
+                store.coordination.claim_handoff(session_id=sid)
+                row = real_get(reader, sid)
             return row
 
-        db_proxy = MagicMock(wraps=db)
-        db_proxy.get_handoff_state.side_effect = claiming_get
-        db_proxy.request_handoff.side_effect = db.request_handoff
-        db_proxy.fail_handoff.side_effect = db.fail_handoff
+        monkeypatch.setattr(SurfaceLabelReader, "get_handoff_state", claiming_get)
 
-        keep, printed, _ = _run_handoff(db_proxy, "cli-sess-b", monkeypatch)
+        keep, printed, _ = _run_handoff(_offline_store(), "cli-sess-b", monkeypatch)
         out = "\n".join(printed)
         assert keep is True
         assert t("cli.commands.handoff.timed_out") not in out
         assert t("cli.commands.handoff.taking_long") in out
         # The row is still owned by the gateway — untouched by the CLI.
-        assert db.get_handoff_state("cli-sess-b")["state"] == "running"
+        assert _state(store, "cli-sess-b") == "running"
         # Late gateway completion wins cleanly (no split-brain).
-        db.complete_handoff("cli-sess-b")
-        assert db.get_handoff_state("cli-sess-b")["state"] == "completed"
+        store.coordination.complete_handoff(session_id="cli-sess-b")
+        assert _state(store, "cli-sess-b") == "completed"
 
-    def test_slow_dispatch_beyond_60s_completes(self, db, monkeypatch):
+    def test_slow_dispatch_beyond_60s_completes(self, store, monkeypatch):
         """The exact live-repro shape: claim @~5s, complete @~80s simulated.
         Old code timed out at 60s with the false 'gateway running?' message;
         new code waits through the running phase and exits on completed."""
-        db.ensure_session("cli-sess-c", "cli")
+        seed_session(store, "cli-sess-c", "cli")
         t0 = {"polls": 0}
-        real_get = db.get_handoff_state
+        real_get = SurfaceLabelReader.get_handoff_state
 
-        def slow_gateway(sid):
+        def slow_gateway(reader, sid):
             t0["polls"] += 1
-            row = real_get(sid)
+            row = real_get(reader, sid)
             state = (row or {}).get("state")
             if state == "pending" and t0["polls"] >= 2:
-                db.claim_handoff(sid)
+                store.coordination.claim_handoff(session_id=sid)
             # each poll ~2s simulated; complete after ~40 polls (~80s+)
             if state == "running" and t0["polls"] >= 45:
-                db.complete_handoff(sid)
-            return real_get(sid)
+                store.coordination.complete_handoff(session_id=sid)
+            return real_get(reader, sid)
 
-        db_proxy = MagicMock(wraps=db)
-        db_proxy.get_handoff_state.side_effect = slow_gateway
-        db_proxy.request_handoff.side_effect = db.request_handoff
-        db_proxy.fail_handoff.side_effect = db.fail_handoff
+        monkeypatch.setattr(SurfaceLabelReader, "get_handoff_state", slow_gateway)
 
-        keep, printed, host = _run_handoff(db_proxy, "cli-sess-c", monkeypatch)
+        keep, printed, host = _run_handoff(_offline_store(), "cli-sess-c", monkeypatch)
         out = "\n".join(printed)
         assert keep is False  # completed -> CLI exits like /quit
         assert t("cli.commands.handoff.complete", platform="discord") in out
         assert t("cli.commands.handoff.timed_out") not in out
         assert host._should_exit is True
-        assert db.get_handoff_state("cli-sess-c")["state"] == "completed"
+        assert _state(store, "cli-sess-c") == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +239,7 @@ class TestDesktopHandoffFail:
         import contextlib
 
         from tui_gateway import methods_session as ms
+        from tui_gateway import server
 
         handler = None
         for name, fn in ms._registry._pending:
@@ -236,6 +257,7 @@ class TestDesktopHandoffFail:
         globs = dict(handler.__globals__)
         globs["_sess_nowait"] = lambda p, r: (session, None)
         globs["_session_db"] = fake_session_db
+        globs["_persistence_for"] = server._persistence_for
         globs["_ok"] = lambda rid, result: {"ok": True, **result}
         globs["_db_unavailable_error"] = lambda rid, code: {"error": code}
         rebound = types.FunctionType(
@@ -244,18 +266,18 @@ class TestDesktopHandoffFail:
         )
         return rebound("rid", {"error": "poll timeout"})
 
-    def test_desktop_fail_refuses_running_row(self, db):
-        db.ensure_session("d1", "desktop")
-        assert db.request_handoff("d1", "discord")
-        assert db.claim_handoff("d1")
-        res = self._call(db, "d1")
+    def test_desktop_fail_refuses_running_row(self, store):
+        seed_session(store, "d1", "desktop")
+        assert store.coordination.request_handoff(session_id="d1", platform="discord")
+        assert store.coordination.claim_handoff(session_id="d1")
+        res = self._call(store, "d1")
         assert res["failed"] is False
         assert res["state"] == "running"
-        assert db.get_handoff_state("d1")["state"] == "running"
+        assert _state(store, "d1") == "running"
 
-    def test_desktop_fail_still_fails_pending_row(self, db):
-        db.ensure_session("d2", "desktop")
-        assert db.request_handoff("d2", "discord")
-        res = self._call(db, "d2")
+    def test_desktop_fail_still_fails_pending_row(self, store):
+        seed_session(store, "d2", "desktop")
+        assert store.coordination.request_handoff(session_id="d2", platform="discord")
+        res = self._call(store, "d2")
         assert res["failed"] is True
-        assert db.get_handoff_state("d2")["state"] == "failed"
+        assert _state(store, "d2") == "failed"

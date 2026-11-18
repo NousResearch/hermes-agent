@@ -381,6 +381,24 @@ class CLIChatTurnMixin:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
             self._flush_credit_notices()
+            # Safety refusal: take the whole refused turn (user row + any tool rounds + the refusal)
+            # out of this session's MODEL context so a later /resume isn't re-sent the blocked
+            # content and locked, while KEEPING the user's message visible in the chat as a greyed
+            # refused notice. The in-memory history (result["messages"]) is already the clean
+            # pre-refusal history; this makes the durable model read match it.
+            if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
+                from agent.agent_init_session import agent_interface
+                from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                _store, _refused_sid = agent_interface(self.agent), getattr(self.agent, "session_id", None)
+                if _store is not None and _refused_sid:
+                    try:  # best-effort: a refusal must never crash turn teardown
+                        _store.messages.retain_refused_turn_for_display(
+                            _refused_sid, notice=CONTENT_REFUSED_NOTICE,
+                            boundary_row_id=(turn.result or {}).get("refused_turn_boundary_row_id"))
+                    except Exception:
+                        logging.getLogger("hermes").warning(
+                            "content-policy refusal: could not retain the refused turn for %s", _refused_sid,
+                            exc_info=True)
             # A reused thread must never hold stale references to a disposed CLI instance.
             try:
                 set_sudo_password_callback(None)
@@ -400,7 +418,7 @@ class CLIChatTurnMixin:
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
-        from cli import _cprint, _hermes_home, logger
+        from cli import _cprint, logger
         # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
@@ -440,15 +458,6 @@ class CLIChatTurnMixin:
             # Modal prompts gate input until reset — otherwise the CLI freezes after an
             # interrupt until the prompt's own timeout.
             self._clear_active_overlays_for_interrupt()
-            # Debug log to file (stdout may be devnull under redirect_stdout).
-            try:
-                with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
-                    _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
-                             f"children={len(self.agent._active_children)}, "
-                             f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
-            except Exception:
-                pass
             break
 
         if interrupt_msg is not None:
@@ -528,11 +537,15 @@ class CLIChatTurnMixin:
             lost = lost_admission(connection.reattach(self.session_id), admission_id)
             connection.call("prompt.resolve_unknown", session_id=self.session_id,
                             admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
-            connection.reattach(self.session_id)  # the cached pending list the next prompt checks
+            # The cached pending list the next prompt checks: any other lost turn still refuses it.
+            snapshot = connection.reattach(self.session_id)
         except GatewayClientError as exc:
             _cprint(f"  /discard: {exc}")
             return
-        _cprint(f"  Discarded {lost['admission_id']}; send your prompt again.")
+        left = sum(row["status"] == "unknown" for row in snapshot.get("pending", []))
+        _cprint(f"  Discarded {lost['admission_id']}; it was not re-run. "
+                + (f"{left} more paused turn{'s' if left > 1 else ''} to /discard first." if left
+                   else "You can send messages again."))
 
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.
@@ -724,6 +737,10 @@ class CLIChatTurnMixin:
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
             modern = getattr(self, "_modern_layout", False)
+            # A gateway refusal is Hermes's own copy (quoted user text, a /discard line to copy):
+            # markdown stripping or rendering would rewrite the quote and merge the lines.
+            mode = ("raw" if turn.result and turn.result.get("failure_reason") == "gateway_connection"
+                    else self.final_response_markdown)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 if modern:
@@ -740,12 +757,12 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
-                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                ChatConsole().print(_render_final_assistant_content(response, mode=mode),
                                     style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
-                    _render_final_assistant_content(response, mode=self.final_response_markdown),
+                    _render_final_assistant_content(response, mode=mode),
                     title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
                     style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
                     width=self._scrollback_box_width(),

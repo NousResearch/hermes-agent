@@ -15,6 +15,7 @@ from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
 from gateway.config import Platform
+from gateway.delivery import prime_revived_egress
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -154,6 +155,8 @@ class GatewayGoalsMixin:
             return
         if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
+        # Both lanes below answer through this adapter: warm a Relay's egress routing first.
+        prime_revived_egress(adapter, MessageEvent(text="", source=source))
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
@@ -254,7 +257,9 @@ class GatewayGoalsMixin:
                 "goal continuation: status send failed: %s", getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self, source: Any, message: str, *, run_generation: int | None = None,
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The adapter sends the agent response after this caller returns, so for reading order use
@@ -275,8 +280,13 @@ class GatewayGoalsMixin:
             session_key = self._session_key_for_source(source)
         if session_key and hasattr(adapter, "register_post_delivery_callback"):
             try:
-                active = getattr(adapter, "_active_sessions", {}).get(session_key)
-                generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
+                # Authority-run busy follow-ups have no per-turn adapter guard. Their own
+                # event's generation must win over the shared guard (or lack of one), or this
+                # /goal notice turns a generated bubble-cleanup slot into a generationless one.
+                generation = run_generation
+                if generation is None:
+                    active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                    generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
                 adapter.register_post_delivery_callback(session_key, _deliver, generation=generation)
                 return
             except Exception as exc:
@@ -296,10 +306,12 @@ class GatewayGoalsMixin:
         if not sid:
             return None
         await self._warm_goals_session_db(label)
-        return factory(sid)
+        # The manager loads its state from state.db on construction: off the loop, in this scope.
+        return await asyncio.to_thread(factory, sid)
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
@@ -332,7 +344,8 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            await self._defer_goal_status_notice_after_delivery(
+                source, msg, run_generation=run_generation)
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
@@ -360,6 +373,7 @@ class GatewayGoalsMixin:
         """Run goal and loop bookkeeping after an agent turn returns."""
         from gateway.session_authorities import active_authority
         from gateway.session_viewer_automation import viewer_driven
+        from gateway.platforms.base_post_delivery import turn_run_generation
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
@@ -380,19 +394,23 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
+                # Both hooks may defer a notice into this turn's post-delivery slot: each needs
+                # the turn's generation or the chained bubble cleanup loses it.
+                await hook(session_entry=session_entry, source=source,
+                           final_response="" if failed else final_text,
+                           run_generation=turn_run_generation(event))
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
-        self._publish_local_control(source, only_if_present=True)
+        await self._publish_local_control(source, only_if_present=True)
 
-    def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
+    async def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
         """A local (Desktop/Ink) session's goal or loop state just moved here: repaint its viewers' cards,
         whose loop countdown runs off the snapshot's ``next_due_at``."""
         if getattr(source, "platform", None) != Platform.LOCAL:
             return
         from gateway.session_authorities import active_authority
-        from gateway.session_control_actions import publish
-        publish(active_authority(self), source.chat_id, only_if_present=only_if_present)
+        from gateway.session_control_actions import publish_async
+        await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
     @staticmethod
     def _turn_failed() -> bool:
@@ -419,6 +437,7 @@ class GatewayGoalsMixin:
 
     async def _post_turn_loop_completion(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None,
     ) -> None:
         """Complete a /loop wakeup tick after a gateway turn. No-op unless a tick is in flight
         (``awaiting_response``, set when the wakeup was injected); applies the LOOP_COMPLETE marker
@@ -437,7 +456,7 @@ class GatewayGoalsMixin:
         decision = await self._run_in_executor_with_context(mgr.complete_tick, final_response or "")
         msg = decision.get("message") or ""
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            await self._defer_goal_status_notice_after_delivery(source, msg, run_generation=run_generation)
 
     async def _loop_wakeup_fire_one(
         self, sid: str, state: Any, now: float, warned_no_route: set, profile: Optional[str] = None,
@@ -525,7 +544,7 @@ class GatewayGoalsMixin:
             with suppress(Exception):
                 mgr.abandon_tick()
         # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
-        self._publish_local_control(source)
+        await self._publish_local_control(source)
 
     async def _loop_wakeup_watcher(self, interval: float = 15.0) -> None:
         """Fire due /loop wakeups for idle gateway sessions: a coarse ticker scans persisted loops

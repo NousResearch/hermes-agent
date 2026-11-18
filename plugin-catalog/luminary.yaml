@@ -1,0 +1,17 @@
+name: luminary
+repo: https://github.com/alertxsto/luminary-memory
+sha: 414649f8a9bdb577ec5d0fb5c3ae26557d966f47
+subdir: src/luminary_memory/hermes
+version: "0.3.4"
+description: "Luminary Memory — self-hosted, owner-scoped long-term memory with 4-strategy recall (semantic, keyword, temporal, graph), RRF fusion, and lifecycle maintenance. Runs on your machine: SQLite by default, optional PostgreSQL/pgvector. Disclosure — writes ~/.hermes/luminary/ (memory.db, config.json, luminary.log); on first recall downloads the BAAI/bge-small-en-v1.5 embedding model from Hugging Face, otherwise no network by default; optional LLM curation sends turn text to the OpenAI-compatible llm_base_url you configure, and optional pgvector connects to your DSN; reads LUMINARY_LLM_API_KEY and LUMINARY_PG_DSN through Hermes secret scope; `hermes memory setup` selects Luminary and turns off Hermes's built-in memory and user profile in config.yaml; no shell commands, no separate process, no telemetry."
+maintainer: alertxsto
+tier: community
+category: memory
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/alertxsto/luminary-memory/blob/main/docs/hermes-integration.md
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 from tools import tool_backend_helpers
-from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
 
@@ -239,6 +238,7 @@ def _tts_xai_step(config: dict) -> str:
 
 def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for local engines."""
+    from hermes_cli import nous_subscription
     current_provider = config.get("tts", {}).get("provider", "edge")
     current_label = _TTS_PROVIDER_LABELS.get(current_provider, current_provider)
     print()

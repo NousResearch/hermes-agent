@@ -1,0 +1,19 @@
+name: dosbox-full-auto
+repo: https://github.com/EternalNooblet/dosbox-full-auto
+sha: 9ef94560ee05d1eaa54472917405391fbcdf1527
+subdir: plugins/dosbox-full-auto
+description: "All-in-one solution for controlling DOSBox apps with your agent. Self-contained DOSBox-automation with built-in MCP server, registers in Hermes and exposes 55 tools via the dosbox-full-auto skill such as vision based mouse movement, live process memory reading and more. Disclosure — Downloads the author's prebuilt DOSBox-automation emulator and MCP server binaries (GitHub release, sha256-pinned per tag) into plugin-data and registers them as an MCP server; the emulator exposes an unauthenticated HTTP API on 127.0.0.1:8387 that any local process can use to type into DOS and read/write emulator memory; host folders can be mounted only under the plugin's drives folder and the roots you list as mount_allowed_bases in the emulator's own config; the optional visual check sends screenshots to decision.vllm-sr.ai with a key minted after the user accepts that service's terms."
+version: "0.5.0"
+platforms: [linux, windows]
+maintainer: EternalNooblet
+category: automation
+requires_hermes: ">=0.22.7"
+title: "dosbox-full-auto"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  provides_skills: ["dosbox-full-auto"]
+  provides_slash_commands: ["dosbox-full-auto"]
+  provides_cli_commands: ["dosbox-full-auto"]
+tier: community

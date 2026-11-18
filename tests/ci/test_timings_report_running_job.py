@@ -6,9 +6,17 @@ counts up to its last finished step, so the gate appears in every report and in 
 """
 from __future__ import annotations
 
+import shlex
+import sys
+from pathlib import Path
+
+import pytest
+from ruamel.yaml import YAML
+
 from scripts.ci import timings_report
 
 GATE = "All required checks pass (v2)"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _step(name: str, start: str, end: str | None, conclusion: str | None = "success") -> dict:
@@ -114,3 +122,26 @@ def test_report_steps_that_finish_before_collection_are_not_gate_time(monkeypatc
     assert closed["completed_at"] == "2026-01-01T00:05:04Z"
     assert closed["duration_s"] == 4
     assert [step["name"] for step in closed["steps"]] == ["Set up job", "Evaluate job results"]
+
+
+def test_ci_yaml_cuts_the_gate_at_a_step_it_runs_before_the_report(monkeypatch, tmp_path):
+    """The cut lapses silently (every finished step counts again) if the flag names no step of the
+    gate, or never reaches collect_timings: run main() with the argv ci.yaml uses."""
+    ci = YAML(typ="base").load((ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))
+    steps = ci["jobs"]["all-checks-pass"]["steps"]
+    report = next(i for i, step in enumerate(steps) if "--own-job-last-step" in step.get("run", ""))
+    argv = shlex.split(steps[report]["run"].replace("\\\n", " "))
+    seen = {}
+
+    def fake_collect(*args, **kwargs):
+        seen.update(kwargs)
+        raise timings_report.TimingsUnavailable("stopped by the test")
+
+    monkeypatch.setattr(timings_report, "collect_timings", fake_collect)
+    for name in ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_SHA", "GITHUB_TOKEN"):
+        monkeypatch.setenv(name, "x")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", argv[1:])
+    with pytest.raises(SystemExit):
+        timings_report.main()
+    assert seen["last_step"] in [step.get("name") for step in steps[:report]]

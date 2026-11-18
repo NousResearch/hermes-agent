@@ -175,3 +175,58 @@ def test_a_committed_compaction_resets_the_live_agents_guard():
     assert c._no_progress == {}
     decision = c.after_call("skill_view", {"name": "x"}, _SKILL_BODY, failed=False)
     assert decision.code != "idempotent_no_progress_warning", decision
+
+
+def _prune_stub(pruned_n: int):
+    """A compressor-side prune hook: a NEW list and a non-zero count commit, zero does not."""
+
+    def _prune(messages, *, current_tokens):
+        return (messages[:-pruned_n] if pruned_n else messages, pruned_n)
+
+    return _prune
+
+
+def test_a_committed_proactive_prune_resets_the_live_agents_guard():
+    """The post-tool prune arm is the third content-loss boundary (#146217): upstream moved the dedup
+    reset inside ``_proactive_tool_result_prune``, so the guard reset must travel with it or the very
+    reload the demoted results ask for keeps counting as a replay."""
+    from agent.turn_preflight import _proactive_tool_result_prune
+
+    c = _controller()
+    for window in range(3):
+        assert not _reload_then_work(c, window).should_halt
+    assert c._no_progress, "the reloads must have accumulated repeat-result evidence first"
+
+    agent = types.SimpleNamespace(session_id="s-prune", _tool_guardrails=c)
+    messages = [{"role": "user", "content": "x"}, {"role": "tool", "content": "y"}]
+    pruned = _proactive_tool_result_prune(
+        agent, types.SimpleNamespace(prune_tool_results_only=_prune_stub(1)), messages, 100,
+        effective_task_id="task-prune",
+    )
+
+    assert pruned is not messages, "a committed prune must return the new list"
+    assert c._no_progress == {}
+    decision = c.after_call("skill_view", {"name": "x"}, _SKILL_BODY, failed=False)
+    assert decision.code != "idempotent_no_progress_warning", decision
+
+
+def test_a_no_op_proactive_prune_keeps_the_window_evidence():
+    """Nothing left the transcript, so nothing invalidates the guard's window: a no-op prune must not
+    hand a repeat-loop a free reset."""
+    from agent.turn_preflight import _proactive_tool_result_prune
+
+    c = _controller()
+    for window in range(3):
+        assert not _reload_then_work(c, window).should_halt
+    evidence = dict(c._no_progress)
+    assert evidence, "the reloads must have accumulated repeat-result evidence first"
+
+    agent = types.SimpleNamespace(session_id="s-prune", _tool_guardrails=c)
+    messages = [{"role": "user", "content": "x"}, {"role": "tool", "content": "y"}]
+    pruned = _proactive_tool_result_prune(
+        agent, types.SimpleNamespace(prune_tool_results_only=_prune_stub(0)), messages, 100,
+        effective_task_id="task-prune",
+    )
+
+    assert pruned is messages
+    assert c._no_progress == evidence

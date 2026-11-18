@@ -120,6 +120,21 @@ export function getOfficialSkills(profile?: ProfileScope): Promise<{ skills: Off
   })
 }
 
+export interface SkillHubUpdate {
+  name: string
+  identifier: string
+  source: string
+}
+
+/** Hub skills with a newer upstream version (`hermes skills check`). Slow: fetches every source. */
+export function getSkillHubUpdates(profile?: ProfileScope): Promise<{ updates: SkillHubUpdate[] }> {
+  return window.hermesDesktop.api<{ updates: SkillHubUpdate[] }>({
+    ...capabilityScoped(profile),
+    path: '/api/skills/hub/updates',
+    timeoutMs: 120_000
+  })
+}
+
 export function getSkillHubSources(profile?: null | string): Promise<SkillHubSourcesResponse> {
   return hermesApi<SkillHubSourcesResponse>({
     ...profileScoped(profile),

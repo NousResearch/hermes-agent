@@ -2,7 +2,7 @@
  * Invariant: the @assistant-ui dependency cluster agrees on one tap version.
  *
  * The Hermes desktop app (``apps/desktop``) is built from source on every
- * install/update via ``scripts/install.ps1`` → ``npm ci``/``npm install`` →
+ * install/update via ``scripts/install.ps1`` → a locked dependency install →
  * ``tsc -b && vite build``. The ``@assistant-ui`` packages share an internal
  * reactivity lib, ``@assistant-ui/tap``, and they only interoperate when they
  * all resolve the *same* tap version:
@@ -24,21 +24,22 @@
  * last release that targets ``tap@^0.5.x``.
  *
  * This is a *contract* test, not a snapshot: it does not assert specific version
- * numbers, only that the cluster resolves a single shared tap (wherever npm
- * places it — hoisted to root, or nested under the ``apps/desktop`` workspace
- * since the 0.14 bump dropped the ``store`` override) and that this tap satisfies
- * every ``@assistant-ui/*`` package's declared requirement. It fails if any
- * future bump reintroduces a split tap version or requirement across the cluster.
+ * numbers, only that ``pnpm-lock.yaml`` resolves a single shared tap and that
+ * this tap satisfies every ``@assistant-ui/*`` package's declared peer
+ * requirement (pnpm's lock records peer ranges; a dependency that resolved a
+ * different tap would add a second tap version). It fails if any future bump
+ * reintroduces a split tap version or requirement across the cluster.
  */
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { load } from 'js-yaml'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const LOCK_PATH = path.join(REPO_ROOT, 'package-lock.json')
+const LOCK_PATH = path.join(REPO_ROOT, 'pnpm-lock.yaml')
 const TAP = '@assistant-ui/tap'
 
 /**
@@ -96,32 +97,34 @@ function caretSatisfies(version: string, spec: string): boolean {
 }
 
 interface LockPackage {
-  version?: string
-  dependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
   peerDependenciesMeta?: Record<string, { optional?: boolean }>
 }
 
 function lockPackages(): Record<string, LockPackage> {
-  const lock = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8'))
+  const lock = load(fs.readFileSync(LOCK_PATH, 'utf-8')) as { packages?: Record<string, LockPackage> }
 
-  return (lock.packages ?? {}) as Record<string, LockPackage>
+  return lock.packages ?? {}
+}
+
+/** ``name@version`` keys; a scoped name carries a leading @. */
+function splitKey(key: string): { name: string, version: string } {
+  const at = key.lastIndexOf('@')
+
+  return { name: key.slice(0, at), version: key.slice(at + 1) }
 }
 
 function sharedTapVersion(packages: Record<string, LockPackage>): string {
   /** The one tap version every install site resolves to. */
   const versions = new Set<string>()
 
-  for (const [key, meta] of Object.entries(packages)) {
-    const idx = key.lastIndexOf('node_modules/')
-    const name = idx >= 0 ? key.slice(idx + 'node_modules/'.length) : key
+  for (const key of Object.keys(packages)) {
+    const { name, version } = splitKey(key)
 
-    if (name === TAP) {
-      if (meta.version) {versions.add(meta.version)}
-    }
+    if (name === TAP) {versions.add(version)}
   }
 
-  assert.ok(versions.size > 0, 'package-lock.json has no @assistant-ui/tap entry — the @assistant-ui cluster should resolve a single shared tap version.')
+  assert.ok(versions.size > 0, 'pnpm-lock.yaml has no @assistant-ui/tap entry — the @assistant-ui cluster should resolve a single shared tap version.')
   assert.ok(versions.size === 1, `@assistant-ui/tap resolves to multiple versions ${[...versions].sort()} — the cluster must share one tap line (see this test's docstring).`)
 
   return [...versions][0]!
@@ -132,31 +135,33 @@ test('every @assistant-ui/* package\'s tap requirement is satisfiable', () => {
   const tapVersion = sharedTapVersion(packages)
 
   const offenders: string[] = []
+  let checked = 0
 
   for (const [key, meta] of Object.entries(packages)) {
-    const idx = key.lastIndexOf('node_modules/')
-    const name = idx >= 0 ? key.slice(idx + 'node_modules/'.length) : key
+    const { name } = splitKey(key)
 
     if (!name.startsWith('@assistant-ui/') || name === TAP) {continue}
     const peerMeta = (meta.peerDependenciesMeta ?? {})[TAP]
 
     if (peerMeta?.optional) {continue}
-    const spec = (meta.dependencies ?? {})[TAP] || (meta.peerDependencies ?? {})[TAP]
+    const spec = (meta.peerDependencies ?? {})[TAP]
 
     if (!spec) {continue}
+    checked++
 
     if (!caretSatisfies(tapVersion, spec)) {
       offenders.push(`${name} requires ${TAP}"${spec}"`)
     }
   }
 
+  assert.ok(checked > 0, `no @assistant-ui/* package in pnpm-lock.yaml declares a ${TAP} peer`)
   assert.deepEqual(
     offenders,
     [],
-    `Hoisted ${TAP}@${tapVersion} does not satisfy: ` +
+    `Locked ${TAP}@${tapVersion} does not satisfy: ` +
       offenders.join('; ') +
       '. The @assistant-ui cluster has split tap requirements — pin the ' +
-      'offending package (e.g. via root package.json `overrides`) so the ' +
+      'offending package (e.g. via pnpm-workspace.yaml `overrides`) so the ' +
       'whole cluster shares one tap line. See this test\'s module docstring.'
   )
 })

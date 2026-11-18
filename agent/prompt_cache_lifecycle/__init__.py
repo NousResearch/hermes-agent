@@ -2,6 +2,7 @@
 
 Modules: ``replay`` (which requests replay, with which output cap, through which client), ``economics``
 (a keep-alive's cost against the rewrite it prevents), ``edge`` (the cache-edge gates: compact or offload),
+``observation`` (bounded profile/session scalar snapshots for plugin pollers),
 ``warmer`` (``PromptCacheWarmer``: keep-alives, budget, first-miss stop, ``claim_edge``; the agent-facing
 seams). This facade is the surface; code imports topic modules directly inside the package.
 

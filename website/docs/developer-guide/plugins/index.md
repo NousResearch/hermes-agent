@@ -2513,6 +2513,53 @@ gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/u
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::
 
+### Observe core prompt-cache warming
+
+A plugin that sends its own keep-alive (for example HeartBeat 2.0) can defer to core without
+importing lifecycle internals or inspecting the Hermes version:
+
+```python
+status_fn = getattr(ctx, "prompt_cache_warm_status", None)
+status = status_fn(session_id=session_id) if callable(status_fn) else None
+if status is not None and status["managed"]:
+    return  # Core owns this warming policy, including an intentional decision to let it expire.
+# Otherwise apply the plugin's own existing policy; this is not permission to send a request.
+```
+
+`ctx.prompt_cache_warm_status(*, session_id: str) -> dict` returns exactly:
+
+| Key | Meaning |
+|---|---|
+| `managed` | `True` only for `scheduled`, `refreshing` or `expiring`. Core owns the session's warming policy, not a cache-warm guarantee or an exclusive lease. |
+| `next_warm_at` | Finite UTC epoch seconds for a future scheduled attempt, otherwise `None` (including while refreshing). |
+| `reason` | One of the reasons below. |
+
+- **`scheduled`**: a core attempt is scheduled in the future.
+- **`refreshing`**: a core refresh is in flight; no next attempt is promised yet.
+- **`expiring`**: core intentionally declines further warming (economics/learning, count or money
+  exhaustion, miss stop, deliberate compaction/offload, or failed/late refresh after ownership).
+  This remains managed without a timer or window; it does **not** assert that compaction or offload
+  has occurred. An elapsed scheduled time also reads as expiring without updating stored state.
+- **`unsupported`**: the current API, client or request cannot safely be replayed.
+- **`disabled`**: prompt caching was explicitly disabled at the current lifecycle transition.
+- **`unknown`**: a session was observed, but no validated window or ownership decision exists.
+- **`unavailable`**: no observation is retained for this session in this process.
+
+Reads are short, atomic in-memory snapshots: no pricing, storage, history, filesystem or network
+work, no controller creation, no timer/claim/budget mutation. Scope is the plugin manager's owning
+profile home, not the poller's ambient thread context. The scalar method also works with
+`plugins.isolation: host`; the snapshot is read in the owning Hermes process, not the child host.
+
+The credential-free observation store is bounded to 1,000 profile/session pairs. Reads do not renew
+retention. Intentional expiry survives ordinary agent eviction/rebuild while its observation is
+retained. `/new` or reset clears ownership; route/model changes and new user-turn budget transitions
+re-evaluate it. A compaction child carries validated expiry/miss intent, never an unrelated session's
+unknown state. Explicit current disabled/unsupported transitions supersede historical ownership.
+Process restart (or observation eviction) loses the evidence and returns unavailable: there is no
+cross-restart budget guarantee, disk registry or coordination across independent Hermes processes.
+Plugins should feature-detect the method and retain their existing fallback when it is absent or
+unmanaged. Suppress a redundant ping on `managed`, **not** on the presence of a timestamp alone.
+
 ## Specialized plugin types
 
 Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.

@@ -13,6 +13,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
+from agent.prompt_cache_lifecycle.observation import observations
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
@@ -63,6 +64,17 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
             for key, loaded in self._manager._plugins.items()
         )
+
+    def prompt_cache_warm_status(self, *, session_id: str) -> dict:
+        """Process-local core warming ownership, not a cache guarantee or exclusive lease.
+
+        Polling is a memory-only snapshot scoped to this context's manager, even outside a turn.
+        Feature-detect this method; defer another keep-alive when ``managed`` is true, including
+        intentional expiry. Missing/evicted observations and process restarts return unavailable.
+        """
+        if not isinstance(session_id, str):
+            raise TypeError("session_id must be a string")
+        return observations.snapshot(self._manager.scope_key, session_id)
 
     def _segments(self, key: str) -> tuple[str, ...]:
         """Validated plugin-relative settings path (warn + re-raise on rejection)."""

@@ -6,12 +6,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+import hashlib
 import logging
 import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Optional
 
 from agent.prompt_cache_lifecycle.economics import (
@@ -33,6 +34,9 @@ from agent.prompt_cache_lifecycle.replay import (
     replay_cap_honoured,
     replay_output_cap,
 )
+
+from agent.prompt_cache_lifecycle.observation import observations, Reason
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +202,54 @@ class PromptCacheWarmer:
         #: Keep-alive misses since the last hit: ``(real, any)``. Upstream switches and partial reads are
         #: not real misses (:meth:`_miss_ends_warming`).
         self._miss_streak = (0, 0)
+        self._home_key = hermes_home_key()
+        self._observation_owner = object()
+        self._observation_key = (self._home_key, getattr(agent, "session_id", None) or "")
+        self._observation = observations.claim(self._observation_key, self._observation_owner)
+        self._reconcile_observation_route()
+
+    def _route_fingerprint(self) -> str:
+        route = tuple(getattr(self.agent, name, "") for name in ("provider", "base_url", "model", "api_mode"))
+        return hashlib.sha256(repr(route).encode()).hexdigest()
+
+    def _reconcile_observation_route(self) -> None:
+        """A rebuild/cancel is an observation boundary too, not necessarily a new user turn."""
+        fingerprint = self._route_fingerprint()
+        previous = self._observation
+        if previous.route and previous.route != fingerprint:
+            self._observation = replace(previous, route=fingerprint, reason="unknown", next_warm_at=None, ended=False)
+            observations.update(self._observation_key, self._observation)
+        agent = self.agent
+        mode = getattr(agent, "api_mode", None)
+        if getattr(agent, "_cache_disabled", False) or (
+                mode == "anthropic_messages" and not getattr(agent, "_use_prompt_caching", False)):
+            self._observe("disabled")
+        elif (mode not in WARMABLE_API_MODES or getattr(agent, "_skip_prompt_cache_warming", False)
+              or getattr(agent, "provider", "") == "moa"):
+            self._observe("unsupported")
+
+    def _observe(self, reason: Reason, *, due: Optional[float] = None) -> None:
+        self._observation = replace(self._observation, reason=reason, next_warm_at=due,
+                                    ended=bool(self._budget and self._budget.ended))
+        if self._observation_key is not None:
+            observations.update(self._observation_key, self._observation)
+
+    def _begin_observation(self) -> None:
+        key = (self._home_key, getattr(self.agent, "session_id", None) or "")
+        if key != self._observation_key:
+            self._observation_key = key
+            self._observation = observations.claim(key, self._observation_owner)
+        fingerprint = self._route_fingerprint()
+        turn = getattr(self.agent, "_user_turn_count", None)
+        turn = turn if type(turn) is int else None
+        previous = self._observation
+        same = previous.route == fingerprint and previous.turn == turn
+        if same and previous.ended and self._budget is None:
+            self._budget = _Budget(turn, ended=True)
+        retained = same and previous.reason in {"scheduled", "refreshing", "expiring"}
+        self._observation = replace(previous, route=fingerprint, turn=turn,
+                                    reason=previous.reason if retained else "unknown", next_warm_at=None)
+        observations.update(key, self._observation)
 
     # -- read side ------------------------------------------------------------------------------
     @property
@@ -230,6 +282,11 @@ class PromptCacheWarmer:
         agent = self.agent
         turn = getattr(agent, "_user_turn_count", None)
         with self._lock:
+            self._begin_observation()
+            unavailable = self._availability(api_kwargs)
+            if unavailable is not None:
+                reason, observation = unavailable
+                return self._stop(reason, observation=observation)
             budget = self._budget
             if budget is None or budget.turn != turn:
                 budget = self._budget = _Budget(turn)
@@ -240,29 +297,14 @@ class PromptCacheWarmer:
                 # Steps 2/3 still decide on this prompt at the moment a keep-alive would have gone out.
                 budget.ended = True
                 self._carry_ended_budget()
-                return self._stop(WARMING_DISABLED)
+                return self._stop(WARMING_DISABLED, observation="expiring")
             if budget.ended or budget.used >= WARM_BUDGET:
                 self._carry_ended_budget()
                 return self._stop("warm budget spent this turn")
             self._spent = None
-        if getattr(agent, "_skip_prompt_cache_warming", False):
-            return self._stop("the parent agent keeps this prefix warm")
-        api_mode = getattr(agent, "api_mode", None)
-        if api_mode not in WARMABLE_API_MODES:
-            return self._stop("only Anthropic Messages and Chat Completions requests are warmed")
-        # Marker caching is Anthropic-spec only; an OpenAI-spec route caches automatically and proves it
-        # with the reply's cached tokens (no read or write folded = no window below).
-        if getattr(agent, "_cache_disabled", False) or (
-                api_mode == "anthropic_messages" and not getattr(agent, "_use_prompt_caching", False)):
-            return self._stop("prompt caching disabled")
-        if "_moa_prepared_request" in api_kwargs or getattr(agent, "provider", "") == "moa":
-            return self._stop("MoA requests are not replayable")
+        api_mode = str(getattr(agent, "api_mode", ""))
         if getattr(agent, "_interrupt_requested", False):
             return self._stop("turn interrupted")
-        if api_mode == "anthropic_messages" and not has_cache_markers(api_kwargs):
-            return self._stop("request carries no cache markers")
-        if not is_replayable(api_kwargs):
-            return self._stop("request cannot be replayed safely (budget thinking)")
         # An OpenAI-spec automatic cache bills a miss at the plain input rate (no write surcharge).
         self._marked = has_cache_markers(api_kwargs)
         window = guaranteed_window(agent)
@@ -270,21 +312,17 @@ class PromptCacheWarmer:
             return self._stop("cache window not guaranteed warm")
         window, learned = learned_window(agent, window, self._marked)
         if window is None:
-            return self._stop(f"learned: {learned}")
+            return self._stop(f"learned: {learned}", observation="expiring")
         cached_tokens, uncached_tokens = self._prompt_split(response)
         if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
         client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
-        if client is None:
-            return self._stop("no provider client")
-        if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), api_mode):
-            return self._stop("the client cannot bound the replay's output cap")
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either. Nothing
         # is spent yet on the tool wait this run may cover; admission checks the idle budget's spend.
         decision = self._decide(cached_tokens, uncached_tokens, observed_warm_usd=budget.last_warm_usd)
         self._last_decision = decision
         if decision.action != "warm":
-            return self._stop(decision.stop_reason)
+            return self._stop(decision.stop_reason, observation="expiring")
         from agent.prompt_cache_clock import context_witness, response_upstream
         from agent.prompt_cache_lifecycle.tier import idle_warming_allowed
 
@@ -317,6 +355,30 @@ class PromptCacheWarmer:
             self._schedule(run)
             return None if self._run is run else self._inactive_reason
 
+    def _availability(self, api_kwargs: dict) -> Optional[tuple[str, Reason]]:
+        """Current explicit opt-outs supersede historical ownership, even an exhausted budget."""
+        agent = self.agent
+        mode = getattr(agent, "api_mode", None)
+        if getattr(agent, "_cache_disabled", False) or (
+                mode == "anthropic_messages" and not getattr(agent, "_use_prompt_caching", False)):
+            return "prompt caching disabled", "disabled"
+        if getattr(agent, "_skip_prompt_cache_warming", False):
+            return "the parent agent keeps this prefix warm", "unsupported"
+        if mode not in WARMABLE_API_MODES:
+            return "only Anthropic Messages and Chat Completions requests are warmed", "unsupported"
+        if "_moa_prepared_request" in api_kwargs or getattr(agent, "provider", "") == "moa":
+            return "MoA requests are not replayable", "unsupported"
+        if mode == "anthropic_messages" and not has_cache_markers(api_kwargs):
+            return "request carries no cache markers", "unsupported"
+        if not is_replayable(api_kwargs):
+            return "request cannot be replayed safely (budget thinking)", "unsupported"
+        client = getattr(agent, "_anthropic_client" if mode == "anthropic_messages" else "client", None)
+        if client is None:
+            return "no provider client", "unsupported"
+        if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), mode):
+            return "the client cannot bound the replay's output cap", "unsupported"
+        return None
+
     def end_turn(self) -> None:
         """The turn settled: a machine session stops warming (its next request is a guess nobody
         is about to make); a chat a person types into keeps its budget and warms while idle. An ended
@@ -326,7 +388,9 @@ class PromptCacheWarmer:
             self.cancel("agent run settled")
 
     def cancel(self, reason: str = "inactive") -> None:
-        self._stop(reason, lifecycle=True)
+        with self._lock:
+            self._reconcile_observation_route()
+            self._stop(reason, lifecycle=True)
 
     def _carry_ended_budget(self) -> None:
         """The budget ended earlier in this user turn and a later reply moved the prompt on: step 2/3
@@ -340,6 +404,7 @@ class PromptCacheWarmer:
             return
         deadline, tier = window
         self._spent = _Spent(deadline - (tier - delay), tier, context_witness(self.agent))
+        self._observe("expiring")
 
     # -- the cache edge (steps 2 and 3) ----------------------------------------------------------
     def edge_decision(self, *, releasing: bool = False, now: Optional[float] = None) -> EdgeDecision:
@@ -367,6 +432,8 @@ class PromptCacheWarmer:
                 self._spent, self._compacted = None, True
             elif action == "offload":
                 self._offloaded = True
+            if action is not None and self._observation.reason in {"scheduled", "refreshing", "expiring"}:
+                self._observe("expiring")
             return action
 
     # -- internals ------------------------------------------------------------------------------
@@ -383,7 +450,7 @@ class PromptCacheWarmer:
                 run.timer = None
         return run
 
-    def _stop(self, reason: str, *, lifecycle: bool = False) -> str:
+    def _stop(self, reason: str, *, lifecycle: bool = False, observation: Optional[Reason] = None) -> str:
         """Log why warming stopped at INFO, once per change of reason (each request of a
         non-warmable route repeats its refusal). A ``lifecycle`` stop (the loop's own next
         request or turn end) is routine and logs at INFO only when the run sent refreshes."""
@@ -398,6 +465,10 @@ class PromptCacheWarmer:
             elif routine:
                 logger.debug("%sprompt cache warming ended: %s", self._prefix(), reason)
             self._inactive_reason = reason
+            if observation is not None:
+                self._observe(observation)
+            elif self._observation.reason in {"scheduled", "refreshing", "expiring"}:
+                self._observe("expiring")
         return reason
 
     def _stop_if_current(self, run: _Run, reason: str) -> None:
@@ -428,6 +499,7 @@ class PromptCacheWarmer:
         timer.name = "prompt-cache-warmer"
         with run.lock:
             run.timer = timer
+        self._observe("scheduled", due=run.next_warm_at)
         timer.start()
 
     def _end_budget(self, run: _Run, reason: str, *, due_at: float) -> None:
@@ -500,6 +572,7 @@ class PromptCacheWarmer:
                 budget.used += 1
                 budget.spent_usd += decision.warm_cost
             run.refreshing = True
+            self._observe("refreshing")
             return decision.warm_cost
 
     def _refresh(self, run: _Run) -> None:
@@ -532,6 +605,20 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
+        with self._lock:
+            self._finish_refresh(run, message, miss, sent_at)
+
+    def _finish_refresh(self, run: _Run, message: Any, miss: Optional[str], sent_at: float) -> None:
+        """Publish completion under the controller lock; no reset/replacement can interleave.
+
+        A replaced run may still end the SAME user-turn budget, but never a new turn or route.
+        Accounting above remains attributed to the request that actually incurred the cost.
+        """
+        b = run.billing
+        if self._budget is not run.budget or getattr(self.agent, "_session_reset_epoch", 0) != b["reset_epoch"]:
+            return
+        if any(getattr(self.agent, name, "") != b[name] for name in ("provider", "base_url", "model")):
+            return
         if miss is not None and not miss.startswith("cache refresh missed"):
             self._stop_if_current(run, miss)
             return
@@ -550,6 +637,9 @@ class PromptCacheWarmer:
         else:
             self._uncharge_miss(run)
         retry_from = sent_at if miss is not None else None
+        self._reschedule_after_refresh(run, retry_from)
+
+    def _reschedule_after_refresh(self, run: _Run, retry_from: Optional[float]) -> None:
         # A hit, a routing blip or the one retried miss: the reply (re)wrote the prefix, warm on its window.
         with self._lock:
             if self._run is not run:
@@ -616,7 +706,7 @@ class PromptCacheWarmer:
                 return  # a miss of the session a reset ended: the new one is warmed afresh
             # The route the keep-alive was sent on: a switch since then leaves the new route warmable.
             self._missed_route = _route_key(b["provider"], b["base_url"], b["model"])
-            _remember_missed_route(b["session_id"], self._missed_route)
+            _remember_missed_route(b["session_id"], self._missed_route, home_key=self._home_key)
         logger.info("%sprompt cache warming disabled for session: keep-alive missed", self._prefix())
 
     def _send(self, run: _Run) -> Any:
@@ -882,30 +972,34 @@ def _stable_prefix_tokens(api_kwargs: dict[str, Any], api_mode: str) -> int:
 #: Session id -> the route whose keep-alive missed. A miss ends warming for the SESSION, which outlives
 #: one agent: the gateway evicts and rebuilds agents (cache-edge compaction, idle eviction), and a
 #: compaction moves the conversation to a child session id (``carry_missed_route``). Bounded LRU.
-_MISSED_ROUTES: OrderedDict[str, tuple] = OrderedDict()
+_MISSED_ROUTES: OrderedDict[tuple[str, str], tuple] = OrderedDict()
 _MISSED_ROUTES_MAX = 1000
 _missed_routes_lock = threading.Lock()
 
 
-def _remember_missed_route(session_id: Optional[str], route: Optional[tuple]) -> None:
+def _remember_missed_route(session_id: Optional[str], route: Optional[tuple], *, home_key: Optional[str] = None) -> None:
     if not session_id:
         return
+    key = (home_key if home_key is not None else hermes_home_key(), session_id)
     with _missed_routes_lock:
         if route is None:
-            _MISSED_ROUTES.pop(session_id, None)
+            _MISSED_ROUTES.pop(key, None)
             return
-        _MISSED_ROUTES[session_id] = route
-        _MISSED_ROUTES.move_to_end(session_id)
+        _MISSED_ROUTES[key] = route
+        _MISSED_ROUTES.move_to_end(key)
         while len(_MISSED_ROUTES) > _MISSED_ROUTES_MAX:
             _MISSED_ROUTES.popitem(last=False)
 
 
 def carry_missed_route(old_session_id: Optional[str], new_session_id: Optional[str]) -> None:
     """A compaction continued the conversation in a child session: its keep-alive miss goes with it."""
+    home = hermes_home_key()
+    if old_session_id and new_session_id:
+        observations.carry((home, old_session_id), (home, new_session_id))
     with _missed_routes_lock:
-        route = _MISSED_ROUTES.get(old_session_id or "")
+        route = _MISSED_ROUTES.get((home, old_session_id or ""))
     if route is not None:
-        _remember_missed_route(new_session_id, route)
+        _remember_missed_route(new_session_id, route, home_key=home)
 
 
 def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
@@ -913,7 +1007,7 @@ def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
     if warmer is None:
         warmer = PromptCacheWarmer(agent)
         with _missed_routes_lock:  # an agent rebuilt for the same session keeps its miss
-            warmer._missed_route = _MISSED_ROUTES.get(getattr(agent, "session_id", None) or "")
+            warmer._missed_route = _MISSED_ROUTES.get((warmer._home_key, getattr(agent, "session_id", None) or ""))
         agent._prompt_cache_warmer = warmer
     return warmer
 
@@ -938,9 +1032,18 @@ def reset_prompt_cache_session(agent: Any) -> None:
     if warmer is not None:
         warmer.cancel("session reset")
         with warmer._lock:
+            if warmer._observation_key is not None:
+                observations.clear(warmer._observation_key)
+                _remember_missed_route(warmer._observation_key[1], None, home_key=warmer._home_key)
+            warmer._observation_key = None
+            warmer._observation_owner = object()
             warmer._missed_route = None  # a new session id: nothing remembered for it
             warmer._miss_streak = (0, 0)
             warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
+    else:
+        key = (hermes_home_key(), getattr(agent, "session_id", None) or "")
+        observations.clear(key)
+        _remember_missed_route(key[1], None, home_key=key[0])
 
 
 def prompt_cache_warming_disabled(agent: Any) -> bool:

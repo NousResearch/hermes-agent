@@ -87,9 +87,21 @@ def _redact_unsigned_detail(detail: Any) -> Any:
     text = detail.get(key) if key else None
     if not isinstance(text, str) or not text:
         return detail
-    from agent.redact import redact_sensitive_text
-    redacted = redact_sensitive_text(text)
+    redacted = _redact_reasoning_text(text)
     return detail if redacted == text else {**detail, key: redacted}
+
+
+# Chat-completions relays of Responses models (Venice, #157091) inline the signed reasoning item in
+# plain ``reasoning_content`` as ``__ENCRYPTED_REASONING__id=rs_…`` + ciphertext; the provider
+# verifies it on replay, and its ``gAAAA…`` body matches the Fernet token pattern.
+_ENCRYPTED_REASONING_MARKER = "__ENCRYPTED_REASONING__"
+
+
+def _redact_reasoning_text(text: str) -> str:
+    """Redact readable reasoning; an inline encrypted-reasoning block is replay material, kept byte-exact."""
+    from agent.redact import redact_sensitive_text
+    head, marker, sealed = text.partition(_ENCRYPTED_REASONING_MARKER)
+    return redact_sensitive_text(head) + marker + sealed
 
 
 def redact_reasoning_fields(msg: dict) -> None:
@@ -102,11 +114,10 @@ def redact_reasoning_fields(msg: dict) -> None:
     native-carrier types) stay byte-exact: providers verify them on replay. Detail dicts are
     replaced, never mutated, because they may be the SDK response's own objects.
     """
-    from agent.redact import redact_sensitive_text
     for key in ("reasoning", "reasoning_content"):
         value = msg.get(key)
         if isinstance(value, str) and value.strip():
-            msg[key] = redact_sensitive_text(value)
+            msg[key] = _redact_reasoning_text(value)
     details = msg.get("reasoning_details")
     if isinstance(details, list):
         msg["reasoning_details"] = [_redact_unsigned_detail(d) for d in details]

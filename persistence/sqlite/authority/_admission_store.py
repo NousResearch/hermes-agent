@@ -16,6 +16,7 @@ from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUE
 from persistence.authority.admissions import raise_gate
 from persistence.core.errors import AuthorityRefusal
 
+from ..conversation._store.reply_completions import record_reply_completion
 from ._admission_owner import authorize_admission, close_discarded_turn
 from ._runtime import (
     _CANCEL_QUEUED,
@@ -218,6 +219,15 @@ def return_session_claim(holder, *, epoch: int, admission_id: str, generation: i
     return holder._execute_write(write)
 
 
+def _record_completed_result(conn, row, outcome, result):
+    """Index confirmed, nonempty results. Delivery policy is applied by the reader."""
+    value = result.get('result') if result is not None else None
+    response = value.get('final_response') if isinstance(value, dict) else None
+    if outcome == 'completed' and isinstance(response, str) and response.strip():
+        record_reply_completion(conn, session_id=row['target_session_id'],
+                                admission_id=row['admission_id'], kind='turn')
+
+
 def settle_session_input(holder, *, epoch: int, admission_id: str, generation: int, outcome: str,
                          result: dict | None = None, _transfers=None, boundary=None) -> dict:
     """``boundary`` (a ``TurnBoundary``) closes the turn on its current transcript in this same write, before the
@@ -243,6 +253,7 @@ def settle_session_input(holder, *, epoch: int, admission_id: str, generation: i
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, encoded))
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
+        _record_completed_result(conn, row, outcome, result)
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
@@ -426,6 +437,7 @@ def resolve_unknown_session_input(holder, *, epoch: int, admission_id: str, gene
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, _json(encode_result(compact_result(
                              stored, user_message=json.loads(row['payload_json']).get('text'))))))
+            _record_completed_result(conn, row, outcome, stored)
         # ``notice`` says the turn was interrupted: never beside a captured result this resolution commits.
         close_discarded_turn(holder, conn, row, None if (
             _captured is not None and row['owner_epoch'] == epoch) else notice)

@@ -37,6 +37,7 @@ __all__ = [
     "GateRefusal",
     "QueuedFold",
     "QueuedReplacement",
+    "ReplyCompletion",
     "RetryRewriteRefused",
     "TranscriptRewrite",
     "TurnBoundary",
@@ -125,6 +126,17 @@ class AdmissionResult:
 
     record: AdmissionRecord
     result: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyCompletion:
+    """A committed reply candidate in a bound profile's delivery order. Contains no reply text."""
+
+    sequence: int
+    session_id: str
+    admission_id: str
+    kind: Literal["turn", "note"]
+    completed_at: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +285,14 @@ class AdmissionRepository(Protocol):
         """Settle a started admission.
 
         Order: outcome (``invalid_params``); epoch; the row (``not_found``); its session (``not_found``); the composite fence (started, owned by ``epoch``, at ``generation``, the session at ``generation``; else ``stale_generation``); then: its workers retire, ``boundary`` closes the turn on the current physical transcript, ``result`` is stored compacted and encoded, the row goes terminal, the steering ``transfers`` settle (delivered ones ``steered`` on ``completed`` else ``interrupted``, undelivered ones queued again), the session revision bumps.
+        """
+        ...
+
+    def reply_completions(self, *, after: int, limit: int) -> list[ReplyCompletion]:
+        """Read recent reply candidates in completion order from this profile's store.
+
+        The caller must authorize session access before exposing any candidate. The
+        sequence belongs to this profile database and is independent of admission order.
         """
         ...
 

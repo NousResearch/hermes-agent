@@ -1184,7 +1184,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"Results truncated. Use offset={offset + limit} to see more, "
                 "or narrow with a more specific pattern or file_glob."
             )
-        elif target == "content" and not is_programmatic_read():
+        elif target == "content" and offset == 0 and not is_programmatic_read():
             _note_search_complete(_get_file_ops(task_id), result, result_dict,
                                   pattern=pattern, path=path, file_glob=file_glob, output_mode=output_mode)
         return json.dumps(result_dict, ensure_ascii=False)
@@ -1194,34 +1194,36 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
 def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, path: str,
                           file_glob: str | None, output_mode: str) -> None:
-    """State that an untruncated content search is the whole answer, including whether the
+    """State that a first-page, untruncated content search is the whole answer, and whether the
     hidden/gitignored files it skips hold more: in the live routing eval Opus re-ran every
     correct search with grep for exactly that reason. A warning means paths were skipped or
-    errored, so no claim is made then."""
+    errored, so no claim is made then; a failed hidden-file probe leaves that part unverified."""
     if result_dict.get("error") or result_dict.get("warning") or result_dict.get("_omitted"):
         return
     if output_mode == "count":
         # Highest first, so the per-file counts read as the ranking they are asked for.
         result_dict["counts"] = dict(sorted(result.counts.items(), key=lambda kv: (-kv[1], kv[0])))
-        visible = result.counts
+        visible = {p for p, n in result.counts.items() if n > 0}  # grep -c also prints zero rows
+        shown = f"{result.total_count} matching lines in "
     elif output_mode == "files_only":
-        visible = dict.fromkeys(result.files, 0)
+        visible, shown = set(result.files), ""
     else:
-        visible = {}
-        for m in result.matches:
-            visible[m.path] = visible.get(m.path, 0) + 1
-    shown = "" if output_mode == "files_only" else (
-        f"{result.total_count} {'matching lines' if output_mode == 'count' else 'matches'} in ")
-    note = f"Complete: {shown}{len(visible)} files; every file under {path} was searched."
-    everywhere = file_ops.hidden_match_counts(pattern, path, file_glob)
+        visible = {m.path for m in result.matches}
+        shown = f"{result.total_count} result rows in "  # context rows count as rows
+    note = f"Complete: {shown}{len(visible)} files; every file under {path} was searched"
+    try:
+        everywhere = file_ops.hidden_match_counts(pattern, path, file_glob)
+    except (OSError, RuntimeError):  # optional check: the primary result still stands
+        everywhere = None
     if everywhere is None:
-        note = note[:-1] + " except hidden and gitignored ones."
+        note += ". Hidden and gitignored files were not verified."
     else:
         skipped = sorted(p for p in everywhere if p not in visible)
-        note += (" Hidden and gitignored files were checked too: none match, so grep finds the same lines."
-                 if not skipped else
-                 f" {len(skipped)} hidden or gitignored file(s) also match, not shown: "
-                 + ", ".join(skipped[:5]) + (" (+more)" if len(skipped) > 5 else ""))
+        note += (" (hidden and gitignored files checked too, except dependency/build trees such as "
+                 ".git, node_modules, .venv, build, dist, vendor): "
+                 + ("none match, so grep finds the same lines." if not skipped else
+                    f"{len(skipped)} more file(s) match there, not shown: "
+                    + ", ".join(skipped[:5]) + (" (+more)" if len(skipped) > 5 else "")))
     result_dict["complete"] = note
 
 

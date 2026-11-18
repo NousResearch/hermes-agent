@@ -11,6 +11,8 @@ import os
 
 import pytest
 
+from tools.file_operations_common import ExecuteResult
+from tools.file_operations_search import _parse_search_output
 from tools.file_tools import _get_file_ops, search_tool
 
 
@@ -27,6 +29,13 @@ def proj(tmp_path, monkeypatch):
 
 def _search(proj, task, **kw):
     return json.loads(search_tool(path=str(proj), task_id=task, **kw))
+
+
+def _with_home(real_exec, home):
+    """The backend's ``echo $HOME`` (how ``~`` expands) answers ``home``; every other command runs."""
+    def run(command, *a, **kw):
+        return real_exec(f"HOME={home}; {command}" if command == "echo $HOME" else command, *a, **kw)
+    return run
 
 
 def _force_engine(monkeypatch, task, engine):
@@ -67,6 +76,7 @@ def test_complete_says_whether_hidden_or_gitignored_files_also_match(proj):
         pytest.skip("rg not installed")
     clean = _search(proj, "t-complete-hidden", pattern="hit")
     assert "none match" in clean["complete"]
+    assert "node_modules" in clean["complete"]  # the claim names the trees the check prunes
 
     (proj / ".hidden.py").write_text("hit\n")
     (proj / ".gitignore").write_text("build.log\n")
@@ -74,8 +84,52 @@ def test_complete_says_whether_hidden_or_gitignored_files_also_match(proj):
     (proj / ".git").mkdir()  # makes .gitignore apply; .git itself stays pruned
     r = _search(proj, "t-complete-hidden", pattern="hit")
     assert r["total_count"] == 6
-    assert "2 hidden or gitignored file(s) also match" in r["complete"]
+    assert "2 more file(s) match there" in r["complete"]
     assert ".hidden.py" in r["complete"] and "build.log" in r["complete"]
+
+
+def test_hidden_check_uses_the_backend_root_and_never_costs_the_primary_result(proj, monkeypatch):
+    task = "t-complete-tilde"
+    ops = _get_file_ops(task_id=task)
+    if not ops._has_command("rg"):
+        pytest.skip("rg not installed")
+    (proj / ".hidden.py").write_text("hit\n")
+    monkeypatch.setattr(ops, "_exec", _with_home(ops._exec, str(proj.parent)))
+    tilde = json.loads(search_tool(pattern="hit", path="~/proj", task_id=task))
+    assert ".hidden.py" in tilde["complete"], tilde
+
+    def broken(*_a, **_k):
+        raise OSError("probe exploded")
+
+    monkeypatch.setattr(ops, "hidden_match_counts", broken)
+    r = _search(proj, task, pattern="hit")
+    assert r["total_count"] == 6 and "were not verified" in r["complete"]
+
+
+def test_later_pages_and_context_rows_never_feed_the_claim(proj):
+    task = "t-complete-pages"
+    second = _search(proj, task, pattern="hit", output_mode="files_only", limit=2, offset=2)
+    assert len(second["files"]) == 1 and "complete" not in second  # a final page is not the whole answer
+    pages = [_search(proj, task, pattern="hit", output_mode="count", limit=1, offset=o).get("counts", {})
+             for o in (0, 1, 2, 3)]
+    assert [len(p) for p in pages] == [1, 1, 1, 0]  # one row per page, not the whole prefix
+
+    ctx_dir = proj.parent / "ctx"
+    ctx_dir.mkdir()
+    (ctx_dir / "a.py").write_text("before\nhit\nafter\n")
+    ctx = _search(ctx_dir, task, pattern="hit", context=1)
+    assert ctx["complete"].startswith("Complete: 3 result rows in 1 files")  # 1 hit + 2 context rows
+
+
+def test_a_visible_filename_with_a_space_is_listed_not_called_hidden(proj):
+    (proj / "visible file.txt").write_text("hit\n")
+    r = _search(proj, "t-complete-space", pattern="hit", output_mode="files_only")
+    assert r["total_count"] == 4 and any(f.endswith("visible file.txt") for f in r["files"])
+    assert "none match" in r["complete"]
+    # Relative rows (a search rooted at "."), where no "-<digit>" in a tmp path rescues the row.
+    parsed = _parse_search_output(ExecuteResult(stdout="./normal.txt\n./visible file.txt\n", exit_code=0),
+                                  "files_only", limit=50, offset=0, context=0)
+    assert parsed.files == ["./normal.txt", "./visible file.txt"]
 
 
 @pytest.mark.platforms("linux", "macos")
@@ -92,3 +146,22 @@ def test_a_search_that_skipped_unreadable_paths_claims_nothing(proj):
         locked.chmod(0o755)
     assert "unreadable" in r["warning"]
     assert "complete" not in r
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_an_unreadable_hidden_dir_leaves_hidden_files_unverified(proj, monkeypatch):
+    if os.geteuid() == 0:
+        pytest.skip("root reads mode-000 directories")
+    task = "t-complete-hidden-locked"
+    ops = _get_file_ops(task_id=task)
+    if not ops._has_command("rg"):
+        pytest.skip("rg not installed")
+    monkeypatch.setattr(ops, "_native_read_enabled", lambda: False)  # the shell `| head` lane
+    locked = proj / ".private"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        r = _search(proj, task, pattern="hit")
+    finally:
+        locked.chmod(0o755)
+    assert "were not verified" in r["complete"]

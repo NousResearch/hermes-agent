@@ -130,6 +130,13 @@ export function withPlatformsDisabled(configText, platformNames) {
     }
   }
 
+  // The 1.1 stringifier would emit a literal '<<' string key bare, turning it into a merge.
+  visit(doc, {
+    Scalar: (_key, node) => {
+      if (node.value === '<<') node.tag ??= 'tag:yaml.org,2002:str'
+    }
+  })
+
   // Unwrapped: readDesktopLaunchConfig reads desktop.electron_flags line by line.
   return doc.toString({ lineWidth: 0 })
 }

@@ -851,13 +851,31 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
             raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
         if fact:
-            enabled = list(fact["extras"])
+            recorded = list(fact["extras"])
+            # A replay rebuilds the recorded workspace, which still declares what it
+            # was built with. Without one (refresh_dependencies' fallback shape, or
+            # a pre-workspace ledger) the rebuild resolves against the CURRENT tree,
+            # so an extra that tree no longer declares must not ride the ledger
+            # into `uv sync` — mirror _still_declared's launch-path prune here.
+            # (record_state writes `environment`/`resolved_lock` only when non-None,
+            # so absence of both keys is exactly "no replayed workspace captured".)
+            enabled = recorded if ("environment" in fact or "resolved_lock" in fact) \
+                else _still_declared(package, recorded)
         else:
             from pm.extras import pre_pm_baseline
 
             # Nothing recorded yet: a tree still on its main-era venv restores that venv's extras.
             enabled = frozen if frozen is not None else pre_pm_baseline(package.project_root()) or ["all"]
-        stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
+            recorded = enabled
+        if enabled != recorded:
+            # The recorded stamp hashed the stale selection; recompute so the
+            # repaired fact reads current against today's tree. Stamp with the
+            # caller's member inputs (discovery on repair, since repair carries
+            # no plugin change) — the same members the launch path will stamp
+            # with, or the next sync reads the fresh build as drifted.
+            stamp = package.expected_stamp(enabled, **inputs)
+        else:
+            stamp = fact.get("stamp") or package.expected_stamp(enabled, **inputs)
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.

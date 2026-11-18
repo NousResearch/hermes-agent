@@ -1027,6 +1027,22 @@ tool_budget:
 
 The MCP threshold is always capped at the (possibly context-scaled) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
 
+The other caps live in the same block, and one MCP server can get its own limit:
+
+```yaml
+tool_budget:
+  default_result_size_chars: 200000   # generic per-result threshold (default 100000)
+  turn_budget_chars: 400000           # all tool results in one turn (default 200000)
+  unlimited_tools: [search_code]      # never spill these tools' results
+
+mcp_servers:
+  code-search:
+    command: code-search-mcp
+    max_result_chars: 80000           # every tool from this server; beats mcp_result_size_chars
+```
+
+A raised cap is still bounded by the model's context window: on a small model the threshold shrinks to fit, so these settings move the ceiling but never let one result crowd out the conversation. `unlimited_tools` is the exception and is never cut. A value that is not a positive number is ignored, and the default stays in place.
+
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
 ## Global Toolset Disable

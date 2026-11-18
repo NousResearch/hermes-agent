@@ -175,3 +175,34 @@ class TestMcpPrefixThreshold:
         cfg = budget_for_context_window(16_384)  # scaled default < 50K
         assert cfg.default_result_size < 50_000
         assert cfg.resolve_threshold("mcp_tool") == cfg.default_result_size
+
+
+class TestConfiguredCaps:
+    """``tool_budget`` caps / ``unlimited_tools`` and ``mcp_servers.<name>.max_result_chars``."""
+
+    def test_user_caps_apply_and_still_scale_down_for_small_windows(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  default_result_size_chars: 400000\n  turn_budget_chars: 900000\n"
+            "  unlimited_tools: [search_code]\n  mcp_result_size_chars: oops\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
+        big, small = budget_for_context_window(None), budget_for_context_window(16_384)
+        assert (big.default_result_size, big.turn_budget) == (400_000, 900_000)
+        assert big.resolve_threshold("search_code") == float("inf")
+        assert big.mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS  # a bad value keeps the default
+        assert small.default_result_size < DEFAULT_RESULT_SIZE_CHARS  # raised cap never outgrows the window
+
+    def test_server_limit_follows_registration_provenance_not_name_shape(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "mcp_servers:\n  code:\n    command: x\n    max_result_chars: 300000\n"
+            "  code_b:\n    command: y\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import tools.mcp_tool as mcp
+        # Both tool names start with ``mcp_code_``; only the one ``code`` registered gets its limit.
+        monkeypatch.setattr(mcp, "_mcp_tool_server_names",
+                            {"mcp_code_search": "code", "mcp_code_b_search": "code_b"})
+        cfg = budget_for_context_window(None)
+        assert cfg.resolve_threshold("mcp_code_search") == 300_000
+        assert cfg.resolve_threshold("mcp_code_b_search") == min(cfg.mcp_result_size, cfg.default_result_size)
+        # A small model's window still bounds the server's raised limit (#23767).
+        assert budget_for_context_window(16_384).resolve_threshold("mcp_code_search") < 300_000

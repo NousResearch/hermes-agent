@@ -33,7 +33,7 @@ Do not switch a same-host setup to `--code` merely because port 3000 failed. Use
 
 ## Separate-host or headless path
 
-Use this path only after the user explicitly confirms that Hermes runs on a remote host—such as a VPS, container, or cloud VM—or that it is headless and the authorization browser is on a different computer. Do not use this path when the same-host callback is available.
+Use this path only after the user explicitly confirms that Hermes runs on a remote host (such as a VPS, container, or cloud VM) or that it is headless and the authorization browser is on a different computer. Do not use this path when the same-host callback is available.
 
 With `--code`, the CLI waits at interactive prompts for the `code` and `state` values from the browser's final localhost address. Those values must go from the user's browser straight into those prompts, so Hermes does not start this login itself: anything Hermes relays to a process it started lands in its context and transcript. The CLI saves the login under `$HOME/.box`, and Hermes's terminal can run with a different `HOME` from the user's shell (`terminal.home_mode: profile`, or `{HERMES_HOME}/home` in containers such as the official Docker image), so first run `echo "$HOME"` in Hermes's terminal. Give the user the exact command, built from the runner Hermes already resolved and verified and prefixed on macOS/Linux with `HOME=<that path>`, to run in a terminal they control on the Hermes host as the same OS user that runs Hermes (for example an SSH session, or `docker exec -it -u hermes <container> sh` for the official image):
 

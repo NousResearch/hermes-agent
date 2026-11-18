@@ -20,10 +20,12 @@ def find_or_close_attempt(conn, *, session_id, room_id, task_id, generation, pri
     # Retirement may follow the gateway's authorization. A retired key must never be recreated.
     if not conn.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone():
         raise AuthorityRefusal('not_found')
+    # Task IDs are ASCII. JSON may pad the decoded identifier or spell any
+    # character with a Unicode escape. Only rule out rows containing neither.
     rows = conn.execute(
         "SELECT admission_id, request_id, principal_id, status, outcome FROM session_admissions "
-        "WHERE target_session_id=? AND instr(request_id, ?) > 0 ORDER BY seq",
-        (session_id, json.dumps(task_id)))
+        "WHERE target_session_id=? AND (instr(request_id, ?) OR instr(request_id, ?)) ORDER BY seq",
+        (session_id, task_id, r"\u"))
     for row in rows:
         if row['request_id'].startswith('hosted:') and same_owner(row['principal_id'], principal, owner):
             identity, attempt = parse_hosted_attempt(row['request_id'], room_id)

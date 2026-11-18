@@ -68,3 +68,21 @@ def test_unused_attempt_fences_delayed_submit_and_keeps_the_next_attempt_indepen
     assert created
     assert store.hosted_rooms.find_or_close_attempt(**lookup, generation=2) == {
         "admission_id": admitted.admission_id, "status": "queued", "outcome": None}
+
+
+@pytest.mark.parametrize("spelling", [r"\u0064task:23", " dtask:23 "])
+def test_exact_lookup_finds_equivalent_stored_task_ids(backend, scope_a, spelling):
+    from persistence.authority.vocabulary import OwnerRule
+
+    store = backend.open(scope_a)
+    epoch = _seed(store)
+    # Both stored spellings decode to the same identifier in history.
+    request_id = f'hosted:[{{"room_id":"room","task_id":"{spelling}","thread_id":"thread","turn_id":"turn" }},1]'
+    row, _ = _admit(store, epoch, request_id, _guard())
+    store.admissions.claim(epoch=epoch, session_id=SESSION)
+    store.admissions.settle(epoch=epoch, admission_id=row.admission_id, generation=1, outcome="completed",
+                            result={"result": {"final_response": "saved"}, "usage": {}})
+    found = store.hosted_rooms.find_or_close_attempt(
+        epoch=epoch, session_id=SESSION, room_id="room", task_id="dtask:23", generation=1,
+        principal="hosted:room:m1", owner=OwnerRule("alice", frozenset(), frozenset()))
+    assert found == {"admission_id": row.admission_id, "status": "terminal", "outcome": "completed"}

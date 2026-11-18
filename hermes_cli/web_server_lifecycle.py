@@ -551,6 +551,13 @@ def _uvicorn_console_logging() -> None:
     logging.getLogger("uvicorn").setLevel(logging.INFO)
 
 
+# A reverse proxy or tunnel in front of the server reuses idle upstream connections, and uvicorn's
+# 5 s default closes them between the dashboard's and Webapp's 5-10 s polls: every poll pays a new
+# connection, and a request that races the close fails. 120 s outlasts any poll gap and common
+# proxy idle timeouts (Cloudflare Tunnel ~100 s), so the proxy, not the server, ends an idle one.
+KEEP_ALIVE_S = 120
+
+
 def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
                           ws_ping: Optional[tuple[float, float]] = None,
                           timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
@@ -602,6 +609,7 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         ws_ping_timeout=ws_ping[1],
         ws_per_message_deflate=per_message_deflate,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        timeout_keep_alive=KEEP_ALIVE_S,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
         # mid-turn request orphans the backend past that budget (#76244). 3s

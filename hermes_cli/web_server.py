@@ -68,6 +68,7 @@ _log = logging.getLogger(__name__)
 
 
 from hermes_cli.web_server_lifecycle import (
+    KEEP_ALIVE_S,
     PORT_IN_USE_EXIT_CODE,
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
@@ -1095,6 +1096,7 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         # behind a tunnel (SSH-isolated backend, public gate) keeps it.
         ws_per_message_deflate=ssh_isolated or not _is_loopback or bool(app.state.auth_required),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        timeout_keep_alive=KEEP_ALIVE_S,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
         # mid-turn request orphans the backend past that budget (#76244). 3s

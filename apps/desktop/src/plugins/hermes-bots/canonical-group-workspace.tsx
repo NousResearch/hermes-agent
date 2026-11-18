@@ -1,7 +1,7 @@
 import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, hasCanonicalGroupPendingWork, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, offersGroupSafetyMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
@@ -568,14 +568,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     setError('')
 
     try {
-      // A retried Stop replays its lost id, which covers only work up to that first fence.
-      const replay = stopIntent.current !== null
       const first = requestStop()
       first.catch(() => undefined)
-      const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
-
-      // The replay's fence may precede newer work, including another stalled preparation.
-      if (replay && !cancelled && (state?.driver_status?.working || hasCanonicalGroupPendingWork(state?.driver_status))) {await requestStop(true)}
+      if (covered && await covered.settled) {
+        await first.catch(() => undefined)
+        await requestStop(true)
+      } else {
+        await first
+      }
 
       if (alive.current) {
         setNotice('stopped')

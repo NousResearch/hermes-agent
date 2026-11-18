@@ -118,28 +118,23 @@ it.each(['stalled', 'deferred', 'indeterminate'] as const)('confirms Stop for id
   }
 })
 
-it('keeps a failed confirmation open and replays its Stop before fencing newer waiting work', async () => {
+it('replays only the original Stop when another window posts during the replay', async () => {
   let attempts = 0
-
   const { update } = await open('stalled', async () => {
     if (++attempts === 1) {throw new Error('Stop timed out')}
-
-    if (attempts === 3) {update(wire.afterStop)}
+    // The replay reached the gateway. Another window's Send lands before its reply.
+    update(wire.working)
 
     return wire.stop
   })
-
   fireEvent.click(screen.getByRole('button', { name: labels.stopGroup }))
   const dialog = await screen.findByRole('dialog')
   fireEvent.click(within(dialog).getByRole('button', { name: labels.stopGroup }))
   await within(dialog).findByText('Stop timed out')
-  expect(screen.queryByText(labels.stopped)).toBeNull()
   fireEvent.click(within(dialog).getByRole('button', { name: labels.stopGroup }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   const ids = stops().map(call => call[2].cancel_id)
-  expect(ids).toHaveLength(3)
-  expect(ids[1]).toBe(ids[0])
-  expect(ids[2]).not.toBe(ids[0])
+  expect(ids).toEqual([ids[0], ids[0]])
 })
 
 it('says in plain words when Retry cannot repair the stall', async () => {

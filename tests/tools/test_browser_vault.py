@@ -644,6 +644,38 @@ class TestBrowserVaultTools:
         assert out["success"] is False
         assert [sid for _, sid in sup.typed if sid == "S2"] == []
 
+    def test_only_the_first_retyped_key_may_pull_focus_back(self, store):
+        """A page that steals focus after every key is refused on the second key: the between-keys
+        check asserts and does not re-focus, or it would hide the theft and keep typing into a page
+        that redirects input."""
+        from agent.vault_login_classifier import build_focus_js
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        page = {"focused": True}
+        steal = sup.insert_text
+
+        def insert_and_steal(text, *, session_id, **kwargs):
+            page["focused"] = False  # the page moves focus away after each keystroke
+            return steal(text, session_id=session_id, **kwargs)
+
+        sup.insert_text = insert_and_steal
+
+        def focus_check(_sup, expression):
+            nonce = re.search(r'const nonce = "([0-9a-f]+)"', expression).group(1)
+            fill = [{"index": 1, "token": "current-password"}]
+            if expression == build_focus_js(fill, nonce, expected_origin="https://example.com"):
+                page["focused"] = True  # this check focuses the field first
+            return {"focused": 1} if page["focused"] else {"refused": "focus_lost", "tag": "INPUT", "found": "INPUT"}
+
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[focus_check],
+            verify_answers=[{"landed": 0, "reverted": 1, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        assert [t for t, _ in sup.typed] == ["s3cret-pw", "s"]
+
     def test_every_secret_script_is_pinned_to_the_session_the_fill_started_on(self, store):
         """The read-back carries the expected values and runs while the page may move on: it, the
         write and every focus/clear check go to the page session the fill validated, never to

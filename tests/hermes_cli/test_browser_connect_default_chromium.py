@@ -13,6 +13,23 @@ import posixpath
 import hermes_cli.browser_connect as bc
 
 
+def test_linux_real_browser_install_wins_over_chrome_for_testing_on_path(tmp_path, monkeypatch):
+    real = tmp_path / "google-chrome"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    browser = type("Browser", (), {
+        "mac_app": None,
+        "win_install": (),
+        "linux_bins": ("google-chrome", "chrome"),
+        "linux_paths": (str(real),),
+        "linux_exec": None,
+    })()
+    monkeypatch.setitem(bc._BROWSER_BY_KEY, "chrome", browser)
+    monkeypatch.setattr(bc.shutil, "which", lambda name: "/usr/bin/chrome-for-testing")
+
+    assert bc.chromium_executable("chrome", system="Linux") == str(real)
+
+
 def _ls_dump(*entries: str) -> str:
     return "(\n" + ",\n".join(entries) + "\n)\n"
 

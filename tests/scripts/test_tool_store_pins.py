@@ -228,3 +228,59 @@ def test_explicit_runtime_dir_is_checked_without_a_bootstrap_python(tmp_path):
     store = _store_at_other_pins(account / ".hermes" / "tools")
     run, provisioned = _run_runner(tmp_path, account, home, _naming("HERMES_RUNTIME_DIR", store), bootstrap=False)
     assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("bootstrap", [True, False])
+def test_runtime_dir_naming_the_account_store_through_a_missing_component_is_recognised(tmp_path, bootstrap):
+    """pm resolves HERMES_RUNTIME_DIR with Path.resolve(), which collapses ``missing/..`` without
+    the filesystem; the runner must read the path the same way or it misses the account's store."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(store / "missing" / "..")},
+                                   bootstrap=bootstrap)
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_suffix_leading_the_faked_homes_store_back_to_the_account_store_is_refused(tmp_path):
+    """HERMES_DATA_DIR_SUFFIX is appended literally (hermes_constants), so ``/../..`` through the faked
+    home's missing ``.hermes`` reaches the account's store once pm resolves it."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home,
+                                   {"HERMES_DATA_DIR_SUFFIX": "/../../account/.hermes", "HERMES_RUNTIME_DIR": str(store)})
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "account's tool store" in run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_run_that_never_reaches_setup_is_not_refused_for_want_of_a_bootstrap_python(tmp_path):
+    """An explicit HERMES_PYTHON with pytest skips setup, so nothing is provisioned and there is no
+    store to keep the run off."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_PYTHON": sys.executable, **_naming("HERMES_HOME", store)},
+                                   bootstrap=False)
+    assert provisioned is None
+    assert "cannot check" not in run.stderr, run.stderr
+    assert "using HERMES_PYTHON" in run.stdout, run.stdout + run.stderr
+
+
+@pytest.mark.platforms("posix")
+def test_store_pm_cannot_resolve_is_refused_with_pms_reason(tmp_path):
+    """A bootstrap Python whose pm fails to resolve the store (here: a payload manifest whose store
+    escapes its root) refuses the run with pm's reason, not as a missing interpreter."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    (tmp_path / "manifest.json").write_text(json.dumps({"repo": "checkout", "store": "../outside"}), encoding="utf-8")
+    run, provisioned = _run_runner(tmp_path, account, home, _naming("HERMES_HOME", store))
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "escapes its root" in run.stderr
+    assert "no bootstrap Python" not in run.stderr

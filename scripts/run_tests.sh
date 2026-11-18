@@ -106,7 +106,7 @@ _account_stores() {
   account="$(_account_home)" || return 0
   for suffix in "" ${HERMES_DATA_DIR_SUFFIX:+"$HERMES_DATA_DIR_SUFFIX"}; do
     if [ -f "$account/.hermes$suffix/tools/facts.json" ]; then
-      printf '%s\n' "$account/.hermes$suffix/tools"
+      _resolved_path "$account/.hermes$suffix/tools"
     fi
   done
 }
@@ -118,17 +118,44 @@ _which_store() {
   done <<<"$2"
   return 1
 }
+# Prints PATH as pm's Path.resolve() reads it: symlinks resolved through the
+# part that exists, a `..` after a missing part taken lexically. `-ef` alone
+# stats the literal path, so `<store>/missing/..` would not match <store>.
+_resolved_path() {
+  local resolved="" part next parts
+  case "$1" in /*) ;; *) resolved="$(pwd -P)" ;; esac
+  IFS=/ read -r -a parts <<<"$1"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      "" | .) ;;
+      ..) resolved="${resolved%/*}" ;;
+      *) if [ -d "$resolved/$part" ]; then
+           next="$(cd -P "$resolved/$part" 2>/dev/null && pwd)" || next="$resolved/$part"
+           resolved="$next"
+         else
+           resolved="$resolved/$part"
+         fi ;;
+    esac
+  done
+  printf '%s\n' "${resolved:-/}"
+}
 # Prints the store this run's `pm install` writes: HERMES_RUNTIME_DIR as pm
 # takes it, else pm's own resolver (stamps, HERMES_HOME, profiles), run by the
-# bootstrap interpreter found beside STORE.
+# bootstrap interpreter found beside STORE; says why on stderr when it cannot.
 _pm_store() {
   local python
-  if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then printf '%s\n' "$HERMES_RUNTIME_DIR"; return 0; fi
-  python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
+  if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then _resolved_path "$HERMES_RUNTIME_DIR"; return 0; fi
+  if ! python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")"; then
+    echo "error: faked HOME: no bootstrap Python to ask pm which tool store this run provisions" >&2
+    return 1
+  fi
   PYTHONHOME= "$python" -I -B -c 'import sys
 sys.path.insert(0, sys.argv[1])
 from pm.environments import store_root
-print(store_root(sys.argv[1]))' "$REPO_ROOT" 2>/dev/null
+try:
+    print(store_root(sys.argv[1]))
+except Exception as error:
+    sys.exit(f"error: faked HOME: pm cannot resolve the tool store this run provisions: {error}")' "$REPO_ROOT"
 }
 # Points HERMES_RUNTIME_DIR away from an account store that this run's
 # `pm install` would write other pins into; status 1 when it cannot.
@@ -137,12 +164,13 @@ _avoid_account_stores() {
   stores="$(_account_stores)"
   [ -n "$stores" ] || return 0
   if ! target="$(_pm_store "${stores%%$'\n'*}")"; then
-    echo "error: faked HOME: no bootstrap Python, so cannot check whether this run would provision the account's tool store (${stores//$'\n'/, }); set HERMES_RUNTIME_DIR to a store of this home's own" >&2
+    echo "error: faked HOME: cannot check whether that is the account's tool store (${stores//$'\n'/, }); set HERMES_RUNTIME_DIR to a store of this home's own" >&2
     return 1
   fi
   named="$(_which_store "$target" "$stores")" || return 0
   ! _store_has_pins "$named" >/dev/null || return 0
-  fallback="$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools"
+  # The suffix is appended literally (hermes_constants), `..` included.
+  fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools")"
   if _which_store "$fallback" "$stores" >/dev/null; then
     echo "error: faked HOME: $fallback is the account's tool store $named, which records other pins; set HERMES_RUNTIME_DIR to a store of this home's own" >&2
     return 1
@@ -157,20 +185,22 @@ _store_has_pins() {
   python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
   PYTHONHOME= "$python" -I -B "$REPO_ROOT/scripts/tool_store_pins.py" "$REPO_ROOT" "$1" 2>/dev/null
 }
-if _shared="$(_account_tool_store)"; then
-  _account="${_shared%%$'\n'*}"
-  export HERMES_RUNTIME_DIR="$_account/.hermes/tools"
+# Picks the tool store the setup below provisions; status 1 refuses the run.
+# Only a run that reaches setup asks: one that never provisions has no store
+# to keep off the account's.
+_choose_tool_store() {
+  local shared account
+  shared="$(_account_tool_store)" || { _avoid_account_stores; return; }
+  account="${shared%%$'\n'*}"
+  export HERMES_RUNTIME_DIR="$account/.hermes/tools"
   # setup-hermes.sh's uv-managed bootstrap interpreter is the same kind of
   # cache, but only reused: a missing pinned minor would download into it.
-  if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ] && [ -w "$_account/.local/share/uv/python" ] \
-      && compgen -G "$_account/.local/share/uv/python/cpython-${_shared#*$'\n'}[.-]*" >/dev/null; then
-    export UV_PYTHON_INSTALL_DIR="$_account/.local/share/uv/python"
+  if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ] && [ -w "$account/.local/share/uv/python" ] \
+      && compgen -G "$account/.local/share/uv/python/cpython-${shared#*$'\n'}[.-]*" >/dev/null; then
+    export UV_PYTHON_INSTALL_DIR="$account/.local/share/uv/python"
   fi
   echo "▶ faked HOME: using the account's tool store $HERMES_RUNTIME_DIR"
-else
-  _avoid_account_stores || exit 1
-fi
-unset _account _shared
+}
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
   echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
@@ -180,6 +210,7 @@ else
       echo "error: run-in-hermes-env did not produce a current environment for $REPO_ROOT" >&2
       exit 1
     fi
+    _choose_tool_store || exit 1
     echo "▶ environment missing or stale for $REPO_ROOT — re-running under run-in-hermes-env" >&2
     export __HERMES_TESTS_REEXEC=1
     exec "$SCRIPT_DIR/run-in-hermes-env" "$BASH" "${BASH_SOURCE[0]}" "$@"

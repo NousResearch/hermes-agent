@@ -460,6 +460,93 @@ describe('long frames', () => {
     expect(JSON.parse(stored()!).pending).toEqual([])
   })
 
+  it.each(['not recorded', 'rejected'] as const)(
+    'settles journal frames independently when daily activity is %s, without resending either settled half',
+    async failure => {
+      let acceptDaily = false
+      const calls: Call[] = []
+      const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+        calls.push([method, params ?? {}])
+
+        if (method === 'shared_metrics.desktop_daily' && !acceptDaily) {
+          if (failure === 'rejected') {
+            throw new Error('daily report unavailable')
+          }
+
+          return { recorded: false } as never
+        }
+
+        return { recorded: true } as never
+      })
+
+      await setMetricsGate(captureDesktopMetricsGate, 'on')
+      bindDesktopMetrics(request)
+      recordAction('composer.send', 'click')
+      recordLongFrames([120])
+      await flush()
+      vi.setSystemTime(DAY2)
+      tickDesktopMetrics()
+      await flush()
+
+      const frames = calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames')
+
+      expect(frames.map(([, params]) => params)).toEqual([{
+        day: '2026-09-27', visible_ms: 0, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }])
+      expect(JSON.parse(stored()!).pending).toHaveLength(1)
+      acceptDaily = true
+      tickDesktopMetrics()
+      await flush()
+      tickDesktopMetrics()
+      await flush()
+      expect(calls.filter(([method]) => method === 'shared_metrics.desktop_daily').map(([, params]) => params)).toEqual([
+        expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] }),
+        expect.objectContaining({ actions: [{ action: 'composer.send', count: 1, via: 'click' }] })
+      ])
+      expect(calls.filter(([method]) => method === 'shared_metrics.desktop_long_frames')).toEqual(frames)
+      expect(JSON.parse(stored()!).pending).toEqual([])
+    }
+  )
+
+  it.each([false, true])('ignores a retired requester’s daily receipt (recorded: %s)', async recorded => {
+    const started = Promise.withResolvers<void>()
+    const response = Promise.withResolvers<{ recorded: boolean }>()
+    const oldCalls: Call[] = []
+    const oldRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      oldCalls.push([method, params ?? {}])
+
+      if (method === 'shared_metrics.desktop_daily') {
+        started.resolve()
+
+        return await response.promise as never
+      }
+
+      return { recorded: true } as never
+    })
+
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
+    bindDesktopMetrics(oldRequest)
+    noteMessageSent()
+    recordLongFrames([120])
+    await flush()
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    await started.promise
+    const pending = JSON.parse(stored()!).pending
+    const next = requester()
+
+    bindDesktopMetrics(next.request)
+    response.resolve({ recorded })
+    await flush()
+    expect(JSON.parse(stored()!).pending).toEqual(pending)
+    expect(methods(oldCalls)).not.toContain('shared_metrics.desktop_long_frames')
+    expect(next.calls).toEqual([])
+    tickDesktopMetrics()
+    await flush()
+    expect(methods(next.calls)).toEqual(['shared_metrics.desktop_daily', 'shared_metrics.desktop_long_frames'])
+    expect(JSON.parse(stored()!).pending).toEqual([])
+  })
+
   it('collection off: no frame is counted, persisted or sent', async () => {
     const { calls, request } = requester()
 

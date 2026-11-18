@@ -45,6 +45,7 @@ def test_a_managed_local_model_goes_cold_after_its_unload_and_a_users_own_server
                             session_id="s", _session_db=None, _prompt_cache_clock_restored=True,
                             context_compressor=SimpleNamespace(compression_count=0))
     t0 = 1_000_000.0
+    monkeypatch.setattr("agent.prompt_cache_clock.time.time", lambda: t0)  # the reply finished as it was sent
     _record_write(agent, t0)
     window = cache_window(agent)
     assert cache_certainly_warm(window, now=t0 + 5 * 60)
@@ -53,6 +54,24 @@ def test_a_managed_local_model_goes_cold_after_its_unload_and_a_users_own_server
         assert cache_certainly_cold(window, now=t0 + 20 * 60)
     else:
         assert not cache_certainly_cold(window, now=t0 + 24 * 3600)
+
+
+def test_a_managed_local_models_unload_is_counted_from_when_its_reply_finished(monkeypatch):
+    """The managed server's 15 min idle wait starts when the model goes idle: a reply that took ten
+    minutes is still warm nine minutes after it finished, and cold once the unload (+ two sweeps) ran."""
+    import agent.prompt_cache_clock as clock
+    from hermes_cli.local_runtime import growth
+
+    monkeypatch.setattr(growth, "is_managed_endpoint", lambda base_url: base_url == _LOCAL)
+    agent = SimpleNamespace(provider="custom", base_url=_LOCAL, model="qwen3.8-27b", api_mode="chat_completions",
+                            session_id="s", _session_db=None, _prompt_cache_clock_restored=True,
+                            context_compressor=SimpleNamespace(compression_count=0))
+    t0 = 1_000_000.0
+    monkeypatch.setattr(clock.time, "time", lambda: t0 + 10 * 60)  # the reply finished ten minutes after the send
+    _record_write(agent, t0)
+    window = clock.cache_window(agent)
+    assert not clock.cache_certainly_cold(window, now=t0 + 19 * 60)
+    assert clock.cache_certainly_cold(window, now=t0 + 30 * 60)
 
 
 def test_a_malformed_route_store_entry_is_dropped_never_raised(tmp_path, monkeypatch):

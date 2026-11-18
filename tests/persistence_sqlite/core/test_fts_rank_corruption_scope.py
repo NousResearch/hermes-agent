@@ -122,6 +122,7 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
     holder = _open(path)
     try:
         create_session(holder, "s", source="cli")
+        old_row = append_message(holder, "s", role="tool", content=CUT_TOOL_ROW, tool_name="terminal")
         row_id = append_message(holder, "s", role="tool", content=CUT_TOOL_ROW, tool_name="terminal")
         # What a pre-v3 release does on open of this v3 store: stamp the marker at MAX(id)
         # and swap in its id-gated delete trigger.
@@ -129,6 +130,7 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
             "INSERT OR REPLACE INTO state_meta(key, value) "
             f"VALUES('fts_tool_full_content_high_water', '{row_id}');"
             f"DROP TRIGGER messages_fts_delete;{_PRE_V3_DELETE_TRIGGER};"))
+        holder._execute_write(lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (old_row,)))
     finally:
         holder.close()
 
@@ -138,6 +140,9 @@ def test_pre_v3_reopen_of_a_realigned_store_realigns_again(tmp_path):
         trigger_sql = reopened._conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'messages_fts_delete'").fetchone()[0]
         assert "fts_tool_full_content_high_water" not in trigger_sql
+
+        hits = reopened._conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'frag*' ORDER BY rank")
+        assert [row[0] for row in hits] == [row_id]
 
         reopened._execute_write(lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (row_id,)))
 
@@ -224,6 +229,10 @@ def test_genuine_corruption_on_the_ranked_path_still_latches(tmp_path, monkeypat
         class CorruptRankedRead:
             def __init__(self, conn):
                 self._conn = conn
+
+            @property
+            def in_transaction(self):
+                return self._conn.in_transaction
 
             def execute(self, sql, *args):
                 if "ORDER BY rank" in sql:

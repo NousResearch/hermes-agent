@@ -488,7 +488,18 @@ def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_
                 raise
             raise attributed from exc
 
-    return [dict(row) for row in holder._read_retrying_ioerr(read)]
+    def snapshot_read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        if conn.in_transaction:
+            return read(conn)
+        conn.execute("BEGIN")
+        try:
+            return read(conn)
+        finally:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+
+    callback = snapshot_read if order_by_sql == _FTS_RANK_ORDER_BY else read
+    return [dict(row) for row in holder._read_retrying_ioerr(callback)]
 
 
 def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:

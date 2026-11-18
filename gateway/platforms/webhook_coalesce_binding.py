@@ -1,10 +1,11 @@
 """The accepted coalesced binding is checked against the actual producer snapshot."""
 import hashlib
-import uuid
+
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.platforms.api_server_store import authority_store
+from persistence.core.errors import AuthorityRefusal
 
 
 @dataclass(frozen=True)
@@ -25,23 +26,18 @@ class Binding:
         if (not isinstance(value, dict) or set(value) != {'profile_id', 'store_id', 'route', 'connector', 'destination'}
                 or any(not isinstance(value[key], str) for key in ('profile_id', 'store_id', 'route', 'connector'))
                 or not isinstance(value['destination'], dict)):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return cls(**value)
 
 
 expected_binding: ContextVar[Binding | None] = ContextVar('webhook_coalesced_binding', default=None)
 
 
-def ensure_store_identity(db):
-    rows = db._read_all("SELECT value FROM state_meta WHERE key='store_instance_id'")
-    if rows:
-        return rows[0]['value']
-
-    def write(conn):
-        conn.execute("INSERT OR IGNORE INTO state_meta(key,value) VALUES('store_instance_id',?)", (uuid.uuid4().hex,))
-        return conn.execute("SELECT value FROM state_meta WHERE key='store_instance_id'").fetchone()[0]
-
-    return db._execute_write(write)
+def ensure_store_identity(authority):
+    identity = authority_store(authority).state_meta.get('store_instance_id')
+    if not identity:
+        raise AuthorityRefusal('storage_unavailable')
+    return identity
 
 
 def binding_from(adapter, authority, store_id, route, destination):
@@ -59,4 +55,4 @@ def validate_snapshot(adapter, envelope):
     if (authority is not expected.authority or authority is None
             or binding_from(adapter, authority, expected.store_id, envelope['webhook_route'],
                             envelope['webhook_delivery']) != expected):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')

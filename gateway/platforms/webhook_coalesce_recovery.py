@@ -41,7 +41,7 @@ class DurableWebhookCoalescer:
         event = MessageEvent(text='', message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         async with producer_scope(self.adapter, event) as authority:
-            store_id = await drain_thread(ensure_store_identity, authority.db)
+            store_id = await drain_thread(ensure_store_identity, authority)
             digest = route_digest(self.adapter, source.chat_id)
             route = self.adapter._routes[route_name]
             destination = snapshot_destination(self.adapter, delivery_info(self.adapter, route, profile, payload, route_name))

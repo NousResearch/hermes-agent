@@ -48,6 +48,7 @@ async def test_accepted_window_is_recovered_without_provider_retry(monkeypatch):
 async def test_real_producer_commit_recovers_and_expired_retry_does_not_block(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
     from gateway.config import Platform
+    from gateway.platforms.api_server_store import authority_store
     from gateway.platforms.webhook import WebhookAdapter
     from tests.gateway.test_pre_gateway_dispatch import _post_webhook, _webhook_app
 
@@ -68,7 +69,7 @@ async def test_real_producer_commit_recovers_and_expired_retry_does_not_block(mo
 
             monkeypatch.setattr(store, 'finish', interrupted)
             await adapter._coalescer._handoff(row['id'], flush=True)
-            assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
+            assert len(authority_store(authority).admissions.match()) == 1
             assert len(await asyncio.to_thread(store.pending)) == 1
             monkeypatch.setattr(store, 'finish', finish)
             await _lose_loop(adapter)
@@ -80,7 +81,7 @@ async def test_real_producer_commit_recovers_and_expired_retry_does_not_block(mo
             try:
                 await restarted._coalescer._handoff(row['id'], flush=True)
                 assert await asyncio.to_thread(restarted._coalescer.store.pending) == []
-                assert len(authority.db._read_all('SELECT admission_id FROM session_admissions')) == 1
+                assert len(authority_store(authority).admissions.match()) == 1
                 with restarted._coalescer.store.connection() as conn:
                     conn.execute('UPDATE members SET expires=0 WHERE expires IS NOT NULL')
                 from aiohttp import web

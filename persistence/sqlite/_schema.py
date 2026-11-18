@@ -1136,6 +1136,10 @@ def _init_schema(holder: StoreHolder):
     else:
         _run_data_migrations(holder, cursor, row[0], fts5_available)
 
+    if cursor.execute("SELECT 1 FROM state_meta WHERE key='store_instance_id'").fetchone() is None:
+        cursor.execute("INSERT OR IGNORE INTO state_meta(key,value) VALUES('store_instance_id',?)",
+                       (str(uuid.uuid4()),))
+
     _ensure_unique_title_index(holder, cursor)
     if fts5_available:
         _init_fts(holder, cursor)

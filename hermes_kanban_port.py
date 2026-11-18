@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Comment, Event, Run, Task
 
-#: The ownership levels a store can hold (``hermes_state_port.LEVELS``): kanban records are
+#: The ownership levels a store can hold (``hermes_storage_levels.LEVELS``): kanban records are
 #: agent level only, so a backend that stores anything else should say so here and refuse it.
 LEVELS = frozenset({"agent"})
 

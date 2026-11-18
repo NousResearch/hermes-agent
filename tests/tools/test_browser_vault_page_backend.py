@@ -66,8 +66,8 @@ def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
     out = json.loads(raw)
     assert out["success"] is True and out["filled_fields"] == 2 and SECRET not in raw
     secret_calls = [expr for expr, secret in fake.calls if SECRET in expr]
-    # fill + read-back: both carry the secret, both go through the secret channel
-    assert len(secret_calls) == 2 and all(secret for expr, secret in fake.calls if SECRET in expr)
+    # the fill and every read-back poll carry the secret; all go through the secret channel
+    assert len(secret_calls) >= 2 and all(secret for expr, secret in fake.calls if SECRET in expr)
 
     fake.calls.clear()
     fake.url = "https://evil.example/login"

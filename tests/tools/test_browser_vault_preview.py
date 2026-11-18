@@ -85,8 +85,9 @@ def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
         "action": "fill", "handle": meta.id, "target": "preview"}, InlineToolContext(effective_task_id="t"))
     result = json.loads(raw)
     assert result["success"] is True and result["filled_fields"] == 1 and result["origin"] == ORIGIN, result
-    # inspection, origin pre-check, fill, read-back, unstamp, close
-    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "evaluate", "evaluate", "close"]
+    # inspection, origin pre-check, fill, read-back polls, unstamp — all on the one pinned tab
+    ops = window.ops()
+    assert ops[0] == "open" and ops[-1] == "close" and set(ops[1:-1]) == {"evaluate"} and len(ops) >= 7
     secret_calls = [c["expression"] for c in window.calls if json.dumps(password) in c.get("expression", "")]
     assert secret_calls  # the fill and the read-back both carry the value; neither leaks it
     assert password not in raw

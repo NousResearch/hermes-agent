@@ -67,6 +67,9 @@ _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 # Polling beats a single sleep because a mask or a late revert can write the value twice.
 _FILL_VERIFY_INTERVAL_S = 0.05
 _FILL_VERIFY_CEILING_S = 0.5
+# A value counts as kept only once every field has read back right for this long without a miss:
+# a framework can show the value for a frame and revert it on its next commit.
+_FILL_VERIFY_STABLE_S = 0.2
 
 # Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
 # one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
@@ -775,7 +778,10 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
 
 
 def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[str, Any]:
-    """Poll the filled controls until the page keeps every value, or the ceiling expires.
+    """Poll the filled controls until the page has kept every value for ``_FILL_VERIFY_STABLE_S``.
+
+    A miss resets the window; a fill that has not landed in full by ``_FILL_VERIFY_CEILING_S`` is
+    reported as reverted, so the longest wait is the ceiling plus one stability window.
 
     The fill's own count is a claim about the write; this is the claim about the page. A controlled
     input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field loses its stamp.
@@ -785,7 +791,8 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[st
     from agent.vault_login_classifier import build_fill_verify_js, build_unstamp_js
 
     expected = len(fills)
-    deadline = time.monotonic() + _FILL_VERIFY_CEILING_S
+    started = time.monotonic()
+    held_since: Optional[float] = None
     landed = 0
     reverted = 0
     while True:
@@ -800,7 +807,14 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[st
                     "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
         landed = int(verified.get("landed", 0) or 0)
         reverted = int(verified.get("reverted", 0) or 0)
-        if landed >= expected or time.monotonic() >= deadline:
+        now = time.monotonic()
+        if landed < expected:
+            held_since = None
+            if now - started >= _FILL_VERIFY_CEILING_S:
+                break
+            continue
+        held_since = now if held_since is None else held_since
+        if now - held_since >= _FILL_VERIFY_STABLE_S:
             break
     _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
     if landed < expected:

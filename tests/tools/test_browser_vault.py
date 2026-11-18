@@ -643,6 +643,62 @@ class TestBrowserVaultTools:
         assert out["success"] is False
         assert [sid for _, sid in sup.typed if sid == "S2"] == []
 
+    def test_a_value_reverted_after_the_first_good_read_is_not_a_fill(self, store):
+        """The read-back is a claim the page KEPT the value: a framework that accepts it for one
+        frame and reverts it on the next commit must fail the fill, not pass on the first sample."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        samples = [{"landed": 1, "reverted": 0, "missing": []}]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                answer = samples[0]
+                samples[0] = {"landed": 0, "reverted": 1, "missing": []}  # reverted from now on
+                return {"success": True, "result": json.dumps(answer)}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+
+    def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
+        """The other half of stability: a mask that writes twice reads wrong first, then holds."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        reads = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                reads.append(1)
+                ok = len(reads) > 1
+                return {"success": True, "result": json.dumps(
+                    {"landed": int(ok), "reverted": int(not ok), "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
+        assert out["success"] is True and out["filled_fields"] == 1
+
     def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
         """A framework login form can expose a phone box with no autocomplete, name, id, label or
         placeholder — nothing to classify. When the password's form holds exactly one other text

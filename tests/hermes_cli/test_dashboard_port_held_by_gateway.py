@@ -92,3 +92,28 @@ def test_the_old_command_points_a_windows_user_at_task_scheduler_and_the_startup
     from hermes_cli.web_server_port_holder import launcher_examples
     assert launcher_examples("win32") == "Task Scheduler task or Startup-folder entry"
     assert launcher_examples("linux") == launcher_examples("darwin") == "systemd unit or launchd job"
+
+
+@pytest.mark.parametrize("state, drain_reason, counts", [
+    ("draining", "restart_wait", False), ("draining", "idle_exit", False), ("ready", None, True)])
+def test_only_a_ready_gateway_is_named_as_the_ports_holder(tmp_path, state, drain_reason, counts):
+    """A gateway in its restart wait still answers ``identify`` with an endpoint (a client may finish a
+    parked turn), but it is going away: the old command keeps exit 75, which a supervisor retries,
+    rather than 78, which ``RestartPreventExitStatus=78`` parks for good."""
+    import asyncio
+
+    from hermes_cli.web_server_port_holder import gateway_holding_port
+    from tests.hermes_cli.test_gateway_runtime import control_peer
+
+    home = tmp_path / "profile"
+    identity = str(home.resolve())
+    payload = {"protocol": 1, "runtime_protocol": 1, "instance_id": "owner", "authority_epoch": 1,
+               "hermes_home": identity, "state": state, "api_origin": "http://127.0.0.1:41817",
+               "supervisor": "none", "served_profiles": [{"profile_id": identity, "home": identity}],
+               "capabilities": ["session-authority-v1"], **({"drain_reason": drain_reason} if drain_reason else {})}
+
+    async def probe():
+        async with control_peer(home, payload):
+            return await asyncio.to_thread(gateway_holding_port, 41817, home)
+
+    assert (asyncio.run(probe()) is not None) is counts

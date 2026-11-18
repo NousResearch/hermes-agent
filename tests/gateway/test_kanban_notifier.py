@@ -289,7 +289,7 @@ def test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner(
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     kb.init_db()
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify me", assignee="worker")
     finally:
@@ -300,7 +300,7 @@ def test_notify_subscribe_cli_unset_profile_delivers_as_dispatcher_owner(
     )
     assert "Subscribed" in out, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.complete_task(conn, tid, summary="done")
     finally:
@@ -333,7 +333,7 @@ def test_notify_subscribe_named_profile_delivers_without_dispatcher_lock(
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
     kb.init_db()
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify me", assignee="worker")
     finally:
@@ -344,7 +344,7 @@ def test_notify_subscribe_named_profile_delivers_without_dispatcher_lock(
     )
     assert "Subscribed" in out, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.complete_task(conn, tid, summary="done")
     finally:

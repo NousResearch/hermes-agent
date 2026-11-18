@@ -12,6 +12,7 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 @pytest.fixture
@@ -45,6 +46,7 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     dashboards) don't need a side query to filter by chat session."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
     with kbc.connect() as conn:
         kb.create_task(
             conn, title="acp task", assignee="alice", session_id="acp-x"
@@ -248,6 +250,7 @@ def test_run_slash_reclaim_running_task(kanban_home):
     import time
     import secrets
     from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
     out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")
     m = re.search(r"(t_[a-f0-9]+)", out1)
@@ -293,7 +296,7 @@ def test_notify_subscribe_cli_leaves_notifier_profile_unset_by_default(
     monkeypatch.setenv("HERMES_PROFILE_NAME", profile)
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify me")
     finally:
@@ -304,9 +307,9 @@ def test_notify_subscribe_cli_leaves_notifier_profile_unset_by_default(
     )
     assert "Subscribed" in out, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        subs = kb.list_notify_subs(conn, tid)
+        subs = kbn.list_notify_subs(conn, tid)
     finally:
         conn.close()
 
@@ -321,7 +324,7 @@ def test_notify_subscribe_cli_honors_explicit_notifier_profile(
     monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
     monkeypatch.delenv("HERMES_PROFILE", raising=False)
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify me")
     finally:
@@ -332,9 +335,9 @@ def test_notify_subscribe_cli_honors_explicit_notifier_profile(
         "--notifier-profile work"
     )
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        subs = kb.list_notify_subs(conn, tid)
+        subs = kbn.list_notify_subs(conn, tid)
     finally:
         conn.close()
 

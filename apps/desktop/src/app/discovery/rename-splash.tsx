@@ -120,6 +120,7 @@ export function RenameSplash({ reopened }: RenameSplashProps) {
           </Button>
         </>
       }
+      kind="rename"
       listLabel={copy.renameSplash.listLabel}
       onEscape={onEscape}
       onRowActivated={noteRenameSplashRow}

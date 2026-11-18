@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
+import { $firstTimeSplash } from '@/store/first-time-splash'
 import { $guidanceLedger } from '@/store/guidance-ledger'
 import { $itemIndex } from '@/store/item-index'
 import { $newVersionReady } from '@/store/new-version'
@@ -49,6 +50,7 @@ beforeEach(() => {
   $guidanceLedger.set({})
   $traySeen.set([])
   $renameSplash.set(null)
+  $firstTimeSplash.set(null)
   $itemIndex.set({})
   $newVersionReady.set(false)
   $cronJobs.set([])

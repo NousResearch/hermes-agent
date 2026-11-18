@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect } from 'react'
+import { computed, type ReadableAtom } from 'nanostores'
+import { type ComponentType, type ReactNode, useEffect } from 'react'
 
-import { existingUserVerdict } from '@/lib/existing-user'
+import { existingUserVerdict, type ExistingUserVerdict } from '@/lib/existing-user'
 import { $cronJobs } from '@/store/cron'
+import { $firstTimeSplash, closeFirstTimeSplash, considerFirstTimeSplash } from '@/store/first-time-splash'
 import { $onboardingPhase, $setupGuidePhase } from '@/store/onboarding-phase'
 import { $profiles } from '@/store/profile'
 import { $renameSplash, considerRenameSplash, dismissRenameSplash } from '@/store/rename-splash'
@@ -10,15 +12,54 @@ import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session
 
 import { KeptChatRoutes } from '../contrib/route-cover'
 
+import { FirstTimeSplash } from './first-time-splash'
 import { RenameSplash } from './rename-splash'
+
+interface SplashDefinition {
+  /** Why it is on screen (`reopened` from the tray, else `shown`), or null while closed. */
+  $open: ReadableAtom<null | 'reopened' | 'shown'>
+  consider: (verdict: ExistingUserVerdict) => void
+  closeByNav: () => void
+  Splash: ComponentType<{ reopened: boolean }>
+}
+
+/** The splashes that cover the chat area. The verdict decides which one a person gets: the rename
+ *  splash for someone who used Hermes before, the first-time splash for someone new, so at most one
+ *  is ever open. */
+const SPLASHES: readonly SplashDefinition[] = [
+  {
+    $open: $renameSplash,
+    consider: considerRenameSplash,
+    closeByNav: () => dismissRenameSplash('nav'),
+    Splash: RenameSplash
+  },
+  {
+    $open: $firstTimeSplash,
+    consider: considerFirstTimeSplash,
+    closeByNav: () => closeFirstTimeSplash('nav'),
+    Splash: FirstTimeSplash
+  }
+]
+
+/** The splash on screen and why it is there, or null. */
+const $shownSplash = computed(
+  SPLASHES.map(splash => splash.$open),
+  (...reasons): null | { definition: SplashDefinition; reason: 'reopened' | 'shown' } => {
+    const index = reasons.findIndex(reason => reason !== null)
+    const definition = SPLASHES[index]
+    const reason = reasons[index]
+
+    return definition && reason ? { definition, reason } : null
+  }
+)
 
 /** The navigation a splash gives way to: the rail (docked, or in the compact menu sheet) and the
  *  chat sidebar (docked, or as a sheet). */
 const NAV_REGIONS = '[data-slot="global-nav"], [data-zone-pane="sessions"], [data-narrow-overlay]'
 
-/** Settles the splash from what the machine has told this window, as it arrives, and closes it on
- *  any click in the nav (the click still goes where it was going). Renders nothing, so the session
- *  list's churn re-renders only this. */
+/** Settles the splashes from what the machine has told this window, as it arrives, and closes the
+ *  open one on any click in the nav (the click still goes where it was going). Renders nothing, so
+ *  the session list's churn re-renders only this. */
 function SplashTriggers() {
   const sessions = useStore($sessions)
   const loading = useStore($sessionsLoading)
@@ -27,7 +68,7 @@ function SplashTriggers() {
   const routines = useStore($cronJobs)
   const onboarding = useStore($onboardingPhase)
   const setupGuide = useStore($setupGuidePhase)
-  const open = useStore($renameSplash) !== null
+  const open = useStore($shownSplash) !== null
 
   const verdict = existingUserVerdict({
     sessionsSettled: !loading && !failed,
@@ -37,7 +78,8 @@ function SplashTriggers() {
     routines: routines.length
   })
 
-  useEffect(() => considerRenameSplash(verdict), [verdict])
+  // The rename splash first: a `fresh` verdict records the newcomer the first-time splash reads.
+  useEffect(() => SPLASHES.forEach(splash => splash.consider(verdict)), [verdict])
 
   useEffect(() => {
     if (!open) {
@@ -47,7 +89,7 @@ function SplashTriggers() {
     // Capture: a nav control may stop propagation, or unmount what was clicked.
     const onClick = (event: MouseEvent) => {
       if (event.target instanceof Element && event.target.closest(NAV_REGIONS)) {
-        dismissRenameSplash('nav')
+        $shownSplash.get()?.definition.closeByNav()
       }
     }
 
@@ -70,7 +112,7 @@ interface SplashCoveredRoutesProps {
  * it and gets its focus back when it closes (route-cover.tsx).
  */
 export function SplashCoveredRoutes({ chat, pages }: SplashCoveredRoutesProps) {
-  const reason = useStore($renameSplash)
+  const shown = useStore($shownSplash)
 
   return (
     <>
@@ -78,9 +120,9 @@ export function SplashCoveredRoutes({ chat, pages }: SplashCoveredRoutesProps) {
       <KeptChatRoutes
         chat={chat}
         cover={
-          reason && (
+          shown && (
             <div className="discovery-splash-layer" data-slot="discovery-splash-layer">
-              <RenameSplash reopened={reason === 'reopened'} />
+              <shown.definition.Splash reopened={shown.reason === 'reopened'} />
             </div>
           )
         }

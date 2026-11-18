@@ -47,7 +47,7 @@ describe('set_theme requests', () => {
   // An unpicked skin resolves to the shell's own default at paint time, so the accent lands on that skin.
   it.each([
     { shell: 'classic', choice: false, saved: 'nous-accent-e0218a' },
-    { shell: 'redesign', choice: true, saved: 'portal-accent-e0218a' }
+    { shell: 'redesign', choice: null, saved: 'portal-accent-e0218a' }
   ])('parks a picker card and answers it with the applied pick ($shell)', ({ choice, saved }) => {
     $shellChoice.set(choice)
     const respond = deliver('theme.pick', { picker: 'accent', session_id: 'session-a' })

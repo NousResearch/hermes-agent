@@ -20,9 +20,6 @@ import {
   togglePaneVisible
 } from './store'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 // Ground truth for "toggle terminal broke — ⌘J/⌘B work fine, but once I move
 // the terminal around it just doesn't open/close anymore", and for "I have the
 // header hidden and it keeps coming back".
@@ -415,7 +412,7 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
     activateTreePane('g-chat', 'terminal')
 
     expect($terminalTakeover.get()).toBe(false)
-    $shellChoice.set(true)
+    $shellChoice.set(null)
   })
 
   it('survives a restart with a clickable, mountable terminal tab', () => {

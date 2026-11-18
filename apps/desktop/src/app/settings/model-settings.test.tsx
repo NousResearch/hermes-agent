@@ -7,13 +7,9 @@ import type * as ConfigApi from '@/api/config'
 import { I18nProvider, resolveTranslations } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $shellChoice } from '@/store/shell-variant'
 
 import { ModelSettings } from './model-settings'
 import { SettingsOwnerContext } from './profile-scope'
-
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub

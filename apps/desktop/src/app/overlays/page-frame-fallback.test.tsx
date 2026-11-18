@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { Suspense } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { lazyView } from '@/lib/lazy-view'
@@ -10,12 +10,9 @@ import { $shellChoice } from '@/store/shell-variant'
 import { PageFrameFallback, SettingsFrameFallback } from './page-frame-fallback'
 import { WorkspacePageFallback } from './page-header-skeleton'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 afterEach(() => {
   cleanup()
-  $shellChoice.set(true)
+  $shellChoice.set(null)
 })
 
 // A page whose chunk never arrives: the Suspense fallback is all there is to see.

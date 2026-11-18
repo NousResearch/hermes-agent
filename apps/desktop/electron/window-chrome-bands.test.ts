@@ -41,7 +41,7 @@ test('a shell flip moves every open shell window to its new band; the Browser st
   assert.equal(relaid.length, 2)
 
   chat.close()
-  bands.applyPreferences({ [SHELL_CHOICE_KEY]: 'true' })
+  bands.applyPreferences({})
   assert.deepEqual(relaid, [chat, browser, browser])
 })
 

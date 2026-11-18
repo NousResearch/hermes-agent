@@ -58,8 +58,7 @@ import {
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $settingsScopeProfile } from '@/store/settings-scope'
-// setPortalPreferred arrives with the Settings toggle; until then these cases set the stored choice.
-import { $shellChoice } from '@/store/shell-variant'
+import { setPortalPreferred } from '@/store/shell-variant'
 import { deferred } from '@/test/deferred'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -127,7 +126,7 @@ describe('Portal sidebar', () => {
     $hiddenSidebarAgentsExpanded.set(false)
     $sidebarAgentExpanded.set({})
     $sidebarAgentScroll.set(0)
-    $shellChoice.set(true)
+    setPortalPreferred(true)
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
     $selectedStoredSessionId.set(null)
@@ -169,7 +168,7 @@ describe('Portal sidebar', () => {
     $simplifiedPinnedRows.set(new Map())
     $pluginRecords.set({})
     vi.restoreAllMocks()
-    $shellChoice.set(false)
+    setPortalPreferred(false)
     $sessions.set([])
     $sessionTiles.set([])
     $apiRequestScope.set({ connectionId: null, profile: null })
@@ -371,13 +370,13 @@ describe('Portal sidebar', () => {
     const pins = $pinnedSessionIds.get()
     expect($sessionListProfileScope.get()).toBe(ALL_PROFILES)
     expect($profileScope.get()).toBe('research')
-    act(() => $shellChoice.set(false))
+    act(() => setPortalPreferred(false))
     expect($sessionListProfileScope.get()).toBe('research')
     expect($profileScope.get()).toBe('research')
     expect($sessions.get()).toBe(sessions)
     expect($pinnedSessionIds.get()).toBe(pins)
     expect($selectedStoredSessionId.get()).toBe('pinned')
-    act(() => $shellChoice.set(true))
+    act(() => setPortalPreferred(true))
     mount()
     fireEvent.click(screen.getAllByText('Pinned plan')[0])
     expect(resume).toHaveBeenCalledWith('pinned', expect.objectContaining({ profile: 'research' }))

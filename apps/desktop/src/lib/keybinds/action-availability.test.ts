@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 // The bindings store every keybind surface reads; it declares window-dependent availability itself.
 import { $bindings, $comboIndex, bindingsFor, conflictsFor } from '@/store/keybinds'
@@ -7,12 +7,9 @@ import { $shellChoice } from '@/store/shell-variant'
 import { $offeredKeybindActions, allKeybindActions, defaultBindings, keybindActionAvailable } from './actions'
 import { canonicalizeCombo } from './combo'
 
-// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
-beforeEach(() => $shellChoice.set(true))
-
 const listed = (id: string) => allKeybindActions().some(action => action.id === id)
 
-afterEach(() => $shellChoice.set(true))
+afterEach(() => $shellChoice.set(null))
 
 // ⌘⇧S toggles the classic statusbar; the redesign has no strip, so there the row would do nothing.
 describe('shell-dependent shortcuts', () => {
@@ -20,7 +17,7 @@ describe('shell-dependent shortcuts', () => {
     $shellChoice.set(false)
     expect(listed('view.toggleStatusbar')).toBe(true)
 
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     expect(listed('view.toggleStatusbar')).toBe(false)
   })
 
@@ -37,14 +34,14 @@ describe('shell-dependent shortcuts', () => {
     })
 
     $shellChoice.set(false)
-    $shellChoice.set(true)
+    $shellChoice.set(null)
     stop()
 
     expect(seen).toEqual([false, true, false])
   })
 
   it('keeps its binding while unlisted, so a flip back to classic finds the chord where it was', () => {
-    $shellChoice.set(true)
+    $shellChoice.set(null)
 
     expect(defaultBindings()['view.toggleStatusbar']).toEqual(['mod+shift+s'])
     expect($bindings.get()['view.toggleStatusbar']).toEqual(['mod+shift+s'])

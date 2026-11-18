@@ -5,7 +5,7 @@
 // (ui-preferences.ts) — read at window creation so the first paint is right,
 // and re-applied when the choice changes.
 
-/** Shared-preferences key of the redesign choice (src/store/shell-variant.ts). */
+/** Shared-preferences key of the redesign opt-out (src/store/shell-variant.ts). */
 export const SHELL_CHOICE_KEY = 'hermes.desktop.agentShell.v1'
 
 /** Classic: Electron's compact band. */
@@ -19,10 +19,10 @@ export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
  *  Browser keeps the classic layout in every mode (as the renderer does). */
 export type WindowChromeKind = 'browser' | 'chat'
 
-/** The redesign is off until the user opts in (`'true'`), exactly as the
- *  renderer's `$portalPreferred` decodes the same key. */
+/** The redesign is on unless the user rolled it back (`'false'`), exactly as
+ *  the renderer's `$portalPreferred` decodes the same key. */
 export function portalShellPreferred(values: Readonly<Record<string, string>> | null | undefined): boolean {
-  return values?.[SHELL_CHOICE_KEY] === 'true'
+  return values?.[SHELL_CHOICE_KEY] !== 'false'
 }
 
 export function windowTitlebarHeight({ kind, portal }: { kind: WindowChromeKind; portal: boolean }): number {

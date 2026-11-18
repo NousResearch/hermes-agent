@@ -52,15 +52,15 @@ afterEach(() => {
   adoptShellPreference(null)
 })
 
-test('the redesign wording is off until the user opts in, and follows a later change', () => {
-  expect(adoptShellPreference(null)).toBe(false)
-  expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes gateway')
-
-  expect(adoptShellPreference(REDESIGN)).toBe(true)
+test('the redesign wording is on until the user rolls the shell back, and follows a later change', () => {
+  expect(adoptShellPreference(null)).toBe(true)
   expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes')
 
   expect(adoptShellPreference(CLASSIC)).toBe(false)
   expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes gateway')
+
+  expect(adoptShellPreference(REDESIGN)).toBe(true)
+  expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes')
 })
 
 describe('classic keeps the main-branch wording', () => {

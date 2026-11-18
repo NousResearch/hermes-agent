@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useContext, useEffect, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $desktopMetricsGate } from '@/store/desktop-metrics'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $modeShadowed } from '@/store/interface-mode'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -80,11 +81,12 @@ import type { AppearanceSubpageId } from './appearance-subpages'
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
-import { InterfaceModeSettings } from './interface-mode-settings'
+import { InterfaceModeFeedbackContext, InterfaceModeSettings } from './interface-mode-settings'
 import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { SimplifiedAgentFeedback } from './simplified-agent-feedback'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -412,11 +414,16 @@ interface AppearanceSettingsProps {
 
 export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const redesign = usePortalShell()
+  const [showFeedback, setShowFeedback] = useState(false)
 
-  return redesign && (subpage === undefined || subpage === 'general') ? (
-    <AppearanceOverview advanced={<AppearanceAdvancedSettings />} />
-  ) : (
-    <AppearanceSettingsDetail subpage={subpage} />
+  return (
+    <InterfaceModeFeedbackContext value={{ showFeedback: showFeedback && !redesign, setShowFeedback }}>
+      {redesign && (subpage === undefined || subpage === 'general') ? (
+        <AppearanceOverview advanced={<AppearanceAdvancedSettings />} />
+      ) : (
+        <AppearanceSettingsDetail subpage={subpage} />
+      )}
+    </InterfaceModeFeedbackContext>
   )
 }
 
@@ -1315,6 +1322,8 @@ export function AppearanceAdvancedSettings() {
 
 function AppearanceSettingsDetail({ subpage }: AppearanceSettingsProps) {
   const { t, isSavingLocale } = useI18n()
+  const { showFeedback } = useContext(InterfaceModeFeedbackContext)!
+  const metricsGate = useStore($desktopMetricsGate)
   const a = t.settings.appearance
 
   // A pointer held on the intensity slider when this overlay closes (Escape
@@ -1330,6 +1339,7 @@ function AppearanceSettingsDetail({ subpage }: AppearanceSettingsProps) {
 
   const content = (
     <>
+      {showFeedback && metricsGate === 'on' && <SimplifiedAgentFeedback />}
       <div>
         {subpage === undefined && (
           <>

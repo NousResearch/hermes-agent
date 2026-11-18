@@ -31,10 +31,8 @@ from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, loop_heartbeat_forever,
 )
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
-
-if TYPE_CHECKING:
-    from gateway.status_report import StatusReporter
+from gateway.status_report import INTERVAL_S as STATUS_REPORT_INTERVAL_S, StatusReporter, status_reporter_from_launch_env
+from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1652,10 +1650,9 @@ class GatewayStartupMixin:
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
-        from gateway.status_report import INTERVAL_S, status_reporter_from_launch_env
         reporter = self._status_reporter = status_reporter_from_launch_env()
         if reporter is not None:
-            logger.info("status report: on, reporting gateway status about every %.0fs", INTERVAL_S)
+            logger.info("status report: on, reporting gateway status about every %.0fs", STATUS_REPORT_INTERVAL_S)
             self._spawn_supervised(lambda: reporter.run(lambda: self._running), "status_report_watcher")
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).

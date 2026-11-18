@@ -1,7 +1,6 @@
 """Per-turn client values cross real authority admission and claim, never the ledger."""
 import asyncio
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,25 +11,26 @@ from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_controls import AuthorityConnection
-from hermes_state_runtime import list_session_admissions
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 from tests.waiting import async_wait_until
 
 
 @pytest_asyncio.fixture
 async def owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config = {'terminal': {'client_env_turn_passthrough': ['JOB_RUN_ID']}}
+    monkeypatch.setattr('gateway.session_policy.profile_config', lambda authority: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    (Path(store._db.db_path).resolve().parent / 'config.yaml').write_text(
-        'terminal:\n  client_env_turn_passthrough: [JOB_RUN_ID]\n')
     seen = []
 
     async def answer(event):
         seen.append((dict(bound_turn_env()), toolchain_environ({})))
         return 'done'
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
-    store._db.create_session('s', source='telegram')
+    seed_session(store.persistence, 's', 'telegram')
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='turn'), 's')
     authority.launch_sources['s'] = 'acp'
@@ -51,8 +51,8 @@ async def rpc(connection, method='prompt.submit', **params):
 
 
 async def settled(authority):
-    await async_wait_until(lambda: all(row['status'] == 'terminal' for row in
-        list_session_admissions(authority.db, session_id='s', pending_only=False)), timeout=5, what='turn settlement')
+    await async_wait_until(lambda: all(row.status == 'terminal' for row in
+        authority.persistence.admissions.list(session_id='s', pending_only=False)), timeout=5, what='turn settlement')
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,7 @@ async def test_admission_scopes_values_without_persisting_or_logging(owner, capl
         await settled(authority)
     assert seen == [({'JOB_RUN_ID': secret}, {'JOB_RUN_ID': secret}), ({}, {})]
     assert bound_turn_env() == {}
-    with authority.db._read_ctx() as conn:
+    with raw_holder(authority.persistence)._read_ctx() as conn:
         durable = '\n'.join(conn.iterdump())
     assert secret not in durable and 'turn_env' not in durable and 'UNDECLARED' not in durable
     assert secret not in caplog.text
@@ -82,7 +82,7 @@ async def test_malformed_map_is_invalid_params(owner, bad):
     authority, connection, seen = owner
     reply = await rpc(connection, input_id='bad', text='hello', turn_env=bad)
     assert reply['error']['data']['reason'] == 'invalid_params'
-    assert not list_session_admissions(authority.db, session_id='s', pending_only=False)
+    assert not authority.persistence.admissions.list(session_id='s', pending_only=False)
     assert not seen
 
 

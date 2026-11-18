@@ -1,6 +1,6 @@
 """Transient per-admission tool environment; deliberately excluded from durable payloads."""
 from agent.session_client_env import accepted_turn_env, configured_turn_names
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def admit_turn_env(authority, value):
@@ -11,7 +11,7 @@ def admit_turn_env(authority, value):
         return accepted_turn_env(value, configured_turn_names(profile_config(authority)))
     except ValueError:
         # Never echo a value, including in chained exceptions at an RPC/log boundary.
-        raise RuntimeStoreError('invalid_params') from None
+        raise AuthorityRefusal('invalid_params') from None
 
 
 def remember_turn_env(authority, row, values, *, new_admission):

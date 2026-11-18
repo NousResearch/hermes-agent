@@ -47,7 +47,7 @@ def _map_denial(tool_name: str, reason: str, detail: str) -> tuple[str, str] | N
         # Refused by the bot's own capability list (Bot Builder): the request
         # is to add it to that bot, for everyone who uses the bot.
         profile, _, inner_detail = detail.partition(":")
-        if not profile or not inner_detail:
+        if not profile:
             return None
         inner = reason[len("bot_"):]
         if inner == "skill_not_selected":

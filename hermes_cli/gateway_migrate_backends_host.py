@@ -123,6 +123,16 @@ class SystemHost:
         from hermes_cli.dashboard_procs import _normalized_home_for_compare
         return _normalized_home_for_compare(path) == _normalized_home_for_compare(str(self.home))
 
+    def profile_on_shared_gateway(self) -> Optional[str]:
+        """This home's profile name when it is a named profile the default profile's gateway serves
+        (not ``gateway.standalone: true``): it never runs a gateway or Webapp of its own. Else None."""
+        from hermes_constants import profile_name_for_home
+        from hermes_cli.profiles import profile_is_standalone
+        name = profile_name_for_home(self.home)
+        if name in (None, "default") or profile_is_standalone(self.home):
+            return None
+        return name
+
     def default_home(self) -> bool:
         """Whether this home is the calling account's own default home: ``.hermes`` in its passwd home
         directory, not whatever root this shell's HERMES_HOME names (a unit started by systemd does not

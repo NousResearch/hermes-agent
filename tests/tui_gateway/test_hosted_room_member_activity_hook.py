@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,8 +34,8 @@ def observer(monkeypatch):
         with lock:
             seen.append(kwargs)
 
-    monkeypatch.setattr(
-        "hermes_cli.plugins.iter_hook_callbacks", lambda name: (on_activity,) if name == HOOK_NAME else ())
+    manager = SimpleNamespace(_hooks={HOOK_NAME: [on_activity]}, _observer_dispatcher_scope=object())
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
     monkeypatch.setattr(server, "_stdio_transport", type("Sink", (), {"write": staticmethod(lambda _o: True)})())
     yield seen
     shutdown_plugin_stream_hook_dispatcher()

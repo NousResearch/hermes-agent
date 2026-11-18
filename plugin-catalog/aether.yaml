@@ -1,7 +1,7 @@
 name: aether
 title: Aether
 repo: https://github.com/abundantbeing/aether
-sha: 5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8
+sha: 71129b31958f6378a50ce955951d8ad68014c7ed
 version: "0.1.0"
 description: "Living themes for Hermes Desktop: ask Hermes for any look and it paints a full palette plus an animated WebGL scene behind your chats, or pick one of eighteen scenes, put any of ten finishes on it, recolour it in an editor that keeps text readable, let the scene react to the pointer, and switch to or recolour the theme plugins you already have from other creators. Disclosure — no network calls of its own, no telemetry, no credentials or API keys; themes Hermes makes are stored in the profile's plugin-data; picking Inter, IBM Plex Sans, Space Grotesk or Courier Prime as a theme font loads it from Google Fonts through Hermes Desktop's own theme typography; with pointer reaction on, the Desktop half listens to pointer movement and clicks inside the Hermes window, records nothing and sends nothing; to credit other creators' themes, the agent half reads the installed plugins' plugin.yaml, Desktop script and one picture from their own folders, read only and local only."
 maintainer: abundantbeing
@@ -9,14 +9,14 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/abundantbeing/aether#readme
-image: https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/catalog-cover.jpg
+image: https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/catalog-cover.jpg
 screenshots:
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/hero-agent-theme.png
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/gallery.png
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/customise.png
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/pointer-well.png
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/other-creators.png
-  - https://raw.githubusercontent.com/abundantbeing/aether/5067a7a1e6d584eab9a25a7a7cb1e7159a6302d8/docs/screenshots/presets.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/hero-agent-theme.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/gallery.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/customise.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/pointer-well.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/other-creators.png
+  - https://raw.githubusercontent.com/abundantbeing/aether/71129b31958f6378a50ce955951d8ad68014c7ed/docs/screenshots/presets.png
 readme: true
 platforms: []
 capabilities:

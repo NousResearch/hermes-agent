@@ -74,10 +74,13 @@ class GuardedAccept:
 
 
 def install_proactor_accept_guard(loop: asyncio.AbstractEventLoop) -> None:
-    """Guard every listener on *loop*'s proactor; a no-op on selector loops and when already guarded."""
+    """Wrap the loop's proactor accept once, if CPython exposes that hook."""
     if not isinstance(loop, BaseProactorEventLoop):
         return
-    proactor = loop._proactor
-    if isinstance(proactor.accept, GuardedAccept):
+    proactor = getattr(loop, "_proactor", None)
+    if proactor is None:
         return
-    proactor.accept = GuardedAccept(loop, proactor.accept)
+    accept = getattr(proactor, "accept", None)
+    if not callable(accept) or isinstance(accept, GuardedAccept):
+        return
+    proactor.accept = GuardedAccept(loop, accept)

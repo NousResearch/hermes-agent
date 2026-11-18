@@ -933,6 +933,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-layer-sheet` | `45` | ″ |  |
 | `--portal-layer-sheet-rail` | `51` | ″ |  |
 | `--portal-layer-status-bar` | `50` | ″ | The status bar stands in the canvas on route pages too (z-50, mounted before it), and under the menus and popovers opened after it. |
+| `--portal-layer-spotlight` | `52` | ″ | A splash row's spotlight on the nav (app/discovery/nav-spotlight.tsx): over the rail, the chat sidebar and their sheets, which it points into; it is never hit. |
 
 #### Bridge (`bridge.css`): portal roles under the names shared components read
 
@@ -1115,6 +1116,28 @@ of the chat's agent first (a Routines section and tab; rev 11/16, 1264:40927), e
 in words and an error dot while it needs attention, and opens one on the Routines page. The chat list
 carries no routines; runs never join Chats. The sidebar's scheduled-jobs
 section and the statusbar's Cron item are classic only.
+
+### Discovery: splashes and the notifications tray (`app/discovery/`)
+
+Onboarding and discovery (Figma "Hermes web app onboarding and discovery", Phase 1) live in the
+redesign only. A **splash** (`SplashSurface`) fills the chat area, never the window: it is the
+workspace pane's cover (`KeptChatRoutes`' `cover`), so whatever it covers is inert and gets its
+focus back, while the rail and the chat sidebar stay live and any click in them closes it (the
+click still goes where it was going). A splash is a heading, rows and a footer: each row is one
+line, says more while it is hovered, focused or tapped, and rings its real place in the nav with a
+dashed elbow (`NavSpotlight`, `--portal-layer-spotlight`), following that place every frame and
+drawing nothing when it is not on screen. The active row is the brand selection. Figma paints
+splashes on the brand fill; here a splash shows the launch's own artwork under a stage veil that
+thins toward the far side (Figma's text scrim), so it follows the artwork and both themes. The
+rename splash (M1) is the first; Escape, its button or a nav click marks it seen through the one
+guidance seam (`store/guidance-ledger.ts`).
+
+The **notifications tray** is the rail's bell (above the account and status controls) opening a
+rail popover. Its items are a typed table (`TRAY_ITEMS` in `tray-items.tsx`): each publishes a
+state atom (`null` = not listed; `news` = a token for what it announces) and a card, usually the
+shared `TrayCard` (caption, title, sentence, one action). The bell carries a brand-ink dot while
+any listed item has news not yet seen; opening the tray sees it, and the cards that were new say
+so until it closes. Community posts from the frames are not built.
 
 ### The chat sidebar is a variant
 

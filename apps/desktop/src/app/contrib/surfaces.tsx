@@ -27,6 +27,7 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
 import { PortalSidebar } from '../chat/sidebar/portal/portal-sidebar'
+import { SplashCoveredRoutes } from '../discovery/splash-layer'
 import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
 import { PortalGatewayMenuPanel } from '../redesign/portal-gateway-menu-panel'
@@ -42,7 +43,6 @@ import { StatusbarControls } from '../shell/statusbar-controls'
 
 import { latestChatActions, latestSidebarActions } from './latest-actions'
 import { setStatusbarItemGroup, useStatusbarContributions } from './panes'
-import { KeptChatRoutes } from './route-cover'
 import { useStatusRequester } from './status-requester'
 import type { SidebarActions, WiringActions } from './types'
 
@@ -305,7 +305,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
 
   // The redesign paints pages over a kept chat (route-cover.tsx); classic swaps them in place.
   if (portal) {
-    return <KeptChatRoutes chat={chatRoutes} pages={pageRoutes} />
+    return <SplashCoveredRoutes chat={chatRoutes} pages={pageRoutes} />
   }
 
   return (

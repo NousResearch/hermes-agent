@@ -11,6 +11,7 @@ import { useCapabilitiesPageDescription } from '@/app/capabilities/page-copy'
 import { agentCapabilityCopy } from '@/app/capabilities/ui/agent-capability-copy'
 import { useHiddenAgentCopy } from '@/app/chat/sidebar/hidden-agent-copy'
 import { useNewSessionCopy } from '@/app/chat/sidebar/simplified-new-session-copy'
+import { discoveryCopy } from '@/app/discovery/discovery-copy'
 import { usePageFrameCopy } from '@/app/overlays/page-frame-copy'
 import { routinesCopy } from '@/app/routines/routines-copy'
 import { appearanceAdvancedCopy } from '@/app/settings/appearance-advanced-copy'
@@ -161,7 +162,16 @@ const COPY_KEEPS: Record<string, string> = {
   ),
   ...keep('password-manager unlock session', 'settingsPages.vault.managersDesc'),
   // Developer mode documents the schedule's input syntax by its name.
-  ...keep('cron expression syntax', 'routines.customHintDeveloper')
+  ...keep('cron expression syntax', 'routines.customHintDeveloper'),
+  // The rename splash strikes the classic nouns through, and ⌘K still finds things by them.
+  ...keep(
+    'the classic word a rename replaced',
+    'discovery.classicNames.sessions',
+    'discovery.classicNames.profiles',
+    'discovery.classicNames.artifacts',
+    'discovery.classicNames.cron',
+    'discovery.classicNames.gateways'
+  )
 }
 
 /** Redesign-only copy that lives outside the catalog (each module holds all nine locales). */
@@ -176,6 +186,7 @@ function redesignCopyModules(): Record<string, unknown> {
     appearanceAdvanced: appearanceAdvancedCopy('en'),
     appearanceOverview: appearanceOverviewCopy('en'),
     capabilitiesPage: hook(useCapabilitiesPageDescription),
+    discovery: discoveryCopy('en'),
     hiddenAgent: hook(useHiddenAgentCopy),
     history: hook(useHistoryCopy),
     newSession: hook(useNewSessionCopy),

@@ -1,0 +1,356 @@
+/* The redesign's discovery surfaces: the splash in the chat area (Figma M1 205:4586, 1A 477:4004),
+   its nav spotlight, and the notifications tray (17:4451, 479:4114). Figma draws the splash on the
+   brand fill with the wing art; here it is the stage's own art under a veil that thins toward the
+   far side (Figma's "Text scrim"), so it follows the launch's artwork and both themes. */
+
+/* ── Splash ──────────────────────────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .discovery-splash-layer {
+  position: absolute;
+  z-index: var(--portal-layer-stage-overlay);
+  inset: 0;
+  display: flex;
+  padding: var(--portal-space-tight);
+}
+
+:root[data-shell='portal'] .discovery-splash {
+  --discovery-scrim-toward: to right;
+  /* Where the scrim ends: the art at full strength on the far side, past the text. */
+  --discovery-scrim-end: transparent;
+  /* The struck-through classic word's column, so the arrows and new names line up. */
+  --discovery-classic-column: 6rem;
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-panel);
+  background:
+    var(--artwork-stage-noise),
+    linear-gradient(
+      var(--discovery-scrim-toward),
+      var(--portal-surface-stage) 35%,
+      var(--portal-surface-stage-veil) 60%,
+      var(--discovery-scrim-end)
+    ),
+    var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: normal, normal, var(--artwork-blend);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .discovery-splash:dir(rtl) {
+  --discovery-scrim-toward: to left;
+}
+
+/* Programmatic focus lands on the surface so Tab starts inside it; it is not a control. */
+:root[data-shell='portal'] .discovery-splash:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Figma's corner marks, 14px arms inset 15px from the frame. */
+:root[data-shell='portal'] .discovery-splash-brackets {
+  --discovery-mark: linear-gradient(var(--portal-text-tertiary), var(--portal-text-tertiary));
+  position: absolute;
+  inset: 0.9375rem;
+  pointer-events: none;
+  background:
+    var(--discovery-mark) left top / 0.875rem 1px no-repeat,
+    var(--discovery-mark) left top / 1px 0.875rem no-repeat,
+    var(--discovery-mark) right top / 0.875rem 1px no-repeat,
+    var(--discovery-mark) right top / 1px 0.875rem no-repeat,
+    var(--discovery-mark) left bottom / 0.875rem 1px no-repeat,
+    var(--discovery-mark) left bottom / 1px 0.875rem no-repeat,
+    var(--discovery-mark) right bottom / 0.875rem 1px no-repeat,
+    var(--discovery-mark) right bottom / 1px 0.875rem no-repeat;
+}
+
+:root[data-shell='portal'] .discovery-splash-content {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  max-inline-size: 39.5rem;
+  /* Top-anchored, a sixth of the way down on a tall stage: a row opening its line grows the list
+     downward and never moves the heading. */
+  padding-block: clamp(2.5rem, 16vh, 9rem) 2.5rem;
+  padding-inline: 4.5rem 2.5rem;
+}
+
+:root[data-shell='portal'] .discovery-splash-eyebrow {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .discovery-splash-title {
+  margin: 0.875rem 0 0;
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-xl-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+
+:root[data-shell='portal'] .discovery-splash-subtitle {
+  max-inline-size: 30rem;
+  margin: 0.75rem 0 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-splash-rows {
+  margin: 1.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root[data-shell='portal'] .discovery-splash-row {
+  border-block-end: 1px solid var(--portal-stroke-divider);
+  border-inline-start: 2px solid transparent;
+}
+
+/* The active row is the selection: the brand selection fill and the brand edge (U17). */
+:root[data-shell='portal'] .discovery-splash-row[data-active] {
+  border-inline-start-color: var(--portal-surface-brand);
+  background-color: var(--portal-surface-brand-selected);
+}
+
+:root[data-shell='portal'] .discovery-splash-row-button {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  inline-size: 100%;
+  min-block-size: 2.875rem;
+  padding-block: 0.75rem;
+  padding-inline: 0.875rem 0.75rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .discovery-splash-row-button:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-text-brand);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+:root[data-shell='portal'] .discovery-splash-row-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.75rem;
+  min-inline-size: 0;
+}
+
+:root[data-shell='portal'] .discovery-rename-classic {
+  flex: none;
+  overflow: hidden;
+  inline-size: var(--discovery-classic-column);
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  text-decoration: line-through;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .discovery-rename-arrow {
+  flex: none;
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .discovery-rename-arrow:dir(rtl) {
+  transform: scaleX(-1);
+}
+
+:root[data-shell='portal'] .discovery-rename-current {
+  overflow: hidden;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The NEW row has no classic word: its badge takes that column and the name lines up with the others
+   (one arrow's width further on). */
+:root[data-shell='portal'] .discovery-rename-classic:has([data-slot='badge']) {
+  inline-size: calc(var(--discovery-classic-column) + 0.875rem + 0.75rem);
+  text-decoration: none;
+}
+
+:root[data-shell='portal'] .discovery-splash-row-meta {
+  flex: none;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-shell='portal'] .discovery-splash-row-detail {
+  margin: 0;
+  padding-block: 0 0.75rem;
+  padding-inline: calc(0.875rem + var(--discovery-classic-column) + 0.875rem + 1.5rem) 0.75rem;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] .discovery-splash-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1.25rem;
+  margin-block-start: 1.5rem;
+}
+
+:root[data-shell='portal'] .discovery-splash-footnote {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+/* Compact (< 640, breakpoints.ts): the splash is the whole stage and the text spans it, so the veil
+   never thins under it; the struck word and the detail come in closer. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] .discovery-splash {
+    --discovery-classic-column: 4.5rem;
+    --discovery-scrim-end: var(--portal-surface-stage-veil);
+  }
+
+  :root[data-shell='portal'] .discovery-splash-content {
+    padding: 2.5rem 1rem 1.5rem;
+  }
+
+  :root[data-shell='portal'] .discovery-splash-row-detail {
+    padding-inline-start: 0.875rem;
+  }
+}
+
+/* Touch: a row is a 44px target. */
+@media (hover: none), (pointer: coarse) {
+  :root[data-shell='portal'] .discovery-splash-row-button {
+    min-block-size: var(--portal-touch-target);
+  }
+}
+
+/* ── Nav spotlight ───────────────────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .discovery-spotlight {
+  position: fixed;
+  z-index: var(--portal-layer-spotlight);
+  inset: 0;
+  pointer-events: none;
+}
+
+:root[data-shell='portal'] .discovery-spotlight-line {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: var(--portal-text-brand);
+  stroke-dasharray: 2 3;
+  stroke-width: 1.5;
+}
+
+/* Placed from the viewport's own origin by the measured box (nav-spotlight.tsx), so physical, not
+   logical: a right-to-left page measures the same physical boxes. */
+:root[data-shell='portal'] .discovery-spotlight-ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: var(--portal-radius-surface);
+  outline: var(--portal-focus-ring-width) solid var(--portal-text-brand);
+  outline-offset: 2px;
+}
+
+/* ── Notifications tray ──────────────────────────────────────────────────────────────────────── */
+
+/* The bell's dot is news, not trouble: the brand ink, where Routines' alert dot is the error ink. */
+:root[data-shell='portal'] [data-slot='rail-alert'][data-tone='news'] {
+  background: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .discovery-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  inline-size: 20rem;
+  max-inline-size: calc(100vw - 1rem);
+  max-block-size: calc(100dvh - 2rem);
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+:root[data-shell='portal'] .discovery-tray-title {
+  margin: 0;
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+
+:root[data-shell='portal'] .discovery-tray-empty {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-ui-size);
+}
+
+:root[data-shell='portal'] .discovery-tray-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root[data-shell='portal'] .discovery-tray-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.375rem;
+  padding: 0.875rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background-color: var(--portal-surface-card);
+}
+
+:root[data-shell='portal'] .discovery-tray-card-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .discovery-tray-card-title {
+  margin: 0;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-tray-card-description {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] .discovery-tray-card-action {
+  margin-block-start: 0.25rem;
+}

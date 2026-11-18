@@ -33,6 +33,10 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('../chat', () => ({ ChatView: () => <div data-testid="chat-view" /> }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
+// The splash reads the live session store this file mocks; with no splash the pane is its routes.
+vi.mock('../discovery/splash-layer', async () => ({
+  SplashCoveredRoutes: (await import('./route-cover')).KeptChatRoutes
+}))
 vi.mock('../chat/sidebar/portal/portal-sidebar', () => ({ PortalSidebar: () => null }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))

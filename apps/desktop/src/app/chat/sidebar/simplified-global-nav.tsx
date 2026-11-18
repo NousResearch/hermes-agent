@@ -121,6 +121,8 @@ function RailButton({ active, alert, area, children, label, metric, onNavigate, 
         aria-expanded={panel ? panel.shown : undefined}
         aria-label={label}
         className="portal-chrome-button"
+        // Where a splash row points at this destination (app/discovery/nav-spotlight.tsx).
+        data-nav-spot={area}
         onClick={() => {
           recordIaAction(metric)
 

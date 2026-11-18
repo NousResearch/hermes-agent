@@ -1048,6 +1048,8 @@ class HostedRoomRuntime:
             self._publish(binding, state.settle_task(
                 self.store, attempt, placement=self.placement, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
             return
+        except AuthorityChangedError:
+            raise
         except (StaleLeaseError, StaleTaskError):
             pass  # Recovery can still accept this exact attempt under the current lease.
         current = state.get_task(self.store, attempt.identity, placement=self.placement)

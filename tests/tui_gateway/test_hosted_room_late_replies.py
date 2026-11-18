@@ -247,3 +247,21 @@ def test_invalid_callback_keeps_the_existing_failure_outcome(db, monkeypatch):
     callback = next(iter(room.member.states.values()))['on_terminal']
     callback({'status': 'settled', 'settlement_id': 'x' * 129, 'text': 'Malformed receipt.'})
     assert room.task()['status'] == 'failed'
+
+
+def test_callback_kept_across_two_transfers_expires_with_its_authority(db, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    room = _running(db, monkeypatch)
+    _defer(room)
+    _held_by_another_process(room)
+    room.member.complete(room.identity.task_id, content='Old epoch.')
+    assert room.task()['status'] == 'deferred'
+    for epoch, (owner, successor) in enumerate(((BINDING.gateway_id, 'other'), ('other', BINDING.gateway_id)), 1):
+        hosted_rooms.claim_authority(
+            tmp_path / 'state.db', room_id=BINDING.room_id, expected_gateway_id=owner,
+            expected_epoch=epoch, new_gateway_id=successor, event_id=f'transfer-{epoch}', now=room.now[0])
+    room.now[0] += 31
+    room.runtime._process_room(replace(BINDING, authority_epoch=3))
+    assert (room.task()['status'], room.published) == ('deferred', [])
+    assert not room.runtime._terminal_receipts

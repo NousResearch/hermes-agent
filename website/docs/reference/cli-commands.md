@@ -2196,6 +2196,8 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 
 `hermes update` follows this installation's update channel. A source checkout of the official repository defaults to `stable`, the latest published `vX.Y.Z` GitHub release at its exact commit; forks and mirrors default to `main`. To follow every commit on `main` instead, run `hermes update --set-channel main`; `hermes update --set-channel stable` switches back. On the `main` channel, a checkout on another branch may be switched to the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
 
+Once a backend migration has stopped the old backend (`backend_migration.json` in the home, also when that file cannot be read), the update's dashboard restart leaves a stopped `hermes-dashboard.service` stopped.
+
 | Option | Description |
 |--------|-------------|
 | `--install-id` | Print this installation's identity and path, then exit. |

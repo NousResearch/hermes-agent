@@ -960,6 +960,48 @@ async def test_a_beat_that_failed_across_the_freeze_is_not_retried_after_the_goo
     assert wake_seq > goodbye_seq
 
 
+@pytest.mark.parametrize("step", ["lock", "status"], ids=["confirming the lock", "reading the status"])
+async def test_a_beat_still_being_prepared_when_the_goodbye_goes_out_is_not_sent(clock, monkeypatch, step):
+    """The suspend path can say goodbye while the next beat is still confirming the sender lock or
+    reading the gateway's status. That beat is superseded: sent, it would tell the receiver the machine
+    is awake as it goes to sleep."""
+    receiver = Receiver()
+    loop = asyncio.get_running_loop()
+    calls = {"lock": 0, "status": 0}
+    reporter = None
+
+    async def say_goodbye() -> None:
+        reporter.goodbye()
+
+    def on_the_second(name):
+        calls[name] += 1
+        if name == step and calls[name] == 2:
+            asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
+
+    def read_status() -> dict:
+        on_the_second("status")
+        return a_status_source()
+
+    def take_the_lock(scope, identity):
+        on_the_second("lock")
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    reporter = make_reporter(receiver, source=read_status)
+    await reporter.poll()
+    clock.advance(AFTER_INTERVAL_S)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "goodbye"]
+
+    clock.advance(GOODBYE_QUIET_S + 1)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "goodbye", "beat"]
+    goodbye_seq, wake_seq = (seen.body["seq"] for seen in receiver.requests[1:])
+    assert wake_seq > goodbye_seq
+
+
 async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clock):
     """The quiet minute only brings the next beat forward from the interval: a wait the receiver asks
     for in that late reply still holds."""

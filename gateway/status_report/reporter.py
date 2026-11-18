@@ -110,12 +110,14 @@ class StatusReporter:
         self._last_poll_at = now
         if now < self._due_at:
             return
+        goodbyes_said = self._goodbyes_said
         if not await self._become_sender():
             self._due_at = now + _jittered(self._interval_s)
             return
         retry, self._retry_body = self._retry_body, None
         body = retry or await self._next_report("beat")
-        goodbyes_said = self._goodbyes_said
+        if self._goodbyes_said != goodbyes_said:
+            return  # a goodbye went out while this beat was prepared: it is superseded, and the goodbye set the next one
         outcome = await asyncio.to_thread(
             post_report, self._target, body, timeout=_BEAT_TIMEOUT_S, opener=self._opener)
         self._settle(outcome, body, retried=retry is not None, after_goodbye=self._goodbyes_said != goodbyes_said)

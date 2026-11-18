@@ -84,6 +84,12 @@ def _hosted_deployment_reaching_storage(monkeypatch, attempts):
     monkeypatch.setattr(hosted_mode, "_refuse_direct_platform_adapters", lambda gateway_config: None)
     monkeypatch.setattr(hosted_mode, "_refuse_non_sandbox_terminal", lambda config: None)
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
+    # The identity verifier's resolution has its own tests: here it resolves to an available stub,
+    # so the admission reaches the storage check.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("hermes_identity_verifier.resolve_identity_verifier",
+                        lambda name: SimpleNamespace(is_available=lambda: True))
 
     def refuse():
         attempts.append("storage-check")

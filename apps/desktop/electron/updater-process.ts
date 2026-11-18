@@ -29,6 +29,7 @@ export function resolveVenvDir(updateRoot: string): string {
   return path.join(updateRoot, 'venv')
 }
 
+import { resolveProbeTimeoutMs } from './backend-probes'
 import { platformDefaultHermesHome } from './data-paths'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -225,7 +226,9 @@ function launcherVersionProbe(launcher: string, root?: string): LauncherVersionP
     args: viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version'],
     options: {
       cwd: root,
-      timeout: 15000,
+      // Same knob as the usability probe: a stalled machine must not be able to
+      // time out ticket minting while the runtime probe still succeeds.
+      timeout: resolveProbeTimeoutMs(),
       windowsHide: true,
       windowsVerbatimArguments: viaCmd,
       env: root ? { ...process.env, HERMES_INSTALL_ROOT: root } : process.env

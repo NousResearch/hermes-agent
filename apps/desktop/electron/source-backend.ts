@@ -2,8 +2,23 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
+
+/**
+ * Attempts for the usability probe. A stalled machine must not be mistaken for a
+ * missing install: a timeout means "unknown", and only a definitive failure
+ * (ENOENT, non-zero exit) proves the install is gone.
+ */
+const PROBE_ATTEMPTS = 3
+const PROBE_RETRY_BACKOFF_MS = 1_000
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve): void => {
+    setTimeout((): void => {
+      resolve()
+    }, ms)
+  })
 
 export interface SourceBackend {
   kind: 'command' | 'python'
@@ -20,6 +35,12 @@ export interface SourceBackend {
 interface SourceOptions {
   isWindows?: boolean
   env?: NodeJS.ProcessEnv
+  /** Per-attempt probe budget (ms). Defaults to PROBE_TIMEOUT_MS. */
+  probeTimeoutMs?: number
+  /** How many times a timed-out probe is re-attempted. Defaults to PROBE_ATTEMPTS. */
+  probeAttempts?: number
+  /** Delay between timed-out attempts (ms). Defaults to PROBE_RETRY_BACKOFF_MS. */
+  probeBackoffMs?: number
 }
 
 /** Keep the validated command. PM owns interpreter and generation selection. */
@@ -43,30 +64,47 @@ export async function resolveSourceInstallationBackend(
   const command: string = shell ? `"${launcher}"` : launcher
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
-  try {
-    await execProbe(command, ['--version'], {
-      cwd: root,
-      env: { ...process.env, ...options.env, ...env },
-      shell,
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      windowsHide: true
-    })
-  } catch {
-    return null
+  const timeoutMs: number = options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+  const attempts: number = Math.max(1, options.probeAttempts ?? PROBE_ATTEMPTS)
+  const backoffMs: number = options.probeBackoffMs ?? PROBE_RETRY_BACKOFF_MS
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await execProbe(command, ['--version'], {
+        cwd: root,
+        env: { ...process.env, ...options.env, ...env },
+        shell,
+        stdio: 'ignore',
+        timeout: timeoutMs,
+        windowsHide: true
+      })
+
+      return {
+        kind: 'command',
+        label: `Hermes at ${root}`,
+        command,
+        args: [...args],
+        env,
+        root,
+        bootstrap: false,
+        shell,
+        local: 'installed'
+      }
+    } catch (err) {
+      // A timeout means "unknown", not "broken": a stalled machine must never be
+      // reported as a missing install. Only a definitive failure (ENOENT,
+      // non-zero exit) fails fast.
+      if (!isTimeoutError(err)) {
+        return null
+      }
+
+      if (attempt < attempts - 1) {
+        await delay(backoffMs)
+      }
+    }
   }
 
-  return {
-    kind: 'command',
-    label: `Hermes at ${root}`,
-    command,
-    args: [...args],
-    env,
-    root,
-    bootstrap: false,
-    shell,
-    local: 'installed'
-  }
+  return null
 }
 
 /** Developer overrides retain their interpreter, even outside the checkout. */

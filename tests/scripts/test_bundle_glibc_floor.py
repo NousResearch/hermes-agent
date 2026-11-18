@@ -74,6 +74,12 @@ def test_each_arch_fails_on_a_need_above_its_own_floor(tmp_path):
     }
 
 
+def test_packed_relative_relocations_require_glibc_2_36(tmp_path):
+    write_elf(tmp_path / "packed.so", {"libc.so.6": ["GLIBC_2.17", "GLIBC_ABI_DT_RELR"]})
+    assert violations(tmp_path, "x64") == {("packed.so", "GLIBC_ABI_DT_RELR")}
+    assert violations(tmp_path, "arm64") == set()
+
+
 def test_x64_gpu_engines_have_their_own_ceiling_and_nothing_else_does(tmp_path):
     app = tmp_path / "linux-unpacked"
     tools = app / "resources/agent-payload/tools"

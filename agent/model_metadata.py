@@ -1660,14 +1660,9 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
     "gpt-5.5": 272_000, "gpt-5.4": 272_000, "gpt-5.2": 272_000, "gpt-5": 272_000,
 }
-# Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
-# gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
-# picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
-# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
-# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
-# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
-# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
+# Legacy opt-ins: only lift the stale 272K advertisement, capped by the account's max_context_window.
+# Prefixes cover eligible tier snapshots; gpt-5.4 must be exact because gpt-5.4-mini enforces 272K.
+# Larger windows can burn more subscription quota; never raise the base slug's default.
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: dict[str, int] = {
     "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-luna": 900_000,
 }
@@ -1681,19 +1676,16 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: dict[str, int] = {
 }
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
-# The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
-# dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
+# Only these older tiers admit dated snapshots. Never synthesize a ``-pro`` alias by prefix.
 _CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
+# These exact slugs use the account's published maximum, not an inferred offline bump.
+_CODEX_CATALOG_WINDOW_BASES = frozenset({"gpt-6.2-astra", "gpt-6.2-sol"})
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra", "gpt-6.1-sol"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _bare_codex_slug(model: Optional[str]) -> str:
-    """Lowercased slug without ``vendor/`` (display/auxiliary callers pass ``openai/gpt-5.6-sol-900k``).
-
-    Display/auxiliary callers pass ids like ``openai/gpt-5.6-sol-900k``; the main-agent path normalizes the
-    namespace away earlier, but this resolver must accept both shapes (#92797 review).
-    """
+    """Lowercased slug without a display or auxiliary caller's ``vendor/`` namespace."""
     return (model or "").strip().lower().rsplit("/", 1)[-1]
 
 
@@ -1703,7 +1695,7 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
     if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return False
     # Dated snapshots of the routable tier bases (gpt-5.6-sol-2026-07-09, gpt-6-sol-2026-09-22) also qualify.
-    return slug in _CODEX_900K_ELIGIBLE_BASES or any(
+    return slug in _CODEX_CATALOG_WINDOW_BASES or slug in _CODEX_900K_ELIGIBLE_BASES or any(
         slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(slug[len(base) + 1:]) for base in _CODEX_900K_SNAPSHOT_BASES
     )
 
@@ -1727,8 +1719,16 @@ def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
     return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)] if _codex_variant_base(raw) is not None else raw
 
 
-def has_codex_context_variant(model_bare: str) -> bool:
-    """Picker-side alias of :func:`is_codex_900k_base`."""
+def _catalog_variant_limit(maximum: object) -> Optional[int]:
+    return min(900_000, maximum) if type(maximum) is int and maximum > 0 else None
+
+
+def has_codex_context_variant(model_bare: str, catalog_row: Optional[dict] = None) -> bool:
+    """Only offer a catalog-backed variant if this account publishes a larger budget."""
+    if _bare_codex_slug(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
+        row = catalog_row or {}
+        standard, limit = row.get("context_window"), _catalog_variant_limit(row.get("max_context_window"))
+        return type(standard) is int and limit is not None and 0 < standard < limit
     return is_codex_900k_base(model_bare)
 
 
@@ -1899,19 +1899,16 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
+        """Resolve opt-in windows from the catalog, or a verified legacy bump, never above the published max."""
+        if _codex_variant_base(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
+            return _catalog_variant_limit(catalog_max) or ctx, source
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
             bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
-    # The Codex catalog only knows the base slug (no -900k, no vendor/).
-    # ``-900k`` variants are Hermes picker aliases — the Codex catalog only knows the base slug, so resolve
-    # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
-    # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
-    # (#92797 review).
+    # The OAuth catalog keys by bare wire slug, not by vendor namespace or picker alias.
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     catalog_max = None
     if access_token:
@@ -1921,6 +1918,9 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
         slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
+    # On a catalog miss, never fall through to the direct API's larger window for a saved pin.
+    if _codex_variant_base(model_bare) in _CODEX_CATALOG_WINDOW_BASES:
+        return _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare, _CODEX_OAUTH_STALE_ADVERTISED_CTX), "fallback"
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 

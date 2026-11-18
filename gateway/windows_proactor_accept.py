@@ -45,6 +45,10 @@ class GuardedAccept:
         def settle(inner):
             nonlocal pending
             if outer.done():
+                # Shutdown won the race. Nobody will take ownership of this connection.
+                if not inner.cancelled() and inner.exception() is None:
+                    conn, _ = inner.result()
+                    conn.close()
                 return
             if inner.cancelled():
                 outer.cancel()

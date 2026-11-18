@@ -117,11 +117,13 @@ def test_queued_completion_does_not_settle_a_cancelled_accept():
         loop.set_exception_handler(lambda _, context: errors.append(context))
         inner = loop.create_future()
         waiting = GuardedAccept(loop, lambda _: inner)(object())
-        inner.set_result((object(), ("127.0.0.1", 50000)))
-        waiting.cancel()
-        await asyncio.sleep(0)
-        assert waiting.cancelled()
-        assert not errors
+        with socket.socket() as conn:
+            inner.set_result((conn, ("127.0.0.1", 50000)))
+            waiting.cancel()
+            await asyncio.sleep(0)
+            assert waiting.cancelled()
+            assert conn.fileno() == -1
+            assert not errors
 
     asyncio.run(scenario())
 

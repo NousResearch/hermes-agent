@@ -679,3 +679,78 @@ def test_moved_function_state_import_allowed_by_the_fix_texts_comment(tmp_path, 
 def test_parse_hosted_entry(text, expected):
     from scripts.code_health.cli import parse_hosted_entry
     assert parse_hosted_entry(text) == expected
+
+
+_LOADER_CENSUS = """
+import json, sys
+import agent.transports as transports
+from agent.secret_sources import registry as secret_registry
+
+for mode in ("chat_completions", "anthropic_messages", "codex_responses", "bedrock_converse"):
+    transport = transports.get_transport(mode)
+    assert transport is not None and transport.api_mode == mode, (mode, transport)
+secret_registry._ensure_builtin_sources()
+print(json.dumps(sorted({m.__file__ for name, m in list(sys.modules.items())
+                         if name.startswith(("agent.transports", "agent.secret_sources")) and getattr(m, "__file__", None)})))
+"""
+
+
+def test_the_modules_by_name_loaders_import_are_on_the_graph(tmp_path):
+    """Every turn resolves its transport through ``agent.transports.get_transport``, whose first
+    use imports each transport module by name (``import_module(f"agent.transports.{name}")``), and
+    the secret-source registry imports its bundled sources from a table of module names; the
+    import-statement walk sees neither. Every module the real loaders import (subprocess) is on
+    the hosted graph, so new state in any of them is judged."""
+    import json
+    import os
+    import sys
+    from pathlib import Path
+
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home")}
+    probe = subprocess.run([sys.executable, "-c", _LOADER_CENSUS], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=120, check=False)
+    assert probe.returncode == 0, probe.stderr
+    loaded = {str(Path(f).resolve().relative_to(REPO.resolve())) for f in json.loads(probe.stdout.splitlines()[-1])}
+    assert {"agent/transports/anthropic.py", "agent/transports/bedrock.py", "agent/transports/codex.py",
+            "agent/secret_sources/bitwarden.py"} <= loaded
+    assert not loaded - reachable(REPO, None)
+
+
+@pytest.mark.parametrize("src, loads", [
+    # a registry walking a table of names under a fixed prefix, inside the function its first use runs
+    ("import importlib\n_MODS = ('one', 'two')\ndef discover():\n    for n in _MODS:\n"
+     "        importlib.import_module(f'pkg.{n}')\n", {"pkg.one", "pkg.two"}),
+    # a lazy facade's export map under its own name, and under a module-level constant
+    ("from importlib import import_module\n_SRC = {'f': 'one'}\ndef __getattr__(n):\n"
+     "    return getattr(import_module(f'{__name__}.{_SRC[n]}'), n)\n", {"pkg.one"}),
+    ("import importlib\n_PKG = 'pkg'\ndef load(k):\n    return importlib.import_module(f'{_PKG}.{k}')\n"
+     "_K = 'two'\n", {"pkg.two"}),
+    # a table of whole module names (and ``module:attr`` references) a loader imports by variable
+    ("_SOURCES = (('pkg.one', 'One'),)\n_REF = 'pkg.two:make'\ndef load():\n"
+     "    for mod, cls in _SOURCES:\n        __import__(mod, fromlist=[cls])\n", {"pkg.one", "pkg.two"}),
+    # a literal name is an ordinary function-body import (the lazy-import audit's business), and a
+    # bare one-word string never names a module by variable
+    ("import importlib\ndef f():\n    return importlib.import_module('pkg.one')\n", set()),
+    ("import importlib\nPLATFORM = 'cli'\ndef f(m):\n    return importlib.import_module(m)\n", set()),
+])
+def test_by_name_loader_shapes(src, loads):
+    from scripts.code_health.hosted_graph import _loaded_by_name
+    assert set(_loaded_by_name("pkg/__init__.py", src)) >= loads
+    if not loads:
+        assert not set(_loaded_by_name("pkg/__init__.py", src))
+
+
+def test_new_state_in_a_module_a_by_name_loader_imports_blocks(tmp_path, monkeypatch, capsys):
+    """The transport registry, verbatim, under a hosted root: a dict added to a transport module
+    nothing imports by statement (only ``get_transport``'s discovery loads it) blocks with HX018."""
+    monkeypatch.setattr(config, "HOSTED_ENTRY", ("agent.transports",))
+    repo, _ = _repo(tmp_path)
+    registry = (REPO / "agent/transports/__init__.py").read_text(encoding="utf-8")
+    transport = "from agent.transports import register_transport\n\nclass T:\n    api_mode = 'anthropic_messages'\n" \
+                "\nregister_transport('anthropic_messages', T)\n"
+    base = _commit(repo, {"agent/__init__.py": "", "agent/transports/__init__.py": registry,
+                          "agent/transports/types.py": "NormalizedResponse = ToolCall = Usage = object\n"
+                                                       "def build_tool_call(): pass\ndef map_finish_reason(): pass\n",
+                          "agent/transports/anthropic.py": transport})
+    code, out = _verdict(repo, base, {"agent/transports/anthropic.py": transport + "_NEW_TRANSPORT_STATE = {}\n"}, capsys)
+    assert code != 0 and "agent/transports/anthropic.py" in out and "HX018" in out, out

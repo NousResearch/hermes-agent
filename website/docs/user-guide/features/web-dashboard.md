@@ -498,17 +498,23 @@ Exit codes: 0 the move could run, or no old backend serves this home; 2 invalid 
 (the blockers are listed, for example a running turn, an address that matches no backend, a bind the
 gateway would refuse, a public URL it would refuse, or the Webapp already enabled on another address);
 6 this kind of backend cannot be migrated automatically (Nix, s6 or another container, a systemd
-system unit, or a host where the gateway cannot be a service). Exit 6 prints the steps to do it by
-hand, one per line, each `hermes` command naming this home (`hermes -p PROFILE ...`, and `hermes -p default ...` for the default home, so a profile chosen with `hermes profile use` does not redirect it). A stopped systemd unit counts as this home's only by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`, later wins); when a file it needs cannot be read, the dry run is blocked instead of guessing. A backend whose address cannot be read shows no address and no steps that depend on one.
-They stop the old backend first, then install, start or restart the gateway by what `hermes gateway
-status` says, and end with `hermes webapp --status`. For a system unit only one line, `sudo systemctl
-disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix and
-containers the steps say what to change in the Nix configuration or the container definition instead
-(Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where the
-gateway cannot be a service, the last step is `hermes gateway run`, for the supervisor you use. A
+system unit, Windows, or a host where the gateway cannot be a service). Exit 6 prints the steps to do
+it by hand, one per line, each `hermes` command naming this home (`hermes -p PROFILE ...`; for the default
+home `hermes -p default ...`, so a profile chosen with `hermes profile use` does not redirect it). They stop the old backend first, then install, start or restart the gateway by what `hermes
+gateway status` says, and end with `hermes webapp --status`. For a system unit only one line, `sudo
+systemctl disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix
+and containers the steps say what to change in the Nix configuration or the container definition
+instead (Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where
+the gateway cannot be a service, the last step is `hermes gateway run`, for the supervisor you use. A
 stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
-`HERMES_HOME`; a backend whose command line cannot be read gets steps without an address rather than a
-guessed one. On macOS a LaunchAgent is planned like a systemd user unit.
+`HERMES_HOME`, judged by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`
+in order, the later value winning); when a file it needs cannot be read, the dry run is blocked instead
+of guessing. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
+Startup-folder entry whose target and arguments are exactly the backend's command (when more than one
+matches, or a matching entry may not be what started it, the steps say so and ask you to pick). The
+steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry
+aside before the gateway is installed; they run as typed in PowerShell or Command Prompt. On macOS a
+LaunchAgent is planned like a systemd user unit.
 
 ## `/reload` Slash Command
 

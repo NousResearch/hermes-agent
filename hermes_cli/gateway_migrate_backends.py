@@ -6,11 +6,14 @@ here was set up by someone else: a systemd unit copied from the docs, a hand-wri
 the Nix ``hermes-backend`` unit (NixOS and Home Manager), the Docker image's s6 ``dashboard``
 longrun or the Compose ``dashboard`` sidecar, a Desktop SSH ``serve`` backend, or a process started
 by hand. The report says which supervisor owns each backend, by what the process runs and which
-unit's ``MainPID`` it is, never by unit name (Nix calls it ``hermes-backend``).
+unit's ``MainPID`` it is, never by unit name (Nix calls it ``hermes-backend``). On Windows without
+``wmic`` (11 24H2 and later) the scan reads the process table through psutil and names the Task
+Scheduler task or Startup-folder entry that starts a backend (``gateway_migrate_backends_windows``).
 
 The report itself never stops, restarts or kills anything, never edits or writes a service file,
 unit, plist or ledger, and opens no network connection: it only runs ``ps``, reads ``/proc`` and
-plists, and issues ``systemctl show`` / ``list-unit-files`` / ``launchctl print`` queries. The spawn
+plists, and issues ``systemctl show`` / ``list-unit-files`` / ``launchctl print`` / ``schtasks /Query``
+queries. The spawn
 ledger is deliberately not read, because reading a corrupt ledger quarantines (renames) it.
 
 Normal Hermes startup still runs first, exactly as for any other ``hermes`` command (e.g.
@@ -56,6 +59,8 @@ _OWNERSHIP = {
     "desktop-local": "It is owned by the Desktop app.",
     "detached": "No supervisor owns it.",
     "manual": "It was started from a shell or another program.",
+    "scheduled-task": "It is started by a Task Scheduler task (Hermes never creates one).",
+    "startup-folder": "An entry in the Startup folder starts exactly this command (Hermes never creates one).",
     "unknown": "Its supervisor could not be identified.",
 }
 
@@ -218,10 +223,26 @@ def _running_backends() -> list[tuple[int, str]]:
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     try:
         rows = _iter_process_table()
+        if not rows and _windows_without_wmic():  # Windows 11 24H2+: psutil reads the same table
+            from hermes_cli.gateway_migrate_backends_windows import process_rows
+            rows = process_rows()
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):  # same failures the update sweep tolerates
         return []
     me = os.getpid()
-    return [(pid, cmd) for pid, cmd in rows if pid != me and _hermes_holder_subcommand(cmd) in ("serve", "dashboard")]
+    found = [(pid, cmd) for pid, cmd in rows if pid != me and _hermes_holder_subcommand(cmd) in ("serve", "dashboard")]
+    if _windows_without_wmic():
+        from hermes_cli.gateway_migrate_backends_windows import drop_launchers
+        found = drop_launchers(found)  # hermes.exe runs the backend as a child with the same argv
+    return found
+
+
+def _windows_without_wmic() -> bool:
+    """Windows without ``wmic`` (11 24H2 and later): only there the scan and the ownership come from
+    psutil and the Windows module. Where wmic works, the report reads and prints what main does."""
+    if os_family() != "win32":
+        return False
+    from hermes_cli.gateway_migrate_backends_windows import wmic_missing
+    return wmic_missing()
 
 
 def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids, desktop_pids,
@@ -234,6 +255,9 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         _systemd_owner_for_pid,
     )
     argv = _dashboard_cmdline_for_pid(pid)
+    if not argv and _windows_without_wmic():
+        from hermes_cli.gateway_migrate_backends_windows import argv_of
+        argv = argv_of(pid)
     if not argv:
         try:
             argv = shlex.split(command)
@@ -264,7 +288,11 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         item.supervisor = "desktop-local"
     elif _container_cgroup(pid) or _in_container():
         item.supervisor = "container"
-    elif os_family() != "win32":
+    elif os_family() == "win32":
+        if _windows_without_wmic():
+            from hermes_cli.gateway_migrate_backends_windows import supervisor
+            item.supervisor, item.unit, item.unit_path = supervisor(pid, item.argv)
+    else:
         ppid = _process_ppid(pid)
         # On macOS launchd is the parent of every job and every orphan: ppid 1 proves no supervisor.
         orphan = ppid is not None and ppid <= 1 and os_family() != "darwin"
@@ -338,7 +366,8 @@ def format_report(items: list[BackendItem]) -> list[str]:
         scope = f" ({item.scope})" if item.scope else ""
         lines.append(f"• {item.supervisor}{where}{scope}: {head}")
         if item.argv:
-            lines.append(f"    runs:    {shlex.join(item.argv)}")
+            runs = subprocess.list2cmdline(item.argv) if _windows_without_wmic() else shlex.join(item.argv)
+            lines.append(f"    runs:    {runs}")
         if item.unit_path:
             lines.append(f"    file:    {item.unit_path}")
         if item.state:

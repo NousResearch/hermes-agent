@@ -173,7 +173,7 @@ class HostedRoomRuntime:
         self._leases: dict[str, DriverLease] = {}
         self._recovered_leases: set[tuple[str, int]] = set()
         self._inspected_indeterminate_attempts: set[tuple[str, str, int]] = set()
-        self._ambiguous_rooms: dict[str, float] = {}
+        self._ambiguous_rooms: dict[str, DriverLease] = {}
         self._deferred_cursor: dict[str, int] = {}
         self._unavailable_route_retries: dict[tuple[str, str], dict[str, float]] = {}
         self._blocked_rooms: set[str] = set()
@@ -769,12 +769,17 @@ class HostedRoomRuntime:
         if self.prepare_room is not None:
             self.prepare_room(binding)
         self._inspect_abandoned_attempts(binding)
-        deferred_until = self._ambiguous_rooms.get(binding.room_id)
-        if deferred_until is not None:
-            if self._tasks(binding, "running") and self.clock() < deferred_until:
-                return
-            self._ambiguous_rooms.pop(binding.room_id, None)
         lease = self._ensure_lease(binding)
+        # A receipt can still commit on the retiring lease. Only its successor recovers running work.
+        with self._status_lock:
+            retiring = self._ambiguous_rooms.get(binding.room_id)
+        if retiring is not None and retiring.lease_generation == lease.lease_generation:
+            if self._tasks(binding, "running"):
+                return
+            with self._status_lock:
+                if self._ambiguous_rooms.get(binding.room_id) == retiring:
+                    del self._ambiguous_rooms[binding.room_id]
+            lease = self._ensure_lease(binding)
         if (lease.room_id, lease.lease_generation) not in self._recovered_leases:
             state.recover_room(self.store, lease, placement=self.placement, clock=self.clock)
             self._recovered_leases.add((lease.room_id, lease.lease_generation))
@@ -810,6 +815,10 @@ class HostedRoomRuntime:
     # ------------------------------------------------------------------ leases
     def _ensure_lease(self, binding: HostedRoomBinding) -> DriverLease:
         with self._status_lock:
+            retiring = self._ambiguous_rooms.get(binding.room_id)
+            if (retiring is not None and retiring.authority_epoch == binding.authority_epoch
+                    and retiring.gateway_id == binding.gateway_id and self.clock() < retiring.expires_at):
+                return retiring
             current = self._leases.get(binding.room_id)
         if current is not None:
             try:
@@ -833,6 +842,14 @@ class HostedRoomRuntime:
         the next scan would then renew that generation in place instead of recovering the room.
         """
         with self._status_lock:
+            retiring = self._ambiguous_rooms.get(lease.room_id)
+            if retiring is not None:
+                if lease.lease_generation == retiring.lease_generation:
+                    if lease.expires_at > retiring.expires_at:
+                        self._ambiguous_rooms[lease.room_id] = lease
+                    return self._ambiguous_rooms[lease.room_id]
+                if lease.lease_generation > retiring.lease_generation:
+                    del self._ambiguous_rooms[lease.room_id]
             known = self._leases.get(lease.room_id)
             if (known is not None and (known.process_generation, known.lease_generation)
                     == (lease.process_generation, lease.lease_generation)
@@ -844,6 +861,9 @@ class HostedRoomRuntime:
     def _renew_lease_if_needed(
         self, lease: DriverLease, *, force: bool = False) -> DriverLease:
         with self._status_lock:
+            retiring = self._ambiguous_rooms.get(lease.room_id)
+            if retiring is not None and retiring.lease_generation == lease.lease_generation:
+                return retiring
             known = self._leases.get(lease.room_id)
         if (known is not None and known.lease_generation == lease.lease_generation
                 and known.expires_at > lease.expires_at):
@@ -973,10 +993,10 @@ class HostedRoomRuntime:
         # reclaimed under a new generation and recovery inspects the ambiguous attempt.
         with self._status_lock:
             known = self._leases.pop(binding.room_id, None)
-        expires_at = attempt.lease.expires_at
-        if known is not None and known.lease_generation == attempt.lease.lease_generation:
-            expires_at = max(expires_at, known.expires_at)
-        self._ambiguous_rooms[binding.room_id] = expires_at
+            lease = attempt.lease
+            if known is not None and known.lease_generation == lease.lease_generation and known.expires_at > lease.expires_at:
+                lease = known
+            self._ambiguous_rooms[binding.room_id] = lease
 
     def _on_terminal(
         self, binding: HostedRoomBinding, attempt: TaskAttempt, receipt: Mapping[str, Any]

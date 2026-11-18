@@ -272,3 +272,22 @@ def test_callback_kept_across_two_transfers_expires_with_its_authority(db, tmp_p
     room.runtime._process_room(replace(BINDING, authority_epoch=3))
     assert (room.task()['status'], room.published) == ('deferred', [])
     assert not room.runtime._terminal_receipts
+
+
+def test_late_callback_preserves_another_turns_lease_handoff(db, monkeypatch):
+    room = _running(db, monkeypatch)
+    _defer(room)
+    lost = _identity('lost-submit')
+    _admit(db, lost)
+
+    def timeout(**kwargs):
+        raise TimeoutError('no submit acknowledgement')
+
+    monkeypatch.setattr(room.member, 'submit', timeout)
+    room.runtime._process_room(BINDING)
+    room.now[0] += 15
+    room.member.complete(room.identity.task_id, content='Saved earlier.')
+    room.now[0] = room.lease.expires_at + 1
+    room.runtime._process_room(BINDING)
+    assert state.get_task(db, lost, placement='profile')['status'] == 'indeterminate'
+    assert room.task()['result']['text'] == 'Saved earlier.'

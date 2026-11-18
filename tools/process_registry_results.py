@@ -22,7 +22,7 @@ MAX_RETAINED_RESULTS = 64
 _RESULT_FIELDS = (
     "id", "command", "cwd", "task_id", "owner_task_id", "session_key",
     "parent_session_id", "started_at", "exit_code", "completion_reason",
-    "termination_source", "notify_on_complete",
+    "termination_source", "notify_on_complete", "exited_at",
 )
 
 
@@ -111,8 +111,12 @@ def load_completed_results(prefix: str = "") -> dict:
                 continue
             if not _owns_result(owner, record.get("parent_session_id")):
                 continue
+            # A receipt written before exited_at was persisted has no such key; keep the field out
+            # of the strict read so the record still restores as "unknown exit" rather than KeyError.
+            fields = {key: record[key] for key in _RESULT_FIELDS if key in record}
+            fields.setdefault("exited_at", 0.0)
             session = ProcessSession(
-                **{key: record[key] for key in _RESULT_FIELDS},
+                **fields,
                 # Receipts written before processes carried a sandbox are a local activity's.
                 sandbox_key=record.get("sandbox_key", ""), exited=True, output_buffer=record["output"],
             )

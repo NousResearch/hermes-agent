@@ -339,3 +339,47 @@ def test_receipts_are_bounded_redacted_and_session_scoped(tmp_path, monkeypatch)
     finally:
         reset_hermes_home_override(token)
     assert not (get_hermes_home() / "logs" / "process-results" / f"{child.id}.json").exists()
+
+
+def test_receipt_records_exit_time_and_restores_it(tmp_path, monkeypatch):
+    """#155114: a restored receipt must carry its exit time or the tab can never age out."""
+    from gateway.session_context import scoped_current_session_id
+    from tools import process_registry_results as receipts
+    from tools.process_registry import ProcessSession
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(receipts, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "logs").mkdir()
+    session = ProcessSession(
+        id="proc_exited", command="echo probe", cwd=str(tmp_path),
+        parent_session_id="owner-1", started_at=100.0, exit_code=0,
+        completion_reason="exited", termination_source="process.kill",
+        exited=True, exited_at=123.5, output_buffer="probe\n",
+    )
+    receipts.save_completed_result(session)
+
+    receipt = tmp_path / "logs" / "process-results" / "proc_exited.json"
+    assert json.loads(receipt.read_text(encoding="utf-8"))["exited_at"] == 123.5
+    with scoped_current_session_id("owner-1"):
+        assert receipts.load_completed_results()["proc_exited"].exited_at == 123.5
+
+
+def test_receipt_written_before_exit_time_still_restores(tmp_path, monkeypatch):
+    """A pre-#155114 receipt has no exited_at key; it must restore as unknown, not be dropped."""
+    from gateway.session_context import scoped_current_session_id
+    from tools import process_registry_results as receipts
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(receipts, "get_hermes_home", lambda: tmp_path)
+    directory = tmp_path / "logs" / "process-results"
+    directory.mkdir(parents=True)
+    (directory / "proc_legacy.json").write_text(json.dumps({
+        "id": "proc_legacy", "command": "echo legacy", "cwd": str(tmp_path),
+        "parent_session_id": "owner-1", "started_at": 100.0, "exit_code": 0,
+        "completion_reason": "exited", "termination_source": "",
+        "notify_on_complete": False, "output": "legacy\n",
+    }), encoding="utf-8")
+    with scoped_current_session_id("owner-1"):
+        restored = receipts.load_completed_results()["proc_legacy"]
+    assert restored.exited is True
+    assert restored.exited_at == 0.0  # 0.0 = unknown, the documented pre-fix fallback.

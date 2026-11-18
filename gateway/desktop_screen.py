@@ -406,10 +406,17 @@ def _source_from_store(db, session_id: str) -> str | None:
     if isinstance(snapshots, dict):
         snapshot = snapshots.get(session_id)
         if isinstance(snapshot, dict):
-            for key in ("source", "created_source", "launch_source"):
-                value = snapshot.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
+            found_source = snapshot.get("source")
+            found_created = snapshot.get("created_source")
+            resolved = _resolve_label(found_source, found_created)
+            if resolved:
+                # Review 1c-r6: the snapshot pair goes through the SAME
+                # label rule, so a re-bound local+desktop snapshot
+                # rescues and a machine transport never slips in.
+                return resolved
+            value = snapshot.get("launch_source")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
 
 
@@ -427,6 +434,9 @@ def _resolve_label(source, created) -> str | None:
     return source or created or None
 
 
+_SQLITE_LOOKUP_TIMEOUT_S = 0.25  # bound the locked-DB worst case (query ~1.4 ms warm)
+
+
 def _source_from_db(session_id: str) -> str | None:
     """READ-ONLY state-DB lookup of the session's launch label.
 
@@ -441,7 +451,8 @@ def _source_from_db(session_id: str) -> str | None:
         path = _state_db_path()
         if not path.exists():
             return None
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True,
+                               timeout=_SQLITE_LOOKUP_TIMEOUT_S)
         try:
             try:
                 row = conn.execute(

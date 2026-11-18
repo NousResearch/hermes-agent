@@ -505,6 +505,28 @@ class TestScopeResolution(ChatGateTestCase):
         self.assertIsNone(self.gate_with(_ClientProxy({}), db_path=path))
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
+    def test_snapshot_rebound_local_desktop_rescues(self):
+        # Review 1c-r6: the snapshot pair goes through _resolve_label.
+        store = _ClientProxy({"s-norow": {"source": "local",
+                                          "created_source": "desktop"}})
+        self.assertIsNone(self.gate_with(store, session_id="s-norow"))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_snapshot_machine_transport_never_screens(self):
+        # Store-level pin (review 1c-r6 NOTE): oneshot+desktop must stay
+        # out even when the snapshot carries the desktop created label.
+        store = _ClientProxy({"s-norow": {"source": "oneshot",
+                                          "created_source": "desktop"}})
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(self.gate_with(store, session_id="s-norow"))
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_db_oneshot_desktop_row_skips(self):
+        path = self.make_db([("s-1", "oneshot", "desktop")])
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(self.gate_with(_ClientProxy({}), db_path=path))
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
     def test_resolve_label_matrix(self):
         r = desktop_screen._resolve_label
         self.assertEqual(r("desktop", "desktop"), "desktop")

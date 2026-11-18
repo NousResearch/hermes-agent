@@ -106,9 +106,9 @@ def get_model_info(profile: Optional[str] = None):
             # config_context_length=None: ignore the override — we want the auto value.
             # Bounded: the resolver's provider probes can hang for tens of seconds
             # when model.base_url is unreachable (#63214).
-            from hermes_cli.runtime_provider_custom import model_block_key_for
+            from hermes_cli.runtime_provider_custom import main_endpoint_key_for
             with _config_profile_scope(profile):  # key_env reads the profile's own secrets
-                api_key = model_block_key_for(model_cfg, base_url)
+                api_key = main_endpoint_key_for(model_cfg, base_url)
             auto_ctx = _bounded_context_length_probe(model_name, base_url, provider, api_key)
         except Exception:
             auto_ctx = 0

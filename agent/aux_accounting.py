@@ -86,9 +86,9 @@ def record_aux_usage(
             try:
                 from agent.auxiliary_client import _runtime_main_value
                 from hermes_cli.config import load_config
-                from hermes_cli.runtime_provider_custom import model_block_key_for
+                from hermes_cli.runtime_provider_custom import main_endpoint_key_for
                 api_key = None if callable(_runtime_main_value("api_key")) else (
-                    model_block_key_for(load_config().get("model"), base_url or "") or None)
+                    main_endpoint_key_for(load_config().get("model"), base_url or "") or None)
             except (Exception, ConfigBackendUnavailable):  # the backend's outage is a SystemExit
                 logger.debug("Aux pricing credential lookup failed; estimating without a key", exc_info=True)
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url, api_key=api_key)

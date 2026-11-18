@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from tests.live_process_fixtures import sleeper_script_path
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("windows")  # live Windows named-pipe E2E
 
@@ -104,6 +105,12 @@ def live_server(tmp_path: Path):
         _kill_tree(proc)
         pytest.fail(f"pipe server child failed to start: {line!r} {err}")
     server_pid = int(line.split()[1])
+    # The pipe is bound now, but the first ``identify`` resolves the server's code identity (the
+    # uncached git provenance walk): 3-4.5 s on a loaded Windows runner, which ate a single 5 s
+    # probe. Ready means answering, so wait for that before any test asserts on it.
+    from gateway.control_socket import identify_gateway
+
+    wait_until(lambda: identify_gateway(home, timeout=10.0), timeout=60, what="pipe server's first identify")
     yield proc, home, server_pid
     _kill_tree(proc)
 

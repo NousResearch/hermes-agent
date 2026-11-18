@@ -6,6 +6,7 @@ host and the public full-backup paths, rather than inferring liveness from PIDs.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import signal
@@ -85,7 +86,8 @@ def _child(home: Path, output: Path) -> tuple[subprocess.Popen[str], Path]:
 
     reader = threading.Thread(target=read_ready, daemon=True)
     reader.start()
-    if not ready.wait(30):
+    # A hang bound, not a delay: a cold child on a CPU-starved Windows runner took over 30 s.
+    if not ready.wait(120):
         proc.kill()
         _, stderr = proc.communicate(timeout=30)
         reader.join(timeout=30)
@@ -95,8 +97,21 @@ def _child(home: Path, output: Path) -> tuple[subprocess.Popen[str], Path]:
 
 
 def _kill(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is None:
-        proc.kill()
+    """Kill the backup child AND its descendants, and reap them all.
+
+    A Windows venv ``python.exe`` is a launcher whose child is the real interpreter, so killing
+    ``proc`` alone left the backup running: it then read EOF on stdin and unwound normally,
+    deleting the stage (and its ``owner.lock``) this test is about to inspect as abandoned."""
+    import psutil
+
+    targets = []
+    with contextlib.suppress(psutil.Error):
+        launcher = psutil.Process(proc.pid)
+        targets = [*launcher.children(recursive=True), launcher]
+    for target in targets:
+        with contextlib.suppress(psutil.Error):
+            target.kill()
+    psutil.wait_procs(targets, timeout=30)
     proc.communicate(timeout=30)
 
 

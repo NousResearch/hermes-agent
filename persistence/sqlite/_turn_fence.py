@@ -30,10 +30,10 @@ _GENERATION_SQL = "SELECT runtime_generation FROM sessions WHERE id=?"
 # holder -> the store keys (``ProfileScope.store_key``) its file is served under besides its own folder's. Kept here,
 # beside the holder rather than on it, so serving a key asks nothing of the holder: any object the registry opens as a
 # holder serves a store as it did before the fence.
-_served: weakref.WeakKeyDictionary[Any, frozenset] = weakref.WeakKeyDictionary()
+_served: weakref.WeakKeyDictionary[Any, frozenset] = weakref.WeakKeyDictionary()  # health: allow HX018 -- keyed by the store holder (one per profile file), so each tenant's entry is its own store's
 _served_lock = threading.Lock()
 # holder -> its own profile folder's store key, resolved once
-_own: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
+_own: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()  # health: allow HX018 -- keyed by the store holder; the value is that holder's own folder key, never shared
 
 
 def serve_fence_key(holder: Any, key: str) -> None:

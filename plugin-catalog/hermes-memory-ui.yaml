@@ -1,8 +1,8 @@
 name: hermes-memory-ui
 repo: https://github.com/xraysight/hermes-memory-ui
-sha: 8f798101a61a33e16f38eb22c3b1ad50ef9484a1
-version: "0.6.4"
-description: "Read-only Hermes Dashboard and Desktop plugin for inspecting built-in, holographic, Mem0, Honcho, Mnemosyne, Hindsight, and ByteRover memory. Disclosure — reads the active profile's memory files, provider configs and provider API keys (keys are never returned to the UI), and on user action sends search/recall/reflect queries with configured bank/peer/user IDs to the configured Mem0, Honcho and Hindsight endpoints (Hindsight Cloud default api.hindsight.vectorize.io) using those keys; ByteRover queries run the local `brv` CLI; for a local embedded Hindsight setup a contents read may start the `hindsight-embed` daemon; no memory is written."
+sha: 58b4dd9541ca5409e1dfb8f0be63f08c8dfd6c74
+version: "0.7.0"
+description: "Read-only Hermes Dashboard and Desktop plugin for inspecting built-in, holographic, Mem0, Honcho, Mnemosyne, Hindsight, and ByteRover memory. Disclosure — reads built-in memory files and limits from profiles permitted by the host and the target profile's plugin settings; provider views stay on the active profile. Configured providers can receive queries and bank, peer, or user IDs; provider credentials are used server-side. ByteRover can invoke the local brv CLI, and inspecting local embedded Hindsight can start its daemon. The UI does not edit memory."
 maintainer: xraysight
 tier: community
 category: desktop

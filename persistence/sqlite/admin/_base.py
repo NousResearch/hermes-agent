@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import functools
-from contextlib import contextmanager
+from contextlib import _GeneratorContextManager, contextmanager  # the type ``@contextmanager`` operations return
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -15,11 +15,38 @@ from .._backend import translated
 from .._holder import StoreHolder
 
 
+class _LocalOnlyContext:
+    """A context manager an admin operation returned: kept and entered later, it refuses while a hosted scope is bound
+    before the context runs, as the operation that made it does."""
+
+    __slots__ = ("_target",)
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+
+    def __enter__(self) -> Any:
+        _holder_module.refuse_hosted_activity()
+        return self._target.__enter__()
+
+    def __exit__(self, *exc: object) -> Any:
+        return self._target.__exit__(*exc)
+
+
+def local_only_methods(cls: type) -> type:
+    """Make every public method of ``cls`` refuse while a hosted scope is bound: for operation objects an admin hands
+    out (a repair guard), which a caller may keep and use after a hosted scope was bound."""
+    for name, member in list(vars(cls).items()):
+        if not name.startswith("_") and callable(member) and not isinstance(member, (type, staticmethod, classmethod)):
+            setattr(cls, name, _local_only(member))
+    return cls
+
+
 def _local_only(operation: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(operation)
     def run(*args: Any, **kwargs: Any) -> Any:
         _holder_module.refuse_hosted_activity()
-        return operation(*args, **kwargs)
+        result = operation(*args, **kwargs)
+        return _LocalOnlyContext(result) if isinstance(result, _GeneratorContextManager) else result
     return run
 
 

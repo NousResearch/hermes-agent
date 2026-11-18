@@ -13,13 +13,16 @@ const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
 // `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
-// A colon must be followed by a separator (or end the string): `/E:Users`
-// is a valid POSIX filename under WSL, not a Windows drive path.
 // `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs) and the
 // `/E:/...` spelling some shells emit for `E:\...` — without the `:` branch a
 // perfectly valid Windows path fell through to the WSL branch below and became
 // `\\wsl.localhost\<distro>\E:\...`.
-const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:(?::)?\/+|:$|$)/i
+//
+// The colon form is its own alternative so it can only follow a bare letter,
+// and it must be followed by a separator (or end the string). `/E:Users` is a
+// valid POSIX filename under WSL, and `/mnt/c:/notes.md` is a POSIX path whose
+// directory is literally `c:` — neither is the `C:` drive.
+const SHELL_DRIVE_RE = /^\/(?:(?:cygdrive\/|mnt\/)?([a-z])|([a-z]):)(?:\/+|$)/i
 
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
@@ -203,7 +206,11 @@ export function shellDriveToNativePath(value: string, exists: (path: string) => 
     return null
   }
 
-  const nativePath = `${drive[1].toUpperCase()}:/${value.slice(drive[0].length)}`
+  // Group 1 is the slash spelling at any prefix depth; group 2 is the bare
+  // `C:` colon spelling, which has no prefix.
+  const letter = drive[1] ?? drive[2]
+
+  const nativePath = `${letter.toUpperCase()}:/${value.slice(drive[0].length)}`
 
   return exists(nativePath) ? nativePath : null
 }

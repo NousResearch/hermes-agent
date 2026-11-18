@@ -146,3 +146,20 @@ test('shellDriveToNativePath accepts the /E:/ drive spelling instead of bridging
   // Still gated by existence: no native twin means the path stays on the bridge.
   assert.equal(shellDriveToNativePath('/Z:/nope/x.txt', exists), null)
 })
+
+test('shellDriveToNativePath keeps a colon behind /mnt/ or /cygdrive/ on the POSIX side', () => {
+  // The colon form is a drive spelling only directly after the letter.
+  // `/mnt/c:/notes.md` is a POSIX path whose directory is literally `c:`;
+  // reading it as `C:/notes.md` silently opens an unrelated Windows file
+  // whenever that twin exists, including on a remote profile.
+  const existing = new Set(['C:/notes.md', 'C:/'])
+  const exists = (path: string) => existing.has(path)
+
+  assert.equal(shellDriveToNativePath('/mnt/c:/notes.md', exists), null)
+  assert.equal(shellDriveToNativePath('/cygdrive/c:/notes.md', exists), null)
+  assert.equal(shellDriveToNativePath('/mnt/c:', exists), null)
+
+  // The prefix-less colon form and the slash spelling still resolve.
+  assert.equal(shellDriveToNativePath('/c:/notes.md', exists), 'C:/notes.md')
+  assert.equal(shellDriveToNativePath('/mnt/c/notes.md', exists), 'C:/notes.md')
+})

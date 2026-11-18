@@ -1,6 +1,6 @@
 name: rom-studio
 repo: "https://github.com/erosika/rom-studio"
-sha: "45a5310ff14c630ad137e647a5571ad127c957cd"
+sha: "2c07ad28539231defd46bad8d2e6b868a5f909d3"
 version: "0.3.0"
 title: ROM Studio
 description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app, also a tab in the web dashboard, shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. kit agent-play, started by hand, can send game pictures to a model API you name. No agent tools, hooks, middleware or env vars. Linux only. Disclosure — Starts a local page on 127.0.0.1 (port 8778) whenever a game folder is set, restarts it if it stops and stops it when Hermes ends, and `kit play` starts a local player on 127.0.0.1:4870 (with `--phone`, also an https listener on this computer's LAN addresses, opened by a key link). `kit setup` git-clones the decomp address you give, downloads the poryscript 3.6.1 compiler from GitHub (checked against a sha256) and installs the player's npm package, and the build runs your decomp's own Makefile and tools on your computer. `kit agent-play --provider`, run by hand, sends pictures of the game and its on-screen state to the model API you name, using the key from the environment variable you choose."
@@ -8,12 +8,12 @@ maintainer: erosika
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
-docs_url: "https://github.com/erosika/rom-studio/blob/45a5310ff14c630ad137e647a5571ad127c957cd/README.md"
-image: "https://raw.githubusercontent.com/erosika/rom-studio/45a5310ff14c630ad137e647a5571ad127c957cd/docs/images/banner.png"
+docs_url: "https://github.com/erosika/rom-studio/blob/2c07ad28539231defd46bad8d2e6b868a5f909d3/README.md"
+image: "https://raw.githubusercontent.com/erosika/rom-studio/2c07ad28539231defd46bad8d2e6b868a5f909d3/docs/images/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/erosika/rom-studio/45a5310ff14c630ad137e647a5571ad127c957cd/docs/images/plugin-dashboard.png"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/45a5310ff14c630ad137e647a5571ad127c957cd/docs/images/pane-gallery.png"
-  - "https://raw.githubusercontent.com/erosika/rom-studio/45a5310ff14c630ad137e647a5571ad127c957cd/docs/images/pane-now.png"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/2c07ad28539231defd46bad8d2e6b868a5f909d3/docs/images/plugin-dashboard.png"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/2c07ad28539231defd46bad8d2e6b868a5f909d3/docs/images/pane-gallery.png"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/2c07ad28539231defd46bad8d2e6b868a5f909d3/docs/images/pane-now.png"
 readme: true
 platforms: [linux]
 capabilities:

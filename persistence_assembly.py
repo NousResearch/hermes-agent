@@ -27,6 +27,7 @@ from persistence.core.backend import PersistenceStore
 
 __all__ = [
     "Persistence",
+    "bound_hosted_scope",
     "close_all_stores",
     "close_stores_under",
     "live_stores",
@@ -98,6 +99,15 @@ class Persistence:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def bound_hosted_scope() -> Any:
+    """The bound ``hermes_scope.Scope`` when it is hosted (its tenant is not the local one), else None. Hosted mode, for
+    persistence, is exactly this: a hosted scope is bound. Nothing about a local install changes while it is None."""
+    from hermes_scope import current_scope
+
+    scope = current_scope()
+    return scope if scope is not None and not scope.is_local else None
 
 
 def profile_scope(profile: Optional[str] = None, *, home: Optional[Path] = None) -> ProfileScope:

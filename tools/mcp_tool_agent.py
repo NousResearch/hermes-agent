@@ -319,6 +319,17 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
     return pinned, same_code, [d for d in map(_pinned_def, pinned) if d]
 
 
+def _refresh_name_dependent_defs(merged: list, dropped: set, fresh: dict) -> list:
+    """A restore that drops a pinned tool has already moved tools[] (the cached prefix is broken
+    there), so a surviving tool whose ``_DYNAMIC_SCHEMA_REWRITERS`` entry derives its text from the
+    other tool names takes this build's definition: pinned bytes would still name what was dropped
+    (execute_code's sandbox list, delegate_task's sibling line). Nothing dropped: bytes untouched."""
+    if not dropped:
+        return merged
+    from model_tools import _DYNAMIC_SCHEMA_REWRITERS
+    return [fresh.get(name, t) if (name := _def_name(t)) in _DYNAMIC_SCHEMA_REWRITERS else t for t in merged]
+
+
 def pinned_tool_defs(saved) -> list:
     """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
@@ -360,6 +371,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
+    merged = _refresh_name_dependent_defs(merged, {_def_name(d) for d in pinned_defs} - merged_names, fresh)
     changed = merged != fresh_defs
     if changed:
         with _agent_tools_lock:

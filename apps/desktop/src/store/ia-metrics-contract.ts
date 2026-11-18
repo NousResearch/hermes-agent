@@ -19,8 +19,21 @@ export const IA_ACTIONS = {
     'dismissed'
   ],
   gateway: ['popover_open', 'popover_connecting', 'popover_offline', 'system', 'logs', 'reconnect', 'offline_agent'],
-  // A splash's events are prefixed by the splash (`rename_` for the rename splash).
-  splash: ['rename_shown', 'rename_reopened', 'rename_dismissed_nav', 'rename_dismissed_button', 'rename_dismissed_escape'],
+  // A splash's events are prefixed by the splash (`rename_` for the rename splash, `first_time_` for
+  // the first-time splash).
+  splash: [
+    'rename_shown',
+    'rename_reopened',
+    'rename_dismissed_nav',
+    'rename_dismissed_button',
+    'rename_dismissed_escape',
+    'first_time_shown',
+    'first_time_reopened',
+    'first_time_closed_nav',
+    'first_time_closed_close',
+    'first_time_closed_escape',
+    'first_time_closed_signup'
+  ],
   // The first hover or focus of each row in one showing.
   splash_row: [
     'rename_chats',
@@ -28,8 +41,21 @@ export const IA_ACTIONS = {
     'rename_library',
     'rename_routines',
     'rename_machines',
-    'rename_notifications'
+    'rename_notifications',
+    'first_time_chats',
+    'first_time_routines',
+    'first_time_agents',
+    'first_time_library',
+    'first_time_theme'
   ],
+  // A first-timer's starter ideas under the composer: which one was sent, by its code.
+  starter_chip: ['morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'],
+  // The ideas leaving (on their own after two finished chats, or by Hide) and coming back (Show ideas).
+  starter_chips: ['hidden_auto', 'hidden_user', 'shown_again'],
+  // Sign up started, by where: the first-time splash, the notifications tray, or a held chat.
+  sign_up: ['splash', 'tray', 'chat'],
+  // "Make it yours" in the first-time splash: a light / dark pick, or one of the five colours.
+  theme_pick: ['mode_light', 'mode_dark', 'color_blue', 'color_violet', 'color_green', 'color_orange', 'color_pink'],
   // A ⌘K query that is one of the classic words, by word (never the query itself).
   alias_search: ['sessions', 'profiles', 'artifacts', 'cron', 'gateways']
 } as const

@@ -41,7 +41,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
 from agent.model_metadata import is_local_endpoint
 from agent.process_transport import waits_like_local
-from session_rules.turns import flatten_message_text
+from session_rules.turns import flatten_message_text, split_thinking_content
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -3050,11 +3050,22 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
+            # Reasoning can ride inside ``content`` as typed blocks ({"type": "thinking", …})
+            # instead of a ``reasoning_content`` field — Mistral and other non-strict wires do
+            # exactly this. Split first: flattening treats those blocks as non-text, so the
+            # thinking would be dropped and the reasoning box would stay empty while the
+            # provider still billed reasoning tokens.
+            delta_visible_content, delta_block_thinking = split_thinking_content(
+                getattr(delta, "content", None))
+
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            if not reasoning_text and delta_block_thinking:
+                reasoning_text = delta_block_thinking
+
             # A profile-declared text carrier doubles as the readable reasoning.
             reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
@@ -3102,7 +3113,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
-            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            delta_content = delta_visible_content
             if delta_content:
                 content_parts.append(delta_content)
                 if content_watch.feed(delta_content):

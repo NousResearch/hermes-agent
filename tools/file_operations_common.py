@@ -417,4 +417,8 @@ def settle_tail(file_ops, path: str, lines: int | None, offset: int, limit: int,
     settled = tail_start(result.total_lines, lines, offset)
     if settled == offset:
         return offset, result
-    return settled, file_ops.read_file(path, settled, limit)
+    retry = file_ops.read_file(path, settled, limit)
+    # A second change during the retry is reported, never returned as a stale tail.
+    if not retry.error and not retry.is_binary and tail_start(retry.total_lines, lines, settled) != settled:
+        raise ValueError("File changed during tail read; retry with the same negative offset.")
+    return settled, retry

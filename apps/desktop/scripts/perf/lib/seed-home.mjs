@@ -15,7 +15,7 @@
 import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { isAlias, isMap, parseDocument, visit } from 'yaml'
+import { isAlias, isMap, isSeq, parseDocument, visit } from 'yaml'
 
 // gateway/config.py `Platform` members that are messaging adapters (`local` is the CLI itself).
 const CORE_PLATFORMS = [
@@ -55,12 +55,40 @@ function bundledPluginPlatforms(repoRoot) {
     .map(entry => entry.name.toLowerCase())
 }
 
-// Materialize an aliased mapping before editing it, leaving the anchor's other
-// consumers alone. Scalars retain their source spelling and quoting.
+function resolved(doc, node) {
+  return isAlias(node) ? node.resolve(doc) : node
+}
+
+// The node a YAML 1.1 loader sees for `key`: a local key wins, then merge sources in order.
+function effectiveNode(doc, map, key, seen) {
+  if (!isMap(map) || seen.has(map)) return undefined
+  if (map.has(key)) return map.get(key, true)
+  seen.add(map)
+
+  for (const pair of map.items) {
+    if (pair.key?.value?.description !== '<<') continue
+    const source = resolved(doc, pair.value)
+
+    for (const item of isSeq(source) ? source.items : [source]) {
+      const node = effectiveNode(doc, resolved(doc, item), key, seen)
+      if (node !== undefined) return node
+    }
+  }
+
+  return undefined
+}
+
+// Materialize an inherited or aliased mapping locally before editing it, leaving
+// its other consumers alone. Scalars retain their source spelling and quoting.
 function mapping(doc, parent, key) {
-  let node = parent.get(key)
-  if (isAlias(node)) {
-    node = node.resolve(doc).clone()
+  const map = parent === doc ? doc.contents : parent
+  if (!isMap(map)) return null
+  const own = map.has(key)
+  const field = own ? map.get(key, true) : effectiveNode(doc, map, key, new Set())
+  let node = resolved(doc, field)
+
+  if (isMap(node) && (!own || isAlias(field))) {
+    node = node.clone()
     visit(node, {
       Node: (_key, child) => {
         if ('anchor' in child) delete child.anchor

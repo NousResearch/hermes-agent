@@ -226,6 +226,47 @@ def test_a_dashboard_plugin_api_file_is_refused(tmp_path, monkeypatch, hosted_ve
     assert "refused in hosted mode" in caplog.text
 
 
+@pytest.mark.parametrize("signal", ["frozen_verdict", "start_flag"])
+def test_the_shared_user_code_importer_refuses_out_of_image_files(tmp_path, monkeypatch, signal):
+    """``plugin_isolation.import_user_code`` — the one importer that executes a single file of
+    plugin code in-process (dashboard plugin apis, gateway hook handlers) — refuses in hosted
+    mode itself, whatever its caller checked: under either hosted signal an out-of-image file
+    raises the predicate's refusal before it is read, so its body never runs and no module is
+    left behind. No audit hook is installed here, so this is the importer's own guard."""
+    from hermes_cli.plugin_isolation import import_user_code
+
+    if signal == "frozen_verdict":
+        monkeypatch.setitem(hosted_mode._VERDICT, "hosted", True)
+    else:
+        monkeypatch.setitem(hosted_mode._VERDICT, "hosted", None)
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run", "--hosted"])
+    assert not hosted_fence_installed()  # the importer's guard, not the hook, is what refuses
+    marker = tmp_path / "executed"
+    user_file = tmp_path / "user_code.py"
+    user_file.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+                         encoding="utf-8")
+    with pytest.raises(HostedCodeRefused, match="deployment image"):
+        import_user_code(user_file, "_census_user_code")
+    assert not marker.exists()
+    assert "_census_user_code" not in sys.modules
+
+
+def test_the_shared_user_code_importer_loads_on_a_local_install(tmp_path, monkeypatch):
+    from hermes_cli.plugin_isolation import import_user_code
+
+    monkeypatch.setitem(hosted_mode._VERDICT, "hosted", False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "dashboard"])
+    marker = tmp_path / "executed"
+    user_file = tmp_path / "user_code_local.py"
+    user_file.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+                         encoding="utf-8")
+    try:
+        assert import_user_code(user_file, "_census_user_code_local") is not None
+        assert marker.exists()
+    finally:
+        sys.modules.pop("_census_user_code_local", None)
+
+
 def test_the_plugin_host_child_refuses_paths_from_the_wire(tmp_path, hosted_verdict):
     """The plugin host child loads whatever directory, api file, schema file or base
     class the parent process sends over the wire; the wire is not provenance, so in a

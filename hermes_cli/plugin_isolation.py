@@ -143,8 +143,17 @@ def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:
 
     The module sits in ``sys.modules`` while its body runs (forward references under ``from
     __future__ import annotations`` resolve by module name) and is removed again if the body raises.
-    It applies no ``plugins.isolation`` check; callers keep their own.
+    It applies no ``plugins.isolation`` check; callers keep their own. It does apply the hosted
+    code rule itself, whatever its caller checked: in a hosted process (either signal — the
+    ``--hosted`` start flag or a frozen hosted verdict) a file outside the deployment image is
+    refused with :class:`~hermes_cli.hosted_code_fence.HostedCodeRefused` before it is read, so
+    user code never executes in the shared process through this importer.
     """
+    from hermes_cli.hosted_code_fence import HostedCodeRefused, hosted_code_refusal
+
+    refusal = hosted_code_refusal(path)
+    if refusal:
+        raise HostedCodeRefused(refusal)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         return None

@@ -71,12 +71,12 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "the bundled platform plugin's own file under this module's tree — inside the image by construction",
     ("gateway/platforms/base.py", "<module>"):
         "this module's own project root, derived from __file__ — inside the image by construction",
-    ("gateway/run.py", "<module>"):
-        "this module's own project root, derived from __file__ — inside the image by construction",
     ("gateway/run.py", "_builtin_adapter_import"):
         "adapter module names from the literal _BUILTIN_ADAPTERS table in this module",
     ("gateway/run_agent_cache.py", "GatewayAgentCacheMixin._clear_session_boundary_security_state"):
         "core module names from the literal table in this function",
+    ("hermes_agent/compat/finder.py", "_Alias.create_module"):
+        "the current name of a moved Hermes module, from the literal MOVES table in hermes_agent/compat/moves.py, imported through the ordinary import system (which the armed fence judges)",
     ("hermes_bootstrap.py", "harden_import_path"):
         "the bootstrap's own image root, or an operator env override — this function may run nothing beyond the stdlib before the root is on sys.path, so it guards nothing itself; an entry it inserts that resolves outside the image is refused by the armed fence's import-time sys.path check before any import can use it",
     ("hermes_cli/_launchers.py", "<module>"):
@@ -95,8 +95,6 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("hermes_cli/doctor_tools.py", "_check_tool_availability"):
         "the project root of the deployment's own checkout — inside the image by construction",
-    ("hermes_cli/gateway.py", "run_gateway"):
-        "the project root of the deployment's own checkout — inside the image by construction",
     ("hermes_cli/gateway_migrate.py", "platform_serves_profile_prefix"):
         "the __module__ of an already-imported adapter factory — the module is already in the process",
     ("hermes_cli/local_runtime/__init__.py", "__getattr__"):
@@ -105,8 +103,6 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("hermes_cli/main.py", "__getattr__"):
         "module names from the literal _FROZEN_ATTR_SOURCES table in this module",
-    ("hermes_cli/main.py", "_cleanup_oneshot_runtime"):
-        "module names from the literal _ONESHOT_CLEANUPS table in this module",
     ("hermes_cli/main.py", "_forward_command._cmd"):
         "command module names from the literal command registry in this module",
     ("hermes_cli/plugin_host.py", "_import_ref"):
@@ -115,8 +111,8 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "core module names from the literal table in this function",
     ("hermes_cli/plugins_registrars.py", "_resolve"):
         "refs from the literal registrar table in this module",
-    ("hermes_cli/plugins_registrars.py", "make_scoped_provider_registrar.register"):
-        "the registry module from the literal registrar table in this module",
+    ("hermes_cli/plugins_registrars.py", "_register_with_row"):
+        "the registry module from the literal _SCOPED_PROVIDER_REGISTRARS row its callers look up (register_scoped_provider, make_scoped_provider_registrar) — the loader moved here from make_scoped_provider_registrar.register",
     ("hermes_cli/plugins_loader.py", "PluginLoaderMixin._register_deferred_platform_tools"):
         "a submodule of the plugin module the guarded directory loader just imported — its search path is the plugin directory the predicate already judged",
     ("hermes_cli/service_manager.py", "_HostServiceManager._backend_module"):
@@ -127,6 +123,8 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("hermes_cli/tools_config_providers.py", "_plugin_registry"):
         "registry module names, bound as literals at every call site",
+    ("hermes_cli/update_cmd_commit.py", "load_post_move_modules"):
+        "module names from the literal POST_MOVE_MODULES table in this module",
     ("hermes_cli/update_completion.py", "main"):
         "this checkout's own root, verified against the request — inside the image by construction",
     ("hermes_cli/update_host_obligation.py", "_marker_mutex"):
@@ -139,8 +137,6 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this module's own project root, derived from __file__ — inside the image by construction",
     ("hermes_cli/windows_ssh_runtime.py", "_win32"):
         "the literal pywin32 module table in this function",
-    ("mini_swe_runner.py", "create_environment"):
-        "environment types validated against a literal set, resolving inside the image's own tools package",
     ("plugins/kanban/dashboard/plugin_api.py", "_run_aux._run"):
         "a submodule of the image's own hermes_cli package (the literal prefix in the f-string)",
     ("plugins/memory/__init__.py", "import_memory_provider_module"):
@@ -151,8 +147,6 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "a sibling module inside this bundled plugin's own tree — inside the image by construction",
     ("plugins/platforms/buzz/adapter.py", "_load_sibling_file"):
         "a sibling file inside this bundled plugin's own tree — inside the image by construction",
-    ("plugins/platforms/discord/adapter.py", "<module>"):
-        "this plugin's own checkout root, derived from __file__ — inside the image by construction",
     ("plugins/platforms/feishu/adapter.py", "_load_lark_oapi"):
         "the literal _LARK_SDK_IMPORTS table in this module",
     ("plugins/platforms/google_chat/adapter.py", "_load_google_modules"):
@@ -163,14 +157,12 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "this plugin's own checkout root, derived from __file__ — inside the image by construction",
     ("plugins/platforms/teams/adapter.py", "check_teams_requirements._import"):
         "the literal _SDK_IMPORTS table in this module",
-    ("plugins/platforms/telegram/adapter.py", "<module>"):
-        "this plugin's own checkout root, derived from __file__ — inside the image by construction",
     ("plugins/platforms/telegram/adapter.py", "check_telegram_requirements"):
         "the literal SDK module table in this function",
-    ("plugins/platforms/whatsapp/adapter.py", "<module>"):
-        "this plugin's own checkout root, derived from __file__ — inside the image by construction",
     ("plugins/platforms/whatsapp_cloud/adapter.py", "_optional_module"):
         "resolver module names, bound as literals at every call site",
+    ("persistence/sqlite/__init__.py", "__getattr__"):
+        "submodules of this image package, enumerated from its own directory (_PACKAGE_DIR, derived from __file__) — inside the image by construction",
     ("pm/_venv_entry.py", "main"):
         "the pm-managed venv's console entry point: it launches the requested command in that venv's own interpreter (its addsitedir processes that venv's .pth files there), never inside a Hermes process",
     ("pm/launch.py", "<module>"):
@@ -193,14 +185,16 @@ EXEMPT_LOADERS: dict[tuple[str, str], str] = {
         "core module names, bound as literals at every call site",
     ("tools/connectors/__init__.py", "__getattr__"):
         "submodules of this image package, selected by the literal _LAZY_EXPORTS table",
-    ("tools/cronjob_tools.py", "<module>"):
-        "this module's own project root, derived from __file__ — inside the image by construction",
-    ("tools/mcp_tool.py", "_import_sdk_names"):
-        "SDK module names, bound as literals at every call site",
+    ("tools/mcp_tool.py", "_load_sdk_names"):
+        "SDK module names, bound as literals at every call site or taken from the literal _OPTIONAL_TYPE_FAMILIES table (the loader moved here from _import_sdk_names)",
     ("tools/mcp_tool.py", "sdk_httpx"):
         "the literal httpx fallback table in this function",
     ("tools/mcp_tool_errors.py", "_optional_types"):
         "optional SDK module names, bound as literals at every call site",
+    ("tools/plugin_guard.py", "<module>"):
+        "a generated move shim: runpy runs the literal module name hermes_cli.plugins_install_scan",
+    ("tools/plugin_guard.py", "_forward"):
+        "a generated move shim: inserts this checkout's own root, derived from __file__ — inside the image by construction",
     ("tools/tts_tool.py", "_sdk_importer._import"):
         "SDK module names, bound as literals at every _sdk_importer call site",
     ("tui_gateway/agent_factory.py", "_make_agent"):
@@ -410,6 +404,16 @@ def test_every_exemption_entry_matches_a_real_hit():
     stale = sorted(f"{relpath}:{qualname}" for (relpath, qualname) in EXEMPT_LOADERS
                    if (relpath, qualname) not in seen)
     assert not stale, f"Exemption entries that no longer match any loader hit: {stale}"
+
+
+def test_the_shared_user_code_importer_is_guarded_never_exempt():
+    """``plugin_isolation.import_user_code`` executes user-supplied files in-process for several
+    callers: it must refuse in hosted mode itself (its own predicate call precedes the load), and
+    no exemption may ever waive it."""
+    hits = [hit for hit in _scan_repo()
+            if (hit.relpath, hit.qualname) == ("hermes_cli/plugin_isolation.py", "import_user_code")]
+    assert hits and all(hit.guarded for hit in hits)
+    assert ("hermes_cli/plugin_isolation.py", "import_user_code") not in EXEMPT_LOADERS
 
 
 def test_the_fence_module_is_never_exempt():

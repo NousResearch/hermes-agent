@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Weekly Review and Planning
 
-Run a bounded weekly reset across the user's chosen systems. This is a concrete recurring task, not a generic productivity methodology — the `weekly-review` Automation Blueprint schedules it as a cron job.
+Run a bounded weekly reset across the user's chosen systems. This is a concrete recurring task, not a generic productivity methodology: the `weekly-review` Automation Blueprint schedules it as a cron job.
 
 ## When to Use
 

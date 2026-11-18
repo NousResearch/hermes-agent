@@ -233,3 +233,36 @@ def test_a_relative_profile_home_is_refused_at_open(tmp_path):
 
 def test_the_kinds_are_the_user_extension_kinds():
     assert KINDS == frozenset({"plugin", "mcp_server"})
+
+
+def test_a_relative_bound_agent_is_the_directory_it_names_after_the_cwd_moves(tmp_path, monkeypatch):
+    own, other = tmp_path / "own", tmp_path / "other"
+    own.mkdir()
+    other.mkdir()
+    registry = LocalExtensionRegistry(own)
+    relative = Scope(LOCAL_TENANT, ".", LOCAL_OWNER, owner=LOCAL_OWNER, can_administer=True)
+    monkeypatch.chdir(own)
+    with push_state(scope=relative):
+        assert registry.list() == []  # "." is this registry's profile while the cwd is it
+    monkeypatch.chdir(other)
+    with push_state(scope=relative):
+        with pytest.raises(RegistryPinRefused):  # and another profile once the cwd moves
+            registry.list()
+
+
+def test_a_relative_bound_agent_follows_a_retargeted_symlink(tmp_path, monkeypatch):
+    own, other = tmp_path / "own", tmp_path / "other"
+    own.mkdir()
+    other.mkdir()
+    registry = LocalExtensionRegistry(own)
+    link = tmp_path / "link"
+    link.symlink_to(own)
+    relative = Scope(LOCAL_TENANT, "link", LOCAL_OWNER, owner=LOCAL_OWNER, can_administer=True)
+    monkeypatch.chdir(tmp_path)
+    with push_state(scope=relative):
+        assert registry.list() == []  # "link" names this registry's profile now
+    link.unlink()
+    link.symlink_to(other)
+    with push_state(scope=relative):
+        with pytest.raises(RegistryPinRefused):  # and another profile once it is retargeted
+            registry.list()

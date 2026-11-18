@@ -54,7 +54,6 @@ def local_kernel(monkeypatch):
     from tools import process_registry
 
     ran: list[str] = []
-    monkeypatch.setattr(cet, "SANDBOX_AVAILABLE", True)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
     # execute_code imports _get_env_config from terminal_tool at call time; patch it there.
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "local"})
@@ -122,7 +121,6 @@ def test_unflagged_run_carries_no_approval_note(local_kernel, monkeypatch):
 def test_remote_backend_result_carries_the_note(monkeypatch):
     from tools import process_registry
 
-    monkeypatch.setattr(cet, "SANDBOX_AVAILABLE", True)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "ssh"})
     monkeypatch.setattr(terminal_tool, "_docker_has_host_access", lambda _config: False)

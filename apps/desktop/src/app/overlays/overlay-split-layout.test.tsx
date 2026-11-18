@@ -1,11 +1,42 @@
-import { cleanup, fireEvent, render, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { Settings2 } from '@/lib/icons'
+import { setSidebarOpen } from '@/store/layout'
 
 import { OverlayNav, type OverlayNavGroup } from './overlay-split-layout'
+import { PageToolbar } from './page-toolbar'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  act(() => setSidebarOpen(true))
+})
+
+it('only a titled nav is the page panel the band offers to show again once folded', () => {
+  const groups: OverlayNavGroup[] = [
+    { active: true, id: 'overview', label: 'Overview', icon: Settings2, onSelect: vi.fn() }
+  ]
+
+  act(() => setSidebarOpen(false))
+
+  const { rerender } = render(
+    <>
+      <PageToolbar onBack={vi.fn()} />
+      <OverlayNav groups={groups} />
+    </>
+  )
+
+  // An untitled nav (Command Center) has no panel to fold, so a "Show sidebar" there would do nothing.
+  expect(screen.queryByRole('button', { name: 'Show sidebar' })).toBeNull()
+
+  rerender(
+    <>
+      <PageToolbar onBack={vi.fn()} />
+      <OverlayNav groups={groups} title="Settings" />
+    </>
+  )
+  expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+})
 
 it('expands independently of navigation and reveals a newly selected child', () => {
   const select = vi.fn()

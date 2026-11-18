@@ -48,7 +48,7 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
   useEffect(publishWorkspaceGeometry, [])
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1">
+    <div className="relative flex min-h-0 min-w-0 flex-1" data-slot="layout-tree">
       {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash
           hairline per seam) — content mounted in a zone must not paint its
           own edge chrome. App components (asides, the shadcn sidebar) carry

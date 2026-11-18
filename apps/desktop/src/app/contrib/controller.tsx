@@ -1,3 +1,11 @@
+import '../redesign/portal-artwork.css'
+import '../redesign/portal-typography.css'
+import '../redesign/portal-layout.css'
+import '../redesign/portal-shell.css'
+import '../redesign/portal-controls.css'
+import '../redesign/portal-floating.css'
+import '../redesign/portal-pages.css'
+
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
@@ -5,12 +13,14 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
+import { provideZoneHeader } from '@/components/pane-shell/tree/renderer/zone-header-provider'
 import {
   $layoutTree,
   bindPaneVisibility,
@@ -94,7 +104,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
-import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarShown, $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
@@ -123,6 +133,7 @@ import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-preset
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
+import { LayoutTreeCover } from './route-cover'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -191,32 +202,39 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
-registry.registerMany([
-  {
-    id: 'sessions',
-    area: 'panes',
-    // String fallback only (menus, drag ghosts); the tab itself renders
-    // `tabTitle` below so the strip follows `display.language` once it loads.
-    title: translateNow('sidebar.sessions'),
-    // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
-    // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
-    // its default-ish spot beside main, not a random same-placement stack.
-    data: {
-      placement: 'left',
-      collapsible: true,
-      dock: { pane: 'workspace', pos: 'left' },
-      revealAliases: ['chat-sidebar'],
-      // Standing chrome: no close gestures at all — the tab is shown/hidden
-      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
-      hideOnly: true,
-      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
-      tabTitleText: () => translateNow('sidebar.sessions'),
-      width: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      maxWidth: `${SIDEBAR_MAX_WIDTH}px`
-    },
-    render: () => <WiredPane part="sidebar" />
+const sessionsPane = {
+  id: 'sessions',
+  area: 'panes',
+  // String fallback only (menus, drag ghosts); the tab itself renders
+  // `tabTitle` below so the strip follows `display.language` once it loads.
+  title: translateNow('sidebar.sessions'),
+  // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
+  // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
+  // its default-ish spot beside main, not a random same-placement stack.
+  data: {
+    placement: 'left',
+    collapsible: true,
+    dock: { pane: 'workspace', pos: 'left' },
+    revealAliases: ['chat-sidebar'],
+    // Standing chrome: no close gestures at all — the tab is shown/hidden
+    // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+    hideOnly: true,
+    tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
+    tabTitleText: () => translateNow('sidebar.sessions'),
+    width: `var(--sessions-pane-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
+    // The redesign's rows and New-session split need more room (portal-sidebar.css).
+    minWidth: `var(--sessions-pane-min-width, ${SIDEBAR_DEFAULT_WIDTH}px)`,
+    maxWidth: `var(--sessions-pane-max-width, ${SIDEBAR_MAX_WIDTH}px)`,
+    // The redesign folds the sidebar when its sash is dragged well under the minimum (Figma
+    // 1054:22350), as ⌘B does; classic defines no fold width, so its sash stops at the minimum.
+    dragCollapseBelow: 'var(--sessions-pane-collapse-width, 0px)',
+    onDragCollapse: () => setSidebarOpen(false)
   },
+  render: () => <WiredPane part="sidebar" />
+}
+
+registry.registerMany([
+  sessionsPane,
   {
     id: 'workspace',
     area: 'panes',
@@ -363,7 +381,8 @@ registry.registerMany([
     } satisfies PaletteContribution
   },
   // Hiding the bar removes the surface that would otherwise offer it back, so
-  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
+  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S). A shell with no
+  // strip does not offer the action, so the palette drops the row there.
   paletteToggle({
     id: 'view.toggleStatusbar',
     label: 'Toggle status bar',
@@ -778,12 +797,14 @@ registerPaneOpener('sessions', () => {
 registerPaneCloser('files', () =>
   paneRootSide('files') === fileBrowserSide() ? setFileBrowserOpen(false) : dismissTreePane('files')
 )
+// The redesign's conversation header stands in for chat-only tab strips in every zone.
+provideZoneHeader(usePortalZoneHeader)
 
 // ---------------------------------------------------------------------------
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
-  const statusbarVisible = useStore($statusbarVisible)
+  const statusbarVisible = useStore($statusbarShown)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -830,7 +851,11 @@ export function ContribController() {
           data-contrib-shell=""
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
-          <LayoutTreeRoot titlebar />
+          <div className="flex min-h-0 flex-1">
+            <LayoutTreeCover>
+              <LayoutTreeRoot titlebar />
+            </LayoutTreeCover>
+          </div>
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />

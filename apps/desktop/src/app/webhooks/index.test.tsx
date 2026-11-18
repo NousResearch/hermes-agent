@@ -29,6 +29,8 @@ vi.mock('@/store/profile', async () => {
   return {
     $activeGatewayProfile: atom('alpha'),
     $profileScope: atom('__all__'),
+    // The page frame's band reads the shared layout store, which reads this flag.
+    $showAllProfiles: atom(false),
     normalizeProfileKey: (value: string | null | undefined) => String(value ?? '').trim() || 'default'
   }
 })

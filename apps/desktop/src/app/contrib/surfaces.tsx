@@ -18,9 +18,11 @@ import { $gateway } from '@/store/gateway'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
+import { type PageFrameKind, WorkspacePageFallback } from '../overlays/page-header-skeleton'
 import { ArtifactsView, CapabilitiesView, MessagingView } from '../page-views'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
 import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
@@ -33,6 +35,8 @@ import { StatusbarControls } from '../shell/statusbar-controls'
 
 import { latestChatActions, latestSidebarActions } from './latest-actions'
 import { setStatusbarItemGroup, useStatusbarContributions } from './panes'
+import { KeptChatRoutes } from './route-cover'
+import { useStatusRequester } from './status-requester'
 import type { SidebarActions, WiringActions } from './types'
 
 export function LegacySessionRedirect() {
@@ -80,13 +84,17 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   chatOpen: boolean
   commandCenterOpen: boolean
 }) {
+  const portal = usePortalShell()
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
   const demoLayout = useStore($chatOnboardingSolo)
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, actions.requestGateway, gatewayScope)
+
+  const requestStatus = useStatusRequester(actions.requestGateway)
+
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestStatus, gatewayScope)
   const extraLeftItems = useStatusbarContributions('left')
   const extraRightItems = useStatusbarContributions('right')
 
@@ -107,8 +115,11 @@ export const StatusbarSurface = memo(function StatusbarSurface({
     toggleCommandCenter: actions.toggleCommandCenter
   })
 
-  // The demo layout (first-run intro) has no status bar.
-  return demoLayout ? null : <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
+  if (demoLayout) {
+    return null
+  }
+
+  return <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} sidebar={portal} />
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin
@@ -159,6 +170,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   )
 
   const chatActions = useMemo(() => latestChatActions(actions), [actions])
+  const portal = usePortalShell()
 
   const chatView = (
     <ChatView
@@ -178,19 +190,39 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   // on the contribution, not a DOM marker — the `data-zone-no-header` attribute
   // that used to ride this wrapper gated a body double-click toggle that no
   // longer exists, and nothing has read it since.
-  const page = (view: ReactNode) => (
+  // A built-in page waits in its own frame; a contributed page's layout is its own business.
+  const page = (view: ReactNode, frame?: PageFrameKind) => (
     <div className="contents">
-      <Suspense fallback={null}>{view}</Suspense>
+      <Suspense fallback={frame && <WorkspacePageFallback frame={frame} />}>{view}</Suspense>
     </div>
   )
 
-  return (
-    <Routes>
+  // Everything the router reads as a chat location (appViewForPath), redirects included.
+  const chatRoutes = (
+    <>
       <Route element={chatView} index />
       <Route element={chatView} path=":sessionId" />
-      <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
-      <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
-      <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
+      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
+      <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
+      <Route element={<MoveToCloudRedirect />} path="move-to-cloud" />
+      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
+    </>
+  )
+
+  const pageRoutes = (
+    <>
+      <Route
+        element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />, 'capabilities')}
+        path="capabilities"
+      />
+      <Route
+        element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />, 'messaging')}
+        path="messaging"
+      />
+      <Route
+        element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />, 'library')}
+        path="artifacts"
+      />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
       <Route element={null} path="cron" />
@@ -199,8 +231,8 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={null} path="starmap" />
       <Route element={null} path="webhooks" />
       {/* Registry-contributed pages (core features + plugins) render in the
-          workspace pane like any built-in view — behind the same blast wall
-          as every other contribution mount. */}
+            workspace pane like any built-in view — behind the same blast wall
+            as every other contribution mount. */}
       {routeContributions.map(route => (
         <Route
           element={page(
@@ -212,10 +244,18 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
           path={route.path.slice(1)}
         />
       ))}
-      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
-      <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
-      <Route element={<MoveToCloudRedirect />} path="move-to-cloud" />
-      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
+    </>
+  )
+
+  // The redesign paints pages over a kept chat (route-cover.tsx); classic swaps them in place.
+  if (portal) {
+    return <KeptChatRoutes chat={chatRoutes} pages={pageRoutes} />
+  }
+
+  return (
+    <Routes>
+      {chatRoutes}
+      {pageRoutes}
     </Routes>
   )
 })

@@ -110,6 +110,68 @@ tie `styles.css`'s own `:root.dark` rules on specificity and must come later).
    pressed are the next ink steps, focus is one 2px brand-ink ring, disabled is
    40% opacity — the same rule for every component.
 
+### Responsive (compact, medium, wide)
+
+One renderer serves the desktop window and phones (the browser host), so the language has three
+width classes and two breakpoints, defined once in `src/app/redesign/breakpoints.ts` (`$widthClass`,
+`widthClassFor`). A custom property cannot feed a media query, so there is no breakpoint token: every
+redesign query repeats the literal (`max-width: 639.98px` compact, `max-width: 1023.98px` below wide)
+with a comment naming the class. Classic's sidebar dock point is the medium breakpoint; classic is otherwise untouched.
+
+- **Wide (≥ 1024)**: the desktop layout above, pixel for pixel.
+- **Medium (640–1023)**: the rail stays; the chat sidebar and page panels leave the layout and open
+  as **sheets** from the band's sidebar button over a full-width stage; page columns start at the
+  panel inset.
+- **Compact (< 640)**: no rail column (`--portal-rail-reserve: 0`). The band is the menu, the title
+  and "+" (no Back/Forward: the browser has them), 48px in the browser (44px on touch; native windows
+  keep 60, where Electron seats its controls). The menu opens the desktop's left side as one sheet:
+  the rail beside the chat sidebar or the page's panel, or the rail alone on a page without one.
+  Page insets collapse to 16px; the developer rail has no compact form.
+- **Sheets** (`app/shell/shell-sheet.ts`): full height past the rail, `--portal-sheet-width`
+  (`min(20rem, 100vw − 3.5rem)`), opaque, over `--portal-surface-scrim`. A tap on the scrim, Esc, or
+  any pick (navigation) closes one; focus moves into it and returns to the menu. Sheets sit under
+  menus and popovers (`--portal-layer-sheet*`), so a row's menu opens over its sheet.
+- **Short (max-height 30rem, `SHORT_QUERY`)**: a landscape phone or a raised keyboard puts the
+  composer on one row (attach, editor, send), hides the model row until there is room, and takes the browser's compact band (48, touch 44).
+- **Touch** (`(hover: none), (pointer: coarse)` on the browser host, any width): chrome buttons,
+  rows, menu items, tabs and page buttons take `--portal-touch-target` (44px); switches and
+  checkboxes keep their visual and extend their hit area; text fields never go under
+  `--portal-type-field-touch-min` (16px, iOS zoom); hover-only affordances are shown.
+- **Floating surfaces** stay inside the window (Radix's available size less a 16px gutter); on
+  compact a dialog is the whole window with its footer on the floor, and toasts span the window above
+  the composer.
+- **Browser chrome** (`app/redesign/browser-chrome.ts`): `theme-color` follows the canvas;
+  `viewport-fit=cover` lays the page under the notch, and on a device that reports a safe area the
+  app root is inset by it as a whole (body-portalled dialogs read `--portal-safe-*`).
+
+### Artwork
+
+The redesign paints one artwork per app launch behind the whole window (Figma "Prod - Desktop" ›
+Brand, frame `16292:10764`: one row per artwork). Dark rotates Vanilla (the engraved wing as a
+trace), Wing (the RGB wing), Angel, Ascend and Karborn; light rotates its own Vanilla and Ascend.
+`app/redesign/artwork.ts` picks the next one in that order on every launch (per device, in
+localStorage), so two launches in a row never repeat; every window of one launch shares the pick
+through the main process's launch id (`hermesDesktop.launchId`), and in a browser each page load
+is a launch. A theme switch keeps the same artwork when the other theme draws it, else the next
+one it does. The pick is mirrored onto `<html data-artwork-dark/-light>` before the first paint;
+classic and the popped-out Browser get none, and the transparent HUD has no canvas to show its on.
+
+`app/redesign/portal-artwork.css` holds the art: Figma's geometry in frame pixels (the 1270×870
+Background), scaled to cover the window and centred, plus its ground (`--portal-artwork-ground-*`,
+which becomes `--portal-surface-canvas`). Panels are veils over it, Figma's own fills: the stage of
+a new chat and a page body `--portal-surface-stage-veil`, a conversation the stronger
+`--portal-surface-stage-veil-conversation`, the sidebar kind `--portal-sidebar-panel-background`.
+Every painter repeats the art on its own box (`--artwork-paint`, `background-attachment: fixed`)
+so nested surfaces never compound a veil; covers that cannot (`--portal-surface-stage`,
+`--portal-page-background`) take the veil flattened onto the ground. With a sidebar or page nav
+docked (wide), the figure artworks move right by Figma's own amount to stay on the stage; every
+image carries bleed past every placement (Ascend repeats across), so no window size ever reaches an
+image edge. The panels carry Figma's NOISE effects as tiny tiling `feTurbulence` SVGs
+(`assets/portal-noise-*.svg`, `--artwork-panel-noise`/`--artwork-stage-noise`): the sidebar kind in
+both themes, the stage in light. Figma's
+"01 · Artwork" screens are the canvas layer on its own, not an app state; it shows no setting to
+turn the art off or choose one.
+
 ### Tokens
 
 `raw.css` holds the only colour literals (primitives: brand, status, danger, the
@@ -567,6 +629,22 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-sidebar-count-radius` | `10px` | ″ |  |
 
 <!-- design-tokens:end -->
+
+### Page header (`app/redesign/page-header.tsx`)
+
+Every routed page with a title or tabs renders `PageHeader` (Agents and an agent's Overview /
+History / Settings, Capabilities, Library, Messaging, Routines, Spawn tree, Webhooks, every global
+Settings page), so the H1, its description, the actions and the tab bar sit at one place on all of
+them. The geometry is `--portal-page-*` in `tokens/space.css`: the column top 18 (16 on compact), an
+H1 row (H1, actions at its end), the description 6 under it spanning the column, an optional leading
+tile (the agent avatar) beside both; with tabs the title block always reserves 68 (877:4166), so the
+tab bar is at one y whether a page has a description or not, then 24 to the tabs, 32h tabs and 24 to
+the content; without tabs the content follows after the page rhythm, 32. `PageTabs` is a WAI-ARIA
+tab list (arrows, Home, End; roving focus) whose tabs all take the widest tab's width, and a count
+reserves three digits while it loads, so switching tabs or a count arriving never moves a neighbour.
+On compact the actions take their own row and the tabs keep their own widths in one row that scrolls sideways when it must (44px on touch).
+A page that loads in fills its first paint with placeholders shaped like the loaded content
+(`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
 
 ### Rules of thumb
 

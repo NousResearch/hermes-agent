@@ -25,12 +25,15 @@ export function Field({
     <div className="grid gap-1.5">
       <label
         className="flex items-baseline gap-2 text-xs font-medium text-foreground"
+        data-slot="field-label"
         htmlFor={htmlFor}
         id={htmlFor ? `${htmlFor}-label` : undefined}
       >
         {label}
         {optional && optionalLabel && (
-          <span className="text-[0.65rem] font-normal text-muted-foreground">{optionalLabel}</span>
+          <span className="text-[0.65rem] font-normal text-muted-foreground" data-slot="field-optional">
+            {optionalLabel}
+          </span>
         )}
       </label>
       {children}
@@ -40,6 +43,11 @@ export function Field({
 
 export function FieldHint({ children, error }: { children: ReactNode; error?: boolean }) {
   return (
-    <p className={cn('text-[0.66rem] leading-4', error ? 'text-destructive' : 'text-muted-foreground')}>{children}</p>
+    <p
+      className={cn('text-[0.66rem] leading-4', error ? 'text-destructive' : 'text-muted-foreground')}
+      data-slot="field-hint"
+    >
+      {children}
+    </p>
   )
 }

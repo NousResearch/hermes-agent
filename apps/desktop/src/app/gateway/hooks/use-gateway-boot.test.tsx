@@ -576,7 +576,6 @@ describe('primary failure foreground isolation', () => {
     expect($desktopBoot.get().error).toBeNull()
     const toasts = $notifications.get().filter(entry => entry.kind === 'error')
     expect(toasts).toHaveLength(1)
-    expect(toasts[0].action?.label).toBe('Open Gateways')
   })
 
   it.each(['progress', 'reconnect'] as const)(

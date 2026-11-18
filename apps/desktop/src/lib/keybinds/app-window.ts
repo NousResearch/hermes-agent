@@ -8,6 +8,8 @@
 // The window kind changes live: "Open in Chrome" moves an app window into a
 // tab without reloading the page, so callers follow `onBrowserWindowKindChange`.
 
+import { atom, onMount } from 'nanostores'
+
 import { arraysEqual } from '@/lib/storage'
 
 const APP_WINDOW_QUERIES = ['standalone', 'minimal-ui', 'window-controls-overlay'].map(
@@ -36,6 +38,17 @@ export function inChromiumAppWindow(): boolean {
     APP_WINDOW_QUERIES.some(query => window.matchMedia(query).matches)
   )
 }
+
+/** `inChromiumAppWindow` as a store, for chrome that must follow a live window-kind change. */
+export const $chromiumAppWindow = atom(false)
+
+onMount($chromiumAppWindow, () => {
+  const sync = () => $chromiumAppWindow.set(inChromiumAppWindow())
+
+  sync()
+
+  return onBrowserWindowKindChange(sync)
+})
 
 /** Runs `listener` whenever the window's display mode changes. */
 export function onBrowserWindowKindChange(listener: () => void): () => void {

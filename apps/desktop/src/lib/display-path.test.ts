@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { displayPath, normalizeDisplayPath, pathLeaf } from './display-path'
+import { displayPath, displayProfilePath, normalizeDisplayPath, pathLeaf } from './display-path'
 
 describe('displayPath', () => {
   it('collapses a macOS home prefix to ~', () => {
@@ -43,5 +43,21 @@ describe('pathLeaf', () => {
     expect(pathLeaf('/Users/me/www/hermes-agent')).toBe('hermes-agent')
     expect(pathLeaf('~/www/hermes-agent')).toBe('hermes-agent')
     expect(pathLeaf('/')).toBe('/')
+  })
+})
+
+describe('displayProfilePath', () => {
+  it('collapses the home the profile folder lives under, wherever that is', () => {
+    expect(displayProfilePath('/srv/sandbox/home/.hermes')).toBe('~/.hermes')
+    expect(displayProfilePath('/srv/sandbox/home/.hermes/profiles/ops')).toBe('~/.hermes/profiles/ops')
+    expect(displayProfilePath('C:\\Users\\me\\.hermes')).toBe('~/.hermes')
+  })
+
+  it('keeps every character of a dotted path', () => {
+    expect(displayProfilePath('/home/me/.cache/x/.hermes-custom')).toBe('~/.cache/x/.hermes-custom')
+  })
+
+  it('leaves a custom HERMES_HOME outside a home untouched', () => {
+    expect(displayProfilePath('/opt/hermes')).toBe('/opt/hermes')
   })
 })

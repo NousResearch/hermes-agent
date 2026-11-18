@@ -21,6 +21,8 @@ export const StatusDot = memo(function StatusDot({ className, tone, ...props }: 
     <span
       aria-hidden="true"
       className={cn('inline-block size-1.5 rounded-full', TONE_BG[tone], className)}
+      data-slot="status-dot"
+      data-tone={tone}
       {...props}
     />
   )

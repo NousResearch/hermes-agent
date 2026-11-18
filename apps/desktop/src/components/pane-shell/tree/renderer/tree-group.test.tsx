@@ -2,9 +2,10 @@ import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $shellChoice } from '@/store/shell-variant'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
@@ -46,6 +47,9 @@ const toggle = (label: string) =>
   globalThis.document.querySelector<HTMLButtonElement>(
     `[data-tree-group="terminal-zone"] button[aria-label="${label}"]`
   )!
+
+// The redesign is opt-in until it is turned on: these cases describe it, so they select it.
+beforeEach(() => $shellChoice.set(true))
 
 afterEach(() => {
   if (root) {
@@ -358,6 +362,27 @@ describe('TreeGroup', () => {
   // no Close anywhere on screen. The BODY must serve the same right-click zone
   // menu the strip carries, so Close/Minimize stay reachable from the pane's
   // own content.
+  // The redesigned shell rounds only a panel row's OUTER corners, so a zone
+  // must name exactly the window edges it touches, plus the pane it shows.
+  it('marks only the window edges the zone touches', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+
+    render(<TreeGroup leftEdge node={terminalGroup(false)} parentAxis="row" topEdge />)
+
+    const zone = globalThis.document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!
+
+    expect(zone.dataset.windowTop).toBe('true')
+    expect(zone.dataset.windowStart).toBe('true')
+    expect(zone.dataset.windowEnd).toBeUndefined()
+    expect(zone.dataset.zonePane).toBe('terminal')
+  })
+
   it('opens the zone menu from ordinary pane body content', () => {
     disposePane = registry.register({
       area: 'panes',

@@ -178,7 +178,14 @@ from tools.environments.base import EnvironmentConnectionError
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The cwd and env persist between calls: activate a virtualenv or export once. Output is truncated, full text saved to a file; never pipe through head/tail.
 
-Foreground (default) returns when done; to wait a fixed time, sleep in the foreground, never a background or polling loop. Health-check background servers separately; use process_manage for jobs. Trust the result's "cwd" after a cd. Do not use it to read, search or edit files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked; for several files or counts, call them in parallel or loop in execute_code."""
+Foreground (default) returns when done; to wait a fixed time, sleep in the foreground, never a background or polling loop. Health-check background servers separately; use process_manage for jobs. Trust the result's "cwd" after a cd."""
+
+# Appended by model_tools._rewrite_terminal only when the session has the tools they name: a
+# terminal-only session must not be told to avoid its only file route. Kept last in the description
+# on purpose (live A/B: the same redirect near the top barely moved Opus off cat/grep).
+TERMINAL_FILE_TOOLS_HINT = " Do not use it to read, search or edit text files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked"
+TERMINAL_FILE_TOOL_NAMES = frozenset({"read_file", "search_files", "patch", "write_file"})
+TERMINAL_EXECUTE_CODE_HINT = "; for several files or counts, call them in parallel or loop in execute_code"
 
 # Environment lifecycle state.
 _active_environments: dict[str, Any] = {}

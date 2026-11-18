@@ -411,6 +411,17 @@ def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional
     return _fn_def({**fn, "description": desc.replace(SCREENSHOTS_DETACHED, SCREENSHOTS_DETACHED + hint, 1)})
 
 
+def _rewrite_terminal(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Steer file work to the file tools only when the session has all of them, and name
+    execute_code only when it is present (a terminal-only session keeps the shell as its file route)."""
+    from tools.terminal_tool import TERMINAL_EXECUTE_CODE_HINT, TERMINAL_FILE_TOOL_NAMES, TERMINAL_FILE_TOOLS_HINT
+    if not TERMINAL_FILE_TOOL_NAMES <= available:
+        return td
+    hint = TERMINAL_FILE_TOOLS_HINT + (TERMINAL_EXECUTE_CODE_HINT if "execute_code" in available else "") + "."
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + hint})
+
+
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -493,6 +504,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_vault": _rewrite_browser_vault,
     "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
+    "terminal": _rewrite_terminal,
 }
 
 

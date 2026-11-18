@@ -1594,3 +1594,75 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+class TestBufferThresholdUnflushedDelta:
+    """Verify buffer_threshold measures unflushed chars since the last push (#157481)."""
+
+    def test_should_edit_uses_unflushed_delta_not_total_accumulated(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        cfg = StreamConsumerConfig(edit_interval=3.2, buffer_threshold=20, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", cfg)
+
+        # Simulate having already flushed 25 characters (above buffer_threshold=20).
+        consumer._accumulated = "A" * 25
+        consumer._last_sent_text = "A" * 25
+        consumer._message_id = "msg_1"
+        consumer._already_sent = True
+        consumer._edit_last_pushed_len = len(consumer._accumulated)
+        import time
+        consumer._last_edit_time = time.monotonic()
+
+        tick = SimpleNamespace(
+            is_interim=True, got_done=False, got_segment_break=False, commentary_text=None,
+        )
+
+        # Adding 5 more chars brings total len to 30 (>= 20), but unflushed is only 5 (< 20).
+        consumer._accumulated += "B" * 5
+        assert consumer._should_edit(tick) is False
+
+        # Adding 15 more chars brings unflushed delta to 20 (>= 20), triggering an edit.
+        consumer._accumulated += "C" * 15
+        assert consumer._should_edit(tick) is True
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_bypass_edit_interval_after_first_threshold(self):
+        """After exceeding buffer_threshold once, small deltas must not fire edits every tick."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        cfg = StreamConsumerConfig(edit_interval=5.0, buffer_threshold=20, cursor="")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", cfg)
+
+        # First chunk exceeds buffer_threshold and triggers initial send immediately.
+        consumer.on_delta("A" * 25)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        assert adapter.send.call_count == 1
+        assert adapter.edit_message.call_count == 0
+
+        # Several small deltas well below buffer_threshold=20 and before edit_interval=5.0s
+        # should stay buffered instead of calling edit_message on every tick.
+        for ch in ("b", "c", "d", "e"):
+            consumer.on_delta(ch)
+            await asyncio.sleep(0.07)
+
+        assert adapter.edit_message.call_count == 0
+
+        # Accumulating >= 20 unflushed characters since the last push triggers one mid-stream edit.
+        consumer.on_delta("X" * 16)
+        await asyncio.sleep(0.08)
+        assert adapter.edit_message.call_count == 1
+
+        # Next tiny delta waits again instead of firing immediately.
+        consumer.on_delta("z")
+        await asyncio.sleep(0.07)
+        assert adapter.edit_message.call_count == 1
+
+        consumer.finish()
+        await task
+        assert adapter.edit_message.call_count == 2
+
+

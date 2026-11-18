@@ -243,6 +243,7 @@ def prune_pre_checkpoint_items(
     retained_user_token_budget: int = RETAINED_USER_MESSAGE_TOKEN_BUDGET,
     retained_summary_token_budget: int = RETAINED_SUMMARY_TOKEN_BUDGET,
     enable_summary_retention: bool = True, item_sources: Optional[list[Any]] = None,
+    typed_text_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Restructure Responses input around the newest compaction checkpoint.
 
@@ -264,6 +265,10 @@ def prune_pre_checkpoint_items(
       ``function_call_output``; assistant carrier shadowed by a stale replay), so a source
       that is itself a canonical summary carrier is read from the SOURCE and retained as a
       synthesized ``role="assistant"`` message.
+    - ``typed_text_only`` types the text of a message synthesized from a source (``input_text`` for a
+      user message, ``output_text`` for an assistant one): the ChatGPT Codex backend takes only typed
+      parts, and the items converted from the transcript are already typed there. Other routes keep the
+      string shorthand (#157071).
     - ``enable_summary_retention`` is a test override, not a config surface.
 
     The server drops every input item that precedes a replayed ``compaction`` item (live-verified Aug 2026),
@@ -318,9 +323,11 @@ def prune_pre_checkpoint_items(
         if enable_summary_retention and isinstance(source, dict) and _is_summary_item(source):
             text = flatten_message_text(source.get("content"))
             _src_role = source.get("role")
+            _role = _src_role if _src_role in ("user", "assistant") else "assistant"
             _retain_summary(text if text.strip() else None,
-                            {"type": "message", "role": _src_role if _src_role in ("user", "assistant") else "assistant",
-                             "content": text})
+                            {"type": "message", "role": _role,
+                             "content": ([{"type": "input_text" if _role == "user" else "output_text", "text": text}]
+                                         if typed_text_only else text)})
             continue
         # Typed non-message items never carry role=user or a summary flag.
         if "type" in item and item.get("type") != "message":

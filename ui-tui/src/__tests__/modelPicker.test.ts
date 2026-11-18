@@ -1,11 +1,16 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import { appendModelPickerFilter, providerIndexAfterClearingFilter } from '../components/modelPicker.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
 describe('ModelPicker provider filtering', () => {
+  it('appends q to an empty filter', () => {
+    expect(appendModelPickerFilter('', 'q')).toBe('q')
+    expect(appendModelPickerFilter('q', 'q')).toBe('qq')
+  })
+
   it('keeps the selected provider when clearing the provider filter', () => {
     const nous = provider('nous', 'Nous Portal')
     const ollama = provider('ollama-cloud', 'Ollama Cloud')

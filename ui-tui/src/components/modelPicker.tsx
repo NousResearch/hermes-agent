@@ -25,6 +25,10 @@ type Stage = 'provider' | 'key' | 'model' | 'reasoning' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
+export function appendModelPickerFilter(filter: string, ch: string): string {
+  return ch && ch.length === 1 && ch >= ' ' ? filter + ch : filter
+}
+
 /** Rows of the effort step (step 3/3): the shared ladder, the off state, then
  *  "keep current" (empty value = no `--reasoning` flag on the emitted command).
  *  Resolved at call time so the two labelled rows follow the active language;
@@ -569,7 +573,7 @@ export function ModelPicker({
 
     // Any other printable single character extends the filter.
     if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
-      setFilter(v => v + ch)
+      setFilter(v => appendModelPickerFilter(v, ch))
       setSel(0)
     }
   })

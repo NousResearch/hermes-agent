@@ -266,6 +266,12 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         if state.auth_required or loaded_web is not None or webapp is not None:
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
+        # WinError 10014 (a dropped AcceptEx) makes the proactor close this
+        # socket. Desktop then gets connection refused while the process stays
+        # up. ``hermes serve`` uses a selector loop; the gateway cannot.
+        from gateway.windows_proactor_accept import install_proactor_accept_guard
+
+        install_proactor_accept_guard(asyncio.get_running_loop())
         await server.startup(sockets=[listener])
         if not server.started or server.should_exit:
             raise RuntimeError("gateway API lifespan startup failed")

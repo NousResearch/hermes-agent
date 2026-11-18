@@ -47,12 +47,8 @@ def _run_owned_job(job, tmp_path, db=None):
         persistence=persistence,
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
         pending_results={})
-    row = {
-        "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "payload": {"text": ""},
-        # A real claim of the seeded session: the owner bridge fences the run's writes by its stamp.
-        **(claim_stamp(persistence, ref.session_id) if owns_db else {"owner_epoch": 1, "generation": 1}),
-    }
+    row = {"admission_id": admission_id, "request_id": request_id, "principal_id": "cron-owner", "payload": {"text": ""},
+           **(claim_stamp(persistence, ref.session_id) if owns_db else {"owner_epoch": 1, "generation": 1})}  # a real claim
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,
     }))

@@ -16,8 +16,8 @@ import pytest
 import tools.async_delegation as ad
 from persistence import SessionId, TurnFenceSuperseded
 from persistence.conversation.sessions import NewSession, SessionLineageKind
-from tests.hosted_persistence._turn_rows import flush
-from tests.hosted_persistence.test_turn_fence_lifetime import S, _next_claim, _take_over, _turn, claimed
+from tests.persistence.hosted._turn_rows import flush
+from tests.persistence.hosted.test_turn_fence_lifetime import S, _next_claim, _take_over, _turn
 
 CHILD = SessionId("delegated-child")
 

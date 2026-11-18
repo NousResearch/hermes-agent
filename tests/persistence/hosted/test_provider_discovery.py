@@ -294,3 +294,4 @@ def test_store_location_of_a_home_not_on_disk_reads_no_config(tmp_path, monkeypa
     scope = persistence_assembly.profile_scope(home=missing)
     assert persistence_assembly.store_location(scope) == missing / "state.db"
     assert not missing.exists()
+

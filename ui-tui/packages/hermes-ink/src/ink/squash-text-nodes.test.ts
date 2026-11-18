@@ -47,18 +47,20 @@ describe('stripOsc8', () => {
     expect(withOpener).toBeGreaterThan(100)
     expect(spliced).toBeGreaterThan(0)
 
-    const nested = ESC.repeat(5000) + `]8;;x${BEL}`.repeat(5000) + 'label'
+    // Linear time: sizes where a quadratic strip takes far longer than the bound, while a
+    // linear one finishes in milliseconds, so a loaded runner cannot flake it.
+    const nested = ESC.repeat(50000) + `]8;;x${BEL}`.repeat(50000) + 'label'
     const started = performance.now()
 
     expect(stripOsc8(nested)).toBe('label')
-    expect(performance.now() - started).toBeLessThan(50)
+    expect(performance.now() - started).toBeLessThan(2000)
 
     // Unterminated openers whose payload scan restarts on every splice stay linear too.
-    const unterminated = ESC.repeat(20000) + ']8;'.repeat(20000) + 'x'.repeat(20000)
+    const unterminated = ESC.repeat(100000) + ']8;'.repeat(100000) + 'x'.repeat(100000)
     const begun = performance.now()
 
     expect(stripOsc8(unterminated)).not.toContain(OPEN)
-    expect(performance.now() - begun).toBeLessThan(50)
+    expect(performance.now() - begun).toBeLessThan(2000)
   })
 
   it('drops only the opener when the payload has no terminator before a newline or the end', () => {
@@ -114,6 +116,30 @@ describe('squashTextNodesToSegments', () => {
       { hyperlink: undefined, styles: {}, text: 'before ;' },
       { hyperlink: undefined, styles: { color: 'ansi:red' }, text: `${BEL} WARNING` },
       { hyperlink: 'https://docs.example.com/real', styles: {}, text: 'TRUSTED' }
+    ])
+  })
+
+  it('bounds the payload skip by the node an opener ends in, even at its last char', () => {
+    const run = element('ink-text', [
+      text(`a ${OPEN}`),
+      element('ink-virtual-text', [text(`;X${BEL}Y`)], { bold: true })
+    ])
+
+    expect(segmentsOf(run)).toEqual([
+      { hyperlink: undefined, styles: {}, text: 'a ' },
+      { hyperlink: undefined, styles: { bold: true }, text: `;X${BEL}Y` }
+    ])
+  })
+
+  it('never lets an ST terminator straddling a node boundary end the payload in the next node', () => {
+    const run = element('ink-text', [
+      text(`a ${OPEN};u${ESC}`),
+      element('ink-virtual-text', [text('\\b')], { bold: true })
+    ])
+
+    expect(segmentsOf(run)).toEqual([
+      { hyperlink: undefined, styles: {}, text: `a ${ESC}` },
+      { hyperlink: undefined, styles: { bold: true }, text: '\\b' }
     ])
   })
 })

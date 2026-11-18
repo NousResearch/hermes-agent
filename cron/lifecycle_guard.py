@@ -1412,6 +1412,36 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _is_python_source(path: Path, text: str) -> bool:
+    """True for a Python source file: ``.py`` suffix or a ``#!...python`` shebang.
+
+    The referenced-script walk exists to catch shell scripts; walking Python source text as shell
+    tokens produces bogus candidates (a data-path string literal, a doc string, even raw bytes
+    decoded from an image the script names) and can burn the whole remote-read budget on an
+    innocent command. Mirrors the exemption ``check_gateway_lifecycle`` already applies to ``.py``
+    scripts.
+    """
+    if str(path).lower().endswith(".py"):
+        return True
+    head = text[:256].lstrip()
+    if not head.startswith("#!"):
+        return False
+    return "python" in head.splitlines()[0].lower()
+
+
+def _local_path_exists(path: Path) -> bool:
+    """Whether *path* exists in THIS process's filesystem.
+
+    Keeps the remote-backend read fallback for genuinely absent paths only: a path that exists
+    locally but yielded no script text was already rejected as binary or non-regular, and asking
+    the backend for it just feeds its raw bytes back into the recursion.
+    """
+    try:
+        return os.path.lexists(str(path))
+    except (OSError, ValueError):
+        return False
+
+
 def _scan_written_bodies(
     bodies: list[str], recurse: Callable[..., bool], cwd: Optional[str], executed: bool,
 ) -> bool:
@@ -1510,6 +1540,13 @@ def _contains_unsafe_gateway_action(
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue
         if script_text is None and read_remote_script is not None:
+            # A local path that EXISTS already has a verdict (binary, directory, device,
+            # unreadable): nothing executable to scan. Falling back to the backend there mailed raw
+            # bytes (e.g. a JPEG named in the script) back into the recursion, whose decoded
+            # garbage produced hundreds of bogus candidates and exhausted the remote-read budget,
+            # failing closed on innocent commands.
+            if _local_path_exists(resolved):
+                continue
             # Local path missing; the remote backend's output crosses the same trust boundary as a
             # local read — sanitize identically (binary skip + size fail-closed).
             if not budget.charge_remote_read():
@@ -1528,6 +1565,16 @@ def _contains_unsafe_gateway_action(
                     )
                 continue
         if not script_text:
+            continue
+        if _is_python_source(resolved, script_text):
+            # Python runs via the interpreter, never a POSIX shell, and the shell reference walk is
+            # a false-positive generator on Python sources (a JPEG literal, a pathlib "/", a doc
+            # string...). Keep the regex + data-exemption scan so a literal lifecycle command in
+            # the source is still blocked, but do not walk its string literals as scripts.
+            if not budget.charge_text(script_text):
+                return _budget_exhausted(budget, "text", depth) if candidate_executed else False
+            if _lifecycle_command_scan_with_data_exemption(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):

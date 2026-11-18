@@ -278,6 +278,66 @@ describe('visible time ownership', () => {
     expect(JSON.parse(localStorage.getItem(key)!).pending).toEqual([])
   })
 
+  it('does not freeze a day with unadopted legacy frames when an older receipt arrives after midnight', async () => {
+    const receipt = Promise.withResolvers<{ recorded: boolean }>()
+
+    bindDesktopMetrics(async (method, params = {}) => {
+      calls.push([method, params])
+
+      if (method === 'shared_metrics.desktop_long_frames' && params.day === '2026-09-27') {
+        return receipt.promise as never
+      }
+
+      return { recorded: method !== 'shared_metrics.desktop_daily' } as never
+    })
+    await setMetricsGate(captureDesktopMetricsGate, 'on')
+    recordAction('composer.send', 'click')
+    recordLongFrames([70])
+    await flush()
+    vi.setSystemTime(NOON + DAY)
+    tickDesktopMetrics()
+    await flush()
+    expect(histograms().map(report => report.day)).toEqual(['2026-09-27'])
+
+    recordLongFrames([70])
+    await flush()
+
+    const key = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).find(candidate =>
+      candidate.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) &&
+      !candidate.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))!
+
+    const legacy = JSON.parse(localStorage.getItem(key)!)
+
+    legacy.today.frames = { '100ms_to_250ms': 7 }
+    legacy.today.visibleMs = 3 * MINUTE
+    localStorage.setItem(key, JSON.stringify(legacy))
+    const storage = pageStorage()
+    const setItem = storage.setItem
+    let blockAdoption = true
+
+    vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
+      if (blockAdoption && name.startsWith(`${key}:frames:legacy-`)) {
+        throw new DOMException('full', 'QuotaExceededError')
+      }
+
+      setItem.call(this, name, value)
+    })
+    vi.setSystemTime(NOON + 2 * DAY)
+    receipt.resolve({ recorded: true })
+    await flush()
+    expect(histograms().map(report => report.day)).toEqual(['2026-09-27'])
+
+    blockAdoption = false
+    tickDesktopMetrics()
+    await flush()
+    tickDesktopMetrics()
+    await flush()
+    expect(histograms().at(-1)).toEqual({
+      day: '2026-09-28', visible_ms: 3 * MINUTE,
+      frames: [{ bucket: '50ms_to_100ms', count: 1 }, { bucket: '100ms_to_250ms', count: 7 }]
+    })
+  })
+
   it('waits for a same-profile peer tail before the backend latches midnight', async () => {
     const accepted = new Map<string, Record<string, unknown>>()
 

@@ -931,8 +931,17 @@ function reportAbandonedSteps(): void {
 
 function flushFrameDays(owner: string, requester: SharedMetricsRequester, collector: DesktopFrameMetrics | null): void {
   if (collector && scope === owner && request === requester && $desktopMetricsGate.get() === 'on') {
-    void collector.flush(requester, () =>
-      frameMetrics === collector && scope === owner && request === requester && $desktopMetricsGate.get() === 'on')
+    const key = stateKey()
+
+    const current = () =>
+      frameMetrics === collector && scope === owner && request === requester && $desktopMetricsGate.get() === 'on'
+
+    // Checked per day under the freeze lock: a receipt that lands after midnight makes a new day eligible.
+    void collector.flush(requester, current, day => {
+      const state = readState(key, collector, botCount)
+
+      return ![state.today, ...state.pending].some(entry => entry.day === day && (entry.frames || entry.visibleMs))
+    })
   }
 }
 
@@ -975,13 +984,8 @@ async function flushPendingDays(): Promise<void> {
         }
 
         if (!recorded) {
-          // Do not freeze a journal before its pending legacy contributions have been adopted.
-          const journalOnly = await withState(current =>
-            !current.pending.some(entry => entry.frames || entry.visibleMs), undefined, collector)
+          flushFrameDays(owner, requester, collector)
 
-          if (journalOnly) {
-            flushFrameDays(owner, requester, collector)
-          }
           return
         }
 

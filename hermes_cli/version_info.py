@@ -12,6 +12,7 @@ Resolution order:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -21,6 +22,14 @@ from typing import Literal, cast
 from hermes_cli.steward import UPDATE_MECHANISMS
 from hermes_cli.update_channel import STABLE_TAG_RE
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli._subprocess_compat import (
+    NO_LAZY_FETCH_ENV,
+    bounded_probe_run,
+    noninteractive_git_env,
+)
+
+# Every version probe is bounded on both ends (see ``_run_git``).
+_GIT_PROBE_TIMEOUT_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -60,15 +69,25 @@ def _derived_version(
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    """One bounded ``git`` probe; ``None`` on any failure.
+
+    ``subprocess.run``'s post-timeout cleanup awaits an *unbounded* ``communicate()``;
+    on Windows the killed launcher can leave ``git.exe`` holding the captured pipes, so
+    that join never returns and the calling worker wedges instead of degrading the
+    version label. ``bounded_probe_run`` is the repo's deadlock-safe probe (job-object
+    containment + tree-kill + 1 s drain + abandon) — it returns ``None`` rather than
+    raising, so a failed probe simply reads as "no value".
+    """
+    result = bounded_probe_run(
+        ["git", *args],
+        timeout=_GIT_PROBE_TIMEOUT_SECONDS,
+        cwd=str(repo_dir),
+        env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+    )
+    if result is None or result.returncode != 0:
         return None
     value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    return value or None
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -226,15 +245,21 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
-        dirty_result = subprocess.run(
+        dirty_result = bounded_probe_run(
             status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
+            timeout=_GIT_PROBE_TIMEOUT_SECONDS,
             cwd=str(repo_dir),
-            check=False,
+            # Keep the caller's git config for ``status``: isolating it (as
+            # ``noninteractive_git_env`` does for the value probes) changes the
+            # autocrlf/filemode normalization and reports a clean tree as modified.
+            # Only the lazy-fetch guard is layered on; the containment is what bounds it.
+            env={**os.environ, **NO_LAZY_FETCH_ENV},
         )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
+        dirty = bool(
+            dirty_result is not None
+            and dirty_result.returncode == 0
+            and (dirty_result.stdout or "").strip()
+        )
     except (OSError, subprocess.SubprocessError):
         dirty = False
 

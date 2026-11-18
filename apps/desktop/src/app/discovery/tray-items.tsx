@@ -1,0 +1,205 @@
+import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
+import type { ComponentType } from 'react'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
+import { $firstTimeSplashReopenable, reopenFirstTimeSplash } from '@/store/first-time-splash'
+import { $newVersionReady } from '@/store/new-version'
+import { createNotificationTray, type TrayItemSource } from '@/store/notification-tray'
+import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
+import { $connection } from '@/store/session'
+import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus, startActiveUpdate } from '@/store/updates'
+import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-access'
+
+import { useDiscoveryCopy } from './discovery-copy'
+import { useFirstTimeCopy } from './first-time-copy'
+
+export interface TrayCardProps {
+  /** Closes the tray: call it before an action that takes the person somewhere else. */
+  close: () => void
+  /** The item had news the person had not seen when the tray opened. */
+  unseen: boolean
+}
+
+/** One entry of the notifications tray. Add an item by appending a definition to {@link TRAY_ITEMS};
+ *  the tray, its bell and what counts as seen need no change. */
+export interface TrayItemDefinition extends TrayItemSource {
+  Card: ComponentType<TrayCardProps>
+}
+
+interface TrayCardViewProps {
+  eyebrow?: string
+  title: string
+  description?: string
+  action: { label: string; run: () => void }
+  unseen: boolean
+}
+
+/** The tray's one card shape: a caption, a display title, a sentence, one action. Items compose it
+ *  so every entry reads alike; an item that needs a different shape renders its own. */
+export function TrayCard({ action, description, eyebrow, title, unseen }: TrayCardViewProps) {
+  const copy = useDiscoveryCopy()
+
+  return (
+    <article className="discovery-tray-card" data-slot="tray-card" data-unseen={unseen || undefined}>
+      {(eyebrow || unseen) && (
+        <p className="discovery-tray-card-eyebrow">
+          {unseen && <Badge variant="default">{copy.tray.newBadge}</Badge>}
+          {eyebrow}
+        </p>
+      )}
+      <h3 className="discovery-tray-card-title">{title}</h3>
+      {description && <p className="discovery-tray-card-description">{description}</p>}
+      <Button className="discovery-tray-card-action" onClick={action.run} size="sm" variant="outline">
+        {action.label}
+      </Button>
+    </article>
+  )
+}
+
+/** An update for the target this window would install (the same choice as the palette's Update
+ *  row), while it waits and nothing is installing it. Hermes Cloud updates its own agents. */
+const $pendingUpdate = computed(
+  [$connection, $cloudOwnsUpdates, $updateStatus, $backendUpdateStatus, $updateApply, $backendUpdateApply],
+  (connection, cloudOwns, client, backend, clientApply, backendApply) => {
+    const target = updateTargetFor(connection)
+    const status = target === 'backend' ? backend : client
+    const applying = (target === 'backend' ? backendApply : clientApply).applying
+
+    if (cloudOwns[target] || applying || !status?.supported || status.error) {
+      return null
+    }
+
+    if (!((status.behind ?? 0) > 0 || status.updateAvailable)) {
+      return null
+    }
+
+    // What the update installs: a newer target is news again. Checks run at most daily in the
+    // background (store/updates.ts), so a busy branch lights the bell no more often than that.
+    return { news: status.targetSha ?? status.latestTag ?? 'available', target }
+  }
+)
+
+function AppUpdateCard({ close, unseen }: TrayCardProps) {
+  const copy = useDiscoveryCopy().updateItem
+
+  return (
+    <TrayCard
+      action={{
+        label: copy.action,
+        run: () => {
+          close()
+          startActiveUpdate($pendingUpdate.get()?.target)
+        }
+      }}
+      eyebrow={copy.eyebrow}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
+function NewVersionCard({ unseen }: TrayCardProps) {
+  const copy = useDiscoveryCopy().newVersion
+
+  return (
+    <TrayCard
+      action={{ label: copy.refresh, run: () => window.location.reload() }}
+      description={copy.description}
+      eyebrow={copy.eyebrow}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
+function RenameSplashCard({ close, unseen }: TrayCardProps) {
+  const copy = useDiscoveryCopy().renameItem
+
+  return (
+    <TrayCard
+      action={{
+        label: copy.action,
+        run: () => {
+          close()
+          reopenRenameSplash()
+        }
+      }}
+      description={copy.description}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
+/** Sign up (1A' 479:4114), for as long as it is required: news until the tray has been opened. A
+ *  sign up that came back without signing the visitor in is news again, and the card says so (a held
+ *  message says it in the chat instead, held-exchange.tsx). */
+const $signUpItem = computed([$signUpRequired, $signInFailed], (required, failed) =>
+  required ? { news: failed ? 'sign-in-failed' : 'v1' } : null
+)
+
+function SignUpCard({ close, unseen }: TrayCardProps) {
+  const copy = useFirstTimeCopy()
+  const failed = useStore($signInFailed)
+
+  return (
+    <TrayCard
+      action={{
+        label: failed ? copy.held.tryAgain : copy.tray.signUp.action,
+        run: () => {
+          close()
+          startSignUp('tray')
+        }
+      }}
+      description={failed ? copy.held.failedBody : copy.tray.signUp.description}
+      title={failed ? copy.held.failedTitle : copy.tray.signUp.title}
+      unseen={unseen}
+    />
+  )
+}
+
+function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
+  const copy = useFirstTimeCopy().tray.meet
+
+  return (
+    <TrayCard
+      action={{
+        label: copy.action,
+        run: () => {
+          close()
+          reopenFirstTimeSplash()
+        }
+      }}
+      title={copy.title}
+      unseen={unseen}
+    />
+  )
+}
+
+/** The tray's items, in the order they list. */
+export const TRAY_ITEMS: readonly TrayItemDefinition[] = [
+  { id: 'sign-up', $state: $signUpItem, Card: SignUpCard },
+  { id: 'app-update', $state: $pendingUpdate, Card: AppUpdateCard },
+  {
+    id: 'new-version',
+    $state: computed($newVersionReady, ready => (ready ? { news: 'ready' } : null)),
+    Card: NewVersionCard
+  },
+  // Once seen, the splash's entry is news once more: the splash says it can be found here.
+  {
+    id: 'rename-splash',
+    $state: computed($renameSplashReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
+    Card: RenameSplashCard
+  },
+  // The same for the first-time splash, which says it can be found here too.
+  {
+    id: 'first-time-splash',
+    $state: computed($firstTimeSplashReopenable, reopenable => (reopenable ? { news: 'v1' } : null)),
+    Card: FirstTimeSplashCard
+  }
+]
+
+export const notificationTray = createNotificationTray(TRAY_ITEMS)

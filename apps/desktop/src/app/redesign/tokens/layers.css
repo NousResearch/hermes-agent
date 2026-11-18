@@ -14,4 +14,7 @@
   /* The status bar stands in the canvas on route pages too (z-50, mounted before it), and under the
      menus and popovers opened after it. */
   --portal-layer-status-bar: 50;
+  /* A splash row's spotlight on the nav (app/discovery/nav-spotlight.tsx): over the rail, the chat
+     sidebar and their sheets, which it points into; it is never hit. */
+  --portal-layer-spotlight: 52;
 }

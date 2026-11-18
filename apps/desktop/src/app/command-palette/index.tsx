@@ -111,6 +111,7 @@ import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 import { usePaletteContributions } from './contrib'
 import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
+import { useOldNameRows } from './old-name-rows'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 import { useUpdateRowLabel } from './use-update-row-label'
 
@@ -1323,10 +1324,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // Branch rows rank below BOTH the fixed groups and the typed-only lists: they
   // scale with whatever worktrees happen to exist, so on a tie they're the least
   // likely thing meant. Everything above is either always-present chrome or a
-  // list the search itself asked for.
+  // list the search itself asked for. A renamed place found by its classic word leads (the redesign's
+  // root list only): the person typed a name the app no longer shows.
+  const oldNameGroups = useOldNameRows(search, portal && !page, go)
+
   const groups = useMemo(
-    () => [...baseGroups, ...searchGroups, ...branchGroup],
-    [baseGroups, branchGroup, searchGroups]
+    () => [...oldNameGroups, ...baseGroups, ...searchGroups, ...branchGroup],
+    [baseGroups, branchGroup, oldNameGroups, searchGroups]
   )
 
   // Settings-scoped page (⌘K on the Settings overlay, or its search pill):

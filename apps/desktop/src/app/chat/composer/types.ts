@@ -50,6 +50,9 @@ export interface ChatBarProps {
   /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */
   profile?: string | null
   cwd?: string | null
+  /** The redesign's empty-chat landing around the composer: what sits above it (a greeting) and below
+   *  it (starter ideas), moving with it wherever it docks. */
+  landing?: { above: ReactNode; below: ReactNode }
   onCancel: () => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void

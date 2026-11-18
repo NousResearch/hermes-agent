@@ -1,0 +1,23 @@
+name: games-category-local-test
+repo: https://github.com/cruzlxyz/ClashOfClans
+sha: 2b12e7086f17cfc2c4ec106d36cae247416a1eb5
+description: 'Local test entry for the proposed games category.'
+maintainer: cruzlxyz
+tier: community
+category: games
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools:
+    - coc_verify
+    - coc_player
+    - coc_clan
+    - coc_league
+    - coc_ranks
+    - coc_meta
+    - coc_timer
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COC_API_TOKEN

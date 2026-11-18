@@ -1,0 +1,540 @@
+/* The design system page (index.tsx). Only the redesign renders these classes, and the page is built
+   from the language it documents: every value reads a token, and the specimens read the token they
+   show through --ds-specimen, set on each row to var(<token>). */
+
+/* ── Page frame: the panel at the stage's leading edge, the stage past it (as Library) ── */
+
+.ds-page {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): below it the panel is the band menu's sheet, not a column. */
+  .ds-page:has(> .page-sidebar-panel) {
+    padding-inline-start: var(--page-nav-width);
+  }
+}
+
+/* Its column is the page stage contract's (portal-pages.css). */
+.ds-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--portal-settings-card-pad);
+  padding-block: var(--portal-page-top) var(--portal-page-end-space);
+}
+
+.ds-stage > .portal-page-header {
+  margin-bottom: 0;
+}
+
+.ds-nav-group + .ds-nav-group {
+  margin-top: var(--portal-settings-card-pad);
+}
+
+/* ── Text ── */
+
+.ds-part-title {
+  margin: var(--portal-page-rhythm) 0 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+
+.ds-about {
+  max-width: 48rem;
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.ds-about code,
+.ds-table code,
+.ds-source,
+.ds-not-shown code {
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+}
+
+.ds-source,
+.ds-meta {
+  color: var(--portal-text-quaternary);
+  font-size: var(--portal-type-meta-size);
+}
+
+.ds-caption {
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+/* ── Preview: the real mode and accent switches ── */
+
+.ds-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--portal-settings-row-pad) var(--portal-page-header-gap);
+  padding: var(--portal-settings-row-pad) var(--portal-settings-card-pad);
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.ds-preview-control {
+  display: flex;
+  align-items: center;
+  gap: var(--portal-space-tight);
+}
+
+.ds-preview-note {
+  margin: 0;
+  color: var(--portal-text-quaternary);
+  font-size: var(--portal-type-meta-size);
+}
+
+/* ── A family: a token file, a component group ── */
+
+.ds-family {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--portal-settings-row-pad);
+  padding-top: var(--portal-page-header-gap);
+  scroll-margin-top: var(--portal-page-top);
+}
+
+.ds-family-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--portal-space-tight) var(--portal-settings-row-pad);
+}
+
+.ds-family-head h3 {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.ds-family-head .ds-about {
+  flex-basis: 100%;
+}
+
+/* ── Token rows: specimen, name and source, resolved value ── */
+
+.ds-token-list {
+  overflow: hidden;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.ds-token {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 4rem minmax(0, 1fr) minmax(6rem, 12rem);
+  align-items: start;
+  gap: var(--portal-settings-row-pad);
+  padding: var(--portal-space-tight) var(--portal-settings-row-pad);
+}
+
+.ds-token + .ds-token {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+.ds-token-specimen {
+  display: flex;
+  min-height: var(--portal-row-chrome);
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ds-token-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--portal-space-tight) / 2);
+}
+
+.ds-token-name {
+  max-width: 100%;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  overflow-wrap: anywhere;
+}
+
+.ds-token-note {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.ds-token-defined,
+.ds-token-value {
+  max-width: 100%;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ds-token-value {
+  display: -webkit-box;
+  overflow: hidden;
+  padding-top: calc(var(--portal-space-tight) / 2);
+  -webkit-box-orient: vertical;
+  color: var(--portal-text-secondary);
+  -webkit-line-clamp: 3;
+  text-align: end;
+}
+
+/* Specimens. Each reads the row's token through --ds-specimen. */
+
+.ds-swatch,
+.ds-radius-sample,
+.ds-shadow-sample {
+  width: var(--portal-row-chrome);
+  height: var(--portal-row-chrome);
+}
+
+.ds-swatch {
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-control);
+  background: var(--ds-specimen);
+}
+
+.ds-radius-sample {
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--ds-specimen);
+  background: var(--portal-surface-control);
+}
+
+.ds-shadow-sample {
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-elevated);
+  box-shadow: var(--ds-specimen);
+}
+
+.ds-length-bar {
+  width: var(--ds-specimen);
+  max-width: 100%;
+  height: var(--portal-space-tight);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-brand);
+}
+
+.ds-type-sample,
+.ds-font-sample,
+.ds-tracking-sample {
+  color: var(--portal-text-primary);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.ds-type-sample {
+  font-size: var(--ds-specimen);
+}
+
+.ds-font-sample {
+  font-family: var(--ds-specimen);
+  font-size: var(--portal-type-section-size);
+}
+
+.ds-tracking-sample {
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--ds-specimen);
+}
+
+/* Motion: the dot crosses its track while the row is hovered or focused, at the row's duration (or
+   with the row's easing at the base duration). Nothing moves under reduced motion. */
+.ds-motion-track {
+  position: relative;
+  width: 100%;
+  height: var(--portal-space-tight);
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-surface-control);
+}
+
+.ds-motion-dot {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: var(--portal-space-tight);
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-surface-brand);
+}
+
+.ds-token[data-kind='duration'] .ds-motion-dot {
+  transition: inset-inline-start var(--ds-specimen) var(--portal-ease);
+}
+
+.ds-token[data-kind='easing'] .ds-motion-dot {
+  transition: inset-inline-start var(--portal-motion-slow) var(--ds-specimen);
+}
+
+.ds-token:is(:hover, :focus-within) .ds-motion-dot {
+  inset-inline-start: calc(100% - var(--portal-space-tight));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-token .ds-motion-dot {
+    transition: none;
+  }
+}
+
+/* ── Component entries: title, source and use, then the examples in a grid ── */
+
+.ds-entry {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--portal-settings-row-pad);
+  padding: var(--portal-settings-card-pad);
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.ds-entry-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: calc(var(--portal-space-tight) / 2) var(--portal-settings-row-pad);
+}
+
+.ds-entry-head h4 {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+
+.ds-entry-head .ds-about {
+  flex-basis: 100%;
+}
+
+.ds-examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--portal-settings-row-pad);
+}
+
+.ds-examples[data-dense] {
+  grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
+  gap: var(--portal-space-tight);
+}
+
+.ds-example {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--portal-space-tight);
+  margin: 0;
+}
+
+.ds-example-stage {
+  display: flex;
+  min-width: 0;
+  min-height: var(--portal-touch-target);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--portal-space-tight);
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-ui-size);
+}
+
+/* A block-level primitive takes the cell's width. */
+.ds-example-stage > :is([data-slot='alert'], [data-slot='progress'], [data-slot='empty-state'], [data-slot='skeleton'], .portal-page-header, .global-settings-section, [data-slot='separator'], .ds-masonry, [data-slot='reel'], .ds-scroll-box) {
+  flex: 1 1 100%;
+}
+
+.ds-example figcaption {
+  overflow: hidden;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An entry whose example is a whole surface (the page header, a settings card, a table) takes the
+   full row. */
+.ds-examples:has(> .ds-example > .ds-example-stage > :is(.portal-page-header, .global-settings-section, [data-slot='alert'], .ds-masonry, [data-slot='reel'])) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ds-icon {
+  width: var(--portal-rail-glyph);
+  height: var(--portal-rail-glyph);
+}
+
+.ds-loader {
+  width: var(--portal-touch-target);
+  height: var(--portal-touch-target);
+}
+
+.ds-status-dot {
+  display: inline-block;
+  width: var(--portal-space-tight);
+  height: var(--portal-space-tight);
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-online);
+}
+
+.ds-skeleton-line {
+  width: 100%;
+  height: var(--portal-space-compact);
+}
+
+.ds-tile {
+  width: 8rem;
+  height: 4rem;
+}
+
+.ds-tile[data-size='1'] {
+  height: 6rem;
+}
+
+.ds-tile[data-size='2'] {
+  height: 5rem;
+}
+
+.ds-masonry {
+  --masonry-min-width: 8rem;
+}
+
+.ds-scroll-box {
+  height: 5rem;
+}
+
+.ds-fade-text {
+  display: block;
+  max-width: 10rem;
+}
+
+.ds-row {
+  display: flex;
+  gap: var(--portal-space-tight);
+}
+
+.ds-context-target {
+  padding: var(--portal-settings-row-pad);
+  border: 1px dashed var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-text-tertiary);
+}
+
+/* ── Not shown, and Still to unify ── */
+
+.ds-not-shown {
+  display: grid;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.ds-not-shown > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+  gap: var(--portal-settings-row-pad);
+  padding: var(--portal-space-tight) var(--portal-settings-row-pad);
+}
+
+.ds-not-shown > div + div {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+.ds-not-shown dt {
+  color: var(--portal-text-primary);
+}
+
+.ds-not-shown dd {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+.ds-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-card);
+}
+
+.ds-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+.ds-table th {
+  padding: var(--portal-space-tight) var(--portal-settings-row-pad);
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-caption);
+  text-align: start;
+  text-transform: uppercase;
+}
+
+.ds-table td {
+  padding: var(--portal-space-tight) var(--portal-settings-row-pad);
+  border-top: 1px solid var(--portal-stroke-divider);
+  vertical-align: top;
+}
+
+/* ── Compact (breakpoints.ts: max-width 639.98px): rows stack ── */
+
+@media (max-width: 639.98px) {
+  /* The five accents need the card's whole width: the caption goes above its control. */
+  .ds-preview-control {
+    max-width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ds-preview-control [data-slot='segmented-control'] {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .ds-token {
+    grid-template-columns: 3rem minmax(0, 1fr);
+  }
+
+  .ds-token-value {
+    grid-column: 2;
+    text-align: start;
+  }
+
+  .ds-not-shown > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: calc(var(--portal-space-tight) / 2);
+  }
+}

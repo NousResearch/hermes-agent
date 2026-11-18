@@ -21,6 +21,7 @@ export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
+export const DESIGN_SYSTEM_ROUTE = '/design-system'
 
 export type AppView =
   | 'session-import'
@@ -30,6 +31,7 @@ export type AppView =
   | 'chat'
   | 'command-center'
   | 'cron'
+  | 'design-system'
   // A contributed (plugin) full page at its own route — NOT chat. Without this
   // distinction contributed paths fell through appViewForPath's 'chat' default,
   // so the sidebar kept a session highlighted and the titlebar kept the
@@ -48,6 +50,7 @@ export type AppRouteId =
   | 'capabilities'
   | 'command-center'
   | 'cron'
+  | 'design-system'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -73,7 +76,8 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
-  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
+  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' },
+  { id: 'design-system', path: DESIGN_SYSTEM_ROUTE, view: 'design-system' }
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))

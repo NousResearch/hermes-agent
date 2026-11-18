@@ -510,7 +510,7 @@ def test_the_storage_interface_and_main_hosted_modules_are_on_the_graph():
     for path in ("persistence_assembly.py", "persistence/core/backend.py", "persistence/workers/sessions.py",
                  "persistence/conversation/lineage.py", "session_retention.py", "agent/checkpoints/manager.py",
                  "gateway/session_ingress_media.py", "agent/primary_auth_fallback.py",
-                 "agent/redact_phone_policy.py"):
+                 "agent/redact_phone_policy.py", "plugins/persistence/__init__.py"):
         assert path in graph, path
     assert not {"hermes_state", "hermes_state_registry"} & set(config.HOSTED_ENTRY)
 

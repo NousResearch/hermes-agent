@@ -146,6 +146,7 @@ HOSTED_ENTRY: tuple[str, ...] = (
     "hermes_cli.tools_config",
     "persistence_assembly",
     "plugins.context_engine",
+    "plugins.persistence",
     "plugins.teams_pipeline.runtime",
     "session_retention",
     "tools.approval_yolo",

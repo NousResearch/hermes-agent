@@ -1,0 +1,181 @@
+"""The sender: when a report goes out, what each reply does to the next one, and which gateway sends."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import secrets
+import time
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional
+
+from agent.runtime_scope import bind_profile_scope
+from gateway.status import acquire_scoped_lock
+from gateway.status_report.payload import ReportKind, build_report, read_status_source
+from gateway.status_report.target import ReportTarget, report_target_from_env
+from gateway.status_report.transport import Outcome, post_report
+from gateway.status_scoped_locks import release_scoped_lock
+from hermes_constants import get_process_hermes_home, profile_name_for_home
+
+logger = logging.getLogger(__name__)
+
+INTERVAL_S = 120.0
+_JITTER = 0.1
+_QUICK_RETRY_S = 5.0
+_RETRY_AFTER_MAX_S = 600.0
+# After the credential is rejected: 2, 4, 8, 16, 32 minutes, then an hour between tries.
+_REJECTED_BACKOFF_S = (120.0, 240.0, 480.0, 960.0, 1920.0, 3600.0)
+_BEAT_TIMEOUT_S = 10.0
+# A machine freezes 2 to 4 s after its suspend is accepted; a goodbye still unanswered by then is lost anyway.
+_GOODBYE_TIMEOUT_S = 3.0
+# No beat this long after a goodbye: one landing between the goodbye and the freeze would read as
+# the gateway being back, then going silent. Past it, a gateway still running says so again.
+_GOODBYE_QUIET_S = 60.0
+_TICK_S = 1.0
+_LOCK_SCOPE = "status-report"
+
+
+def _interval_s() -> float:
+    return random.uniform(INTERVAL_S * (1 - _JITTER), INTERVAL_S * (1 + _JITTER))
+
+
+class StatusReporter:
+    """Reports this gateway's status to the deployment's URL: a beat about every ``INTERVAL_S`` and
+    a goodbye before the gateway suspends its own machine.
+
+    Timed on the WALL clock. A machine suspend stops the monotonic clock the event loop sleeps on
+    while the wall clock keeps host time, so a slept interval would resume with its remainder after
+    the wake. Compared on ``time.time()`` the deadline is already past by then, and the first report
+    after a wake goes out within a tick.
+
+    State is in memory only and changes only on the event loop; file and network work runs on
+    worker threads."""
+
+    def __init__(self, target: ReportTarget, *, launch_home: Path,
+                 read_source: Callable[[], Mapping[str, Any]] = read_status_source, opener: Any = None) -> None:
+        self.boot_id = secrets.token_hex(16)
+        self._target = target
+        self._launch_home = launch_home
+        self._read_source = read_source
+        self._opener = opener
+        self._seq = 0
+        self._due_at = 0.0  # wall-clock time of the next beat; 0 is "now"
+        self._seen_at = 0.0  # wall clock at the last poll, to notice it stepping back
+        self._quiet_until = 0.0  # a goodbye went out: no beat before this
+        self._retry: Optional[bytes] = None  # the report that is owed its one quick retry
+        self._rejections = 0
+        self._held_off = False  # the receiver rejected the credential or asked for a wait
+        self._is_sender = False
+        self._lock_refusal_logged = False
+        self._last_kind: Optional[str] = None
+        self._goodbyes: set[asyncio.Task] = set()
+
+    async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
+        """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
+        is noticed; whether one is due is decided on the wall clock."""
+        try:
+            while is_running():
+                await self.poll()
+                await asyncio.sleep(tick)
+        finally:
+            if self._is_sender:
+                self._is_sender = False
+                release_scoped_lock(_LOCK_SCOPE, self._target.url)
+
+    async def poll(self) -> None:
+        """Send a beat if one is due."""
+        now = time.time()
+        if now < self._seen_at:  # the wall clock stepped back: keep what was left of each wait
+            self._due_at -= self._seen_at - now
+            self._quiet_until -= self._seen_at - now
+        self._seen_at = now
+        if now < self._due_at:
+            return
+        if not self._is_sender and not await self._become_sender():
+            self._due_at = now + _interval_s()
+            return
+        retry, self._retry = self._retry, None
+        body = retry or await self._next_report("beat")
+        outcome = await asyncio.to_thread(
+            post_report, self._target, body, timeout=_BEAT_TIMEOUT_S, opener=self._opener)
+        self._settle(outcome, body, retried=retry is not None)
+
+    def goodbye(self) -> None:
+        """Start the last report before this machine suspends and return at once: the caller never
+        waits for the receiver. One attempt with a short timeout, on its own task. Skipped by a
+        gateway that is not the sender and while the receiver holds the sender off."""
+        if not self._is_sender or self._held_off:
+            return
+        self._retry = None
+        self._quiet_until = time.time() + _GOODBYE_QUIET_S
+        self._due_at = max(self._due_at, self._quiet_until)
+        task = asyncio.get_running_loop().create_task(self._say_goodbye())
+        self._goodbyes.add(task)  # the loop keeps only a weak reference to a running task
+        task.add_done_callback(self._goodbyes.discard)
+
+    async def _say_goodbye(self) -> None:
+        body = await self._next_report("goodbye")
+        outcome = await asyncio.to_thread(
+            post_report, self._target, body, timeout=_GOODBYE_TIMEOUT_S, opener=self._opener)
+        logger.info("status report: goodbye %s (%s)", outcome.kind, outcome.status or "no reply")
+
+    async def _become_sender(self) -> bool:
+        """Take the machine-local sender lock. Every gateway of one machine inherits the same report
+        URL, so the lock decides which of them reports; one that died is replaced on a later poll."""
+        acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
+        if acquired:
+            self._is_sender = True
+        elif not self._lock_refusal_logged:
+            self._lock_refusal_logged = True
+            logger.info("status report: another gateway on this machine is the sender; standing by")
+        return acquired
+
+    async def _next_report(self, kind: ReportKind) -> bytes:
+        self._seq += 1
+        seq = self._seq  # taken before the await: a goodbye may start while a beat is being built
+        source = await asyncio.to_thread(self._read_scoped_source)
+        return build_report(kind, seq=seq, boot_id=self.boot_id, source=source)
+
+    def _read_scoped_source(self) -> Mapping[str, Any]:
+        # A watcher runs outside any turn, so bind the launch profile here: the reads are relative
+        # to the bound home and must not follow whatever scope is ambient.
+        with bind_profile_scope(self._launch_home, hydrate_secrets=False):
+            return self._read_source()
+
+    def _settle(self, outcome: Outcome, body: bytes, *, retried: bool) -> None:
+        """Set the next beat from how this one went."""
+        now = time.time()
+        wait, held_off = _interval_s(), False
+        if outcome.kind == "stored":
+            self._rejections = 0
+        elif outcome.kind == "throttled" and outcome.retry_after_s is not None:
+            wait, held_off = min(outcome.retry_after_s, _RETRY_AFTER_MAX_S), True
+        elif outcome.kind == "rejected":
+            wait, held_off = _REJECTED_BACKOFF_S[min(self._rejections, len(_REJECTED_BACKOFF_S) - 1)], True
+            self._rejections += 1
+        elif outcome.kind == "failed" and not retried and now >= self._quiet_until:
+            # One quick retry of the same report, unless a goodbye has gone out since: its seq is
+            # higher, so the receiver would drop the retry.
+            wait, self._retry = _QUICK_RETRY_S, body
+        self._held_off = held_off
+        self._due_at = max(now + wait, self._quiet_until)
+        # The first of a run of equal outcomes is worth a line; the rest would repeat it every interval.
+        changed, self._last_kind = outcome.kind != self._last_kind, outcome.kind
+        level = logging.DEBUG if not changed else logging.INFO if outcome.kind == "stored" else logging.WARNING
+        logger.log(level, "status report: %s (%s), next in %.0fs",
+                   outcome.kind, outcome.status or "no reply", self._due_at - now)
+
+
+def status_reporter_from_launch_env(environ: Optional[Mapping[str, str]] = None) -> Optional[StatusReporter]:
+    """The reporter of this gateway, or None: the launch environment has no report URL, or this is
+    a named profile's gateway. A machine that runs one gateway per profile starts them all from the
+    same environment, so each would report; only the launch (default) profile's gateway does."""
+    target = report_target_from_env(environ)
+    if target is None:
+        return None
+    launch_home = get_process_hermes_home()  # launch profile, pre-identity
+    if profile_name_for_home(launch_home) != "default":
+        logger.info("status report: off for this gateway (only the default profile's gateway reports)")
+        return None
+    return StatusReporter(target, launch_home=launch_home)

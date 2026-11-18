@@ -899,11 +899,14 @@ def socket_safe_tmpdir() -> str:
 # would void administrator policy at a directory the user controls (#135200); ``HERMES_HOME``
 # moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
 # otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
+# ``GATEWAY_STATUS_REPORT_URL`` turns on gateway status reports to a URL the hosting deployment
+# chose (``gateway/status_report``): the launch stamp is its opt-in, so no user-writable layer may
+# turn reports on or point them somewhere else.
 # Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
 # ``hermes_cli.config.reload_env``, ``agent.secret_sources.registry.apply_all`` (reported as
 # ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
 # writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
-LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
+LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME", "GATEWAY_STATUS_REPORT_URL"})
 
 
 def is_launch_only_env_key(name: str) -> bool:

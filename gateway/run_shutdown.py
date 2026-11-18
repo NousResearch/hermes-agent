@@ -630,7 +630,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         )
         try:
             if self_suspend_available():
-                accepted = await asyncio.to_thread(suspend_self)
+                accepted = await self._suspend_after_status_goodbye(suspend_self)
                 lever = "self-suspend"
                 if accepted:
                     # flaps answers seconds BEFORE the kernel freezes, so the fence has to span
@@ -652,7 +652,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     )
                     return
                 # The watcher already holds the supervisor across this call.
-                accepted = await asyncio.to_thread(request_brokered_suspend, url)
+                accepted = await self._suspend_after_status_goodbye(request_brokered_suspend, url)
                 lever = "brokered suspend"
                 if not accepted:
                     self._scale_to_zero_abandon_suspend()

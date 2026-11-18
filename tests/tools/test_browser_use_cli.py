@@ -783,7 +783,12 @@ class TestSkillTextDescription:
         assert overrides["description"].startswith(bu_cli._HEADER_BASE)
         assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
-
+    def test_description_tells_model_to_close_its_own_tab(self):
+        description = bu_cli._dynamic_schema_overrides()["description"]
+        assert "reuses the attached tab when that is blank" in description
+        assert "before = current_tab()['targetId']" in description
+        assert "close_tab(tid) in a finally block only if tid != before" in description
+        assert "never close a reused or initial tab" in description
 
 
 class TestBrowserExec:

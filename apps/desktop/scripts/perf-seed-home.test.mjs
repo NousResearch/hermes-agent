@@ -128,6 +128,12 @@ platforms:
     expect(seeded.platforms.telegram.enabled).toBe(false)
   })
 
+  it('leaves a genuine merge key untagged in a config that declares YAML 1.2', () => {
+    const source = '%YAML 1.2\n---\ndefaults: &defaults {provider: openai-codex}\nmodel: {<<: *defaults}\n'
+
+    expect(withPlatformsDisabled(source, ['telegram'])).toContain('model: { <<: *defaults }')
+  })
+
   it('keeps a long one-line electron_flags list readable by the Desktop launch reader', () => {
     const flags = [
       '--disable-gpu-compositing',

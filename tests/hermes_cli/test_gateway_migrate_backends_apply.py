@@ -209,12 +209,13 @@ def test_an_explicit_address_needs_a_backend_even_if_the_inventory_is_empty(home
 
 def test_mixed_supervisors_require_a_unique_selection(home, capsys, monkeypatch):
     host = FakeHost(home, host="127.0.0.1")
-    items = host.backends() + FakeHost(home, host="127.0.0.2", supervisor="container").backends()
+    # 0.0.0.0, not another loopback address: the gateway refuses 127.0.0.2 as webapp.host.
+    items = host.backends() + FakeHost(home, host="0.0.0.0", supervisor="container").backends()
     monkeypatch.setattr(host, "backends", lambda: items)
     code, out = _plan(host, capsys)
     assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"] == []
     assert _plan(host, capsys, address="127.0.0.1:9119")[0] == engine.EXIT_OK
-    assert _plan(host, capsys, address="127.0.0.2:9119")[0] == engine.EXIT_UNSUPPORTED
+    assert _plan(host, capsys, address="0.0.0.0:9119")[0] == engine.EXIT_UNSUPPORTED
 
 
 @pytest.mark.parametrize(("supervisor", "scope"), [("nix-systemd", "system"), ("nix-launchd", "gui/501"), ("s6", None),
@@ -657,3 +658,57 @@ def test_running_turns_count_markers_the_backend_wrote_in_any_profile(tmp_path, 
 
     for home in (root, work):
         assert SystemHost(home).running_turns(os.getpid(), None) == 1
+
+
+# --- review round 1: a by-hand move passes the same target checks as an automatic one
+
+
+class ManualHost(FakeHost):
+    """An s6/container backend: the plan prints by-hand steps (exit 6) instead of moving it."""
+
+    def __init__(self, home, **kw):
+        super().__init__(home, supervisor="container", **kw)
+
+
+def _webapp(home, block):
+    (home / "config.yaml").write_text("model:\n  default: fake-model\nwebapp:\n" + block, encoding="utf-8")
+
+
+def test_a_by_hand_move_blocks_when_the_webapp_is_already_enabled_elsewhere(home, capsys):
+    _webapp(home, "  enabled: true\n  host: 127.0.0.1\n  port: 9200\n")
+
+    code, out = _plan(ManualHost(home, host="127.0.0.1"), capsys)
+
+    assert code == engine.EXIT_BLOCKED and any("already enabled on 127.0.0.1:9200" in b for b in out["plan"]["blockers"])
+    (entry,) = out["plan"]["unsupported"]
+    assert entry["steps"] == []  # nothing that would set webapp.port 9119 over the Webapp on 9200
+
+
+def test_a_by_hand_move_never_plans_keep_webapp_address(home, capsys):
+    _webapp(home, "  enabled: true\n  host: 127.0.0.1\n  port: 9200\n")
+
+    code, out = _plan(ManualHost(home, host="127.0.0.1"), capsys, keep_webapp_address=True)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"][0]["steps"] == []
+    assert any("--keep-webapp-address is not planned for a by-hand move" in b for b in out["plan"]["blockers"])
+
+
+def test_a_by_hand_move_blocks_on_a_bind_the_gateway_refuses(home, capsys):
+    code, out = _plan(ManualHost(home, host="example.lan"), capsys)
+
+    assert code == engine.EXIT_BLOCKED and out["plan"]["unsupported"][0]["steps"] == []
+    assert any("widening the bind is never done" in b for b in out["plan"]["blockers"])
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_an_existing_refused_webapp_public_url_blocks_the_move(home, capsys, manual):
+    """The plan sets enabled/host/port but leaves webapp.public_url: the gateway would still refuse it."""
+    _webapp(home, "  enabled: false\n  public_url: https://user:pw@dash.example\n")
+    host = ManualHost(home, host="127.0.0.1") if manual else FakeHost(home, host="127.0.0.1")
+
+    code, out = _plan(host, capsys)
+
+    assert code == engine.EXIT_BLOCKED
+    assert any("After the move the gateway would still refuse the Webapp: webapp.public_url" in b
+               for b in out["plan"]["blockers"])
+    assert "user:pw" not in json.dumps(out)

@@ -505,7 +505,9 @@ it by hand, one per line, each `hermes` command naming this home (`hermes -p PRO
 home `hermes -p default ...`, so a profile chosen with `hermes profile use` does not redirect it). They stop the old backend first, then install, start or restart the gateway by the line `hermes
 gateway status` prints (the steps quote it), and end with `hermes webapp --status`. A gateway that has just
 started takes a few seconds to serve the address; until then that prints "The gateway is not running", so
-wait a few seconds and run it again. For a system unit only one line, `sudo
+wait a few seconds and run it again. A by-hand move passes the same checks as an automatic one: an address the gateway
+would refuse, a Webapp already enabled elsewhere, or a `webapp:` block the gateway would still refuse
+after the move blocks it (exit 3) with no steps printed. For a system unit only one line, `sudo
 systemctl disable --now UNIT`, needs root, and the next one shows the unit is no longer active. For Nix
 and containers the steps say what to change in the Nix configuration or the container definition
 instead (Nix refuses `hermes config set` on a managed install; the image ships the Webapp built). Where

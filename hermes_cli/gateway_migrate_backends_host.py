@@ -210,6 +210,17 @@ class SystemHost:
         from gateway.webapp_listener import webapp_settings
         return webapp_settings(self.home, document=self.effective_config())
 
+    def proposed_webapp_reason(self, host: str, port: int, public_url: Optional[str]) -> Optional[str]:
+        """Why the gateway would keep the Webapp off with ``webapp.enabled: true`` and this *host*/*port*
+        (and *public_url* when the move sets one) over the rest of the block as configured, or None."""
+        import copy
+        from gateway.webapp_listener import webapp_settings
+        document = copy.deepcopy(self.effective_config())
+        block = document.get("webapp") if isinstance(document.get("webapp"), dict) else {}
+        document["webapp"] = {**block, "enabled": True, "host": host, "port": port,
+                              **({"public_url": public_url} if public_url else {})}
+        return webapp_settings(self.home, document=document).reason
+
     def accepted_webapp_host(self, host: str) -> Optional[str]:
         """The gateway's own ``webapp.host`` validation: the canonical host, or None when refused."""
         from gateway.webapp_listener import _configured_address

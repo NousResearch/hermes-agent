@@ -125,9 +125,9 @@ class BackendPlan:
         return [{"name": n, "title": titles[n]} for n in APPLY_STEPS]
 
     def exit_code(self) -> int:
-        if self.unsupported:
-            return EXIT_UNSUPPORTED
-        return EXIT_BLOCKED if self.blockers else EXIT_OK
+        if self.blockers:  # a by-hand move with a blocker prints no steps, so it is blocked, not manual
+            return EXIT_BLOCKED
+        return EXIT_UNSUPPORTED if self.unsupported else EXIT_OK
 
     def to_dict(self) -> dict:
         return {
@@ -507,26 +507,60 @@ def _address(plan: BackendPlan, host, keep_webapp: bool) -> None:
                              "unknown and nothing can be planned for it. Nothing changed.")
         return
     plan.old_host, plan.old_port = address
+    target, problems = _target(host, address, keep_webapp)
+    plan.blockers += problems
+    if target is not None:
+        plan.keep_webapp = keep_webapp
+        plan.new_host, plan.new_port = target
+
+
+def _target(host, old: tuple[str, int], keep_webapp: bool) -> tuple[Optional[tuple[str, int]], list[str]]:
+    """Where the Webapp would serve, and why it cannot: the same rules for an automatic and a by-hand move."""
     settings = host.webapp_settings()
     if keep_webapp:
         if not settings.enabled:
-            plan.blockers.append("--keep-webapp-address needs the Webapp already enabled (webapp.enabled: true); "
-                                 "it is off in this home.")
-            return
-        plan.keep_webapp, plan.new_host, plan.new_port = True, settings.host, settings.port
-        return
-    accepted = host.accepted_webapp_host(plan.old_host)
+            return None, ["--keep-webapp-address needs the Webapp already enabled (webapp.enabled: true); "
+                          "it is off in this home."]
+        return (settings.host, settings.port), []
+    accepted = host.accepted_webapp_host(old[0])
     if accepted is None:
-        plan.blockers.append(
-            f"The old backend binds {plan.old_host}; the gateway's webapp.host takes only loopback, a wildcard "
-            f"or one IP address, and widening the bind is never done. Nothing changed.")
+        return None, [f"The old backend binds {old[0]}; the gateway's webapp.host takes only loopback, a wildcard "
+                      f"or one IP address, and widening the bind is never done. Nothing changed."]
+    if settings.enabled and (_canonical(settings.host), settings.port) != (_canonical(accepted), old[1]):
+        return None, [f"The Webapp is already enabled on {format_address(settings.host, settings.port)}, not on the "
+                      f"old backend's {format_address(*old)}. Re-run with --keep-webapp-address to retire the old "
+                      f"backend and keep the Webapp where it is."]
+    return (accepted, old[1]), []
+
+
+def _proposed_webapp(plan: BackendPlan, host) -> None:
+    """The webapp: block the move would leave, judged by the gateway itself: an existing value the plan
+    does not set (a refused webapp.public_url) keeps the Webapp off and blocks the move."""
+    reason = host.proposed_webapp_reason(plan.new_host, plan.new_port, plan.public_url)
+    if reason:
+        plan.blockers.append(f"After the move the gateway would still refuse the Webapp: {reason}. Fix it in "
+                             f"config.yaml and re-run. Nothing changed.")
+
+
+def _manual_target(plan: BackendPlan, host, keep_webapp: bool) -> None:
+    """A by-hand move prints webapp.host/port commands: they pass the same checks as an automatic move."""
+    item, why, _steps = plan.unsupported[0]
+    address = _address_of(item, host) if item else None
+    if address is None:
         return
-    plan.new_host, plan.new_port = accepted, plan.old_port
-    if settings.enabled and (_canonical(settings.host), settings.port) != (_canonical(accepted), plan.old_port):
-        plan.blockers.append(
-            f"The Webapp is already enabled on {format_address(settings.host, settings.port)}, not on the old "
-            f"backend's {format_address(plan.old_host, plan.old_port)}. Re-run with --keep-webapp-address to "
-            f"retire the old backend and keep the Webapp where it is.")
+    if keep_webapp:
+        problems = ["--keep-webapp-address is not planned for a by-hand move: its printed steps set the Webapp "
+                    "to the old backend's address. Stop the old backend through its supervisor and leave webapp.* "
+                    "as it is."]
+    else:
+        target, problems = _target(host, address, False)
+        if target is not None:
+            reason = host.proposed_webapp_reason(*target, None)
+            problems = [f"After the move the gateway would still refuse the Webapp: {reason}. Fix it in "
+                        f"config.yaml and re-run. Nothing changed."] if reason else []
+    if problems:
+        plan.blockers += problems
+        plan.unsupported[0] = (item, why, [])  # no steps that would set a refused or conflicting address
 
 
 def _gateway(plan: BackendPlan, host) -> None:
@@ -580,7 +614,10 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
         plan.blockers.append(f"{problem}: fix it and re-run the dry run. Nothing changed.")
         return plan
     _select(plan, host.backends(), address, host)
-    if plan.unsupported or not plan.candidates:
+    if plan.unsupported:
+        _manual_target(plan, host, keep_webapp)
+        return plan
+    if not plan.candidates:
         return plan
 
     plan.item = plan.candidates[0]
@@ -592,6 +629,8 @@ def build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False) 
         return plan
     _credentials(plan, env, host, cfg)
     _public_url(plan, cfg, env)
+    if plan.new_host is not None:
+        _proposed_webapp(plan, host)
     _gateway(plan, host)
     _auth_and_turns(plan, host, force_interrupt)
     plan.bundle_missing = host.bundle_missing()

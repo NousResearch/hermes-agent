@@ -54,6 +54,7 @@ import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
+import { HeldExchange, useIntroUnlessHeld } from '../discovery/held-exchange'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
@@ -63,8 +64,6 @@ import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { ComposerHeartField } from './composer/chat-bar-parts'
 import { FloatingComposerSurface } from './composer/floating-surface'
-import { requestComposerInsert } from './composer/focus'
-import { droppedFileInlineRefs } from './composer/inline-refs'
 import {
   ComposerScopeProvider,
   ComposerSurfaceProvider,
@@ -72,10 +71,10 @@ import {
   useComposerSurfaceId
 } from './composer/scope'
 import { useHistoryWindow } from './history-window'
-import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
-import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { type DroppedFile } from './hooks/use-composer-actions'
+import { useConversationFileDrop } from './hooks/use-conversation-file-drop'
 import { shouldShowIntro } from './intro-visibility'
-import { useChatLanding } from './landing'
+import { useChatLanding, useComposerLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -660,7 +659,10 @@ const ChatViewContent = memo(function ChatViewContent({
     selectedSessionId
   })
 
-  const landing = useChatLanding(showIntro, introHoldsThread, setupChat, introPersonality, introSeed)
+  // A visitor's message held until sign up takes the new chat's landing (held-exchange.tsx).
+  const introShown = useIntroUnlessHeld(showIntro, { primary: isPrimary, routed: isRoutedSessionView })
+  const landing = useChatLanding(introShown, introHoldsThread, setupChat, introPersonality, introSeed)
+  const composerLanding = useComposerLanding(landing.centered, isPrimary, composerScope.target, gatewayOpen)
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
@@ -716,33 +718,12 @@ const ChatViewContent = memo(function ChatViewContent({
     requestModelOptionsForOwner
   })
 
-  // Drop files anywhere in the conversation area, not just on the composer
-  // input. In-app drags (project tree / gutter) carry workspace-relative paths
-  // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder
-  // drops carry absolute local paths that don't exist on a remote gateway (and
-  // images need byte upload for vision), so route them through the attachment
-  // pipeline — otherwise the local path leaks into the prompt verbatim.
-  const onDropFiles = useCallback(
-    (candidates: DroppedFile[]) => {
-      const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
-      const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
-
-      if (refs.length) {
-        requestComposerInsert(refs.join(' '), { mode: 'inline', target: composerScope.target })
-      }
-
-      if (osDrops.length) {
-        void onAttachDroppedItems(osDrops)
-      }
-    },
-    [composerScope.target, currentCwd, onAttachDroppedItems]
-  )
-
-  // Session drags are POINTER drags (session-drag.ts) — never native DnD.
-  // The drop zone below only handles files; session drops commit through the
-  // drag session itself, which routes a center/link drop to this surface's
-  // composer via `data-composer-target`.
-  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
+  const { dragKind, dropHandlers } = useConversationFileDrop({
+    cwd: currentCwd,
+    enabled: showChatBar,
+    onAttachDroppedItems,
+    target: composerScope.target
+  })
 
   // While a session drag targets one of this surface's EDGES or a tab strip,
   // the zone overlay/caret owns the visual — the link overlay stands down.
@@ -818,6 +799,7 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionKey={threadKey}
           />
           {classicPrimary && <IntroCopy />}
+          <HeldExchange primary={isPrimary} routed={isRoutedSessionView} />
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
@@ -841,10 +823,11 @@ const ChatViewContent = memo(function ChatViewContent({
               <ChatBar
                 busy={busy}
                 cwd={currentCwd}
-                disabled={!gatewayOpen}
+                disabled={composerLanding.disabled}
                 focusKey={activeSessionId}
                 freshDraftKey={freshDraftKey}
                 gateway={gateway}
+                landing={composerLanding.around}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
                 onAddContextRef={onAddContextRef}
                 onAddUrl={onAddUrl}

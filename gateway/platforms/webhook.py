@@ -331,8 +331,12 @@ class WebhookAdapter(BasePlatformAdapter):
         # Replies from background gates reuse an older delivery_info entry. Read current
         # route policy on EVERY send so a hot policy change also covers those continuations.
         self._reload_dynamic_routes()
-        parts = str(chat_id).split(":", 2)
-        route = self._routes.get(parts[1], {}) if len(parts) == 3 and parts[0] == "webhook" else {}
+        # Canonical decoder: production chat ids are `webhook:v2:<token>`, so a raw
+        # `split(":")` yields "v2" as the route and silently drops the policy gate.
+        try:
+            route = self._routes.get(_WebhookDeliveryIdentity.route_from_chat_id(str(chat_id)), {})
+        except (ValueError, TypeError, IndexError):
+            route = {}
         policy = route.get("response_policy", self._delivery_policies.get(chat_id))
         try:
             validate_response_policy(policy)

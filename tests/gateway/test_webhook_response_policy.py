@@ -11,7 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
-from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
+from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH, _WebhookDeliveryIdentity
 
 URGENT = "[NEEDS-APPROVAL] Server remains offline after automated recovery\nAction required: Open the provider console and check the boot failure.\nEvidence: Two independent HTTP probes time out."
 
@@ -59,7 +59,9 @@ def _subscriptions(tmp_path, routes):
 def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, text, metadata, allowed):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     a, target = _adapter()
-    chat = "webhook:incident:q:existing:0"
+    # Production chat ids are `webhook:v2:<token>`; the legacy spelling below is kept
+    # only in the decoder for admissions queued before that upgrade.
+    chat = _WebhookDeliveryIdentity.from_parts(None, "incident", "existing-0").session_chat_id
     a._delivery_info[chat] = {"deliver": "discord", "deliver_extra": {"chat_id": "test-only"}}
     _subscriptions(tmp_path, {"incident": _route()})
 
@@ -78,6 +80,28 @@ def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, 
         # A suppressed reply must not consume later urgent delivery.
         assert (await a.send(chat, URGENT)).success
         assert target.send.await_count == 1
+
+    asyncio.run(exercise())
+
+
+def test_v2_session_without_cached_policy_still_gated(tmp_path, monkeypatch):
+    """Regression: a `webhook:v2:<token>` chat id must decode its route via the canonical
+    decoder, not a raw split — with the in-memory policy cache expired (gateway restart,
+    TTL prune), an urgent_only route still suppresses a routine final."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    a, target = _adapter()
+    chat = _WebhookDeliveryIdentity.from_parts(None, "incident", "late-final").session_chat_id
+    assert chat.startswith("webhook:v2:")  # the format the old `split(":", 2)[1]` mis-parsed
+    _subscriptions(tmp_path, {"incident": _route(response_policy="urgent_only")})
+
+    async def exercise():
+        # No _delivery_info/_delivery_policies entry: only the route config can gate.
+        # A routine final is suppressed (success without contacting the target); an
+        # urgent final passes the gate and only then misses its (here absent) destination.
+        assert (await a.send(chat, "Routine close-out: incident recovered on its own.")).success
+        assert target.send.await_count == 0
+        urgent = await a.send(chat, URGENT)
+        assert not urgent.success  # passed the policy gate, failed at destination resolution
 
     asyncio.run(exercise())
 

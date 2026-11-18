@@ -8,6 +8,5 @@ vectors are in ``tests/fixtures/status_report/v1``.
 """
 
 from gateway.status_report.reporter import INTERVAL_S, StatusReporter, status_reporter_from_launch_env
-from gateway.status_report.target import STATUS_REPORT_URL_ENV
 
-__all__ = ["INTERVAL_S", "STATUS_REPORT_URL_ENV", "StatusReporter", "status_reporter_from_launch_env"]
+__all__ = ["INTERVAL_S", "StatusReporter", "status_reporter_from_launch_env"]

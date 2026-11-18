@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import random
 import secrets
@@ -25,13 +26,10 @@ INTERVAL_S = 120.0
 _JITTER = 0.1
 _QUICK_RETRY_S = 5.0
 _RETRY_AFTER_MAX_S = 600.0
-# After the credential is rejected: 2, 4, 8, 16, 32 minutes, then an hour between tries.
-_REJECTED_BACKOFF_S = (120.0, 240.0, 480.0, 960.0, 1920.0, 3600.0)
+_REJECTED_BACKOFF_S = tuple(minutes * 60.0 for minutes in (2, 4, 8, 16, 32, 60))
 _BEAT_TIMEOUT_S = 10.0
 # A machine freezes 2 to 4 s after its suspend is accepted; a goodbye still unanswered by then is lost anyway.
 _GOODBYE_TIMEOUT_S = 3.0
-# No beat this long after a goodbye: one landing between the goodbye and the freeze would read as
-# the gateway being back, then going silent. Past it, a gateway still running says so again.
 _GOODBYE_QUIET_S = 60.0
 _TICK_S = 1.0
 _LOCK_SCOPE = "status-report"
@@ -60,13 +58,13 @@ class StatusReporter:
         self._launch_home = launch_home
         self._read_source = read_source
         self._opener = opener
-        self._seq = 0
-        self._due_at = 0.0  # wall-clock time of the next beat; 0 is "now"
-        self._seen_at = 0.0  # wall clock at the last poll, to notice it stepping back
-        self._quiet_until = 0.0  # a goodbye went out: no beat before this
-        self._retry: Optional[bytes] = None  # the report that is owed its one quick retry
+        self._seqs = itertools.count(1)
+        self._due_at = 0.0
+        self._last_poll_at = 0.0
+        self._no_beat_before = 0.0
+        self._retry_body: Optional[bytes] = None
         self._rejections = 0
-        self._held_off = False  # the receiver rejected the credential or asked for a wait
+        self._receiver_holds_off = False
         self._is_sender = False
         self._standing_by_for: Optional[str] = None
         self._last_kind: Optional[str] = None
@@ -87,16 +85,16 @@ class StatusReporter:
     async def poll(self) -> None:
         """Send a beat if one is due."""
         now = time.time()
-        if now < self._seen_at:  # the wall clock stepped back: keep what was left of each wait
-            self._due_at -= self._seen_at - now
-            self._quiet_until -= self._seen_at - now
-        self._seen_at = now
+        if now < self._last_poll_at:
+            self._due_at -= self._last_poll_at - now
+            self._no_beat_before -= self._last_poll_at - now
+        self._last_poll_at = now
         if now < self._due_at:
             return
         if not self._is_sender and not await self._become_sender():
             self._due_at = now + _interval_s()
             return
-        retry, self._retry = self._retry, None
+        retry, self._retry_body = self._retry_body, None
         body = retry or await self._next_report("beat")
         outcome = await asyncio.to_thread(
             post_report, self._target, body, timeout=_BEAT_TIMEOUT_S, opener=self._opener)
@@ -106,11 +104,11 @@ class StatusReporter:
         """Start the last report before this machine suspends and return at once: the caller never
         waits for the receiver. One attempt with a short timeout, on its own task. Skipped by a
         gateway that is not the sender and while the receiver holds the sender off."""
-        if not self._is_sender or self._held_off:
+        if not self._is_sender or self._receiver_holds_off:
             return
-        self._retry = None
-        self._quiet_until = time.time() + _GOODBYE_QUIET_S
-        self._due_at = max(self._due_at, self._quiet_until)
+        self._retry_body = None
+        self._no_beat_before = time.time() + _GOODBYE_QUIET_S
+        self._due_at = max(self._due_at, self._no_beat_before)
         task = asyncio.get_running_loop().create_task(self._say_goodbye())
         self._goodbyes.add(task)  # the loop keeps only a weak reference to a running task
         task.add_done_callback(self._goodbye_done)
@@ -151,14 +149,11 @@ class StatusReporter:
             logger.log(level, "status report: %s; standing by", why)
 
     async def _next_report(self, kind: ReportKind) -> bytes:
-        self._seq += 1
-        seq = self._seq  # taken before the await: a goodbye may start while a beat is being built
+        seq = next(self._seqs)
         source = await asyncio.to_thread(self._read_scoped_source)
         return build_report(kind, seq=seq, boot_id=self.boot_id, source=source)
 
     def _read_scoped_source(self) -> Mapping[str, Any]:
-        # A watcher runs outside any turn, so bind the launch profile here: the reads are relative
-        # to the bound home and must not follow whatever scope is ambient.
         with bind_profile_scope(self._launch_home, hydrate_secrets=False):
             return self._read_source()
 
@@ -173,13 +168,12 @@ class StatusReporter:
         elif outcome.kind == "rejected":
             wait, held_off = _REJECTED_BACKOFF_S[min(self._rejections, len(_REJECTED_BACKOFF_S) - 1)], True
             self._rejections += 1
-        elif outcome.kind == "failed" and not retried and now >= self._quiet_until:
+        elif outcome.kind == "failed" and not retried and now >= self._no_beat_before:
             # One quick retry of the same report, unless a goodbye has gone out since: its seq is
             # higher, so the receiver would drop the retry.
-            wait, self._retry = _QUICK_RETRY_S, body
-        self._held_off = held_off
-        self._due_at = max(now + wait, self._quiet_until)
-        # The first of a run of equal outcomes is worth a line; the rest would repeat it every interval.
+            wait, self._retry_body = _QUICK_RETRY_S, body
+        self._receiver_holds_off = held_off
+        self._due_at = max(now + wait, self._no_beat_before)
         changed, self._last_kind = outcome.kind != self._last_kind, outcome.kind
         level = logging.DEBUG if not changed else logging.INFO if outcome.kind == "stored" else logging.WARNING
         logger.log(level, "status report: %s (%s), next in %.0fs",

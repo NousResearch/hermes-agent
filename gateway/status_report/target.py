@@ -11,9 +11,6 @@ from typing import Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
-# Stamped by the hosting deployment and carrying its own credential in the query string, the shape
-# of GATEWAY_RELAY_SLEEP_URL. Launch-only (hermes_constants.LAUNCH_ONLY_ENV_KEYS): no ``.env`` and no
-# secret source can set it, so reports are on only where the deployment turned them on.
 STATUS_REPORT_URL_ENV = "GATEWAY_STATUS_REPORT_URL"
 _CREDENTIAL_PARAM = "t"
 # What may follow ``Bearer `` (RFC 6750). A credential that decodes to anything else (a space, CR,
@@ -35,7 +32,7 @@ def report_target_from_env(environ: Optional[Mapping[str, str]] = None) -> Optio
 
     Unset or blank is off, silently. A malformed value is off with a warning that names the key
     and never the value. Asked once per gateway start, so the warning needs no latch."""
-    env = os.environ if environ is None else environ  # launch profile, pre-identity
+    env = os.environ if environ is None else environ
     stamped = str(env.get(STATUS_REPORT_URL_ENV, "")).strip()
     if not stamped:
         return None

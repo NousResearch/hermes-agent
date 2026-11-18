@@ -31,8 +31,10 @@ from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, loop_heartbeat_forever,
 )
-from gateway.status_report import INTERVAL_S as STATUS_REPORT_INTERVAL_S, StatusReporter, status_reporter_from_launch_env
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from gateway.status_report import StatusReporter
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1619,7 +1621,6 @@ class GatewayStartupMixin:
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
         "_delegation_auto_resume_watcher")
 
-    # The sender of gateway status reports, when the launch environment asks for them.
     _status_reporter: Optional[StatusReporter] = None
 
     def _start_spawn_background_watchers(self) -> None:
@@ -1651,24 +1652,16 @@ class GatewayStartupMixin:
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
-        # Status reports ONLY where the hosting deployment stamped a report URL into the launch
-        # environment, and only from the launch profile's gateway.
+        from gateway.status_report import INTERVAL_S, status_reporter_from_launch_env
         reporter = self._status_reporter = status_reporter_from_launch_env()
         if reporter is not None:
-            logger.info("status report: on, reporting gateway status about every %.0fs", STATUS_REPORT_INTERVAL_S)
+            logger.info("status report: on, reporting gateway status about every %.0fs", INTERVAL_S)
             self._spawn_supervised(lambda: reporter.run(lambda: self._running), "status_report_watcher")
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
     async def _suspend_after_status_goodbye(self, lever, *args) -> bool:
-        """Pull a scale-to-zero suspend *lever* on a worker thread, right after starting the
-        status report goodbye.
-
-        The goodbye is fire-and-forget: it runs on its own task and thread with its own short
-        timeout and the lever is never awaited behind it, so a slow, failing or absent receiver
-        changes nothing about the suspend. Called only where a lever exists.
-        """
         reporter = self._status_reporter
         if reporter is not None:
             try:

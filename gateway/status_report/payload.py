@@ -8,7 +8,7 @@ import os
 import re
 from typing import Any, Literal, Mapping
 
-from gateway.status import _get_process_start_time, read_runtime_status
+from gateway.status import get_process_start_time, read_runtime_status
 from hermes_cli.auth import get_nous_session_validity
 from hermes_cli.web_routers.status_public import redact_status_for_unverified
 
@@ -17,9 +17,7 @@ logger = logging.getLogger(__name__)
 REPORT_VERSION = 1
 ReportKind = Literal["beat", "goodbye"]
 
-# ``starting``, ``running``, ``draining``: a lifecycle code, never prose.
-_STATE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-# ``<platform>``, or ``<profile>:<platform>`` for a platform this gateway serves for another profile.
+_LIFECYCLE_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PLATFORM_KEY_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}(?::[a-z0-9][a-z0-9_-]{0,63})?")
 _PLATFORM_FIELDS = ("state", "error_code")
 _SESSION_VALIDITY = frozenset({"valid", "terminal", "unknown"})
@@ -31,14 +29,14 @@ def read_status_source() -> dict[str, Any]:
     Blocking: call it off the event loop."""
     runtime = read_runtime_status() or {}
     source: dict[str, Any] = {
-        "gateway_running": True,  # the gateway process itself is asking
+        "gateway_running": True,
         "gateway_state": runtime.get("gateway_state"),
         "gateway_exit_reason": runtime.get("exit_reason"),
         "gateway_platforms": _own_platforms(runtime.get("platforms")),
     }
     try:
         source["nous_session_valid"] = get_nous_session_validity()
-    except Exception:  # the field is optional, and an unreadable auth store must not stop the report
+    except Exception:
         logger.debug("status report: session validity unavailable", exc_info=True)
     return source
 
@@ -49,7 +47,7 @@ def _own_platforms(platforms: Any) -> dict[str, Any]:
     if not isinstance(platforms, dict):
         return {}
     pid = os.getpid()
-    started = _get_process_start_time(pid)
+    started = get_process_start_time(pid)
     return {key: value for key, value in platforms.items()
             if isinstance(value, dict) and value.get("writer_pid") == pid
             and value.get("writer_start_time") == started}
@@ -61,14 +59,14 @@ def allowlisted_status(source: Mapping[str, Any]) -> dict[str, Any]:
     text, counts, paths) is not copied, and a value of the wrong shape is dropped, never passed on."""
     state, platforms = source.get("gateway_state"), source.get("gateway_platforms")
     public: dict[str, Any] = {
-        "gateway_state": state if isinstance(state, str) and _STATE_RE.fullmatch(state) else None,
+        "gateway_state": state if isinstance(state, str) and _LIFECYCLE_CODE_RE.fullmatch(state) else None,
         "gateway_exit_reason": source.get("gateway_exit_reason"),
         "gateway_platforms": {
             key: value for key, value in platforms.items()
             if isinstance(key, str) and _PLATFORM_KEY_RE.fullmatch(key) and isinstance(value, dict)
         } if isinstance(platforms, dict) else {},
     }
-    redact_status_for_unverified(public)  # platform entries and the exit reason become bounded codes
+    redact_status_for_unverified(public)
     status: dict[str, Any] = {
         "gateway_running": source.get("gateway_running") is True,
         "gateway_state": public["gateway_state"],

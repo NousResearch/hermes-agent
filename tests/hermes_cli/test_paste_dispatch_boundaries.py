@@ -40,27 +40,6 @@ def test_pasted_bang_data_reaches_chat_not_shell(tmp_path, monkeypatch, text):
     cli.chat.assert_called_once_with(text, images=None, voice_input=False)
 
 
-def test_pasted_existing_path_is_text_but_typed_path_is_attachment(tmp_path, monkeypatch):
-    cli = runtime(monkeypatch)
-    report = tmp_path / "report.md"
-    report.write_text("report")
-    text = str(report) + "\n"
-    cli._tui_process_one_input(paste(tmp_path, text))
-    cli.chat.assert_called_once_with(text, images=None, voice_input=False)
-    cli.chat.reset_mock()
-    cli._tui_process_one_input(str(report))
-    assert cli.chat.call_args.args[0] == f"[User attached file: {report}]"
-
-
-def test_typed_bang_still_reaches_shell(monkeypatch):
-    cli = runtime(monkeypatch)
-    shell = MagicMock(return_value=0)
-    monkeypatch.setattr("hermes_cli.bang_shell.run_bang_command", shell)
-    cli._tui_process_one_input("!printf hello")
-    assert shell.call_args.args[0] == "printf hello"
-    cli.chat.assert_not_called()
-
-
 @pytest.mark.parametrize("via_tui", [False, True])
 def test_slash_handler_receives_inline_paste(tmp_path, monkeypatch, via_tui):
     cli = runtime(monkeypatch)

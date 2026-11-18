@@ -469,7 +469,17 @@ class SQLiteHostedRoomPolicyRepository:
         with translated():
             capacity = self._prepare(placement, max_active_events)
             self._sync(placement, room_id=room_id, latest_seq=latest_seq)
-            return self._files._hosted_read(placement, _read)
+            def read_generation(conn: sqlite3.Connection) -> PolicySnapshot:
+                # A nested holder snapshot already owns its transaction.
+                if conn.in_transaction:
+                    return _read(conn)
+                conn.execute("BEGIN")
+                try:
+                    return _read(conn)
+                finally:
+                    conn.rollback()
+
+            return self._files._hosted_read(placement, read_generation)
 
     def publication_exists(self, *, placement: HostedPlacement, room_id: str, task_id: str, status: str,
                            execution_generation: int, max_active_events: int = MAX_ACTIVE_POLICY_EVENTS) -> bool:

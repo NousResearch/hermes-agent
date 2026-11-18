@@ -1034,3 +1034,22 @@ def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> No
     # Uncached a gets the 2.0s default estimate, between d and b.
     assert rtp._longest_first(files, cache, root) == [c, d, a, b]
     assert rtp._longest_first(files, {}, root) == files
+
+
+def test_unwritable_durations_cache_warns_instead_of_failing_a_green_run(tmp_path: Path, capsys) -> None:
+    """A read-only checkout (an isolated runner's mount) must not turn a green run red."""
+    rtp = _load_runner("rtp_save_durations")
+    # A directory where the cache file belongs makes the real write fail with an OSError.
+    (tmp_path / rtp._DURATIONS_FILE).mkdir()
+    times = [(tmp_path / "tests" / "test_a.py", 1.25)]
+
+    assert rtp._save_durations(times, tmp_path) is False
+    assert "durations cache not written" in capsys.readouterr().err
+
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    assert rtp._save_durations([(writable / "tests" / "test_a.py", 1.25)], writable) is True
+    assert capsys.readouterr().err == ""
+    assert json.loads((writable / rtp._DURATIONS_FILE).read_text(encoding="utf-8")) == {
+        str(Path("tests", "test_a.py")): 1.25,
+    }

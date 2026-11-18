@@ -123,6 +123,18 @@ def test_rejoin_assistant_assistant_seam_merges():
     assert out[-2]["content"] == "head end\n\ntail start"
 
 
+def test_rejoin_user_seam_never_merges_into_the_todo_snapshot():
+    # The next boundary strips everything after the snapshot header: a merged kept message goes with it.
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    head = [{"role": "assistant", "content": "[summary]"},
+            {"role": "user", "content": f"{TODO_INJECTION_HEADER}\n- [>] 1. Ship the report (in_progress)"}]
+    tail = [{"role": "user", "content": "latest question"},
+            {"role": "assistant", "content": "answer"}]
+    out = rejoin_compressed_head_and_tail(head, tail)
+    assert out[:2] == head and out[-2:] == tail
+    assert _no_consecutive_dupes(out), out
+
+
 
 
 def test_rejoin_tool_seam_left_alone():

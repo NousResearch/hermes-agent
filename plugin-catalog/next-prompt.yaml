@@ -6,7 +6,7 @@ maintainer: soymarketing
 tier: community
 category: desktop
 version: "0.3.5"
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 docs_url: https://github.com/soymarketing/hermes-plugin-next-prompt#readme
 platforms: [windows, macos, linux]
 image: https://raw.githubusercontent.com/soymarketing/hermes-plugin-next-prompt/ec58f9b298b0bb0c182f909a0014432b1dc898a8/docs/media/banner.png

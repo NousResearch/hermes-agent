@@ -465,7 +465,8 @@ __ORIGIN_GUARD__
   if (f.token === "current-password" && el.type !== "password") {
     return { __proto__: null, refused: "not_password" };
   }
-  if (__REFOCUS__) { try { el.focus(); } catch (e) { /* focus can throw on a detached node */ } }
+  // Selecting the field's text makes the next Input.insertText replace a prefilled value, not prefix it.
+  if (__REFOCUS__) { try { el.focus(); el.select(); } catch (e) { /* focus can throw on a detached node */ } }
   let active = document.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
   if (active !== el) return { __proto__: null, refused: "focus_lost", tag: el.tagName, found: active ? active.tagName : null };

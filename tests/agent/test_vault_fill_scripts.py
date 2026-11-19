@@ -140,6 +140,22 @@ def _run(setup: str, expression: str) -> dict:
 
 
 class TestFocusAssertion:
+    @pytest.mark.parametrize("refocus", [True, False])
+    def test_the_first_key_replaces_a_prefilled_value(self, refocus):
+        """Input.insertText replaces the selection and otherwise types at the caret: a field the
+        browser or the site prefilled must be selected first, or the value lands in front of the
+        old one and the page sees both."""
+        setup = """
+          const pw = stamp(add(document, "input", { type: "password", value: "old" }), 1);
+          globalThis.__selected = 0;
+          pw.select = () => { __selected += 1; };
+          pw.focus();
+        """
+        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE, expected_origin=ORIGIN,
+                            refocus=refocus)
+        out = json.loads(_node(setup, "(() => { const r = " + js + "; return { r, selected: __selected }; })()"))
+        assert out == {"r": {"focused": 1}, "selected": 1 if refocus else 0}
+
     def test_a_focused_password_inside_an_open_shadow_root_holds_focus(self):
         """Discovery and fill reach inputs inside open shadow roots; the focus check must too. At
         document level the focused element is the shadow HOST, so a shallow compare would refuse a

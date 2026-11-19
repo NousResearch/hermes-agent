@@ -8,14 +8,20 @@ on the application's event loop rather than on the REPL worker thread that ran t
 
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from prompt_toolkit.buffer import Buffer
 
 import cli as cli_mod
 import hermes_cli.cli_tui_mixin as mixin_mod
+from cli import HermesCLI
+from tests.hermes_cli.test_cli_force_redraw import _fake_app
+from tests.waiting import wait_until
 
 _SGR = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -76,3 +82,36 @@ def test_replay_after_interrupt_repaints_the_rows_the_keypress_printed(monkeypat
     cli_mod._replay_output_history()
 
     assert _rows(capsys.readouterr().out) == on_screen
+
+
+@pytest.mark.parametrize("entry", ["post_interrupt", "slash_redraw"])
+def test_redraw_requested_off_the_loop_paints_on_the_app_loop(entry):
+    """The REPL worker runs both the post-interrupt recovery and ``/redraw``: their erase and replay
+    must run on the loop thread, where they cannot interleave with the loop's own paints."""
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, name="app-loop", daemon=True)
+    loop_thread.start()
+    try:
+        app = _fake_app(rows=24, columns=80, chrome=3, painted=[80, 80, 80])
+        app.loop = loop
+        writers, finished = [], threading.Event()
+        output = app.renderer.output
+        for name in ("cursor_goto", "erase_end_of_line", "write", "write_raw", "flush"):
+            getattr(output, name).side_effect = lambda *a, **k: writers.append(threading.current_thread().name)
+        app.invalidate.side_effect = lambda: (writers.append(threading.current_thread().name), finished.set())
+        cli = object.__new__(HermesCLI)
+        cli._app = app
+        cli_mod._record_output_history("transcript row before the interrupt")
+
+        with patch("hermes_cli.curses_ui.flush_stdin"), patch.object(cli_mod, "_cprint"):
+            if entry == "post_interrupt":
+                cli._recover_terminal_after_interrupt()
+            else:
+                cli._cmd_redraw("/redraw")
+            wait_until(finished.is_set, what="the redraw to finish")
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5)
+        loop.close()
+
+    assert writers and set(writers) == {"app-loop"}, writers

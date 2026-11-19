@@ -125,6 +125,11 @@ class CLIChatTurnMixin:
                 agent_thread.start()
                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
                 self._chat_settle_turn(turn)
+                if turn.result and turn.result.get("interrupted") and self._app is not None:
+                    # The interrupt may have left the renderer drifted (leaked CPR text, VT100 parser
+                    # stalled mid-escape): drain stray bytes and redraw. Before the turn's output, so
+                    # the replay cannot erase the interrupt marker, which is never recorded.
+                    self._recover_terminal_after_interrupt()
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
                 _cprint(t("gateway.model.error_prefix", error=e))

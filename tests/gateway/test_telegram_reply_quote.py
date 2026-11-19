@@ -147,3 +147,18 @@ def test_native_quote_at_a_mismatched_position_is_left_as_quoted():
     event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "the changelog"
+
+
+def test_reply_to_timestamp_is_when_the_quoted_message_was_sent():
+    """Adaptive busy mode compares this with the running turn's start to place the reply."""
+    from datetime import UTC, datetime
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(reply_to_text="earlier answer")
+    msg.reply_to_message.date = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_timestamp == msg.reply_to_message.date.timestamp()
+    assert adapter._build_message_event(_make_message(), MessageType.TEXT).reply_to_timestamp is None

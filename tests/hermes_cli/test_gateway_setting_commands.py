@@ -23,6 +23,8 @@ def test_busy_runs_on_the_gateway_and_mirrors_the_mode(monkeypatch, capsys):
     assert gateway_setting_commands.run(cli, "busy", "/busy queue") is True
     assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "busy queue"})]
     assert cli.busy_input_mode == "queue"
+    assert gateway_setting_commands.run(cli, "busy", "/busy adaptive") is True
+    assert cli.busy_input_mode == "steer"  # the terminal has no quoted replies for adaptive to place
     assert gateway_setting_commands.run(cli, "history", "/history") is False  # a local read stays local
 
 

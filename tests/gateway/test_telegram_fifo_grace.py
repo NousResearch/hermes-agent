@@ -24,7 +24,7 @@ def _busy_telegram_turn():
     state = SimpleNamespace(turn=SimpleNamespace(started_ts=100.0, agent=object()))
     runner._draining = False
     runner._peek_session_state = lambda _key: state
-    runner._effective_busy_input_mode = lambda _source: "interrupt"
+    runner._effective_busy_input_mode = lambda _source, _event=None: "interrupt"
     runner._effective_busy_text_mode = lambda _source: "interrupt"
     runner._delivery_adapter_for = lambda _source: object()
     runner._session_key_for_source = lambda _source: key

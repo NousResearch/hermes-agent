@@ -6427,14 +6427,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
-        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
+        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected, quoted_message_timestamp
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
-            user_id=source.user_id, user_name=source.user_name,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
+            user_id=source.user_id, user_name=source.user_name, auto_skill=topic_skill,
+            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, reply_to_timestamp=quoted_message_timestamp(message),
             channel_prompt=group_identity_prompt(self, message, channel_prompt), reply_expected=group_reply_expected(self, message, chat_type),
             edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
 

@@ -873,6 +873,7 @@ gateway:
     subagent_working_head: "⏳ Sous-agent au travail"
     compressing_head: "⏳ Compression du contexte"
     queued_head: "⏳ Mis en file pour le prochain tour"
+    queued_reply_head: "⏳ Mis en file (réponse à un message antérieur) pour le prochain tour"
     queued_tail: ". Je répondrai dès que la tâche en cours sera terminée."
     interrupting_head: "⚡ Interruption de la tâche en cours"
     interrupting_tail: ". Je réponds à votre message dans un instant."
@@ -889,6 +890,8 @@ gateway:
     behavior_steer_long: "Les messages seront orientés vers l'exécution en cours (après le prochain appel d'outil)."
     behavior_interrupt_short: "interruption de l'exécution en cours"
     behavior_interrupt_long: "Les messages interrompront l'exécution en cours pendant que Hermes est occupé."
+    behavior_adaptive_short: "les réponses aux messages antérieurs sont mises en file, le reste oriente"
+    behavior_adaptive_long: "Pendant que Hermes est occupé, une réponse citant un message antérieur à l'exécution en cours est mise en file pour le prochain tour ; tout le reste (y compris les réponses aux messages de l'exécution en cours) est injecté dans l'exécution en cours."
     status: |-
       **Mode de saisie quand occupé : `{mode}`
       Messages pendant l'occupation : _{behavior}_

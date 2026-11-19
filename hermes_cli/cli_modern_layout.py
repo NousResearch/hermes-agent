@@ -33,8 +33,10 @@ def layout_from_config(display: dict) -> bool:
 
 
 def busy_input_mode_from_config(display: dict) -> str:
-    """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one)."""
-    return str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
+    """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one).
+    ``adaptive`` steers: the terminal has no quoted replies for it to place."""
+    mode = str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
+    return "steer" if mode == "adaptive" else mode
 
 
 def _skin_hex(key: str, fallback: str) -> str:

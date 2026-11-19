@@ -1,6 +1,7 @@
 """Profile-specific busy-input behavior for multiplexed gateways."""
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -584,3 +585,57 @@ async def test_secondary_human_delay_follows_profile_config_not_process_env(tmp_
     # A fresh adapter is off until the runner installs a range; env is never consulted.
     fresh = _adapter()
     assert fresh._human_delay_range_ms is None and fresh._get_human_delay() == 0.0
+
+
+_TURN_SECOND = int(time.time()) - 30
+_TURN_START = _TURN_SECOND + 0.6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply_to", "reply_ts", "thread_id", "expect_queue"),
+    [
+        (None, None, None, False),
+        ("m-old", _TURN_START - 60, None, True),  # comment on earlier output
+        ("m-unknown", None, None, False),  # adapter can't say when the quoted message was sent
+        ("m-progress", _TURN_START + 5, None, False),  # output of the running turn
+        ("m-same-second", float(_TURN_SECOND), None, False),  # Telegram dates are whole seconds
+        ("m-open", _TURN_START - 2, None, False),  # the message that opened the turn
+        ("77", _TURN_START - 600, "77", False),  # topic root anchor, not a quote
+        ("m-old", _TURN_START - 60, "77", True),
+    ],
+)
+@pytest.mark.parametrize("path", ["busy_handler", "priority"])
+async def test_adaptive_busy_mode_queues_replies_to_earlier_output_and_steers_the_rest(
+    tmp_path, monkeypatch, reply_to, reply_ts, thread_id, expect_queue, path,
+):
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "0")
+    runner = _runner(default_mode="interrupt")
+    await _load_profile_snapshot(runner, tmp_path / "research", "adaptive")
+    event = _event(profile="research")
+    event.source.thread_id = thread_id
+    event.reply_to_message_id = reply_to
+    event.reply_to_timestamp = reply_ts
+    event.reply_to_text = "quoted text" if reply_to else None
+    session_key = runner._session_key_for_source(event.source)
+    agent = MagicMock()
+    agent._active_children = []
+    agent.steer.return_value = True
+    runner._running_agents[session_key] = agent
+    turn = runner._session_state(session_key).turn
+    turn.started_ts = _TURN_START
+    turn.event = _event(profile="research")
+    turn.event.message_id = "m-open"
+
+    if path == "busy_handler":
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+    else:
+        assert await runner._handle_message(event) is None
+
+    agent.interrupt.assert_not_called()
+    if expect_queue:
+        agent.steer.assert_not_called()
+    else:
+        agent.steer.assert_called_once()
+        assert agent.steer.call_args.args[0].endswith("follow up")

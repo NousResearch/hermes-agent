@@ -378,7 +378,7 @@ async def test_a_message_the_adapter_saw_idle_counts_when_it_waits_behind_a_runn
     from hermes_constants import get_hermes_home
 
     runner, authority, source, key = await _real_runner(monkeypatch)
-    monkeypatch.setattr(runner, "_effective_busy_input_mode", lambda source: "queue")
+    monkeypatch.setattr(runner, "_effective_busy_input_mode", lambda source, event=None: "queue")
     late = MessageEvent(text="C", source=source, message_id="C")
     with native_callback(runner, late, get_hermes_home()):
         waiting = asyncio.create_task(runner._handle_message(late))

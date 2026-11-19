@@ -54,11 +54,19 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:rc|\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
-_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
+_LEGACY_SHELL_RC_FILES = frozenset({'.bashrc', '.zshrc', '.profile', '.bash_profile', '.zprofile'})
+_EXACT_PATH_END = r'(?=["\'\s;&|)`<>]|$)'
+_SHELL_RC_FILES = (
+    rf"(?:~|\$home|\$\{{home\}})/(?:"
+    rf"(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES if f in _LEGACY_SHELL_RC_FILES)})\b|"
+    rf"(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES if f not in _LEGACY_SHELL_RC_FILES)}){_EXACT_PATH_END})"
+)
+_CREDENTIAL_FILES = (r'(?:~|\$home|\$\{home\})/\.'
+                     rf'(?:(?:netrc|pgpass|npmrc|pypirc)\b|git-credentials{_EXACT_PATH_END})')
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
+_CREDENTIAL_DIRS = _HOME_PREFIX + r'\.(?:aws|gnupg|kube|docker|azure|config/(?:gh|gcloud))(?:/|(?=["\'\s;&|)`<>]|$))'
 _SECRET_FILE = (
     rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
     rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
@@ -81,9 +89,9 @@ _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
 _SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
 _SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH}|'
-    rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+    rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_CREDENTIAL_DIRS})'
 )
-_USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+_USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_CREDENTIAL_DIRS})'
 # touch/mkdir/ln: the home-side targets only; /etc is out of their scope (#85321) and admin commands
 # like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
 _HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
@@ -497,7 +505,7 @@ _REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
 
 DANGEROUS_PATTERNS = [
     # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
-    (r'\brm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/', "delete in root path"),
+    (_CMDPOS + r'rm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run
@@ -752,7 +760,9 @@ DANGEROUS_PATTERNS = [
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command injection) slipped through
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    (rf'\b(?:cp|mv|install)\b.*\s(?:"{_SENSITIVE_WRITE_TARGET}[^"\n]*"|'
+     rf"'{_SENSITIVE_WRITE_TARGET}[^'\n]*'|{_SENSITIVE_WRITE_TARGET}[^\s\"']*){_COMMAND_TAIL}",
+     "copy/move file into sensitive credential/SSH/shell-rc path"),
     # touch/mkdir create, and ln plants a pointer at, the same destinations without a gated write verb
     # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
     # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
@@ -779,17 +789,12 @@ DANGEROUS_PATTERNS = [
      "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # sed -i on Hermes config/.env bypasses the redirection/tee rules; pairs the file_tools
     # write_file/patch deny so the terminal side is not an open door.
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or .env). sed -i bypasses the
     # redirection/tee patterns above because it mutates the file directly. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*{_HERMES_STORE_ROOT}', "in-place edit of Hermes credential store"),
     # perl/ruby -i: the flag may be its own token after other flags (`-p -i -e`), combined (`-pi`), or carry a backup
     # suffix (`-i.bak`), so match any flag token containing `i` anywhere; `perl -e '...'` (no -i) does not trip.
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are not caught by the -e/-c
@@ -894,6 +899,10 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
     "upload a secret or credential file via curl/wget (possible exfiltration)",
     "pipe a credential file into a curl/wget upload (possible exfiltration)",
     "invisible or bidirectional Unicode control character (possible obfuscation)",
+    "in-place edit of system config",
+    "in-place edit of Hermes config/env",
+    "in-place edit of sensitive credential/SSH/shell-rc path",
+    "in-place edit of project env file",
 })
 
 # Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
@@ -1842,6 +1851,20 @@ def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeR
     return False
 
 
+def _root_rm_wrapper_variants(command: str, only: frozenset[str] | None, capped: list[str]) -> tuple[str, ...]:
+    """Project executable wrappers only for the root-path rm rule, never other rules."""
+    if (only is not None and "delete in root path" not in only) or "rm" not in command.lower():
+        return ()
+    from tools.approval_quoted_newlines import _mask_quoted_newlines
+    from tools.approval_wrappers import _blank_literal_heredoc_bodies, strip_wrapper_prefixes
+
+    source = _blank_literal_heredoc_bodies(_mask_quoted_newlines(command))
+    peeled = strip_wrapper_prefixes(source)
+    if peeled == source:
+        return ()
+    return tuple(_lower_preserving_flags(variant) for variant in _command_detection_variants(peeled, capped=capped))
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1860,6 +1883,7 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]
     capped: list[str] = []
+    rm_variants = _root_rm_wrapper_variants(command, only, capped)
     for command_variant in _command_detection_variants(command, capped=capped):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
@@ -1879,8 +1903,12 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                 owner_ranges = _upload_flag_owner_ranges(command_lower) if matches else ([], [])
                 if any(_upload_flag_owned_by_curl_or_wget(owner_ranges, match.start()) for match in matches):
                     yield description
-            elif pattern_re.search(command_lower):
+            elif pattern_re.search(command_lower) or (
+                description == "delete in root path" and any(pattern_re.search(v) for v in rm_variants)
+            ):
                 yield description
+    from tools.approval_sed import sed_findings
+    yield from sed_findings(command, only)
     if capped and only is None:
         yield _PARSER_LIMIT_DESCRIPTION
     if only is not None:

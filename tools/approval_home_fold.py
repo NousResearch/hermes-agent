@@ -8,7 +8,9 @@ rewritten into those forms first.
 
 import functools
 import os
+import posixpath
 import re
+import shlex
 
 from hermes_platform.host import facts
 
@@ -33,7 +35,8 @@ def _home_prefix_fold_regex(path: str):
     home must therefore match a mandatory leading separator, so a relative same-named path
     (``root/file``) is still left alone."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
+    if (not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0]))
+            or (path.startswith(("//", "\\\\")) and len(components) < 2)):
         return None
     # Optional leading root separator; a Windows drive letter is a component. Mandatory (and anchored
     # at a path start: ``/data/root/x`` is not ``/data~/x``) for a single-component home, else ``root/file`` folds.
@@ -44,14 +47,103 @@ def _home_prefix_fold_regex(path: str):
     return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)
 
 
+def _home_path_word_projection(word: str) -> str:
+    """Use one separator/escape spelling for both decoding and provenance checks.
+
+    Native-rooted drive/UNC words retain native separators. Forward-drive words
+    also accept historical mixed directory separators, but backslashes escaping
+    shell syntax remain escapes; a drive prefix alone does not make them native.
+    POSIX words keep the shared shell scanner's escape semantics unchanged.
+    """
+    from tools.approval_detection import _scan_shell, _splice
+    unquoted = word.strip("'\"")
+    if (re.match(r"^[A-Za-z]:\\", unquoted) or unquoted.startswith("\\\\")
+            or re.match(r"^%[A-Za-z_]\w*%\\", unquoted)):
+        return word.replace("\\", "/")
+    if not re.match(r"^[A-Za-z]:/", unquoted):
+        return word
+    edits = []
+    for kind, i, j, _ in _scan_shell(word):
+        if kind == "esc" and word[i + 1] not in "$`*?[]{}'\";&|<>()" and not word[i + 1].isspace():
+            edits.append((i, j, "/" + word[i + 1:j].replace("\\", "/")))
+        elif kind == "char" and word[i] == "\\":
+            edits.append((i, j, "/"))
+    return _splice(word, edits)
+
+
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
-    """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
-    supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
-    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
-        pattern = _home_prefix_fold_regex(path)
-        if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"), command)
-    return command
+    """Project whole shell path words, preserving literal and expansion provenance."""
+    if not any(marker in command for marker in ("/", "\\", "~", "$", "%")):
+        return command
+    from tools.approval_detection import _scan_shell, _splice, _strip_shell_word_syntax
+
+    roots = list(dict.fromkeys(
+        posixpath.normpath(path.replace("\\", "/"))
+        for path in sorted((path for path in paths if path), key=len, reverse=True)
+        if _home_prefix_fold_regex(path) is not None
+    ))
+    edits, start = [], None
+
+    def fold(begin: int, end: int) -> None:
+        word = command[begin:end]
+        if not any(marker in word for marker in ("/", "\\", "~", "$", "%")):
+            return
+        provenance = _home_path_word_projection(word)
+        value = _strip_shell_word_syntax(provenance)
+        assignment = re.match(r"^[A-Za-z_]\w*=", value)
+        prefix = assignment.group() if assignment else ""
+        value = value[len(prefix):]
+        symbolic = re.match(r"^(?:~|\$HOME|\$\{HOME\})(?=/)", value)
+        home_syntax = None
+        if replacement == "~" and symbolic and paths:
+            value = paths[0].replace("\\", "/") + value[symbolic.end():]
+            home_syntax = re.match(r"^[\"']?(?:~|\$HOME|\$\{HOME\})(?=/)", word)
+        dynamic = any(
+            kind == "char" and (home_syntax is None or index >= home_syntax.end())
+            and ((quote != "'" and provenance[index] in "$`")
+                 or (quote is None and provenance[index] in "*?[]{}"))
+            for kind, index, _, quote in _scan_shell(provenance)
+        )
+        # Keep raw quote boundaries around globs/expansions: the hardline floor needs them.
+        if dynamic:
+            rendered = word
+            for path in sorted((path for path in paths if path), key=len, reverse=True):
+                pattern = _home_prefix_fold_regex(path)
+                if pattern is not None:
+                    rendered = pattern.sub(lambda match: replacement + match.group("tail").replace("\\/", "/").replace("\\", "/"), rendered)
+            if rendered != word:
+                edits.append((begin, end, rendered))
+            return
+        value = posixpath.normpath(value)
+        for root in roots:
+            if value.startswith(root.rstrip("/") + "/"):
+                folded = prefix + replacement + value[len(root.rstrip("/")):]
+                rendered = (shlex.quote(folded) if re.search(r"[\s'\";&|<>()`\\]", folded)
+                            or "'" in word or '"' in word else folded)
+                edits.append((begin, end, rendered))
+                return
+
+    for kind, index, stop, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind == "subst" and stop is not None:
+            opener = 2 if command.startswith("$(", index) else 1
+            body = command[index + opener:stop - 1]
+            projected = _fold_home_prefixes(body, paths, replacement)
+            if projected != body:
+                edits.append((index, stop, command[index:index + opener] + projected + command[stop - 1:stop]))
+            if start is None:
+                start = index
+            continue
+        boundary = kind == "comment" or (kind == "char" and quote is None
+                                         and (command[index].isspace() or command[index] in ";&|<>()"))
+        if boundary:
+            if start is not None:
+                fold(start, index)
+                start = None
+        elif start is None:
+            start = index
+    if start is not None:
+        fold(start, len(command))
+    return _splice(command, edits)
 
 
 _MSYS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[/\\](.+)$")
@@ -124,9 +216,10 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     match Docker/gateway deployments and the platform default in every spelling a shell uses for it
     (native, Git Bash ``/c/…``, ``~/AppData/Local/hermes``, ``$LOCALAPPDATA/hermes``)."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_default_hermes_root, get_hermes_home
         home = get_hermes_home().expanduser()
-        paths = _home_spellings([str(home), str(home.resolve(strict=False))], command)
+        root = get_default_hermes_root()
+        paths = _home_spellings([str(home), str(home.resolve(strict=False)), str(root), str(root.resolve(strict=False))], command)
     except Exception:
         return command
     command = _fold_home_prefixes(command, paths, "~/.hermes")

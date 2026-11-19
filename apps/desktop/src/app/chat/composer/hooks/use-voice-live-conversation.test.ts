@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { $apiRequestScope, resolveOwnerNow } from '@/api/client'
 import type { CreateBackendSessionForSend } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { en } from '@/i18n/en'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { chunkForCommentary, toLiveHistory, type VoiceLiveHandlers } from '@/lib/voice-live'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $sessionStates } from '@/store/session-states'
+import { $voiceLiveDrafts } from '@/store/voice-live-draft'
 
 import { delegationPrompt, useVoiceLiveConversation } from './use-voice-live-conversation'
 
@@ -424,5 +427,77 @@ describe('GPT-Live delegation → Hermes turn', () => {
     expect(history.at(-1)?.content[0]?.text).toBe('turn 39')
     expect(history[0]?.role).toBe('user')
     expect(history.find(m => m.role === 'assistant')?.content[0]?.type).toBe('output_text')
+  })
+})
+
+describe('Live words of a recorded call', () => {
+  beforeEach(() => {
+    resetToasts()
+    $voiceLiveDrafts.set({})
+    $sessionStates.set({})
+  })
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    $voiceLiveDrafts.set({})
+    $sessionStates.set({})
+  })
+
+  const fragment = (speaker: 'assistant' | 'user', text: string, startMs: number) =>
+    ({ endMs: startMs + 200, event_id: `ev-${startMs}`, speaker, startMs, text })
+
+  async function liveCall() {
+    const hook = mountLive(vi.fn(), vi.fn(), false)
+    await act(async () => hook.result.current.start())
+    const handlers = transport.handlers.at(-1)!
+    act(() => {
+      handlers.onTranscript?.(fragment('user', 'Ask ', 0))
+      handlers.onTranscript?.(fragment('user', 'Hermes', 400))
+      handlers.onTranscript?.(fragment('assistant', 'Sure.', 800))
+    })
+
+    return hook
+  }
+
+  it('groups live fragments by speaker and keeps each run\'s timing', async () => {
+    await liveCall()
+    expect($voiceLiveDrafts.get()['stored-chat']?.map(run => [run.role, run.text, run.startMs, run.endMs, run.firstEventId])).toEqual([
+      ['user', 'Ask Hermes', 0, 600, 'ev-0'],
+      ['assistant', 'Sure.', 800, 1000, 'ev-800']
+    ])
+  })
+
+  it('keeps an ended call\'s unsaved words while its chat is still busy, then retires them', async () => {
+    const hook = await liveCall()
+    $sessionStates.set({ runtime: { ...createClientSessionState(), busy: true, storedSessionId: 'stored-chat' } })
+    vi.useFakeTimers()
+    act(() => {
+      void hook.result.current.end()
+    })
+    act(() => vi.advanceTimersByTime(5 * 60_000))
+    expect($voiceLiveDrafts.get()['stored-chat']).toHaveLength(2)
+
+    const idle = () => $sessionStates.set({ runtime: { ...createClientSessionState(), busy: false, storedSessionId: 'stored-chat' } })
+    const busy = () => $sessionStates.set({ runtime: { ...createClientSessionState(), busy: true, storedSessionId: 'stored-chat' } })
+    // Checks run every 15 s. A 9 s turn between two checks still restarts the idle wait:
+    // idle at 300 s, busy 320–329 s, still up at 346 s, retired once idle 30 s.
+    idle()
+    act(() => vi.advanceTimersByTime(20_000))
+    busy()
+    act(() => vi.advanceTimersByTime(9_000))
+    idle()
+    act(() => vi.advanceTimersByTime(17_000))
+    expect($voiceLiveDrafts.get()['stored-chat']).toHaveLength(2)
+
+    act(() => vi.advanceTimersByTime(30_000))
+    expect($voiceLiveDrafts.get()['stored-chat']).toBeUndefined()
+  })
+
+  it('shows nothing for a call the owner is not recording', async () => {
+    transport.captureStatus = 'unavailable'
+    const hook = mountLive(vi.fn(), vi.fn(), false)
+    await act(async () => hook.result.current.start())
+    act(() => transport.handlers.at(-1)!.onTranscript?.(fragment('user', 'Hello', 0)))
+    expect($voiceLiveDrafts.get()).toEqual({})
   })
 })

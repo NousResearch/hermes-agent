@@ -12,6 +12,9 @@ VOICE_DEFAULTS = {
         "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
         # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
         "instructions": "",
+        # Desktop: how a chat shows the voice's spoken reading of each Hermes reply
+        # (saved either way): collapse = expandable line under the reply | hide.
+        "spoken_replies": "collapse",
         # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
     },
     "record_key": "ctrl+b",

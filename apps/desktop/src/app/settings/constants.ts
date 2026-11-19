@@ -255,6 +255,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.gpt_live.spoken_replies': ['collapse', 'hide'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -484,7 +485,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
-      instructions: 'GPT-Live Persona'
+      instructions: 'GPT-Live Persona',
+      spokenReplies: 'Spoken Copies Of Replies'
     }
   },
   stt: {
@@ -675,7 +677,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
-        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.',
+      spokenReplies:
+        'The voice reads each Hermes reply aloud, and that reading is saved too. collapse: an expandable "Spoken aloud" line under the reply. hide: show only the written reply, unless the reading is flagged as different from it.'
     }
   },
   tts: {
@@ -797,6 +801,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'voice.voice_chat_mode',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
+      'voice.gpt_live.spoken_replies',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

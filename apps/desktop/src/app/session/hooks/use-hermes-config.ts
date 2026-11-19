@@ -27,6 +27,7 @@ import {
   applyAutoSpeakFromConfig,
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
+  applyGptLiveSpokenRepliesFromConfig,
   applyThinkingSoundFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -171,6 +172,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyBargeInEnabledFromConfig(config)
         applyBargeInThresholdFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        applyGptLiveSpokenRepliesFromConfig(config)
         applyVoiceSilenceMsFromConfig(config, defaults)
         // Resolved server-side (mode + whether a key resolves); non-critical.
         void refreshVoiceLiveStatus().catch(() => undefined)

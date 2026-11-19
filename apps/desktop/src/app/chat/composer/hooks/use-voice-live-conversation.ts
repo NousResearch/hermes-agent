@@ -8,6 +8,13 @@ import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
+import { $sessionStates } from '@/store/session-states'
+import {
+  appendVoiceLiveDraft,
+  markVoiceLiveDraftClaimed,
+  newVoiceLiveDraftRunId,
+  retireVoiceLiveDrafts
+} from '@/store/voice-live-draft'
 
 import { useComposerScope } from '../scope'
 
@@ -19,6 +26,48 @@ const SUBMIT_SETTLE_GRACE_MS = 15_000
 /** Quiet after the last user transcript fragment before the utterance is judged
  *  as a whole ("stop" ends the chat; "stop the container" is a request). */
 const UTTERANCE_SETTLE_MS = 1_500
+/** The thread retires each live run when its saved row lands. Leftovers of an ended
+ *  call (a save that never lands) go once its chat has been continuously idle this
+ *  long; a busy turn defers hydration of the saved rows, so it defers this too, up to a cap. */
+const LIVE_DRAFT_IDLE_MS = 30_000
+const LIVE_DRAFT_RECHECK_MS = 15_000
+const LIVE_DRAFT_MAX_MS = 30 * 60_000
+
+function retireEndedCallDrafts(storedSessionId: string, ids: ReadonlySet<string>) {
+  const ended = Date.now()
+
+  const chatBusy = () =>
+    Object.values($sessionStates.get()).some(
+      state => state.storedSessionId === storedSessionId && (state.busy || state.awaitingResponse)
+    )
+
+  // Continuous idle only: any turn on this chat, however short, restarts the wait.
+  let idleSince: null | number = chatBusy() ? null : ended
+
+  const unsubscribe = $sessionStates.listen(() => {
+    if (chatBusy()) {
+      idleSince = null
+    } else if (idleSince === null) {
+      idleSince = Date.now()
+    }
+  })
+
+  const check = () => {
+    const now = Date.now()
+
+    if ((idleSince !== null && now - idleSince >= LIVE_DRAFT_IDLE_MS) || now - ended >= LIVE_DRAFT_MAX_MS) {
+      unsubscribe()
+      retireVoiceLiveDrafts(storedSessionId, ids)
+
+      return
+    }
+
+    window.setTimeout(check, LIVE_DRAFT_RECHECK_MS)
+  }
+
+  window.setTimeout(check, LIVE_DRAFT_RECHECK_MS)
+}
+
 interface CallTarget {
   createVoiceDraftSession?: CreateBackendSessionForSend
   storedSessionId?: null | string
@@ -249,6 +298,8 @@ export function useVoiceLiveConversation({
   const spokenResponseIdRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
   const wasEnabledRef = useRef(enabled)
+  // Retires the live words the current recorded call put in the chat.
+  const retireLiveDraftsRef = useRef<null | (() => void)>(null)
 
   const latest = useRef({
     activeToolLabel,
@@ -316,6 +367,8 @@ export function useVoiceLiveConversation({
     }
 
     userUtteranceRef.current = ''
+    retireLiveDraftsRef.current?.()
+    retireLiveDraftsRef.current = null
     const session = sessionRef.current
     sessionRef.current = null
     setDelegation(null)
@@ -403,6 +456,19 @@ export function useVoiceLiveConversation({
     }
 
     const callStoredId = stored
+    // Only a call the owner records gets live words: its saved rows replace them.
+    let recorded = false
+    let liveRun: null | { id: string; role: LiveTranscriptFragment['speaker'] } = null
+    const liveRuns = new Set<string>()
+
+    const retireLiveDrafts = () => {
+      const ids = new Set(liveRuns)
+
+      if (callStoredId && ids.size) {
+        retireEndedCallDrafts(callStoredId, ids)
+      }
+    }
+
     const callOwner = assigned ? { ...assigned.owner, profile: assigned.backendProfile } : initialOwner
 
     try {
@@ -427,6 +493,21 @@ export function useVoiceLiveConversation({
         onTranscript: fragment => {
           if (sessionRef.current !== session || !stillTargeted()) {
             return
+          }
+
+          // Arrival order, like the owner's runs: a speaker change starts a new run.
+          if (recorded && callStoredId && fragment.text) {
+            if (liveRun?.role !== fragment.speaker) {
+              liveRun = { id: newVoiceLiveDraftRunId(), role: fragment.speaker }
+              liveRuns.add(liveRun.id)
+            }
+
+            appendVoiceLiveDraft(callStoredId, liveRun.id, fragment.speaker, fragment.text, {
+              endMs: fragment.endMs,
+              eventId: fragment.event_id,
+              startMs: fragment.startMs,
+              timingMissing: fragment.timingMissing
+            })
           }
 
           if (fragment.speaker !== 'user') {
@@ -456,6 +537,8 @@ export function useVoiceLiveConversation({
           }
 
           sessionRef.current = null
+          retireLiveDraftsRef.current?.()
+          retireLiveDraftsRef.current = null
           setDelegation(null)
           setStatus('idle')
 
@@ -513,6 +596,11 @@ export function useVoiceLiveConversation({
             ? { call_id: recordedCallId, delegation_id: delegationId, event_ids: eventIds }
             : undefined
 
+          // Its optimistic bubble now shows this run's words; the live line steps aside.
+          if (claim && callStoredId && eventIds?.[0]) {
+            markVoiceLiveDraftClaimed(callStoredId, eventIds[0], submissionId)
+          }
+
           const submission = claim
             ? latest.current.onSubmit(prompt, voiceContext, submissionId, callStoredId, assigned?.runtimeSessionId, claim)
             : assigned
@@ -569,7 +657,10 @@ export function useVoiceLiveConversation({
         return
       }
 
-      if (captureStatus !== 'recording') {
+      if (captureStatus === 'recording') {
+        recorded = true
+        retireLiveDraftsRef.current = retireLiveDrafts
+      } else {
         notify({ kind: 'warning', message: voiceCopy.liveCaptureUnavailable })
       }
 

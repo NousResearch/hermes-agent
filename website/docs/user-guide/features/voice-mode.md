@@ -233,6 +233,7 @@ voice:
   gpt_live:
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
     instructions: ""            # optional extra persona sentences (tone, pace, language)
+    spoken_replies: collapse    # collapse (default) | hide: how the chat shows the voice reading a reply aloud
 ```
 
 Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
@@ -240,6 +241,8 @@ Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or 
 How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat. In a recorded call (below) the turn runs on your words as already saved, and the rest of the call is ordinary chat history; if the call could not be recorded, the recent spoken exchange rides the model input as a per-turn note instead, never the system prompt. Either way the reply is speakable prose. Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
 **The call is saved to the chat.** The gateway that owns the chat records the call as it happens: each finished turn, yours and the voice's, becomes an ordinary message in the chat you started the call from (a call started on New Chat creates its own chat first). Later turns, `session_search` and memory see what was said, and asking in text "what did we just discuss?" works after you hang up. A delegated request runs on the words already saved, exactly once; if the request cannot be matched to the saved speech, Hermes refuses it rather than guessing.
+
+While you talk, your words and the voice's appear in the chat live and are replaced by the saved messages. The voice reads each Hermes reply aloud, and that reading is saved too: by default it shows as a collapsed "Spoken aloud" line under the written reply. `voice.gpt_live.spoken_replies: hide` removes readings that look like a repeat of the reply; a reading flagged as different (a changed negation, sign or number) stays visible, collapsed. The check compares words, so it can miss a change such as two numbers swapped; the written reply is always shown.
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 

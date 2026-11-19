@@ -433,6 +433,15 @@ function contentRefusedMeta(
   return message.contentRefused ? { contentRefused: message.contentRefused } : {}
 }
 
+// Render-time voice fields (voice-live-display). A join of several saved voice rows:
+// edit, branch and reactions resolve to its first row only, so the renderer offers none.
+function voiceDisplayMeta(message: ChatMessage): { spokenRelay?: ChatMessage['spokenRelay']; voiceJoined?: true } {
+  return {
+    ...(message.spokenRelay ? { spokenRelay: message.spokenRelay } : {}),
+    ...((message.voiceLiveRuns?.length ?? 0) > 1 ? { voiceJoined: true as const } : {})
+  }
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -458,7 +467,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta, ...voiceDisplayMeta(message) } }
     } as ThreadMessage
   }
 
@@ -505,6 +514,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
         // Structured failure layer for the error card (see lib/error-surface).
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
+        ...voiceDisplayMeta(message),
         ...reactionMeta
       }
     }

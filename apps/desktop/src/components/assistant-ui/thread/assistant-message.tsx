@@ -37,7 +37,7 @@ import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-gr
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
-import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
+import { useMessageReactions, useTapbackDoubleClick, useVoiceJoined } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant-ui/tool/approval-activity'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
@@ -95,6 +95,7 @@ import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $gptLiveSpokenReplies } from '@/store/voice-prefs'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -174,12 +175,41 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // inter-agent reply can ever be collapsed. Dispatching on that first keeps
   // the status subscription out of the standard path entirely — the standard
   // message root now re-renders for content, never for a pending flip.
+  // The voice model's spoken reading of the Hermes reply above it (marked at
+  // hydration): collapsed under that reply, or hidden, per
+  // voice.gpt_live.spoken_replies. Saved either way; display only.
+  // Only a faithful reading hides; one that differs from the reply stays one click away.
+  const spokenRelay = useAuiState(s => s.message.metadata.custom?.spokenRelay as 'differs' | 'repeat' | undefined)
+  const spokenReplies = useStore($gptLiveSpokenReplies)
+
+  if (spokenRelay) {
+    return spokenReplies === 'hide' && spokenRelay === 'repeat' ? null : (
+      <AssistantMessageBody {...props} collapsedNotice={<SpokenRelayNotice />} />
+    )
+  }
+
   return interAgentSender ? (
     <InterAgentAssistantMessage {...props} sender={interAgentSender} />
   ) : (
     <AssistantMessageBody {...props} />
   )
 }
+
+/** The compact stand-in for a spoken reading of the Hermes reply above it; the
+ *  words are one click away. */
+const SpokenRelayNotice: FC = () => (
+  <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-start px-1 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+    <details>
+      <summary className="flex cursor-pointer select-none items-center gap-1.5 text-muted-foreground/55 hover:text-muted-foreground/80">
+        <Codicon className="shrink-0" name="unmute" size="0.8125rem" />
+        <span>Spoken aloud</span>
+      </summary>
+      <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+        {MESSAGE_PARTS}
+      </div>
+    </details>
+  </div>
+)
 
 /** The compact stand-in a settled inter-agent reply collapses to (Grok-bots
  *  parity — the transcript shows the event; the text is one click away). */
@@ -1370,7 +1400,9 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     [react]
   )
 
-  const branchInNewChat = onBranchInNewChat
+  const voiceJoined = useVoiceJoined()
+
+  const branchInNewChat = onBranchInNewChat && !voiceJoined
     ? () => {
         triggerHaptic('selection')
         onBranchInNewChat(messageId)

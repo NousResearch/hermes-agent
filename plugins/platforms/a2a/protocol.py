@@ -139,9 +139,9 @@ def text_part(text: str) -> dict:
     return {"text": text, "mediaType": "text/plain"}
 
 
-def text_message(role: str, text: str, context_id: str = "") -> dict:
-    """A2A v1.0 Message with a single text Part."""
-    msg: dict[str, Any] = {"role": role, "parts": [text_part(text)], "messageId": uuid.uuid4().hex}
+def text_message(role: str, text: str, context_id: str = "", message_id: str = "") -> dict:
+    """A2A v1.0 Message with a single text Part (fresh ``messageId`` unless one is given)."""
+    msg: dict[str, Any] = {"role": role, "parts": [text_part(text)], "messageId": message_id or uuid.uuid4().hex}
     if context_id:
         msg["contextId"] = context_id
     return msg
@@ -195,14 +195,17 @@ def extract_context_id(params: dict) -> str:
     return (str(msg.get("contextId") or "") if isinstance(msg, dict) else "") or str(params.get("contextId") or "")
 
 
-def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "") -> dict:
+def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "",
+               status_ts: str = "", status_message_id: str = "", artifact_id: str = "") -> dict:
     """A2A v1.0 Task. ``created_at`` is accepted but NOT serialized: the v1.0 Task proto has no
-    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields."""
-    task: dict[str, Any] = {"id": task_id, "contextId": context_id, "status": {"state": state, "timestamp": now_iso()}}
+    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields. ``status_ts`` and the
+    two ids let a stored task render the same on every read; missing ones are generated."""
+    task: dict[str, Any] = {"id": task_id, "contextId": context_id,
+                            "status": {"state": state, "timestamp": status_ts or now_iso()}}
     if agent_text:
-        task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
+        task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id, status_message_id)
         if state == STATE_COMPLETED:
-            task["artifacts"] = [{"artifactId": uuid.uuid4().hex, "parts": [text_part(agent_text)]}]
+            task["artifacts"] = [{"artifactId": artifact_id or uuid.uuid4().hex, "parts": [text_part(agent_text)]}]
     return task
 
 
@@ -339,14 +342,15 @@ class TaskStore:
         """``input_id``: the owner admission a forwarded task was sent as (empty for local tasks)."""
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
                "input_id": input_id, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+        rec["status_ts"] = rec["created_iso"]
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
 
     def set_state(self, task_id: str, state: str) -> None:
         with self._lock:
-            if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
-                rec["state"] = state
+            if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES and rec["state"] != state:
+                rec.update(state=state, status_ts=now_iso())
 
     def set_push_config(self, task_id: str, url: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
@@ -388,7 +392,9 @@ class TaskStore:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
                 return None
-            rec.update(state=state, reply=reply, completed_at=time.time())
+            # The rendered ids and timestamp are fixed here so every later read returns the same Task.
+            rec.update(state=state, reply=reply, completed_at=time.time(), status_ts=now_iso(),
+                       status_message_id=uuid.uuid4().hex, artifact_id=uuid.uuid4().hex)
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
             out = dict(rec)
@@ -439,7 +445,8 @@ class TaskStore:
     def to_task(rec: dict, include_artifacts: bool = True) -> dict:
         """Render a stored record as an A2A v1.0 Task."""
         task = build_task(rec["task_id"], rec["context_id"], rec["state"], rec.get("reply", ""),
-                          created_at=rec.get("created_iso", ""))
+                          created_at=rec.get("created_iso", ""), status_ts=rec.get("status_ts", ""),
+                          status_message_id=rec.get("status_message_id", ""), artifact_id=rec.get("artifact_id", ""))
         if not include_artifacts:
             task.pop("artifacts", None)
         return task

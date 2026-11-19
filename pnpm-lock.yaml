@@ -168,7 +168,10 @@ importers:
         version: 0.0.9
       '@clerk/electron':
         specifier: 0.1.10
-        version: 0.1.10(@types/react@19.3.0)(electron-store@8.2.0)(electron@44.9.3)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)(use-sync-external-store@1.7.0(react@19.3.0))(zod@4.6.7)
+        version: 0.1.10(@types/react@19.3.0)(electron-store@8.2.0)(electron@44.10.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)(use-sync-external-store@1.7.0(react@19.3.0))(zod@4.6.7)
+      '@clerk/react':
+        specifier: 6.18.6
+        version: 6.18.6(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@codemirror/commands':
         specifier: 6.11.1
         version: 6.11.1
@@ -484,7 +487,7 @@ importers:
         version: 10.1.0
       electron:
         specifier: 44.10.2
-        version: 44.10.2(supports-color@10.2.2)
+        version: 44.10.2
       electron-builder:
         specifier: 27.0.0-alpha.6
         version: 27.0.0-alpha.6(electron-builder-squirrel-windows@27.0.0-alpha.6)
@@ -7149,12 +7152,12 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@clerk/electron@0.1.10(@types/react@19.3.0)(electron-store@8.2.0)(electron@44.9.3)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)(use-sync-external-store@1.7.0(react@19.3.0))(zod@4.6.7)':
+  '@clerk/electron@0.1.10(@types/react@19.3.0)(electron-store@8.2.0)(electron@44.10.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)(use-sync-external-store@1.7.0(react@19.3.0))(zod@4.6.7)':
     dependencies:
       '@clerk/clerk-js': 6.42.3(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)(use-sync-external-store@1.7.0(react@19.3.0))(zod@4.6.7)
       '@clerk/react': 6.18.6(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@clerk/shared': 4.44.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      electron: 44.9.3
+      electron: 44.10.2
       react: 19.3.0
     optionalDependencies:
       electron-store: 8.2.0
@@ -10334,7 +10337,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@44.10.2(supports-color@10.2.2):
+  electron@44.10.2:
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0

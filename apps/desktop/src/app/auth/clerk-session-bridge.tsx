@@ -1,4 +1,4 @@
-import { useAuth, useClerk, useOrganization, useUser } from '@clerk/electron/react'
+import { useAuth, useClerk, useOrganization, useUser } from '@clerk/react'
 import { randomUuid } from '@hermes/shared'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -28,7 +28,8 @@ import {
   type ClerkSessionActions,
   DISABLED_CLERK_SNAPSHOT,
   publishClerkSession,
-  registerClerkSessionActions
+  registerClerkSessionActions,
+  registerClerkSignInAction
 } from '@/store/clerk-session'
 
 export function ClerkSessionBridge() {
@@ -48,6 +49,24 @@ export function ClerkSessionBridge() {
 
     return () => setClerkTokenGetter(null)
   }, [getToken])
+
+  // The browser-hosted Desktop keeps the app usable while signed out, so the
+  // account panel's Login needs an opener even though org actions stay off.
+  useEffect(() => {
+    if (typeof clerk.openSignIn !== 'function') {
+      return
+    }
+
+    return registerClerkSignInAction(() => clerk.openSignIn({}))
+  }, [clerk])
+
+  // Unlike the Electron gate (which unmounts this bridge on sign-out), the
+  // browser keeps it mounted, so a later sign-in must clear the local flag.
+  useEffect(() => {
+    if (isSignedIn) {
+      setSignedOutLocally(false)
+    }
+  }, [isSignedIn])
 
   const refreshOrganizations = useCallback(async () => {
     const generation = ++organizationGenerationRef.current

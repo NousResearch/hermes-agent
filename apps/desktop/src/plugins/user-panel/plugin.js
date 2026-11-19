@@ -60,7 +60,6 @@ const clampAmount = value => {
   return Math.min(MAX_CUSTOM_AMOUNT, Math.max(MIN_CUSTOM_AMOUNT, parsed))
 }
 
-const INFO_ROW = 'flex items-center gap-2 rounded-md px-2 py-1 text-xs text-(--ui-text-primary)'
 const ICON = 'shrink-0 text-(--ui-text-secondary)'
 
 const messageOf = error => (error instanceof Error && error.message) || String(error || 'Request failed')
@@ -93,18 +92,49 @@ function AccountAvatar({ className, imageUrl, label }) {
       })
 }
 
-function MenuInfoRow({ icon, label, trailing }) {
-  return jsxs('div', {
-    className: INFO_ROW,
-    children: [icon, jsx('span', { className: 'min-w-0 flex-1 truncate', children: label }), trailing || null]
-  })
-}
-
 function MenuActionRow({ icon, label, onSelect, trailing }) {
   return jsxs(DropdownMenuItem, {
     className: 'min-w-0 text-xs',
     onSelect,
     children: [icon, jsx('span', { className: 'min-w-0 flex-1 truncate', children: label }), trailing || null]
+  })
+}
+
+function PublicMenuRows({ onBuyCredits, openLink }) {
+  return jsxs('div', {
+    className: 'flex flex-col gap-1',
+    children: [
+      jsx(MenuActionRow, {
+        icon: jsx(Codicon, { className: ICON, name: 'settings', size: '0.875rem' }),
+        key: 'settings',
+        label: 'Settings',
+        onSelect: () => openLink(LINK_URLS.settings)
+      }),
+      jsxs(MenuActionRow, {
+        icon: jsx(Codicon, { className: ICON, name: 'zap', size: '0.875rem' }),
+        key: 'ai-credits',
+        label: 'AI Credits',
+        onSelect: () => openLink(LINK_URLS.aiCredits)
+      }),
+      jsx(MenuActionRow, {
+        icon: jsx(Codicon, { className: ICON, name: 'credit-card', size: '0.875rem' }),
+        key: 'buy-credits',
+        label: 'Buy credits',
+        onSelect: onBuyCredits
+      }),
+      jsx(MenuActionRow, {
+        icon: jsx(Codicon, { className: ICON, name: 'credit-card', size: '0.875rem' }),
+        key: 'pricing',
+        label: 'Pricing',
+        onSelect: () => openLink(LINK_URLS.pricing)
+      }),
+      jsx(MenuActionRow, {
+        icon: jsx(Codicon, { className: ICON, name: 'comment-discussion', size: '0.875rem' }),
+        key: 'book-demo',
+        label: 'Book a demo',
+        onSelect: () => openLink(LINK_URLS.bookDemo)
+      })
+    ]
   })
 }
 
@@ -379,11 +409,12 @@ function UserPanelContent({ onOpenUrl }) {
   const [signingOut, setSigningOut] = useState(false)
   const [retryingSync, setRetryingSync] = useState(false)
 
-  if (!snapshot.enabled || snapshot.status === 'disabled' || snapshot.status === 'signed-out') {
-    return null
+  const openLink = url => {
+    setMenuOpen(false)
+    onOpenUrl(url)
   }
 
-  if (snapshot.status === 'loading' || !snapshot.user) {
+  if (snapshot.status === 'loading') {
     return jsx(Button, {
       'aria-label': 'Loading account',
       disabled: true,
@@ -391,6 +422,72 @@ function UserPanelContent({ onOpenUrl }) {
       type: 'button',
       variant: 'ghost',
       children: jsx('span', { className: 'size-5 rounded-full bg-(--ui-bg-quaternary)' })
+    })
+  }
+
+  const signedIn = snapshot.enabled && snapshot.status === 'signed-in' && Boolean(snapshot.user)
+
+  // Signed out (or Clerk unavailable): keep the same panel, but replace the
+  // organization switcher with a Login row that opens Clerk's sign-in modal.
+  if (!signedIn) {
+    const openSignIn = () => {
+      if (typeof host.clerk.signIn !== 'function') {
+        host.notifyError(new Error('Sign-in is not available in this app'), 'Could not open sign-in')
+        return
+      }
+
+      void host.clerk.signIn().catch(error => host.notifyError(error, 'Could not open sign-in'))
+    }
+
+    return jsxs(DropdownMenu, {
+      onOpenChange: setMenuOpen,
+      open: menuOpen,
+      children: [
+        jsx(DropdownMenuTrigger, {
+          asChild: true,
+          children: jsx(Button, {
+            'aria-label': 'Open account menu',
+            className: 'text-(--ui-text-secondary)',
+            size: 'icon-titlebar',
+            style: { order: -1 },
+            title: 'Sign in',
+            type: 'button',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'account', size: '1rem' })
+          })
+        }),
+        jsxs(DropdownMenuContent, {
+          align: 'start',
+          className: 'min-w-52 max-w-72',
+          side: 'bottom',
+          sideOffset: 6,
+          style: { width: '260px' },
+          children: [
+            jsx(MenuActionRow, {
+              icon: jsx(Codicon, { className: ICON, name: 'sign-in', size: '0.875rem' }),
+              key: 'sign-in',
+              label: 'Log in',
+              onSelect: () => {
+                setMenuOpen(false)
+                openSignIn()
+              }
+            }),
+            jsx(DropdownMenuSeparator, {}),
+            jsx(PublicMenuRows, {
+              onBuyCredits: () => {
+                setMenuOpen(false)
+                setBuyOpen(true)
+              },
+              openLink
+            })
+          ]
+        }),
+        jsx(BuyCreditsDialog, {
+          onOpenChange: setBuyOpen,
+          onOpenUrl,
+          open: buyOpen
+        })
+      ]
     })
   }
 
@@ -435,11 +532,6 @@ function UserPanelContent({ onOpenUrl }) {
     } finally {
       setRetryingSync(false)
     }
-  }
-
-  const openLink = url => {
-    setMenuOpen(false)
-    onOpenUrl(url)
   }
 
   return jsxs(DropdownMenu, {
@@ -592,51 +684,12 @@ function UserPanelContent({ onOpenUrl }) {
             ]
           }),
           jsx(DropdownMenuSeparator, {}),
-          jsxs('div', {
-            className: 'flex flex-col gap-1',
-            children: [
-              jsx(MenuActionRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'settings', size: '0.875rem' }),
-                key: 'settings',
-                label: 'Settings',
-                onSelect: () => openLink(LINK_URLS.settings)
-              }),
-              jsxs(MenuActionRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'zap', size: '0.875rem' }),
-                key: 'ai-credits',
-                label: 'AI Credits',
-                onSelect: () => openLink(LINK_URLS.aiCredits)
-                /* trailing: jsx(AiCreditsValue, {}) */
-              }),
-              jsx(MenuActionRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'credit-card', size: '0.875rem' }),
-                key: 'buy-credits',
-                label: 'Buy credits',
-                onSelect: () => {
-                  setMenuOpen(false)
-                  setBuyOpen(true)
-                }
-              }),
-              jsx(MenuActionRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'credit-card', size: '0.875rem' }),
-                key: 'pricing',
-                label: 'Pricing',
-                onSelect: () => openLink(LINK_URLS.pricing)
-              }),
-              /*
-              jsx(MenuInfoRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'person-add', size: '0.875rem' }),
-                key: 'add-members',
-                label: 'Add Members'
-              }),
-              */
-              jsx(MenuActionRow, {
-                icon: jsx(Codicon, { className: ICON, name: 'comment-discussion', size: '0.875rem' }),
-                key: 'book-demo',
-                label: 'Book a demo',
-                onSelect: () => openLink(LINK_URLS.bookDemo)
-              })
-            ]
+          jsx(PublicMenuRows, {
+            onBuyCredits: () => {
+              setMenuOpen(false)
+              setBuyOpen(true)
+            },
+            openLink
           }),
           snapshot.tokenSyncError
             ? jsxs('div', {

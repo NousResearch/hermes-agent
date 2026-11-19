@@ -85,3 +85,14 @@ def open_worker_log(log_path: Path):
         os.close(fd)
         raise
     return os.fdopen(fd, "ab")
+
+
+def open_task_worker_log(task, board: Optional[str]):
+    """Append-mode per-task log (a re-run on unblock appends, never overwrites),
+    rotated first. Anchored at the board root (not the shared kanban root) so
+    `hermes kanban log` reads its own file and boards sharing task ids don't
+    collide. Reached as ``kanban_db_dispatch._open_worker_log``."""
+    from hermes_cli import kanban_db as _kb
+    log_dir = _kb.worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return open_worker_log(log_dir / f"{task.id}.log")

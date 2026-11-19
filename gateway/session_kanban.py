@@ -63,45 +63,23 @@ def build_kanban_policy(connection, params, config):
 
 
 def kanban_launch_policy(task, cwd, config, private=None):
-    """The launch policy a claimed card runs, its model resolved. Refuses ``invalid_params`` (field
-    ``model``) only when nothing can name one, before a receipt or a worker exists."""
+    """The launch policy a claimed card runs, its model resolved by ``task_model`` (shared with the
+    dispatcher's pre-spawn refusal). Refuses ``invalid_params`` (field ``model``) only when nothing
+    can name one, before a receipt or a worker exists."""
     from gateway.session_policy import build_policy
+    from hermes_cli.kanban_worker_preflight import missing_model_detail, task_model
     params = {'source': 'cli', 'cwd': cwd}
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params[name] = value
     policy = build_policy(params, config, private_secrets={} if private is None else private)
     if policy.model is None:
-        model, unresolved = _profile_model(policy.config())
+        model, unresolved = task_model(task, config, discover=True)
         if unresolved:
-            raise AuthorityRefusal('invalid_params', field='model', detail=(
-                f"No model configured for profile {task.assignee}; run `hermes -p {task.assignee} model` "
-                "or create the task with --model"))
+            from hermes_constants import get_hermes_home
+            raise AuthorityRefusal('invalid_params', field='model', detail=missing_model_detail(task.assignee, get_hermes_home()))
         policy = replace(policy, model=model)
     return policy
-
-
-def _profile_model(config):
-    """``(model, unresolved)`` for a card without ``--model``: the profile's own (``model.default``, the
-    claimed welcome trial), else what a CLI or gateway turn falls back to: the named endpoint's model,
-    then the provider's catalog default. A provider left to credential discovery (``auto``) and a
-    loopback server (the CLI asks it for its one model) resolve at turn time and are never probed."""
-    from gateway.run import _resolve_gateway_model
-    from gateway.session_route_identity import profile_route_identity
-    from hermes_cli.models import get_default_model_for_provider
-    from hermes_cli.runtime_provider import _loopback_hostname
-    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
-    from utils import base_url_hostname
-    model = _resolve_gateway_model(config)
-    identity = profile_route_identity(config)
-    if model or identity == 'auto':
-        return model, False
-    held = config.get('model') if isinstance(config.get('model'), dict) else {}
-    entry = (_get_named_custom_provider(str(held.get('provider') or ''), config=config, resolve_credentials=False)
-             if identity.startswith('custom:') else None) or {}
-    model = str(entry.get('model') or '').strip() or ('' if entry else get_default_model_for_provider(identity))
-    base_url = str(held.get('base_url') or entry.get('base_url') or '')
-    return model, not model and not _loopback_hostname(base_url_hostname(base_url))
 
 
 async def run_task(connection, params):

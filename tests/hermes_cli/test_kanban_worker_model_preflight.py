@@ -65,3 +65,104 @@ def test_resolvable_model_still_spawns(dispatch_profile, config_yaml, task):
     task_id, result, row, _, _ = _dispatch(profile, config_yaml, **task)
     assert len(spawned) == 1 and result.spawned[0][0] == task_id
     assert row.status == "running" and row.worker_pid == 424242
+
+
+def _card(**kw):
+    return SimpleNamespace(**{"id": "t_x", "assignee": "worker", "model_override": None, "provider_override": None, **kw})
+
+
+_LAB = {"model": {"provider": "openrouter", "default": "profile-model"},
+        "custom_providers": [{"name": "lab", "base_url": "https://lab.example.test/v1", "model": "entry-model"}]}
+
+
+def test_named_provider_pick_brings_its_entry_model_and_task_model_still_wins():
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    assert task_model(_card(provider_override="custom:lab"), _LAB) == ("entry-model", False)
+    assert task_model(_card(provider_override="custom:lab", model_override="task-model"), _LAB) == ("task-model", False)
+    assert task_model(_card(), _LAB) == ("profile-model", False)
+
+
+def test_owner_asks_a_single_model_loopback_server_the_dispatcher_never_does():
+    import http.server
+    import json
+    import threading
+
+    from hermes_cli.kanban_worker_preflight import task_model
+
+    hits = []
+
+    class Models(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            body = json.dumps({"data": [{"id": "served-model"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        config = {"model": {"provider": "custom", "base_url": f"http://127.0.0.1:{server.server_port}/v1"}}
+        assert task_model(_card(), config) == ("", False) and hits == []
+        assert task_model(_card(), config, discover=True) == ("served-model", False)
+        assert hits == ["/v1/models"]
+    finally:
+        server.shutdown()
+
+
+def test_preflight_never_imports_the_gateway_runner(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (profile / ".env").write_text("", encoding="utf-8")
+    (profile / "config.yaml").write_text("model:\n  provider: custom\n  base_url: https://llm.example.test/v1\n", encoding="utf-8")
+    probe = (
+        "import os, sys\n"
+        "from types import SimpleNamespace\n"
+        "from hermes_cli.kanban_worker_preflight import refuse_unresolved_model\n"
+        "card = SimpleNamespace(id='t_fresh', assignee='worker', model_override=None, provider_override=None)\n"
+        "try:\n"
+        "    refuse_unresolved_model(card, '.', None)\n"
+        "except RuntimeError as exc:\n"
+        "    print('refused', exc)\n"
+        "print('gateway.run' in sys.modules, os.environ.get('_HERMES_GATEWAY'))\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "_HERMES_GATEWAY"}
+    env.update(HOME=str(tmp_path), HERMES_HOME=str(root), HERMES_KANBAN_HOME=str(root))
+    out = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.strip().splitlines()
+    assert lines[0].startswith("refused No model configured for profile worker")
+    assert f"HERMES_HOME={profile.parent.parent}" in lines[0]
+    assert lines[-1] == "False None"
+
+
+def test_unavailable_config_backend_is_an_infrastructure_spawn_failure(dispatch_profile, monkeypatch):
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    from hermes_cli import config_effective
+
+    profile, spawned = dispatch_profile
+    real = config_effective.load_user_config_effective
+
+    def unavailable(config_path=None, **kwargs):
+        if config_path is not None and Path(config_path).parent == profile:
+            raise ConfigBackendUnavailable("config plane unreachable")
+        return real(config_path, **kwargs)
+
+    monkeypatch.setattr(config_effective, "load_user_config_effective", unavailable)
+    _, result, task, _, runs = _dispatch(profile, "model:\n  provider: openrouter\n")
+    assert not spawned and not result.spawned
+    assert task.status == "ready" and task.worker_pid is None and task.consecutive_failures == 0
+    assert "config plane unreachable" in task.last_failure_error
+    assert len(runs) == 1 and runs[0].outcome == "spawn_failed" and runs[0].metadata.get("infrastructure") is True

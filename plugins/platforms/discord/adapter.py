@@ -1181,7 +1181,7 @@ from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
 
 
-def _discord_app_command_scope_kwargs() -> Dict[str, Any]:
+def _discord_app_command_scope_kwargs() -> dict[str, Any]:
     """Return explicit slash-command install/context defaults for discord.py.
 
     Discord application defaults can be user-install only. If Hermes lets

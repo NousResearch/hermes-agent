@@ -42,7 +42,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
     """Run the MoA reference models and append their aggregated context to the last user
     message (as a trailing text part on multimodal turns). Fail-open."""
     try:
-        from agent.message_content import flatten_message_text as _flatten_mt
+        from session_rules.turns import flatten_message_text as _flatten_mt
         from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
         _moa_context = aggregate_moa_context(
@@ -103,6 +103,32 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
         api_messages = prepared["messages"]
     return prepared, api_messages, pending_moa_prepared_request
 
+
+
+def plan_request_cache(agent: Any, api_messages: Any, tools: Any) -> Any:
+    """The request-local cache sections (``PromptCachePlan``) for *agent*'s destination."""
+    from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+
+    static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
+    return build_prompt_cache_plan(
+        api_messages,
+        tools,
+        # Clamp per-destination: a configured 1h regresses to 5m on
+        # Qwen/Alibaba routes, whose context cache is 5m-only.
+        cache_ttl=effective_cache_ttl(
+            agent._cache_ttl, provider=agent.provider, model=agent.model,
+            base_url=getattr(agent, "base_url", "") or "", auto=getattr(agent, "_cache_ttl_auto", False),
+        ),
+        native_anthropic=agent._use_native_cache_layout,
+        static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
+        session_system_prompt=agent._cached_system_prompt,
+        direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
+        # LiteLLM-style envelope routes forward part-level markers into
+        # tool_result.content[] → non-retryable 400.
+        tool_part_markers=envelope_tool_part_cache_markers_supported(
+            getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+        ),
+    )
 
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
@@ -209,29 +235,7 @@ def assemble_api_request(
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
     if agent._use_prompt_caching and agent.provider != "moa":
-        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
-
-        _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
-        _initial_cache_plan = build_prompt_cache_plan(
-            api_messages,
-            tools_for_api,
-            # Clamp per-destination: a configured 1h regresses to 5m on
-            # Qwen/Alibaba routes, whose context cache is 5m-only.
-            cache_ttl=effective_cache_ttl(
-                agent._cache_ttl, provider=agent.provider, model=agent.model
-            ),
-            native_anthropic=agent._use_native_cache_layout,
-            static_system_prefix=(
-                _static_system_prefix if isinstance(_static_system_prefix, str) else None
-            ),
-            session_system_prompt=agent._cached_system_prompt,
-            direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
-            # LiteLLM-style envelope routes forward part-level markers into
-            # tool_result.content[] → non-retryable 400.
-            tool_part_markers=envelope_tool_part_cache_markers_supported(
-                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
-            ),
-        )
+        _initial_cache_plan = plan_request_cache(agent, api_messages, tools_for_api)
         api_messages = _initial_cache_plan.messages
         tools_for_api = _initial_cache_plan.tools
 

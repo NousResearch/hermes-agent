@@ -90,7 +90,7 @@ class GatewayAgent:
     platform = "cli"
     _supports_active_turn_redirect = True
 
-    def __init__(self, *, session_db=None, session_id=None, model=None, provider=None, base_url=None,
+    def __init__(self, *, session_db=None, persistence=None, session_id=None, model=None, provider=None, base_url=None,
                  api_mode=None, max_iterations=90, quiet_mode=True, tool_progress_mode="all",
                  reasoning_config=None, service_tier=None, clarify_callback=None, connection_callback=None,
                  connection_update_callback=None,
@@ -105,6 +105,7 @@ class GatewayAgent:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
         self.connection = conn
         self._session_db = session_db
+        self.persistence = persistence
         self.session_id = session_id
         self.model = model or ""
         self.provider = provider or ""

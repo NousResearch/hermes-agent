@@ -3,7 +3,7 @@
 A skill's scripts run in the execute_code or terminal child, which never receives a Hermes model-provider key
 (the child-env scrub; GHSA-rhgp-j443-p4rf keeps a skill from declaring one back). Loading the Hermes .env defeats
 that and hands the script every key of the profile, and reading a provider key means the skill depends on getting
-it some other way. Both are high on a skill. Plugins run in-process and read their own keys, so ``plugin_guard``
+it some other way. Both are high on a skill. Plugins run in-process and read their own keys, so ``plugins_install_scan``
 scans without these rules. Leaf module: nothing here imports ``tools.skills_guard``."""
 
 import io

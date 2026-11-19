@@ -188,6 +188,21 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     assert _private_warnings(validate_plugin_dir(whole)), "a whole-module import of file_safety must still warn"
 
 
+def test_retry_after_parser_is_public_but_the_rest_of_retry_utils_is_not(tmp_path):
+    """A plugin that honours a rate limit's Retry-After header with Hermes's parser gets no
+    private-import warning; another name from the same module still warns."""
+    clean = _plugin(tmp_path / "graph", {"client.py": (
+        "from agent.retry_utils import parse_retry_after_seconds\n"
+        "def wait_for(response):\n"
+        "    return parse_retry_after_seconds(response.headers)\n"
+    )})
+    assert _private_warnings(validate_plugin_dir(clean)) == []
+
+    sibling = _plugin(tmp_path / "backoff", {"client.py": "from agent.retry_utils import jittered_backoff\n"})
+    [warning] = _private_warnings(validate_plugin_dir(sibling))
+    assert "agent.retry_utils.jittered_backoff" in warning
+
+
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
     """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
     no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and
@@ -243,3 +258,20 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
     spec.loader.exec_module(gen)
 
     assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"
+
+
+def test_a_published_module_moved_under_hermes_agent_is_public_in_every_spelling(tmp_path, monkeypatch):
+    """Once ``hermes_constants`` moves, ``from hermes_agent import hermes_constants`` names the same
+    published module as ``import hermes_constants`` and must not warn."""
+    from hermes_agent.compat.paths import PathMoves
+    from hermes_cli import plugin_validate_private_imports as private_imports
+
+    monkeypatch.setattr(private_imports, "original_module",
+                        PathMoves({"hermes_constants": "hermes_agent.hermes_constants"}).original_module)
+    plugin = _plugin(tmp_path / "moved", {"uses_moved.py": (
+        "from hermes_agent import hermes_constants\n"
+        "from hermes_agent.hermes_constants import get_hermes_home\n"
+        "import hermes_agent.hermes_constants\n"
+    )})
+
+    assert _private_warnings(validate_plugin_dir(plugin)) == []

@@ -132,6 +132,17 @@ def test_non_mcp_content_type_raises(content_type):
     assert "bad_srv" in msg
 
 
+def test_non_mcp_content_type_error_masks_url_query_credentials():
+    """The error text reaches the model and ``hermes mcp test``: a ``?token=`` key must not ride along (#133713)."""
+    secret = "s3cr3t" + "Value" + "0123456789"
+    with _serve(_handler(status=200, content_type="text/html")) as base:
+        with pytest.raises(NonMcpEndpointError) as exc_info:
+            asyncio.run(_make_task("bad_srv")._preflight_content_type(f"{base}/mcp?token={secret}&v=1", timeout=5.0))
+    msg = str(exc_info.value)
+    assert secret not in msg
+    assert "/mcp?token=***&v=1" in msg
+
+
 # ---------------------------------------------------------------------------
 # Pass-through: valid MCP content types, ambiguous, and error responses
 # ---------------------------------------------------------------------------

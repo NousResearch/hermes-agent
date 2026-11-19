@@ -140,7 +140,7 @@ The adapter exposes:
 
 All callback payloads are encrypted with AES-CBC using the EncodingAESKey. The adapter handles:
 
-- **Inbound**: Decrypt XML payload, verify SHA1 signature
+- **Inbound**: Decrypt XML payload, verify SHA1 signature, and refuse a signed timestamp more than 5 minutes from the gateway's clock (replay protection)
 - **Outbound**: Replies sent via proactive API (not encrypted callback response)
 
 The crypto implementation is compatible with Tencent's official WXBizMsgCrypt SDK.
@@ -160,8 +160,9 @@ WeCom signs every request with the **Token** you registered in the admin
 console. A mismatch between the token configured in Hermes and the token the
 admin console expects is the most common cause. Re-copy both the **Token** and
 **EncodingAESKey** from the admin console — they're easy to truncate. Whitespace
-in `~/.hermes/.env` values around `=` will also break signature checks. After
-fixing, restart `hermes gateway run`.
+in `~/.hermes/.env` values around `=` will also break signature checks, and so
+does a gateway host clock more than 5 minutes off (the signed timestamp is
+refused as a replay; keep NTP on). After fixing, restart `hermes gateway run`.
 
 **Callback URL not reachable / verification step fails.**
 WeCom hits the public URL you registered. Confirm:

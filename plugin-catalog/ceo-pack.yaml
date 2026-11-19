@@ -1,19 +1,21 @@
 name: ceo-pack
-repo: https://github.com/tradersurfer/ceo-layer
-sha: 806e71ae7a7e8136a98c190498ad35de0f806a14
+repo: https://github.com/tradersurfer/ceo-pack
+sha: 28fe9ae947cbb777d9aa10a91c15dbb6d3454928
 description: >-
   CEO Pack — a CEO orchestration layer for Hermes. Brief, route, plan, assign,
   call, verify, log, with Hermes as COO. One owner and one due date per task,
   Type 1 / Type 2 decision gating, credential-safe tool calls, and owner
-  approval for external actions. Free model default is Nemotron 3 Ultra free,
-  with GLM Flash free fallback and paid Claude Sonnet 5.5 / Opus 5.5 overrides
-  the user chooses. The plugin returns model choices; it does not call a model
-  itself (stdlib-only, catalog-safe).
+  approval for external actions. v0.4.0 adds seat aliases, head-CEO config,
+  capability checks, opt-in business-data reading, and generalized closeout
+  (Q1-Q4 + monthly). Free model default is Nemotron 3 Ultra free, with GLM
+  Flash free fallback and paid Claude Sonnet 5.5 / Opus 5.5 overrides the user
+  chooses. The plugin returns model choices; it does not call a model itself
+  (stdlib-only, catalog-safe).
 maintainer: tradersurfer93
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
-version: "0.3.0"
+version: "0.4.0"
 capabilities:
   provides_tools:
     - ceo_brief
@@ -25,6 +27,11 @@ capabilities:
     - ceo_choose_model
     - ceo_tool_call
     - ceo_verify
+    - ceo_closeout_checklist
+    - ceo_daily_check
+    - ceo_performance_check
+    - ceo_status_check
+    - ceo_roster
   provides_hooks:
     - post_tool_call
   provides_middleware: []

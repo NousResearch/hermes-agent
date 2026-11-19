@@ -94,7 +94,7 @@ def test_unresolvable_refs_are_an_error_not_a_clean_report(tmp_path, monkeypatch
 
 def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     """Git reports a moved file as a rename, not a modification; a public name dropped during the move
-    (into ``src/hermes_agent/`` or between packages) and a moved test file losing defs are both drops."""
+    (into ``hermes_agent/`` or between packages) and a moved test file losing defs are both drops."""
     repo = tmp_path
     (repo / "agent").mkdir(); (repo / "tools").mkdir(); (repo / "tests").mkdir()
     (repo / "agent" / "mod.py").write_text("def keep(): ...\ndef gone(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
@@ -104,9 +104,9 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     (repo / "agent" / "plain.py").write_text("def kept(): ...\ndef gone_too(): ...\n" + "V = 1\n" * 20, encoding="utf-8")
     _git(repo, "init", "-q", "-b", "main"); _git(repo, "add", "."); _git(repo, "commit", "-qm", "base")
 
-    (repo / "src" / "hermes_agent" / "agent").mkdir(parents=True); (repo / "gateway").mkdir()
-    (repo / "agent" / "mod.py").rename(repo / "src" / "hermes_agent" / "agent" / "mod.py")
-    (repo / "src" / "hermes_agent" / "agent" / "mod.py").write_text("def keep(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
+    (repo / "hermes_agent" / "agent").mkdir(parents=True); (repo / "gateway").mkdir()
+    (repo / "agent" / "mod.py").rename(repo / "hermes_agent" / "agent" / "mod.py")
+    (repo / "hermes_agent" / "agent" / "mod.py").write_text("def keep(): ...\n" + "X = 1\n" * 20, encoding="utf-8")
     (repo / "tools" / "util.py").rename(repo / "gateway" / "util.py")
     (repo / "gateway" / "util.py").write_text("def stays(): ...\n" + "Y = 1\n" * 20, encoding="utf-8")
     (repo / "providers").mkdir()
@@ -120,7 +120,7 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
 
     monkeypatch.chdir(repo)
     report = _load().diff_surface("HEAD~1", "HEAD")
-    assert report["dropped_names"] == {"src/hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"],
+    assert report["dropped_names"] == {"hermes_agent/agent/mod.py": ["gone"], "gateway/util.py": ["lost"],
                                        "providers/out.py": ["dropped"], "agent/caf\u00e9.py": ["gone_too"]}
     assert report["test_drops"] == {"tests/test_moved.py": (2, 1)}
 
@@ -139,7 +139,7 @@ def test_a_moved_file_is_compared_with_its_old_self(tmp_path, monkeypatch):
     assert crossing["test_drops"] == {"scripts/test_out.py": (2, 1)}
 
     # Once the move lands, later edits have no old top-level source path.
-    (repo / "src" / "hermes_agent" / "agent" / "mod.py").write_text("X = 1\n" * 20, encoding="utf-8")
+    (repo / "hermes_agent" / "agent" / "mod.py").write_text("X = 1\n" * 20, encoding="utf-8")
     _git(repo, "add", "."); _git(repo, "commit", "-qm", "drop after move")
     assert _load().diff_surface("HEAD~1", "HEAD")["dropped_names"] == {
-        "src/hermes_agent/agent/mod.py": ["keep"]}
+        "hermes_agent/agent/mod.py": ["keep"]}

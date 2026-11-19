@@ -35,10 +35,8 @@ import {
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
@@ -72,7 +70,7 @@ import type { ClientSessionState } from '../../../types'
 import {
   committedReplyCovers,
   isStrictAnswerTextExtension,
-  pageReplyCommittingLiveRow,
+  livePlaceOnCommittedPage,
   replyAfterLastTool
 } from './committed-reply'
 import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-equivalence'
@@ -1528,11 +1526,11 @@ export function overlayConcurrentMessageChanges(
 
     // The page caught this turn's reply committed before its completion
     // reached the live row: the live row takes that bubble's place.
-    const committedIndex = pageReplyCommittingLiveRow(overlaid, committedNewRow, current, currentMessages)
+    const committed = livePlaceOnCommittedPage(overlaid, committedNewRow, current, currentMessages)
 
-    if (committedIndex >= 0) {
-      nextIndexById.set(current.id, committedIndex)
-      overlaid[committedIndex] = current
+    if (committed) {
+      nextIndexById.set(current.id, committed.index)
+      overlaid[committed.index] = committed.row
       changed = true
 
       continue
@@ -2143,15 +2141,15 @@ interface ApplyRuntimeInfoOptions {
   owner?: SessionOwnerScope
 }
 
-/** Mirror a session's runtime state into the composer atoms the MAIN pane
- *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+/** Paint foreground runtime metadata without persisting its resolved provider
+ *  class/fallback over the user's sticky composer route. */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   if (state.model !== undefined) {
-    setCurrentModel(state.model)
+    setCurrentModelTransient(state.model)
   }
 
   if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
+    setCurrentProviderTransient(state.provider)
   }
 
   if (state.cwd !== undefined) {

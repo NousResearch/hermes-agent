@@ -42,7 +42,11 @@ def byte_image_records(agent: Any) -> dict[str, set[tuple[str, bytes]]]:
     cached = getattr(agent, "_byte_stripped_tool_images", None)
     if isinstance(cached, dict) and getattr(agent, "_byte_stripped_session_id", None) == sid:
         return cached
-    getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+    from agent.agent_init_session import agent_interface
+
+    store = agent_interface(agent)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None))
     raw = getter(sid, MODEL_CONFIG_KEY, {}) if sid and callable(getter) else {}
     state = _decode(raw)
     agent._byte_stripped_tool_images = state
@@ -59,7 +63,11 @@ def persist_byte_image_records(agent: Any, retained_ids: set[str] | None) -> Non
                 del state[route]
     if getattr(agent, "_persist_disabled", False):
         return
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    from agent.agent_init_session import agent_interface
+
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     sid = getattr(agent, "session_id", None)
     if sid and callable(patcher):
         encoded = {route: [[call_id, digest.hex()] for call_id, digest in sorted(entries)]

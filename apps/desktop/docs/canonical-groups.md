@@ -13,7 +13,8 @@ bounded shared thread context when it takes its first turn. The transcript recor
 A paused discussion from before a roster change can be followed up with a new message in the same thread.
 The room must keep two to six Bots.
 Change the lead in room settings before removing it. Bots on other gateways are selected at room
-creation and their existing seats are kept when editing local members.
+creation and their existing seats are kept when editing local members. A former member's handle
+stays tied to that Bot so its replies stay correctly attributed.
 
 After a membership edit, the room needs a gateway that supports membership updates to run more turns.
 An older gateway can read the stored chat history, but does not understand how to run turns using the

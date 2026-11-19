@@ -182,7 +182,7 @@ it('New Group Chat stays offered for a selection that can span connections', asy
 it('edits local seats against the original room revision and preserves the locked peer seat', async () => {
   const binding = { roomId: 'room-1', profile: 'default', connectionId: 'local' }
 
-  const peer = { member_id: 'peer-bot', profile: 'scout', handle: 'scout', display_name: 'Remote Scout', target: {
+  const peer = { member_id: 'scout', profile: 'scout', handle: 'scout', display_name: 'Remote Scout', target: {
     kind: 'peer', profile: 'scout', peer_id: 'other-box', installation_id: 'other-box', capability_digest: 'a'.repeat(64)
   } }
 
@@ -190,12 +190,12 @@ it('edits local seats against the original room revision and preserves the locke
   const room = { room_id: 'room-1', name: 'Launch team', revision: 4, members: current }
   const refreshed = vi.fn(async () => {})
   request.mockImplementation(async (_route, method) => {
-    if (method === 'groups.capabilities') {return { seatable_profiles: ['alpha', 'beta'] }}
+    if (method === 'groups.capabilities') {return { seatable_profiles: ['alpha', 'beta', 'scout'] }}
 
     if (method === 'groups.members.update') {return { room }}
     throw new Error(`Unexpected RPC: ${method}`)
   })
-  $lastRoster.set([alpha, beta, remote('off-machine')])
+  $lastRoster.set([alpha, beta, { name: 'scout', display_name: 'Local Scout', connectionId: 'local' }, remote('off-machine')])
   const closed = vi.fn()
   render(<CanonicalGroupMemberEditor binding={binding} onClose={closed} onSaved={refreshed} room={room} />)
   await screen.findByRole('checkbox', { name: /^beta/i })
@@ -204,6 +204,11 @@ it('edits local seats against the original room revision and preserves the locke
   expect(locked.hasAttribute('disabled')).toBe(true)
   expect(locked.getAttribute('aria-checked')).toBe('true')
   expect(screen.getByText(botsText().group.remoteMemberLocked)).toBeTruthy()
+  const colliding = screen.getByRole('checkbox', { name: /^local scout/i })
+
+  expect(colliding.hasAttribute('disabled')).toBe(true)
+  expect(colliding.getAttribute('aria-checked')).toBe('false')
+  expect(screen.getByText(botsText().group.memberNameConflict)).toBeTruthy()
   const search = screen.getByRole('textbox', { name: botsText().group.searchToAdd })
   fireEvent.change(search, { target: { value: '@beta' } })
   expect(screen.queryByRole('checkbox', { name: /^old/i })).toBeNull()
@@ -219,4 +224,33 @@ it('edits local seats against the original room revision and preserves the locke
     room_id: 'room-1', profile: 'default', expected_revision: 4, event_id: expect.any(String),
     members: [current[0], peer, { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }]
   })
+})
+
+it('waits for the room to be idle and shows the detail if a save is refused', async () => {
+  const binding = { roomId: 'room-1', profile: 'default', connectionId: 'local' }
+
+  const room = { room_id: 'room-1', name: 'Launch team', revision: 4, members: [
+    { member_id: 'alpha', profile: 'alpha', handle: 'alpha' },
+    { member_id: 'old', profile: 'old', handle: 'old' }
+  ] }
+
+  const props = { binding, room, onClose: vi.fn(), onSaved: vi.fn(async () => {}) }
+  const detail = 'The group chat changed. Reopen Manage members and try again.'
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return { seatable_profiles: ['alpha', 'beta'] }}
+    throw { message: 'invalid_params', data: { detail } }
+  })
+  $lastRoster.set([alpha, beta])
+  const { rerender } = render(<CanonicalGroupMemberEditor {...props} roomBusy />)
+  const candidate = await screen.findByRole('checkbox', { name: /^beta/i })
+
+  expect(screen.getByText(botsText().group.memberEditBusy)).toBeTruthy()
+  expect(candidate.hasAttribute('disabled')).toBe(true)
+
+  rerender(<CanonicalGroupMemberEditor {...props} />)
+  fireEvent.click(candidate)
+  fireEvent.click(screen.getByRole('button', { name: 'Save members' }))
+  expect((await screen.findByRole('alert')).textContent).toBe(detail)
+  expect(props.onClose).not.toHaveBeenCalled()
 })

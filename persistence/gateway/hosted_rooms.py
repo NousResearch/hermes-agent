@@ -188,8 +188,16 @@ class RoomMembershipConflictError(HostedRoomError):
     reason = "room_membership_conflict"
 
 
+class RoomMembershipIdentityError(HostedRoomError):
+    reason = "room_membership_identity"
+
+
 class RoomMembershipLeadError(HostedRoomError):
     reason = "room_membership_lead"
+
+
+class RoomMembershipPeerError(HostedRoomError):
+    reason = "room_membership_peer"
 
 
 class EventCursorConflictError(_OneMessage, HostedRoomError, Conflict):

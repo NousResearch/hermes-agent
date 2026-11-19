@@ -5,6 +5,7 @@ import pytest
 from gateway import hosted_rooms
 from tests.tui_gateway.test_hosted_room_service import (
     _FakeRPC,
+    _append_room_event,
     _server,
     _wait_for,
     store_fixture,
@@ -87,3 +88,31 @@ def test_membership_retry_survives_a_later_edit_and_profile_retirement(store):
             **replace["members"][1], "handle": "different-handle",
         }]})
     assert service._events("team") == events
+
+
+def test_membership_edit_refuses_if_a_send_lands_during_its_readiness_check(store, monkeypatch):
+    service = HostedRoomService(_server(), store=store, placement="profile")
+    service.local_profiles = lambda: ("default", "helper", "reviewer")
+    room = service.create_room(room_id="team", name="Release", members=[
+        {"member_id": "default", "profile": "default", "handle": "hermes"},
+        {"member_id": "helper", "profile": "helper", "handle": "helper"},
+    ])
+    snapshot = service._policy_snapshot
+
+    def read_then_send(current):
+        result = snapshot(current)
+        _append_room_event(
+            store, room_id="team", event_id="racing-send", kind="message.user",
+            actor={"kind": "user", "id": "desktop"}, payload={"thread_id": "topic", "text": "Please review."})
+        return result
+
+    monkeypatch.setattr(service, "_policy_snapshot", read_then_send)
+    with pytest.raises(hosted_rooms.HostedRoomError, match="Reopen Manage members"):
+        service.replace_members(room_id="team", event_id="racing-edit", expected_revision=room["revision"],
+                                members=[room["members"][0], {
+                                    "member_id": "reviewer", "profile": "reviewer", "handle": "reviewer",
+                                }])
+    current = service._room("team")
+    assert current["members"] == room["members"]
+    assert current["revision"] == room["revision"]
+    assert [event["event_id"] for event in service._events("team")] == ["racing-send"]

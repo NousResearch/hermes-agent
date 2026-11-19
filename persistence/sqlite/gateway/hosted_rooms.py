@@ -9,6 +9,7 @@ import sqlite3
 import time
 from collections.abc import Collection, Mapping, Sequence
 from contextlib import closing
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,8 @@ from persistence.conversation.sessions import TitleConflict, sanitize_title
 from persistence.gateway.hosted_rooms import (
     AuthorityConflictError, EventConflictError, EventCursorConflictError, HostedMemberGuard, HostedOwnerClaim,
     HostedPlacement, HostedRoomError, HostedRoomRefusal, RoomConflictError, RoomHeldGrantsPendingError,
-    RoomHistoryExpiredError, RoomMembershipBusyError, RoomMembershipConflictError, RoomMembershipLeadError,
-    RoomNotFoundError, RoomProbeUnavailableError,
+    RoomHistoryExpiredError, RoomMembershipBusyError, RoomMembershipConflictError, RoomMembershipIdentityError,
+    RoomMembershipLeadError, RoomMembershipPeerError, RoomNotFoundError, RoomProbeUnavailableError,
 )
 from session_rules.hosted_rooms import (
     CONTEXT_EVENT_KIND, CONTROL_EVENT_BYTE_RESERVE, CONTROL_EVENT_COUNT_RESERVE, DISBANDED_ROOM_RETENTION_SECONDS,
@@ -145,22 +146,27 @@ def _check_member_identities(conn: sqlite3.Connection, room_id: str, members: li
     for member_id, member in proposed.items():
         old = retained.get(member_id)
         if old is not None and old != member and not _legacy_members_match(json.dumps([old]), [member]):
-            raise HostedRoomError("Existing member identities must be kept unchanged.")
+            raise RoomMembershipIdentityError("Existing member identities must be kept unchanged.")
         if old is None and (member.get("target") or {}).get("kind") == "peer":
-            raise HostedRoomError("Adding a Bot from another gateway is only available when creating a room.")
+            raise RoomMembershipPeerError("Adding a Bot from another gateway is only available when creating a room.")
     if any((member.get("target") or {}).get("kind") == "peer" and member_id not in proposed
            for member_id, member in retained.items()):
-        raise HostedRoomError("A Bot from another gateway cannot be removed from this room yet.")
+        raise RoomMembershipPeerError("A Bot from another gateway cannot be removed from this room yet.")
     added = {key: member for key, member in proposed.items() if key not in retained}
     if not added:
         return
-    for row in conn.execute("""SELECT payload_json FROM hosted_room_events
-                         WHERE room_id=? AND kind='room.members_changed' ORDER BY seq DESC""", (room_id,)):
-        for old in json.loads(row["payload_json"])["previous_members"]:
-            if (member := added.get(old["member_id"].casefold())) is not None and (
-                    old["member_id"] != member["member_id"] or old["profile"] != member["profile"]
-                    or (old.get("target") and old["target"] != member.get("target")) or old["handle"] != member["handle"]):
-                raise HostedRoomError("A former member's identity cannot be reused for a different Bot.")
+    added_handles = {member["handle"].casefold(): member["member_id"] for member in added.values()}
+    changes = conn.execute("""SELECT payload_json FROM hosted_room_events
+                           WHERE room_id=? AND kind='room.members_changed' ORDER BY seq DESC""", (room_id,))
+    earlier = (old for row in changes for old in json.loads(row["payload_json"])["previous_members"])
+    for old in chain(previous, earlier):
+        owner = added_handles.get(old["handle"].casefold())
+        if owner is not None and owner != old["member_id"]:
+            raise RoomMembershipIdentityError("A former member's handle cannot be reused for a different Bot.")
+        if (member := added.get(old["member_id"].casefold())) is not None and (
+                old["member_id"] != member["member_id"] or old["profile"] != member["profile"]
+                or (old.get("target") and old["target"] != member.get("target")) or old["handle"] != member["handle"]):
+            raise RoomMembershipIdentityError("A former member's identity cannot be reused for a different Bot.")
 
 
 def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:

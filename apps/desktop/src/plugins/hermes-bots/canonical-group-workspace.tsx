@@ -676,9 +676,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   }
 
   const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
+  const roomWorking = working || !!sending.current || stopping
 
   const { memberEditor, openMembers } = useCanonicalGroupMemberEditor({
-    binding, methods, onSaved: refreshAfterChange, room: state?.room, visible
+    binding, methods, onSaved: refreshAfterChange, room: state?.room,
+    roomBusy: [busy, roomWorking, driver?.pending_actions?.length].some(Boolean), visible
   })
 
   return <section className="flex h-full min-h-0">
@@ -687,7 +689,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
         onChanged={() => void refreshAfterChange().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onManageMembers={openMembers} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
-        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
+        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={roomWorking} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
         notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
         readError={readError} unavailable={Boolean(state && !driver)} />

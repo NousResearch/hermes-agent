@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -430,3 +431,113 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# Atomic hard delete / refused removal invariant (#157000)
+# ---------------------------------------------------------------------------
+
+class TestAtomicBoardRemoval:
+    """A refused board removal must leave the board listed, active, and readable."""
+
+    def test_refused_hard_delete_preserves_board_identity_and_rows(self, fresh_home, monkeypatch):
+        kb.create_board("remove-race", name="Remove Race")
+        kb.set_current_board("remove-race")
+        with kbc.connect_closing(board="remove-race") as conn:
+            kb.create_task(conn, title="post-removal", assignee="dev")
+
+        def partial_rmtree(path, *args, **kwargs):
+            board_json = Path(path) / "board.json"
+            if board_json.exists():
+                board_json.unlink()
+            raise PermissionError("WinError 32: kanban.db in use")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(shutil, "rmtree", partial_rmtree)
+            with pytest.raises(PermissionError, match="kanban.db in use"):
+                kb.remove_board("remove-race", archive=False)
+
+        assert kb.board_exists("remove-race")
+        assert "remove-race" in [b["slug"] for b in kb.list_boards()]
+        assert kb.read_board_metadata("remove-race")["name"] == "Remove Race"
+        assert kb.get_current_board() == "remove-race"
+        assert not (kb.boards_root() / "_trash").exists()
+        with kbc.connect_closing(board="remove-race") as conn:
+            assert [t.title for t in kb.list_tasks(conn)] == ["post-removal"]
+
+        # Once the lock clears, retry finishes the hard delete cleanly.
+        res = kb.remove_board("remove-race", archive=False)
+        assert res["action"] == "deleted"
+        assert not kb.board_exists("remove-race")
+        assert not kb.board_dir("remove-race").exists()
+        assert not (kb.boards_root() / "_trash").exists()
+        assert kb.get_current_board() == "default"
+
+    def test_refused_board_rename_is_noop_for_hard_delete_and_archive(self, fresh_home, monkeypatch):
+        kb.create_board("locked", name="Locked Board")
+        kb.set_current_board("locked")
+        with kbc.connect_closing(board="locked") as conn:
+            kb.create_task(conn, title="keep-me", assignee="dev")
+
+        board_dir = kb.board_dir("locked")
+        real_rename = Path.rename
+        real_rmtree = shutil.rmtree
+        rmtree_calls: list[Path] = []
+
+        def refusing_rename(self: Path, target):
+            if self == board_dir:
+                raise PermissionError("WinError 5: Access is denied")
+            return real_rename(self, target)
+
+        def tracking_rmtree(path, *args, **kwargs):
+            rmtree_calls.append(Path(path))
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "rename", refusing_rename)
+        monkeypatch.setattr(shutil, "rmtree", tracking_rmtree)
+
+        for archive in (False, True):
+            with pytest.raises(PermissionError, match="Access is denied"):
+                kb.remove_board("locked", archive=archive)
+            assert kb.board_exists("locked")
+            assert "locked" in [b["slug"] for b in kb.list_boards()]
+            assert kb.get_current_board() == "locked"
+            with kbc.connect_closing(board="locked") as conn:
+                assert [t.title for t in kb.list_tasks(conn)] == ["keep-me"]
+
+        assert rmtree_calls == []
+        assert not (kb.boards_root() / "_trash").exists()
+
+    @pytest.mark.platforms("posix")
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="root bypasses directory mode 0555 permissions",
+    )
+    def test_posix_unwritable_subdir_refuses_hard_delete_without_losing_board(self, fresh_home):
+        kb.create_board("posix-locked", name="POSIX Locked")
+        kb.set_current_board("posix-locked")
+        with kbc.connect_closing(board="posix-locked") as conn:
+            kb.create_task(conn, title="survives", assignee="dev")
+
+        locked_dir = kb.board_dir("posix-locked") / "workspaces" / "locked"
+        locked_dir.mkdir(parents=True)
+        (locked_dir / "artifact.txt").write_text("keep", encoding="utf-8")
+        locked_dir.chmod(0o555)
+        try:
+            with pytest.raises(PermissionError):
+                kb.remove_board("posix-locked", archive=False)
+
+            assert kb.board_exists("posix-locked")
+            assert "posix-locked" in [b["slug"] for b in kb.list_boards()]
+            assert kb.get_current_board() == "posix-locked"
+            assert not (kb.boards_root() / "_trash").exists()
+            with kbc.connect_closing(board="posix-locked") as conn:
+                assert [t.title for t in kb.list_tasks(conn)] == ["survives"]
+        finally:
+            if locked_dir.exists():
+                locked_dir.chmod(0o755)
+
+        res = kb.remove_board("posix-locked", archive=False)
+        assert res["action"] == "deleted"
+        assert not kb.board_dir("posix-locked").exists()
+        assert not (kb.boards_root() / "_trash").exists()

@@ -148,6 +148,23 @@ def test_a_page_with_a_frame_gets_the_js_write_not_a_keystroke(tmp_path):
     assert any(PASSWORD in s and IDENTIFIER in s and "filled }" in s for s in sup.scripts)
 
 
+def test_the_frame_probe_runs_on_the_session_the_fill_pinned(tmp_path):
+    """The probe decides whether a keystroke is sent at all: it must read the page the focus checks
+    and the keystrokes go to, not whatever tab the supervisor points at."""
+    sup = _Supervisor(_LOGIN)
+    probed = []
+    real = sup.evaluate_runtime
+
+    def recording(expression, *, session_id=None, **kwargs):
+        if "iframe, frame, object, embed" in expression:
+            probed.append(session_id)
+        return real(expression, session_id=session_id, **kwargs)
+
+    sup.evaluate_runtime = recording
+    assert _fill(sup, tmp_path)["success"] is True
+    assert probed == ["S1"]
+
+
 def test_a_frame_that_appears_after_the_probe_stops_the_keystroke(tmp_path):
     sup = _Supervisor(_LOGIN)
     answer = sup._answer

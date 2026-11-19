@@ -265,6 +265,7 @@ class GatewaySessionCommandsMixin:
 
     async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         source = event.source
         session_key = self._session_key_for_source(source)
         await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)

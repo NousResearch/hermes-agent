@@ -6,6 +6,12 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 
+# ``model.*`` keys bound to one endpoint: an inline credential and a credential pointer. A route
+# change clears them, and profile inheritance never copies them to another profile.
+ENDPOINT_CREDENTIAL_KEYS = ("api_key", "api")
+ENDPOINT_KEY_POINTER_KEYS = ("key_env", "api_key_env")
+
+
 def normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize only proven-equivalent endpoint URL components."""
     raw = str(base_url or "")

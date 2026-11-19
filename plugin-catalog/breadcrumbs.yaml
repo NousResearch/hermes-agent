@@ -1,0 +1,31 @@
+name: breadcrumbs
+title: breadcrumbs
+repo: https://github.com/breadcrumbs-agency/hermes-breadcrumb-plugin
+sha: "9992474031cc633cfb93ac9fbd8d0da742073b9f"
+version: "0.4.2"
+description: "Memory and a context engine in which every line has an address. Each turn, tool step and tool result is a crumb in a content-addressed, append-only store (CRC32C ids, Merkle commits). One tool, crumb(id, level), shows any memory from a one-line handle (0) to its exact bytes (1). crumb_find searches with BM25: no vectors, no model. Each recall, find, open and fold writes a record of what the model saw. With context.engine breadcrumbs, a long chat folds into a layer of crumbs with no model call, and the model opens any folded turn by its id. /island gives each codebase its own profile. A read-only explorer shows the sessions, the zoom and the context of each turn. Disclosure — Every turn, tool step and tool result is stored word for word, append-only, in $HERMES_HOME/breadcrumbs/. When config.json lists hive peers, crumb_find queries go to those peers and crumb fetches blobs from them. An optional background thread runs your local llama-completion binary on a local GGUF model after a span or session closes, with a minimal environment (BREADCRUMBS_SUMMARIZE=0 turns it off). /island, after you confirm, runs `hermes profile create --clone-from` (copying the profile's keys, plugins and memory) and `hermes config set terminal.cwd`, then ends the chat. The dashboard and log views read config.yaml and state.db of your profiles read-only, and the memory slot setup writes non-secret values to config.yaml."
+maintainer: jnorthrup
+tier: community
+category: memory
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/breadcrumbs-agency/hermes-breadcrumb-plugin#readme
+image: https://raw.githubusercontent.com/breadcrumbs-agency/hermes-breadcrumb-plugin/9992474031cc633cfb93ac9fbd8d0da742073b9f/docs/img/hero.png
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/breadcrumbs-agency/hermes-breadcrumb-plugin/9992474031cc633cfb93ac9fbd8d0da742073b9f/docs/media/zoom.png
+platforms: [linux, macos, windows]
+known_issues:
+  - "Select it: `hermes config set memory.provider breadcrumbs`, and `hermes config set context.engine breadcrumbs` for the context engine. An install alone turns nothing on."
+  - "The tools crumb and crumb_find come through the memory provider, not ctx.register_tool, so the plugin's tool list is empty. Their names carry the prefix mcp__ (mcp__crumb, mcp__crumb_find): Anthropic OAuth maps only registry tools back to their names. BREADCRUMBS_TOOL_PREFIX changes the prefix."
+  - "Windows has no flock: use one writer per store there."
+  - "Summaries need llama.cpp's llama-completion and a GGUF model. Without them all else works."
+  - "slot.py, seats.py, island.py and logview.py import Hermes modules that have no public seam yet (plugins.memory, hermes_cli.profiles, hermes_cli.relaunch, hermes_cli.sqlite_safe_read). Each import fails soft: if a release moves it, that feature turns off and logs a warning."
+  - "/island asks through ctx.ask_choice (Hermes 0.22.5 or later)."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

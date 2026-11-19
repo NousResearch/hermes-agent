@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
     share_hint: "请将这些链接分享给 Hermes 团队以获得支持。"
     report_label: "报告"
-    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug` 可上传摘要报告。"
+    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug upload` 可上传摘要报告。"
+    upload_hint: "未上传任何内容。发送 `/debug upload` 可上传摘要报告。"
+    upload_hint_local: "未上传任何内容。发送 `/debug upload` 可上传摘要报告，或发送 `/debug local` 在此查看。"
+    nous_refused: "未上传任何内容。此处无法使用 Nous 私有上传：请在终端运行 `hermes debug share --nous`，或使用桌面应用中的 Send diagnostics。`/debug upload` 则会将摘要上传到公开的粘贴服务。"
   deny:
     stale: "❌ 命令已拒绝（批准已过期）。"
     no_pending: "没有待拒绝的命令。"
@@ -647,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ 无法发送{kind}附件（{file_name}）。"
     delivery_failed_retry: "⚠️ 多次尝试后消息仍发送失败。请重试——你的请求已处理，但响应无法送达。"
     plain_fallback_prefix: "（响应格式化失败，以下为纯文本：）\n\n{content}"
-    turn_error_no_details: "无可用详情"
-    turn_error_detailed: "抱歉，我遇到了一个错误（{error_type}）。\n{error_detail}\n请重试，或用 /reset 开始新会话。"
     turn_error: "抱歉，我遇到了一个错误。"
     context_injection_refused: "上下文注入已被拒绝。"
     no_home_channel: "📬 {platform} 尚未设置主频道。主频道是 Hermes 投递定时任务结果和跨平台消息的地方。\n\n输入 {sethome_cmd} 将此聊天设为主频道，或忽略以跳过。"
@@ -982,6 +983,7 @@ platform:
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
   shared:
+    response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
@@ -1172,8 +1174,6 @@ platform:
         unknown: "未知技能：`{name}`。开始输入即可获得自动补全建议。"
       auto_args_description: "参数：{args_hint}"
       auto_description_fallback: "运行 /{name}"
-    limits:
-      response_truncated: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。有 {dropped_chars} 个字符未能送达；完整回复见会话日志。"
     forum:
       default_title: "新帖子"
     voice:
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "显示 Hermes Agent 版本"
   debug:
-    description: "上传调试报告（系统信息 + 日志）并获取可分享链接"
+    description: "调试报告（系统信息 + 日志）：先显示隐私声明；/debug upload 分享链接"
   quit:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:

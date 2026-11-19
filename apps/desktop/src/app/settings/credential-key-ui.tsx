@@ -88,6 +88,7 @@ export function KeyField({
   if (info.is_set && !editing) {
     return (
       <Input
+        autoComplete="off"
         className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
         onFocus={startEdit}
         readOnly
@@ -99,6 +100,7 @@ export function KeyField({
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
       <Input
+        autoComplete="off"
         autoFocus={editing}
         className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE)}
         onChange={update}

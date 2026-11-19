@@ -165,6 +165,12 @@
         "hermes_yaml:safe_load",
         "hermes_yaml:safe_dump"
       ]
+    },
+    {
+      "source": "plugins/index.md § Send a credentialed HTTP request without leaking it on redirect",
+      "entries": [
+        "hermes_cli.urllib_security:open_credentialed_url"
+      ]
     }
   ]
 }

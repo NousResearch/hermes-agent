@@ -436,6 +436,12 @@ def _run_single_child(
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
+        if isinstance(cancelled := getattr(child, "_delegate_auto_cancelled", None), str):  # the parent's stop won
+            run.worktree_info = None  # still the parent's to keep or release; finalizing it here could prune it
+            # Never ran: not a terminal outcome. A cancel reports nothing; a failed start stays owed (next attempt or
+            # its give-up is the one report). ``unstarted_auto`` keeps the completion silent, ledger included.
+            entry = {**_fabricated_entry(task_index, "interrupted", cancelled, child), "unstarted_auto": True}
+            return run.settle(run.finish_failed(entry, run.close_steering(), preview=cancelled, summary=cancelled))
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
             return run.settle(failure_entry)
@@ -665,6 +671,8 @@ def delegate_task(
         routes, err = _routes_for(task_list, cfg, credentials_cfg, parent_agent)
     if err:
         return tool_error(err)
+    from tools.delegate_tool_auto_resume import refuse_waiting_duplicates
+    routes = refuse_waiting_duplicates(task_list, routes, parent_agent)
     # Fail closed per task: a task its backend cannot route is refused alone (its entry carries the error); the call
     # is a tool error only when no task can run.
     runnable = [r for r in routes if not r.error]

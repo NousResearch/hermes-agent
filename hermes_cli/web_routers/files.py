@@ -110,16 +110,55 @@ def _is_sensitive_filename(name: str) -> bool:
 
 def _is_sensitive_path(path: Path) -> bool:
     """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
-    download); the write endpoints are a separate threat class.
-
-    Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
-    (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
-    to them is out of scope for this fix.
+    insensitive) is a credential directory. Guards reads (list/read/download,
+    #57505) and, via :func:`_refuse_sensitive_write`, writes (#85387).
     """
     if _is_sensitive_filename(path.name):
         return True
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+
+
+_LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
+
+
+def _link_chain(start: Path) -> Optional[list[Path]]:
+    """Every path a leaf symlink chain passes through from *start*, or None past the hop bound.
+
+    *start* is listed with its parent canonicalized, each later hop raw and canonicalized: ``d/srv.json``
+    with ``d -> mcp-tokens`` only names the credential dir once ``d`` is resolved."""
+    hops, current = [Path(os.path.realpath(start.parent), start.name)], start
+    for hop in range(_LINK_CHAIN_MAX_HOPS + 1):  # the extra readlink tells a 40-link chain from a longer one
+        try:
+            link = os.readlink(current)
+        except OSError:
+            return hops
+        if hop == _LINK_CHAIN_MAX_HOPS:
+            return None
+        current = Path(os.path.dirname(current), link)
+        hops += (current, Path(os.path.realpath(current.parent), current.name))
+    return None
+
+
+def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] = None) -> None:
+    """403 when a write/delete would land on a credential file the read side hides.
+
+    *target* is the resolver's (symlink-resolved) path and *requested* the client's path as sent:
+    a write through a link replaces the file it points at, and a credential name that is itself a
+    link (``config.yaml -> settings-store``) resolves to an ordinary-looking backing file."""
+    requested = requested.strip()  # both resolvers strip it before the lookup: "config.yaml " is config.yaml
+    if requested.lower().startswith("file:"):
+        # The spot editor accepts file: URLs (its resolver already refused a malformed one);
+        # the managed routes take the text verbatim, so a URL they cannot parse stays as sent.
+        with contextlib.suppress(ValueError):
+            requested = _file_url_path(requested)
+    # A credential name in the MIDDLE of a chain (alias.txt -> config.yaml -> settings-store) is neither
+    # the name sent nor the final target, so walk the chain from where the client's path lands.
+    anchor = Path(requested).expanduser()
+    if not anchor.is_absolute():
+        anchor = root.expanduser() / anchor if root is not None else None
+    hops = _link_chain(anchor) if anchor is not None else []
+    if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
+        raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -864,6 +903,7 @@ async def stream_managed_file(
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    _refuse_sensitive_write(target, path, policy.locked_root)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -959,6 +999,7 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -969,6 +1010,7 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
+    _refuse_sensitive_write(target, payload.path, policy.locked_root)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
@@ -1042,7 +1084,8 @@ async def fs_read_text(
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
-                backend.read_bytes,
+                _remote_read_bytes,
+                backend,
                 path,
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
@@ -1113,6 +1156,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     target = await _fs_download_path(
         payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
     )
+    # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
+    cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
+    _refuse_sensitive_write(target, payload.path, Path(cwd))
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1207,7 +1253,7 @@ async def fs_read_data_url(
     if backend is not None:
         try:
             data, _size, target = await asyncio.to_thread(
-                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+                _remote_read_bytes, backend, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
@@ -1257,6 +1303,13 @@ def _remote_download_target(backend, path: str) -> tuple[str, int]:
     if _is_sensitive_path(Path(target)):
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, size
+
+
+def _remote_read_bytes(backend, path: str, **limits) -> tuple[bytes, int, str]:
+    """*path* read from the SSH workspace once download's checks pass on the path it resolves to:
+    a link named ``notes.txt`` that points at ``~/.hermes/.env`` is refused before any byte moves."""
+    target, _size = _remote_download_target(backend, path)
+    return backend.read_bytes(target, **limits)
 
 
 def _remote_stream_target(backend, path: str) -> tuple[str, int]:

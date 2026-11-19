@@ -59,8 +59,9 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
         if allowed is not True:
             return f"Security scan blocked this skill ({reason}):\n{format_scan_report(result)}"
-    except Exception as e:
+    except Exception as e:  # the guard is on: a scan that cannot finish must not allow the write
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
 
 

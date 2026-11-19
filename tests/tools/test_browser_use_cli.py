@@ -578,6 +578,19 @@ class TestOwnTabPreamble:
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
+    @pytest.mark.platforms("posix")
+    def test_marker_write_never_follows_a_planted_symlink(self, tmp_path, monkeypatch):
+        """The marker name in the shared temp root is predictable: a planted link must not create its target."""
+        monkeypatch.setenv("BU_NAME", "r7k2")
+        monkeypatch.setitem(sys.modules, "browser_harness", None)  # no daemon pid: marker suffix "0"
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        victim = tmp_path / "victim"
+        (tmp_path / f"hermes-bu-owntab-{os.getuid()}-r7k2-0").symlink_to(victim)  # windows-footgun: ok — posix-only
+
+        exec(bu_cli._OWN_TAB_PREAMBLE, {"cdp": lambda *a, **k: {}, "switch_tab": lambda _tid: None})
+
+        assert not victim.exists()
+
 
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker rows."""

@@ -64,7 +64,7 @@ permissions:
 jobs:
   validate:
     name: Require a supported native smoke target
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 5
     env:
       TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}

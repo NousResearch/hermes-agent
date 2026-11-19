@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
-    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."
+    upload_hint: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز."
+    upload_hint_local: "لم يُرفع أي شيء. أرسل `/debug upload` لرفع التقرير الموجز، أو `/debug local` لعرضه هنا."
+    nous_refused: "لم يُرفع أي شيء. الرفع الخاص إلى Nous غير متاح من هنا: شغّل `hermes debug share --nous` في الطرفية، أو استخدم Send diagnostics في تطبيق سطح المكتب. يرفع `/debug upload` الملخص إلى موقع لصق عام بدلًا من ذلك."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."
@@ -647,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ تعذّر إرسال المرفق من نوع {kind} ({file_name})."
     delivery_failed_retry: "⚠️ فشل إرسال الرسالة بعد محاولات متعددة. يُرجى المحاولة مجددًا — تمت معالجة طلبك لكن تعذّر إرسال الرد."
     plain_fallback_prefix: "(فشل تنسيق الرد، نص عادي:)\n\n{content}"
-    turn_error_no_details: "لا تتوفر تفاصيل"
-    turn_error_detailed: "عذرًا، واجهت خطأ ({error_type}).\n{error_detail}\nحاول مجددًا أو استخدم /reset لبدء جلسة جديدة."
     turn_error: "عذرًا، واجهت خطأ."
     context_injection_refused: "رُفض حقن السياق."
     no_home_channel: "📬 لم تُحدَّد قناة رئيسية لـ {platform}. القناة الرئيسية هي المكان الذي يرسل إليه Hermes نتائج المهام المجدولة والرسائل العابرة للمنصات.\n\nاكتب {sethome_cmd} لجعل هذه المحادثة قناتك الرئيسية، أو تجاهل هذا للتخطّي."
@@ -982,6 +983,7 @@ platform:
     denied: "❌ تم الرفض."
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
   shared:
+    response_as_file: "📎 ردّ طويل: النص الكامل مرفق."
     truncated_suffix: "\n...(مقتطع)"
     unknown: "غير معروف"
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
@@ -1172,8 +1174,6 @@ platform:
         unknown: "مهارة غير معروفة: `{name}`. ابدأ الكتابة للحصول على اقتراحات الإكمال التلقائي."
       auto_args_description: "الوسائط: {args_hint}"
       auto_description_fallback: "تشغيل /{name}"
-    limits:
-      response_truncated: "⚠️ **تم اقتطاع الردّ** — تجاوز هذا الردّ حد التسليم ({max_messages} رسائل). لم يتم تسليم {dropped_chars} حرفًا؛ الردّ الكامل موجود في سجلات الجلسة."
     forum:
       default_title: "منشور جديد"
     voice:
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "عرض إصدار Hermes Agent"
   debug:
-    description: "رفع تقرير تصحيح الأخطاء (معلومات النظام والسجلات) والحصول على روابط قابلة للمشاركة"
+    description: "تقرير تصحيح الأخطاء (معلومات النظام والسجلات): يعرض إشعار الخصوصية أولًا؛ /debug upload يشارك الروابط"
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:

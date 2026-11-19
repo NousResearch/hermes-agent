@@ -85,7 +85,7 @@ jobs:
   # never weakened.
   mode:
     name: Resolve release phase and affected areas
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 10
     outputs:
       phase: ${{ steps.resolve.outputs.phase }}
@@ -160,12 +160,11 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: unitalk-azure
             platform: linux/amd64
-          # arm64 builds on the native arm64 larger runner. A build of
-          # linux/arm64 on an x64 host uses emulation.
+          # Use native arm64 rather than emulation on an x64 host.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64, unitalk-azure-linux-arm]
             platform: linux/arm64
 
     runs-on: ${{ matrix.runner }}
@@ -355,11 +354,11 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: unitalk-azure
             platform: linux/amd64
           # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64, unitalk-azure-linux-arm]
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -562,7 +561,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         variant: [slim, desktop]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 45
     env:
       ARCH: ${{ matrix.arch }}
@@ -799,7 +798,7 @@ jobs:
     name: Docker phase requirements met
     if: always() && inputs.release-phase != ''
     needs: [mode, build, release-publish, release-publish-manifest]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 5
     steps:
       - name: Validate phase job results

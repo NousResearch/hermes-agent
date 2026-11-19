@@ -1074,6 +1074,7 @@ class TestSetupFilesSlashCommand:
     async def test_slash_command_intercepted_before_agent(self, adapter):
         """/setup-files is bot-side admin, not agent input. The dispatch
         path must short-circuit and not call handle_message."""
+        adapter.set_authorization_check(lambda *_args, **_kwargs: True)
         adapter._handle_setup_files_command = AsyncMock(return_value=True)
         adapter._build_message_event = AsyncMock(
             return_value=MessageEvent(

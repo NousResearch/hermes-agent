@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
-    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
+    upload_hint_local: "아무것도 업로드되지 않았습니다. 요약 보고서를 업로드하려면 `/debug upload`를, 여기에서 보려면 `/debug local`을 보내세요."
+    nous_refused: "아무것도 업로드되지 않았습니다. 여기에서는 Nous 비공개 업로드를 사용할 수 없습니다. 터미널에서 `hermes debug share --nous`를 실행하거나 데스크톱 앱의 Send diagnostics를 사용하세요. `/debug upload`는 대신 요약을 공개 paste에 업로드합니다."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."
@@ -647,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} 첨부 파일({file_name})을 전달하지 못했어요."
     delivery_failed_retry: "⚠️ 여러 번 시도했지만 메시지 전달에 실패했어요. 요청은 처리됐지만 응답을 보낼 수 없었으니 다시 시도해 주세요."
     plain_fallback_prefix: "(응답 서식 지정에 실패해 일반 텍스트로 표시해요:)\n\n{content}"
-    turn_error_no_details: "자세한 정보 없음"
-    turn_error_detailed: "죄송해요, 오류가 발생했어요 ({error_type}).\n{error_detail}\n다시 시도하거나 /reset으로 새 세션을 시작하세요."
     turn_error: "죄송해요, 오류가 발생했어요."
     context_injection_refused: "컨텍스트 주입이 거부되었어요."
     no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 Hermes가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."
@@ -982,6 +983,7 @@ platform:
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
   shared:
+    response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
@@ -1172,8 +1174,6 @@ platform:
         unknown: "알 수 없는 스킬: `{name}`. 입력을 시작하면 자동 완성 제안이 표시돼요."
       auto_args_description: "인수: {args_hint}"
       auto_description_fallback: "/{name} 실행"
-    limits:
-      response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
     forum:
       default_title: "새 게시물"
     voice:
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent 버전 표시"
   debug:
-    description: "디버그 보고서(시스템 정보 + 로그) 업로드 및 공유 링크 받기"
+    description: "디버그 보고서(시스템 정보 + 로그): 먼저 개인정보 안내를 표시하며 /debug upload로 링크 공유"
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:

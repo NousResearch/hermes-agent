@@ -96,7 +96,7 @@ async def run(params, board_db):
                     f' (HTTP {status})' if status else '')
                 raise GatewayClientError(f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}') from exc
         else:
-            return _exit_code(receipt, params, board_db)
+            return _exit_code(receipt, params, board_db, claim.session_id)
         failures = 1 if claim.answered != seen else failures + 1
         # Jittered (1-2 s first, up to 16 s): workers of one dead owner do not all redial, and so
         # start a replacement, in the same instant.
@@ -144,10 +144,55 @@ async def _await_receipt(client, params, board_db, claim):
     return receipt
 
 
-def _exit_code(receipt, params, board_db):
+def _kanban_request_id(params):
+    """The owner's durable request identity for this attempt (``session_kanban.run_task`` format)."""
+    import json
+    return 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')],
+                                  separators=(',', ':'))
+
+
+def _owner_marker(params, board_db):
+    """Best-effort read of this attempt's ``owner_admitted`` payload from the board.
+
+    Diagnostics only, and it runs on the refusal path: anything that goes wrong here must not
+    replace the refusal with a different exception, so every failure returns ``{}`` and the
+    message simply omits the owner fields.
+    """
+    import json
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(sqlite3.connect(f'{Path(board_db).resolve().as_uri()}?mode=ro', uri=True)) as conn:
+            row = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted'"
+                ' ORDER BY id DESC LIMIT 1', (params.get('task_id'), params.get('run_id'))).fetchone()
+        marker = json.loads(row[0]) if row and row[0] else {}
+    except (OSError, ValueError, TypeError, sqlite3.Error):
+        return {}
+    return marker if isinstance(marker, dict) else {}
+
+
+def _unknown_detail(receipt, params, board_db, session_id):
+    """The refusal names the facts triage used to have to reconstruct by hand.
+
+    ``unknown`` is not a failed lookup: a replaced owner epoch settles a live session's admission
+    as ``unknown``, and the predecessor's row usually still exists. The bare sentence therefore
+    told an operator nothing about which board, which request, or which owner retained it. The
+    leading sentence stays verbatim (logs and operators match on it); the resolved facts follow.
+    """
+    owner = _owner_marker(params, board_db)
+    return ('Kanban execution unknown; retained by owner'
+            f' [db={board_db} board={params.get("board")}'
+            f' task_id={params.get("task_id")} run_id={params.get("run_id")}'
+            f' request_id={_kanban_request_id(params)} session_id={session_id}'
+            f' owner=pid:{owner.get("pid")} birth:{owner.get("birth")} db:{owner.get("db")}'
+            f' receipt_epoch={receipt.get("owner_epoch")} generation={receipt.get("generation")}]')
+
+
+def _exit_code(receipt, params, board_db, session_id=None):
     from hermes_cli.gateway_client import GatewayClientError
     if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
+        raise GatewayClientError(_unknown_detail(receipt, params, board_db, session_id))
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.

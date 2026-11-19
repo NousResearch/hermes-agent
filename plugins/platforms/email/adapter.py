@@ -21,7 +21,7 @@ from email.parser import BytesHeaderParser
 from email.utils import formatdate, getaddresses, parseaddr
 from email import encoders
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
@@ -876,7 +876,7 @@ class EmailAdapter(BasePlatformAdapter):
         subject = self._task_subject(metadata or {})
         return await self._run_send(self._send_email, (chat_id, content, reply_to, subject), "[Email] Send failed to %s: %s", chat_id)
 
-    def _task_subject(self, metadata: Dict[str, Any]) -> Optional[str]:
+    def _task_subject(self, metadata: dict[str, Any]) -> Optional[str]:
         """Derive an outbound subject from send metadata, if any.
 
         An explicit ``subject`` is honored verbatim (no ``Re:`` prefix — that stays

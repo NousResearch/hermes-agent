@@ -14,8 +14,8 @@ and never sent in the URL. Every report opens its own connection, and a redirect
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `v` | `1` | Contract version. |
-| `kind` | `"beat"` or `"goodbye"` | `beat` at the report interval (120 s unless the receiver says otherwise, 10% jitter); `goodbye` once, just before the gateway suspends its own machine. |
-| `seq` | integer | Starts at 1 and grows by one per report of this process. A quick retry re-sends the same body with the same `seq`. Ignore a report whose `seq` is not above the last one stored for the same `boot_id`. |
+| `kind` | `"beat"` or `"goodbye"` | `beat` at the report interval (120 s unless the receiver says otherwise, 10% jitter); `goodbye` once when the gateway suspends its own machine, started just before it asks for the suspend and not waited for. |
+| `seq` | integer | Starts at 1 and grows with every report of this process. It can skip numbers: a report that was built and then not sent keeps its number. A quick retry re-sends the same body with the same `seq`. Ignore a report whose `seq` is not above the last one stored for the same `boot_id`. |
 | `boot_id` | 32 hex characters | Random per gateway process start. |
 | `status.gateway_running` | boolean | Always `true`: the gateway process itself sends the report. |
 | `status.gateway_state` | string or null | Lifecycle state (`starting`, `running`, `draining`, ...). |

@@ -116,7 +116,7 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
             assert ids['ended'] not in authority.sessions
             assert set(ids['orphans']) <= authority.sessions.keys()
             assert authority.persistence.bindings.receipt(ids['compressed']).current_target == ids['child']
-            assert authority.persistence.admissions.get(ids['unknown_admission']).status == 'unknown'
+            assert authority.persistence.admissions.get(admission_id=ids['unknown_admission']).status == 'unknown'
         await recover_gateway_native_sessions(runner)
         await asyncio.wait_for(entered.wait(), 10)
         await async_wait_until(lambda: len(executed) == 2)
@@ -138,8 +138,8 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
         for name, home in homes:
             authority, ids = runner.session_authorities.for_home(home), saved[name]
             assert authority.persistence.runtime.viewer_close(ids['close']) is None
-            assert authority.persistence.admissions.get(ids['unknown_admission']).status == 'unknown'
-            closed = authority.persistence.admissions.get(ids['close_admission'])
+            assert authority.persistence.admissions.get(admission_id=ids['unknown_admission']).status == 'unknown'
+            closed = authority.persistence.admissions.get(admission_id=ids['close_admission'])
             assert (closed.status, closed.outcome) == ('terminal', 'interrupted')
             with owner_scope(authority):
                 viewer, resumed = await _attach(authority, ids['ended'])

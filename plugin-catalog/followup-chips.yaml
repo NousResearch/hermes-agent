@@ -6,8 +6,8 @@ description: >-
   (other="true", language-neutral via otherLabel). Single-file desktop plugin,
   no native components.
 repo: https://github.com/nuonrg/hermes-plugin-followup-chips
-sha: 853d288cc8437b0c2a90ae8f9b18c11ea44c7713
+sha: 433838dc1577f922d776aee39ab1fc8d6c7418c6
 capabilities: {}
 maintainer: nuonrg
 requires_hermes: ">=0.21.6"
-version: "1.1.0"
+version: "1.1.1"

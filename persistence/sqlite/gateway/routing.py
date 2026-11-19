@@ -28,8 +28,8 @@ from ..conversation.sessions import session_record
 from ._local_lineage import hand_off_conversations, moved_receipts
 from ._routes import (
     _COMPRESSION_LINEAGE_CTE, _ORPHAN_CONTIGUITY_DONORS_SQL, _ORPHAN_LINEAGE_DONOR_SQL, _ORPHANS_SQL,
-    _PEER_BY_KEY_SQL, _PEER_BY_TUPLE_SQL, ROUTE_RETIRED_SQL, apply_telegram_topic_migration, fence_shared_routes,
-    route_retired_params,
+    _PEER_BY_KEY_SQL, _PEER_BY_TUPLE_SQL, ROUTE_RETIRED_MANY_SQL, ROUTE_RETIRED_SQL,
+    apply_telegram_topic_migration, fence_shared_routes, route_retired_many_params, route_retired_params,
 )
 
 __all__ = ["SQLiteRoutingRepository"]
@@ -116,15 +116,37 @@ class SQLiteRoutingRepository:
                 for k, v in entries.items() if k and v]
 
         def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (routing_scope,))
-            if rows:
+            # Write the difference, not the whole index. A full save re-sends every route (a large
+            # profile index is thousands of rows / megabytes of JSON), and rewriting all of them in
+            # one transaction held the store's single in-process writer for tens of seconds once the
+            # process was busy, so every other writer past its patience died with WriterMutexTimeout.
+            # Deletes and updates are therefore scoped to the keys that actually change, and the
+            # retirement predicate is judged for every wanted route in one read (a fence can land
+            # between two saves).
+            existing = {r[0]: r[1] for r in conn.execute(
+                "SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (routing_scope,))}
+            wanted = {row['key'] for row in rows}
+            retired = ({r[0] for r in conn.execute(
+                ROUTE_RETIRED_MANY_SQL, route_retired_many_params([(row['key'], row['entry']) for row in rows], now))}
+                if rows else set())
+            stale = [key for key in existing if key not in wanted or key in retired]
+            if stale:
+                conn.executemany("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                                 [(routing_scope, key) for key in stale])
+                for key in stale:
+                    del existing[key]
+            changed = [row for row in rows
+                       if row['key'] not in retired and existing.get(row['key']) != row['entry']]
+            if changed:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
-                    rows)
+                    "VALUES (:scope, :key, :entry, :now) "
+                    "ON CONFLICT(scope, session_key) DO UPDATE SET "
+                    "entry_json = excluded.entry_json, updated_at = excluded.updated_at",
+                    changed)
             kept = {r[0] for r in conn.execute(
                 "SELECT session_key FROM gateway_routing WHERE scope = ?", (routing_scope,))}
-            return {row['key'] for row in rows} - kept
+            return wanted - kept
         with translated():
             holder = self._store.holder()
             return holder._execute_write(_do)

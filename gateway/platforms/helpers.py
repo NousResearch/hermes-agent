@@ -17,7 +17,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterator, MutableMapping, Optional
+from typing import Any, Callable, Iterator, MutableMapping, Optional
 from urllib.parse import urljoin, urlsplit
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
@@ -360,30 +360,43 @@ def _keep_link_target(match: re.Match[str]) -> str:
     return target if label == target else f"{label}\n{target}"
 
 
+def strip_prose_markdown(text: str, strip: Callable[[str], str]) -> str:
+    """Run ``strip`` over the prose of *text* only; code comes back as its literal payload.
+
+    A fenced block (``` or ~~~, closed only by a fence at least as long that ends its
+    line, as in CommonMark; unclosed runs to the end) and an inline code span lose
+    their delimiters but keep every character inside, so ``a * b * c``, ``**kwargs``
+    and a three-backtick literal inside a longer fence are never read as emphasis.
+    """
+    prefix = "\x00HERMESCODE"
+    while prefix in text:
+        prefix += "X"
+    code: list[str] = []
+
+    def protect(match: "re.Match[str]", *, block: bool = False) -> str:
+        # A block's last newline ends its last line before the closing fence, not content.
+        code.append(match.group("body").removesuffix("\n") if block else match.group("body"))
+        return f"{prefix}{len(code) - 1}\x00"
+
+    text = _FENCED_PLAIN_CODE_RE.sub(lambda m: protect(m, block=True), text)
+    text = _INLINE_PLAIN_CODE_RE.sub(protect, text)
+    return re.sub(re.escape(prefix) + r"(\d+)\x00", lambda m: code[int(m.group(1))], strip(text))
+
+
 def strip_markdown(text: str, *, keep_link_targets: bool = False) -> str:
     r"""Strip markdown formatting for plain-text platforms (SMS, iMessage, etc.).
 
     ``keep_link_targets`` rewrites ``[label](https://url)`` as ``label\nurl``
     instead of discarding the URL; pass it on platforms that auto-link bare URLs.
     """
-    # Code is already plain text. Protect its payload before applying prose
-    # rules, or multiplication, comments, literal links and blank lines change.
-    prefix = "\x00HERMESCODE"
-    while prefix in text:
-        prefix += "X"
-    code: list[str] = []
 
-    def protect(match: "re.Match[str]") -> str:
-        code.append(match.group("body"))
-        return f"{prefix}{len(code) - 1}\x00"
+    def strip(prose: str) -> str:
+        for pattern, repl in _STRIP_RULES:
+            prose = pattern.sub(repl, prose)
+        prose = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", prose)
+        return _NEWLINE_SQUEEZE_RE.sub("\n\n", prose).strip()
 
-    text = _FENCED_PLAIN_CODE_RE.sub(protect, text)
-    text = _INLINE_PLAIN_CODE_RE.sub(protect, text)
-    for pattern, repl in _STRIP_RULES:
-        text = pattern.sub(repl, text)
-    text = _MD_LINK_RE.sub(_keep_link_target if keep_link_targets else r"\1", text)
-    text = _NEWLINE_SQUEEZE_RE.sub("\n\n", text).strip()
-    return re.sub(re.escape(prefix) + r"(\d+)\x00", lambda m: code[int(m.group(1))], text)
+    return strip_prose_markdown(text, strip)
 
 
 class ThreadParticipationTracker:

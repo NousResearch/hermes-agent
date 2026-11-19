@@ -164,10 +164,12 @@ def make_reporter(receiver: Receiver, *, source=a_status_source, credential: Opt
 
 
 async def settle(timeout: float = 10.0) -> None:
-    """Let every task this test started finish, so none is still running when the loop closes."""
+    """Let every task this test started finish, so none is still running when the loop closes.
+    Fails when one is still running at *timeout*: a hung goodbye or watcher must not pass."""
     pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
     if pending:
-        await asyncio.wait(pending, timeout=timeout)
+        _done, still_running = await asyncio.wait(pending, timeout=timeout)
+        assert not still_running, f"{len(still_running)} task(s) still running after {timeout}s: {still_running!r}"
 
 
 def assert_matches_contract(body: dict, kind: str) -> None:

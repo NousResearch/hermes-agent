@@ -122,6 +122,8 @@ export const arSettings = {
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       sessions: 'الجلسات',
+      backup: 'النسخ الاحتياطي والنقل',
+      backupOnly: 'النسخ الاحتياطي',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',

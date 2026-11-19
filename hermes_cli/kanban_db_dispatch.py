@@ -27,6 +27,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -2614,22 +2615,22 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
     Best-effort: the durable gate is ``state_meta`` in
-    ``retag_kanban_worker_sessions``; the in-process set avoids reopening
+    ``retag_worker_sessions``; the in-process set avoids reopening
     state.db on every spawn. A tick must never fail because a session DB was
     busy or missing.
     """
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from persistence_assembly import open_persistence, profile_scope
 
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
+        # Inside the gateway the dispatcher shares the process's store for the profile, not one more
+        # writer connection on the same state.db (#100896).
+        store = open_persistence(profile_scope())
         try:
-            db.retag_kanban_worker_sessions(workspaces_root_path)
+            store.sessions.retag_worker_sessions(workspaces_root_path)
         finally:
-            release_or_close(db)
+            store.close()
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
@@ -2649,9 +2650,8 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import rotate_worker_log, worker_log_rotation_config
-    rotate_worker_log(log_path, *worker_log_rotation_config())
-    return open(log_path, "ab")
+    from hermes_cli.kanban_worker_log import open_worker_log
+    return open_worker_log(log_path)
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
@@ -2802,13 +2802,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
-    # The worker is `-m hermes_cli.kanban_worker_client`: Hermes itself, with no console-script
-    # bootstrap. The routed-profile scrub above strips Hermes-owned PYTHONPATH entries (user
-    # children must not see our tree), so a PYTHONPATH-launched dispatcher spawned a child that
-    # died on `No module named 'hermes_cli'` before it ever reached the owner. Same pin as cron's
-    # external worker (#112729): applied to the sanitized env, after every other decision stands.
+    # The worker is `-m hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
+    # above strips our PYTHONPATH entries, so a PYTHONPATH-launched dispatcher's child died on
+    # `No module named 'hermes_cli'` (#112729). Pinned last, after every other env decision.
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-    env = pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parent.parent)
+    env = pin_hermes_tree_on_pythonpath(env, Path(project_root_str()))
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

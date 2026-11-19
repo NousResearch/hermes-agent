@@ -21,15 +21,12 @@ def admitted(tmp_path, monkeypatch):
     monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda *a: None)
     from hermes_cli import runtime_provider
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kw: _RUNTIME)
-    from hermes_state_registry import acquire, release_or_close
     from unittest.mock import Mock
-    import hermes_state_registry
-    acquire_spy, release_spy = Mock(wraps=acquire), Mock(wraps=release_or_close)
-    monkeypatch.setattr(hermes_state_registry, "acquire", acquire_spy)
-    monkeypatch.setattr(hermes_state_registry, "release_or_close", release_spy)
+    import persistence_assembly
+    acquire_spy = Mock(wraps=persistence_assembly.open_persistence)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", acquire_spy)
     yield db, job
     acquire_spy.assert_not_called()
-    release_spy.assert_not_called()
     db.close.assert_not_called()
 
 
@@ -56,11 +53,11 @@ def test_pre_lifecycle_exceptions_end_owner_once(admitted, monkeypatch, stage):
     with _owner_execution(db, job), pytest.raises(RuntimeError) as caught:
         sched.run_job(job)
     assert caught.value is error
-    db.end_session.assert_called_once_with("cleanup-session", "cron_suppressed")
+    db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
     db.close.assert_not_called()
 
 
-@pytest.mark.parametrize("stall", ["set_session_title", "update_session_cwd", "end_session"])
+@pytest.mark.parametrize("stall", ["set_title", "update_cwd", "end"])
 def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypatch, stall):
     db, job = admitted
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -76,8 +73,8 @@ def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypat
             return True
         return invoke
 
-    for name in ("end_session", "set_session_title", "update_session_cwd"):
-        getattr(db, name).side_effect = call(name)
+    for name in ("end", "set_title", "update_cwd"):
+        getattr(db.sessions, name).side_effect = call(name)
     result = (True, "gate", sched.SILENT_MARKER, None)
     monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (result, None))
     try:
@@ -86,10 +83,10 @@ def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypat
             assert sched.run_job(job) == result
             assert time.monotonic() - start < 2
         assert entered.wait(2)
-        assert calls[0] == "end_session"
-        assert calls.count("end_session") == 1
-        if stall == "end_session":
-            assert calls == ["end_session"]
+        assert calls[0] == "end"
+        assert calls.count("end") == 1
+        if stall == "end":
+            assert calls == ["end"]
         db.close.assert_not_called()
     finally:
         release.set()
@@ -110,7 +107,7 @@ def test_setup_failure_ends_only_lent_owner(admitted, monkeypatch, stage):
         result = sched.run_job(job)
     assert result[0] is False
     assert result[3] is not None and stage in result[3]
-    db.end_session.assert_called_once_with("cleanup-session", "cron_suppressed")
+    db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
     db.close.assert_not_called()
 
 
@@ -132,7 +129,7 @@ def test_live_worker_defers_end_until_stopped(admitted, monkeypatch):
     with _owner_execution(db, job):
         assert sched.run_job(job)[0] is False
     finalize.assert_not_called()
-    db.end_session.assert_not_called()
+    db.sessions.end.assert_not_called()
     agent.close.assert_not_called()
     future.set_result({})
     finalize.assert_called_once()
@@ -163,7 +160,7 @@ def test_real_preparation_refusals_keep_result_and_end_once(admitted, monkeypatc
             assert result[2] == ""
         marker = {"config": "formatting error", "empty_payload": "nothing to run", "injection": "injection"}[gate]
         assert marker in (result[1] + result[3]).lower()
-    db.end_session.assert_called_once_with("cleanup-session", "cron_suppressed")
+    db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
 
 
 @pytest.mark.parametrize("mismatch", ["job", "execution"])
@@ -176,7 +173,7 @@ def test_unrelated_owner_session_is_never_ended(admitted, monkeypatch, mismatch)
     with _owner_execution(db, owner_job, "other-fire" if mismatch == "execution" else None):
         assert sched.run_job(job) == forwarded.return_value
     forwarded.assert_called_once()
-    db.end_session.assert_not_called()
+    db.sessions.end.assert_not_called()
 
 
 def test_missing_store_fallback_preserves_provider_failure(admitted, monkeypatch):
@@ -186,16 +183,16 @@ def test_missing_store_fallback_preserves_provider_failure(admitted, monkeypatch
     with _owner_execution(db, job):
         result = sched.run_job(job)
     assert result[0] is False and result[3] == "RuntimeError: provider failure"
-    db.end_session.assert_called_once_with("cleanup-session", "cron_suppressed")
+    db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
 
 
 def test_failed_end_cannot_replace_original_exception(admitted, monkeypatch):
     db, job = admitted
     original = RuntimeError("original gate failure")
     monkeypatch.setattr(sched, "_prepare_job_prompt", MagicMock(side_effect=original))
-    db.end_session.side_effect = RuntimeError("broken store")
+    db.sessions.end.side_effect = RuntimeError("broken store")
     with _owner_execution(db, job), pytest.raises(RuntimeError) as caught:
         sched.run_job(job)
     assert caught.value is original
-    db.end_session.assert_called_once_with("cleanup-session", "cron_suppressed")
-    db.set_session_title.assert_not_called()
+    db.sessions.end.assert_called_once_with("cleanup-session", "cron_suppressed")
+    db.sessions.set_title.assert_not_called()

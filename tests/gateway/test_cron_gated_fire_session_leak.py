@@ -12,17 +12,18 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_state_local import POLICY_PREFIX
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from persistence_assembly import open_persistence, profile_scope
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.waiting import async_wait_until
 
 
 def _counts(home, db):
-    with db._read_ctx() as conn:
+    with raw_holder(db)._read_ctx() as conn:
         counts = {
             'sessions': conn.execute("SELECT COUNT(*) FROM sessions WHERE source='cron'").fetchone()[0],
             'open_sessions': conn.execute("SELECT COUNT(*) FROM sessions WHERE source='cron' AND ended_at IS NULL").fetchone()[0],
-            'receipts': conn.execute('SELECT COUNT(*) FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)).fetchone()[0],
+            'receipts': conn.execute('SELECT COUNT(*) FROM state_meta WHERE key GLOB ?', (policy_key() + '*',)).fetchone()[0],
             'admissions': conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0],
             'routing': conn.execute('SELECT COUNT(*) FROM gateway_routing').fetchone()[0],
         }
@@ -109,21 +110,19 @@ async def _serve(home):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import AsyncSessionDB
-    from hermes_state_registry import acquire
+
     runner = GatewayRunner(GatewayConfig(sessions_dir=home / 'sessions'))
-    db = acquire(home / 'state.db')
+    db = open_persistence(profile_scope(home=home), eager=True)
     runner.session_store._db = db
-    runner._session_db = AsyncSessionDB(db)
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='gated-fire', db=db)
+    runner._session_db = db.aio
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='gated-fire', persistence=db)
     return runner, authority, db
 
 
 def _stop(authority, db):
     from gateway.session_cron import unbind_owner
-    from hermes_state_registry import release_or_close
     unbind_owner(authority)
-    release_or_close(db)
+    db.close()
 
 
 async def _settled(authority):
@@ -136,7 +135,7 @@ def _effects(owner):
 
 
 def _admissions(db):
-    with db._read_ctx() as conn:
+    with raw_holder(db)._read_ctx() as conn:
         return [dict(row) for row in conn.execute('SELECT * FROM session_admissions')]
 
 
@@ -172,11 +171,11 @@ async def _fire(owner, authority, db, job, *, script=None, agent=False, suppress
         return None
     row = new[0]
     assert row['status'] == 'terminal'
-    session = db.get_session(row['target_session_id'])
-    assert session['ended_at'] is not None
-    messages = db.get_messages(row['target_session_id'])
+    session = db.sessions.get(row['target_session_id'])
+    assert session.ended_at is not None
+    messages = [r.as_wire_row() for r in db.messages.read_transcript(row['target_session_id'])]
     if suppressed:
-        assert session['end_reason'] == 'cron_suppressed'
+        assert session.end_reason == 'cron_suppressed'
         assert messages == []
     else:
         assert any(m['role'] == 'assistant' and m['content'] == 'agent done' for m in messages)
@@ -254,7 +253,7 @@ def test_stalled_suppressed_end_releases_dispatch_guard(owner, monkeypatch):
 
     async def probe():
         _, authority, db = await _serve(owner.home)
-        end = db.end_session
+        end = db.sessions.end
 
         def stalled(session_id, reason):
             calls.append(session_id)
@@ -265,7 +264,7 @@ def test_stalled_suppressed_end_releases_dispatch_guard(owner, monkeypatch):
             finally:
                 finished.set()
 
-        monkeypatch.setattr(db, 'end_session', stalled)
+        monkeypatch.setattr(db.sessions, 'end', stalled)
         monkeypatch.setattr(scheduler, '_cron_cleanup_timeout_seconds', lambda: 0.02)
         try:
             _make_due(jobs['gate']['id'])
@@ -290,25 +289,26 @@ def test_stalled_suppressed_end_releases_dispatch_guard(owner, monkeypatch):
 
 def test_settled_suppressed_fire_can_be_pruned_with_exact_retry_tombstone(owner):
     from gateway.session_results import admission_result
-    from hermes_state_runtime import admit_session_input, get_session_admission
+    from gateway.session_authority import admission_row
     jobs = _jobs(owner.home)
 
     async def probe():
         _, authority, db = await _serve(owner.home)
         try:
             row = await _fire(owner, authority, db, jobs['gate'], script='gate', suppressed=True)
-            row = get_session_admission(db, admission_id=row['admission_id'])
+            row = admission_row(db.admissions.get(admission_id=row['admission_id']))
             sid = row['target_session_id']
             result = admission_result(db, row['admission_id'])
-            assert db._execute_write(lambda conn: conn.execute('PRAGMA foreign_keys').fetchone()[0]) == 1
-            assert await asyncio.to_thread(db.prune_sessions, older_than_days=None) == 1
-            assert db.get_session(sid) is None
+            assert raw_holder(db)._execute_write(lambda conn: conn.execute('PRAGMA foreign_keys').fetchone()[0]) == 1
+            assert (await asyncio.to_thread(db.maintenance.prune_sessions, older_than_days=None,
+                                           media_root=str(owner.home / 'media'))).count == 1
+            assert db.sessions.get(sid) is None
             assert _counts(owner.home, db) == _NOTHING
-            with db._read_ctx() as conn:
+            with raw_holder(db)._read_ctx() as conn:
                 assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
-            replay = admit_session_input(db, epoch=authority.epoch, principal_id=row['principal_id'],
+            replay, _created = db.admissions.admit(epoch=authority.epoch, principal_id=row['principal_id'],
                                          session_id=sid, request_id=row['request_id'], payload=row['payload'])
-            assert replay['status'] == 'terminal' and replay['admission_id'] == row['admission_id']
+            assert replay.status == 'terminal' and replay.admission_id == row['admission_id']
             retained = admission_result(db, row['admission_id'])
             assert retained['result']['cron_result'] == result['result']['cron_result']
             assert retained['result']['messages'] == []

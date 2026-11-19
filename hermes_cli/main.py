@@ -259,6 +259,7 @@ from pathlib import Path
 from typing import Optional
 
 
+from hermes_cli.main_resume_args import apply_in_dir as _apply_in_dir
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
@@ -343,91 +344,9 @@ _startup_fast.ensure_project_root_on_path()
 # cache HERMES_HOME at import time. --profile/-p is pre-parsed from sys.argv,
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
-_PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
 # Set only when -p/--profile was on argv. Sticky active_profile must not count:
 # `hermes desktop` with no flag must not overwrite Desktop's stored profile.
 _explicit_cli_profile: str | None = None
-
-
-def _inside_mcp_add_args(argv: list, index: int) -> bool:
-    """True once argv reaches `hermes mcp add ... --args <command argv>`.
-
-    ``mcp add --args`` is command-argv passthrough. Flags after that point
-    belong to the child MCP command (for example Docker MCP Toolkit's
-    ``--profile``), not to Hermes' own profile selector.
-    """
-    try:
-        mcp_index = argv.index("mcp", 0, index)
-        argv.index("add", mcp_index + 1, index)
-    except ValueError:
-        return False
-    return True
-
-
-def _looks_like_hermes_invocation() -> bool:
-    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
-
-    pytest's own ``-p no:xdist`` reaches ``_scan_profile_flag`` through ``sys.argv`` at import
-    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
-    """
-    return "pytest" not in (sys.argv[0] or "")
-
-
-def _exit_invalid_profile_name(value: str) -> None:
-    from hermes_cli.profiles import _invalid_profile_name_error
-
-    print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
-    print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
-    sys.exit(2)
-
-
-def _looks_like_option_value(value: str) -> bool:
-    """A ``-p`` value that clearly belongs to some other tool (pytest's ``-p no:xdist``, a
-    third-party ``-p --flag``), never a mistyped profile name."""
-    return value.startswith("-") or ":" in value
-
-
-def _scan_profile_flag(argv: list) -> tuple:
-    """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
-
-    Historically the flag worked even after the subcommand (`hermes chat -p
-    coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
-    passthrough region. The value is normalised (strip + casefold, matching
-    ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
-    ``work``. A value that cannot be a profile name is rejected so
-    resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
-    only when the flag comes BEFORE the first subcommand token under a real
-    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
-    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
-    ``--flag``) are always a silent skip.
-    """
-    from hermes_cli._parser import top_level_value_flag_sets
-
-    value_flags, optional_value_flags = top_level_value_flag_sets()
-    i = 0
-    saw_subcommand = False
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
-            break
-        if arg in {"--profile", "-p"} and i + 1 < len(argv):
-            raw = argv[i + 1]
-            value = raw.strip().casefold()
-            if re.match(_PROFILE_NAME_RE, value):
-                return value, 2, i
-            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
-                _exit_invalid_profile_name(raw)
-            break
-        if arg.startswith("--profile="):
-            return arg.split("=", 1)[1].strip().casefold(), 1, i
-        takes_value = "=" not in arg and i + 1 < len(argv) and (
-            arg in value_flags
-            or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
-        )
-        if not takes_value and not arg.startswith("-"):
-            saw_subcommand = True
-        i += 2 if takes_value else 1
-    return None, 0, None
 
 
 def _resolve_sudo_user_profile_env(name: str) -> str | None:
@@ -485,15 +404,19 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
     started that profile's named slot on every container boot: the one the boot reconciler just
     registered down, because a started named slot is a second gateway beside the multiplexer.
-    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
+    ``--no-supervise`` (or any abbreviation argparse accepts) keeps the foreground run, which follows
+    ``active_profile`` as before (#22502).
     """
     words = [a for a in argv if not a.startswith("-")]
-    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
+    if words[:2] != ["gateway", "run"]:
         return False
     if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
         return False
     from hermes_cli.service_manager import _s6_running
-    return _s6_running()
+    if not _s6_running():
+        return False
+    from hermes_cli._parser import gateway_run_no_supervise  # the container boot's own decision
+    return not gateway_run_no_supervise(argv)
 
 
 def explicit_cli_profile() -> str | None:
@@ -510,7 +433,9 @@ def _apply_profile_override() -> None:
     global _explicit_cli_profile
     _explicit_cli_profile = None
     argv = sys.argv[1:]
-    profile_name, consume, profile_index = _scan_profile_flag(argv)
+    from hermes_cli._parser import scan_profile_flag
+
+    profile_name, consume, profile_index = scan_profile_flag(argv)
     from_sticky_profile = False
 
     # HERMES_HOME already set with no explicit flag: trust it only when it
@@ -565,9 +490,9 @@ def _apply_profile_override() -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
-        # A bug in profiles.py must NEVER prevent hermes from starting
-        print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
-        return
+        # A profile WAS requested: the default would read/write the wrong profile (#152716)
+        print(f"Error: profile override failed ({exc})", file=sys.stderr)
+        sys.exit(1)
     os.environ["HERMES_HOME"] = hermes_home
     if consume > 0:
         _explicit_cli_profile = profile_name
@@ -1009,14 +934,12 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable. Never creates one: a claimed Nous welcome
+    trial counts (``anon_auth.free_inference_active``) even when nothing selects ``nous`` yet.
 
-    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
-    secret scope and wants an answer for that profile only — launch-process
-    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
-    make it appear ready. Unscoped callers keep the legacy behavior.
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and secret scope and wants
+    an answer for that profile only — launch-process env and host-wide fallbacks (gh auth, Claude
+    Code credentials) must not make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
@@ -1060,7 +983,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    from hermes_cli.anon_auth import own_trial_active
+    if own_trial_active(strict_profile_scope) or _auth_store_logged_in(
+            get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh
@@ -1211,30 +1136,27 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
-    never opens a writer beside the one the CLI acquires from the registry a moment later.
-    Open failures yield None and any error raised by the ``with`` body is swallowed —
-    callers fall through to their ``return None``."""
-    db = None
+    """Yield main's read-only session reads over a storage interface reader on the current profile's store, or None
+    when it cannot open (lazy imports, so test patches on ``persistence_assembly`` intercept). Every caller is a lookup
+    (last session, title → id, recorded cwd), so it never opens a writer beside the one the CLI opens a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed: callers fall through to their
+    ``return None``."""
+    reader, handles = None, contextlib.ExitStack()
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        from persistence_assembly import open_persistence_reader
+        store = handles.enter_context(open_persistence_reader(get_hermes_home()))
+        store.ready()
+        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
+        from hermes_cli.gateway_session_store import SurfaceLabelReader
+        reader = SurfaceLabelReader(store)
     except Exception:
         pass
     try:
-        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
-        from hermes_cli.gateway_session_store import SurfaceLabelReader
-        yield SurfaceLabelReader(db) if db is not None else None  # body errors (incl. AttributeError on a None db) are swallowed
+        yield reader  # body errors (incl. AttributeError on a None reader) are swallowed
     except Exception:
         pass
     finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
+        handles.close()
 
 
 def _latest_session_id(use_tui: bool) -> Optional[str]:
@@ -1276,17 +1198,18 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     old root ID (exit summary, notes) resumes at the live tip.
     """
     with _session_db() as db:
+        store = db.persistence
         # Exact session ID first, then title (with auto-latest for lineage).
-        session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        session = store.sessions.get(name_or_id)
+        resolved_id = session.session_id if session else store.sessions.resolve_by_title(name_or_id)
         if not resolved_id and name_or_id.startswith("local-"):
             # The TUI epilogue prints a canonical session's unique 22-char prefix.
-            resolved_id = db.resolve_session_id(name_or_id)
+            resolved_id = store.sessions.resolve_id(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = store.lineage.tip(resolved_id) or resolved_id
             except Exception:
                 pass
         return resolved_id
@@ -1393,36 +1316,6 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     sys.exit(1)
 
 
-def _apply_in_dir(args) -> None:
-    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
-    in_dir = getattr(args, "in_dir", None)
-    if not in_dir:
-        return
-    # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
-    # translate drive-root spellings to native Windows form. No-op elsewhere.
-    from tools.environments.local import _msys_to_windows_path
-
-    _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
-    if not os.path.isdir(_target_dir):
-        print(f"Error: --in directory not found: {in_dir}")
-        sys.exit(1)
-    try:
-        os.chdir(_target_dir)
-    except OSError as e:
-        print(f"Error: cannot enter --in directory {in_dir}: {e}")
-        sys.exit(1)
-    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
-    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
-    # cwd, so a value inherited from a parent surface, the shell or .env outlives
-    # this chdir and re-homes the session in the old directory (#106220). Refresh
-    # it. An unset variable stays unset: the backends then derive from the new
-    # process cwd (local exports it at cli import, docker mounts it, ssh and
-    # container backends keep their own remote/sandbox default).
-    if os.environ.get("TERMINAL_CWD", "").strip():
-        os.environ["TERMINAL_CWD"] = _target_dir
-    args.no_restore_cwd = True
-
-
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1468,7 +1361,8 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
         and not getattr(args, "worktree", False)
     ):
         with _session_db() as db:  # never let cwd-restore break a resume
-            _saved_cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
+            session = db.persistence.sessions.get(args.resume)
+            _saved_cwd = ((session.cwd if session else None) or "").strip()
             if _saved_cwd and not os.path.isdir(_saved_cwd):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
@@ -2024,7 +1918,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_leftover_pausable_gateway_pids", "_npm_lockfile_changed",
         "_orphaned_desktop_backend_pids", "_refresh_active_lazy_features",
         "_refresh_active_memory_provider_dependencies", "_relaunch_stopped_serves",
-        "_stop_process_trees",
+        "_stop_process_trees", "_write_update_incomplete_marker",
     ),
     "hermes_cli.update_cmd_maint": (
         "_purge_stale_hermes_modules", "_reload_updated_runtime_modules",
@@ -2040,15 +1934,12 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 
 def __getattr__(name):
     """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
-    if name == "_write_update_incomplete_marker":
-        from hermes_cli._old_updater import stop_for_relaunch as value
-    else:
-        module = _FROZEN_ATTR_SOURCES.get(name)
-        if module is None:
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-        import importlib
+    module = _FROZEN_ATTR_SOURCES.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        value = getattr(importlib.import_module(module), name)
+    value = getattr(importlib.import_module(module), name)
     globals()[name] = value  # cache: later accesses skip __getattr__
     return value
 

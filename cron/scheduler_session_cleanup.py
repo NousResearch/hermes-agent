@@ -17,9 +17,9 @@ def _end_suppressed_cron_session(db, job: dict, job_id: str, job_name: str, cron
 
     if db is None:
         return
-    bounded = _BoundedCronSessionDB(db, job_id)
+    bounded = _BoundedCronSessionDB(db.sessions, job_id)
     try:
-        bounded.end_session(cron_session_id, "cron_suppressed")
+        bounded.end(cron_session_id, "cron_suppressed")
         title = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
         _set_cron_session_title(bounded, cron_session_id,
                                f"{title} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}")
@@ -27,7 +27,7 @@ def _end_suppressed_cron_session(db, job: dict, job_id: str, job_name: str, cron
         # not a directory we are about to execute in. A disconnected mount must not block end.
         workdir = (job.get("workdir") or "").strip()
         if workdir:
-            bounded.update_session_cwd(cron_session_id, workdir)
+            bounded.update_cwd(cron_session_id, workdir)
     except (Exception, KeyboardInterrupt):
         logger.debug("Job '%s': suppressed session cleanup failed", job_id, exc_info=True)
 
@@ -50,7 +50,7 @@ def finish_cron_run(job, job_name, session_id, owner_execution, scope, session_d
             if session_db is not None:
                 _finalize_cron_session(session_db, agent, job_id, job_name, session_id, workdir=workdir)
             elif owner_execution is not None:
-                _end_suppressed_cron_session(owner_execution[0].db, job, job_id, job_name, session_id)
+                _end_suppressed_cron_session(owner_execution[0].persistence, job, job_id, job_name, session_id)
             if scope is not None:
                 if defer_agent_teardown is None:
                     _teardown_cron_agent(agent, job_id)

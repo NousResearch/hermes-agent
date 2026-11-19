@@ -25,13 +25,14 @@ from tests.gateway.test_normal_runtime_boot import control
 
 def _seed(home, rows):
     """Rows as the pre-authority clients wrote them: no route, no owner binding."""
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=home / 'state.db')
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    db = open_persistence(profile_scope(home=home))
     try:
         for sid, source, user_id in rows:
-            db.create_session(sid, source=source, user_id=user_id)
-            db.append_message(sid, 'user', 'OLD_' + sid)
-            db.append_message(sid, 'assistant', 'REPLY_' + sid)
+            seed_session(db, sid, source, user_id=user_id)
+            seed_messages(db, sid, {'role': 'user', 'content': 'OLD_' + sid},
+                          {'role': 'assistant', 'content': 'REPLY_' + sid})
     finally:
         db.close()
 

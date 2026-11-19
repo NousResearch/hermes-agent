@@ -1,6 +1,6 @@
 name: circuit-bench
 repo: https://github.com/juvenile454/hermes-circuit-bench
-sha: "b58b0604685a8473b5220f1ebc957c1ec2617fd3"
+sha: "0c9585a362bee34138cb0b19999f1fc7078fe2d2"
 subdir: circuit_bench
 description: "ESP32 workbench for Hermes and Hermes Desktop, from pin choice to running firmware: checks GPIO choices for ESP32, S2, S3, C3 and C6 against Espressif data, sizes parts with 16 calculators, draws schematics, plans the solder order, builds and flashes with your PlatformIO and esptool, and decodes panics to function and line so Hermes can fix them. 180 modules carry datasheet-cited values. Every verdict and value comes from code with its source, never from the model. A marked simulation runs the whole flow without hardware. Disclosure — runs your own pio, esptool and addr2line as subprocesses (no shell, minimal environment); a build runs the firmware project's PlatformIO scripts with your user rights and asks first; opens serial ports only on request, which can reset the board; writes firmware only with 'Allow flashing real boards' on (off by default) and after confirmation; a schematic can also be saved as a new SVG into a folder you or the agent name (out_dir); background threads only while a port is open or the Bench is in use; no network calls from the plugin (PlatformIO may download packages on a first build), no telemetry, no credentials; data under <HERMES_HOME>/plugin-data/circuit-bench/."
 maintainer: juvenile454
@@ -8,15 +8,15 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/juvenile454/hermes-circuit-bench#readme
-version: "0.1.0"
-image: "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/banner.png"
+version: "0.1.1"
+image: "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/06-panic.png"
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/01-plan-blocked.png"
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/hero-agent.png"
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/07-modules.png"
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/05-flash-dialog.png"
-  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/b58b0604685a8473b5220f1ebc957c1ec2617fd3/docs/screenshots/03-wire.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/06-panic.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/01-plan-blocked.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/hero-agent.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/07-modules.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/05-flash-dialog.png"
+  - "https://raw.githubusercontent.com/juvenile454/hermes-circuit-bench/0c9585a362bee34138cb0b19999f1fc7078fe2d2/docs/screenshots/03-wire.png"
 readme: true
 platforms:
   - linux

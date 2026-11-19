@@ -319,6 +319,7 @@ Subcommands:
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
 | `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
 | `attach` | Give a local client the gateway's WebSocket URL and one single-use session ticket for this profile. Emits JSON; see below. |
+| `tickets` | Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -383,6 +384,17 @@ one), the same text goes to stderr, and the exit code is `ensure`'s for that ver
 attaches through the same code. Details and the dial rules:
 [Gateway internals: `hermes gateway attach`](../developer-guide/gateway-internals.md#hermes-gateway-attach).
 
+`hermes gateway tickets (--probe | --serve) [--json]` is for a client that reaches the gateway
+over SSH and calls its HTTP API through a forwarded port. `--probe` prints
+one JSON line (`protocol`, the ticket `purposes` it mints, `windows_service_session`) and touches
+no gateway. `--serve` prints a hello line with the running gateway's endpoint, then answers each
+stdin line `{"id": ..., "purpose": "native-http"}` with one stdout line holding a single-use
+ticket, until stdin closes. A line may add `"profile": "<name>"` for another profile the same
+gateway serves. `{"id": ..., "purpose": "interactive"}` gets the WebSocket's ticket for a socket
+that reaches every profile the gateway serves. It never starts a gateway, and tickets go to stdout only, never to a log. The line
+protocol and the client rules:
+[Gateway over SSH: client contract](../developer-guide/gateway-ssh-clients.md).
+
 ## `hermes lsp`
 
 ```bash
@@ -422,7 +434,7 @@ hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--res
 
 **Returning user (already configured):** drops straight into the full reconfigure wizard — every prompt shows your current value as its default, press Enter to keep or type a new value. No menu.
 
-**Coming from another agent:** when the first run finds an OpenClaw, Claude Code, Codex CLI or Cursor setup (`~/.openclaw`, `~/.claude`, `~/.codex`, `~/.cursor`), it first asks **"Import your setup from …?"** (default yes). With more than one found, you then pick which from a checklist. Setup installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog, unless you already have it, and runs its import for each pick, which shows a preview and asks before changing anything (OpenClaw's allowlisted API keys and bot tokens are included, as the old built-in step did). Quick Setup after an import that brought a model and its key asks **"Keep your imported model (…) or switch to Nous Portal?"** (default keep, which skips the Nous Portal login). Nothing found, a no, `--non-interactive` or a setup started by the dashboard: no question and nothing installed. On an already configured install, run `hermes import-agent` instead.
+**Coming from another agent:** when the first run finds an OpenClaw, Claude Code, Codex CLI or Cursor setup (`~/.openclaw`, `~/.claude`, `~/.codex`, `~/.cursor`), it first asks **"Import your setup from …?"** (default yes). With more than one found, you then pick which from a checklist. Setup installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog, unless you already have it, and runs its import for each pick, which shows a preview and asks before changing anything (OpenClaw's allowlisted API keys and bot tokens are included, as the old built-in step did). After an import that brought a model and its key, the first choice of **"How do you want to power Hermes?"** is **Keep my imported model (…)**, the default. Nothing found, a no, `--non-interactive` or a setup started by the dashboard: no question and nothing installed. On an already configured install, run `hermes import-agent` instead.
 
 Jump into one section instead of the full wizard:
 
@@ -970,7 +982,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 
 | Subcommand | Description |
 |------------|-------------|
-| `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
+| `subscribe` / `add` | Create a webhook route. Prints the URL and a masked HMAC secret; the full secret is stored in `webhook_subscriptions.json` under the Hermes home. |
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
@@ -1101,25 +1113,26 @@ config_overrides:
 hermes debug share [options]
 ```
 
-Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
+Upload a debug summary to a public paste service and get a shareable URL, or (with `--nous`) send the full redacted logs to private Nous storage.
 
 | Option | Description |
 |--------|-------------|
-| `--lines <N>` | Number of log lines to include per log file (default: 200). |
+| `--lines <N>` | Log lines per file: scanned for the summary's error counts, and included (redacted) with `--nous` / `--local` (default: 200). |
 | `--expire <days>` | dpaste.com fallback retention in days (minimum 1; default: 1). paste.rs pastes are always deleted after 6 hours; dpaste.com pastes cannot be deleted early. |
 | `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
 | `--local` | Print the report locally instead of uploading. |
-| `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
+| `--no-redact` | Disable secret redaction of the logs sent with `--nous` or printed with `--local`. It has no effect on the public paste, which never carries log text. |
+| `--yes` | Skip the confirmation prompt (required when stdin is not a TTY). |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), plus the update and Desktop update hand-off logs when present, and redacted API key status. By default, uploads are redacted so secrets are not included; this covers the system dump (including config values such as `fallback_providers` entries and credentials in their URLs) as well as the logs, and the gateway `/debug` report too.
+**Public paste (default).** The upload is an allowlisted summary, never log lines or message text: Hermes, Python and OS versions; install kind; names of connected platforms and configured built-in toolsets; which `config.yaml` keys are set (key names only, no values; user-named entries such as providers or MCP servers are counted, not named); and counts of warnings/errors by logger, exception class and HTTP status from the recent log tails. The same summary is what the gateway `/debug upload` command and the dashboard **Share debug report** button upload. Public uploads go to paste.rs, falling back to dpaste.com.
 
-Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
+**Private bundle (`--nous`).** The full debug report, the system dump and the agent, gateway, GUI/dashboard and desktop logs (512 KB per file), plus the update and Desktop update hand-off logs when present, go to private Nous diagnostics storage. Secrets are redacted unless `--no-redact` is set; other personal data in the logs (names, IDs, message text) is not. The returned viewer link is only for the Nous team and auto-deletes after 14 days. `--local` prints the same bundle without uploading anything.
 
 ### Examples
 
 ```bash
 hermes debug share              # Upload debug report, print URL
-hermes debug share --lines 500  # Include more log lines
+hermes debug share --lines 500  # Scan more log lines for the summary
 hermes debug share --expire 30  # Keep a dpaste.com fallback paste for 30 days
 hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)
@@ -1212,10 +1225,32 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 | Option | Description |
 |--------|-------------|
 | `-f`, `--force` | Skip the existing-installation confirmation prompt. |
+| `--keep-host` | Replace this agent with the backup but keep what its host set up (a Hermes Cloud agent's Nous Portal sign-in and platform settings). Takes a full backup of this agent first: the undo point. See below. |
+| `--messaging-off` | With `--keep-host`: every messaging bot the backup would run arrives switched off, with its token and settings. See below. |
 
 :::warning
-Stop the gateway before importing to avoid conflicts with running processes.
+Stop the gateway before importing to avoid conflicts with running processes. `--keep-host` inside the Docker image (Hermes Cloud) pauses and restarts the gateway itself.
 :::
+
+### `--keep-host`: replace an agent but keep its host's setup
+
+This is how Settings ▸ [Backup & Transfer](../user-guide/backup-and-transfer.md) replaces a Hermes Cloud agent with a local one. The backup's memory, persona, skills, conversations, scheduled jobs, settings, `.env` keys and `auth.json` logins all come over. The agent keeps:
+
+- **`auth.json`** (the root's and each profile's): its own Nous Portal sign-in (`providers.nous`, the `nous` credential-pool rows, and `active_provider` when either side uses Nous). The backup's Nous tokens are never written. `shared/nous_auth.json`, `webapp/` (the Webapp's sign-in state), `install_id` and lock files are never taken from the backup.
+- **`config.yaml`** (the root home's): its own top-level `model`, `providers`, `fallback_providers`, `fallback`, `auxiliary`, `nous`, `auth`, `web`, `image_gen`, `video_gen`, `tts`, `stt`, `dashboard`, `webapp`, `cron` (scheduler settings; the jobs come from the backup), `max_concurrent_sessions` and `max_live_sessions`. Every other key comes from the backup, and the file keeps the backup's comments.
+- **`.env`** (the root home's): its own `NOUS_*`, `HERMES_*`, `TOOL_GATEWAY_*` and `API_SERVER_KEY` lines.
+
+Only the root home is the host's: a named profile's `config.yaml` and `.env` arrive whole, and so does any other file with those names (a skill's `templates/config.yaml`).
+
+The result is a replacement, not a merge. In the root home and in every profile the backup carries, a file the backup does not have is removed, and when the backup has no `auth.json`, `.env` or `config.yaml`, the agent's copy keeps only its host-owned part. Databases, logs and the gateway's runtime records stay. A profile that only the agent has is left exactly as it is (the import lists it). A folder the backup writes into that is a symlink refuses the import before anything is written. Messaging bot tokens come over too. A bot token answers to one running Hermes at a time, so stop the gateway on the old machine, or add `--messaging-off`.
+
+`--messaging-off` (the Desktop transfer always passes it) brings every messaging bot over switched off. In the root home and in each profile the backup carries, a bot the backup would run (`platforms.<id>.enabled: true`, or a token in `.env` with no `enabled` setting) gets `platforms.<id>.enabled: false`, the switch the **Messaging** page turns on and off, written into the restored `config.yaml`. Its token, allowlists and other settings come over unchanged, and the gateway does not connect it until you switch it on. The import prints `Messaging switched off: Telegram, Discord`. Inbound endpoints (`api_server`, `webhook`) are left alone. An undo does not pass the flag, so it puts the agent's own bots back as they were.
+
+Once the gateway has drained, and before writing anything, it backs up the agent, the memory provider's files outside the home included, to `backups/pre-transfer-<time>.zip` and prints `Undo point: <path>`. The last three are kept. To put the agent back, run `hermes import <that zip> --force --keep-host`: that restores it with the same replace rule, so files the transfer added (the backup's scheduled jobs, its skills, a profile it brought) go again. If a restore fails part-way, the next `--keep-host` import (a retry) reuses that first undo point instead of backing up the half-restored agent.
+
+Inside the Docker image the gateway owns `state.db`, so a plain `hermes import` refuses the session database while it runs. `--keep-host` asks the gateway to finish its in-flight turns and exit (the `pause-for-update` control-socket request `hermes update` uses). It first marks the gateway's s6 slot run-once so the supervisor does not restart it during the restore, then starts the slot again afterwards. If it cannot tell whether that gateway is running, it refuses. Outside a container nothing is paused; stop the gateway first, as with any import.
+
+**Exit status** for `--keep-host`: `Import refused; no files restored` appears only when it stopped before the first write (a linked folder, the undo point could not be written, the gateway would not pause). Any later failure lists what was not restored and prints the undo point again.
 
 **Exit status:** `1` when the archive is damaged — before anything is written, every member is decompressed once and its CRC checked; if any fail, the command prints `Error: backup archive is damaged (N member(s) …)` with the offending members and stops with the Hermes home untouched. Also `1` when any file from the archive could not be restored (listed under `Warnings (N files skipped)` and summarised as `Import incomplete: …`). The files that did land stay in place, but a script or the dashboard will not report a partial restore as success. Runtime files the import deliberately keeps from this machine (`gateway.pid`, `gateway_state.json`, …) and the older-backup session warning below do not change the exit status.
 
@@ -1238,6 +1273,7 @@ Importing an older backup over newer work is still allowed, but it is no longer 
 ```bash
 hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
 hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+hermes import ~/hermes-backup-20260423.zip --keep-host --messaging-off   # Replace a cloud agent, keep its Nous sign-in, bots arrive off
 ```
 
 ## `hermes logs`
@@ -1696,6 +1732,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| `idle-tasks [name] [--pause TASK \| --resume TASK]` | List the idle tasks plugins registered with `ctx.register_idle_task` in this profile (status, run count, last and next run, last summary or error), or pause/resume one task of the named plugin. |
 | `doctor [path-or-id] [--ci]` | Validate a native plugin through the real manifest parser, loader, and registration path. `--ci` exits 1 on errors. |
 | `pack install <path-or-url> [--force]` | Install a plugin pack (`hermes-pack.yaml`) — a declarative set of plugins each pinned to an exact 40-character commit SHA. Shows a mandatory review screen (every plugin, source, pinned ref, declared capabilities), asks one confirmation for the pack contents, then runs ordinary pinned installs. Each plugin's declared capabilities still go through the standard per-plugin consent — a pack never bulk-grants. Partial failures are reported per plugin; exits non-zero when any plugin failed. Interactive only (no `--yes`). |
 | `pack export [--enabled-only] [--name NAME]` | Emit a pack YAML on stdout from the current install: repo + exact SHA of each git-installed plugin plus sanitized non-secret `plugins.entries` config. Local-only plugins (no git provenance) are listed as warning comments, never as installable entries. Secrets, capability grants, and `allow_*` gates are always stripped. |
@@ -2142,6 +2179,7 @@ external update owner. See [Updating & Uninstalling](../getting-started/updating
 | `--no-backup` | Skip all pre-update backups for this run (both the quick state snapshot and the full zip), regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a **full** pre-update backup for this run: the quick state snapshot plus a complete zip of `HERMES_HOME` (config, auth, sessions, skills, pairing data). The default mode is `quick` — a lightweight state snapshot only. Set the permanent mode via `updates.pre_update_backup: quick | full | off` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--force` | Linux/macOS: stop every gateway this update owns at once instead of waiting for in-flight work to drain (choose it when starting the update; it cannot interrupt an update already waiting): running turns, background subagents and tool/background processes are interrupted, a gateway still alive after ~12 s is killed, then the update runs and the gateways restart on the new code. On Windows it only lets the update proceed when another `hermes.exe` is detected; the Windows pause still drains (it does not bypass the venv-holder guard; see `--force-venv`). |
 
 Additional behavior:
 

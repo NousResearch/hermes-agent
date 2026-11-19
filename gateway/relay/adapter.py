@@ -1046,15 +1046,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         await localize_inbound_media(event, self._get_media_client)
 
     def prime_routing_cache(self, event) -> None:
-        """Warm the per-chat egress routing caches from a SYNTHETIC event: a completion
-        turn injected right after a restart (durable async-delegation replay) reaches
-        handle_message with the caches COLD, so its replies egress without
-        scope_id/user_id and the connector's fail-closed tenant guard declines them."""
+        """Fill cold scope/user egress caches for a restored turn; preserve newer live routing."""
         if event is None or getattr(event, "source", None) is None:
             return
-        self._capture_scope(event)
+        self._capture_scope(event, fill_only=True)
 
-    def _capture_scope(self, event) -> None:
+
+    def _capture_scope(self, event, fill_only: bool = False) -> None:
         """Remember a chat's egress discriminators from an inbound event. Never raises.
 
         scope_id: scoped (guild/channel) message → routing-table resolution. user_id:
@@ -1069,12 +1067,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             if not chat:
                 return
             chat = str(chat)
+            put = dict.setdefault if fill_only else dict.__setitem__
             # Underlying platform's string VALUE, skipping the generic RELAY
             # fallback (the connector's session default handles egress then).
             platform = getattr(src, "platform", None)
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
-                self._platform_by_chat[chat] = str(platform_value)
+                put(self._platform_by_chat, chat, str(platform_value))
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
@@ -1082,11 +1081,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             ):
                 value = getattr(src, attr, None)
                 if value:
-                    cache[chat] = str(value)
+                    put(cache, chat, str(value))
             # Latest message ts: the status anchor for typing frames that carry no turn's own anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
-                self._last_inbound_ts_by_chat[chat] = str(message_id)
+                put(self._last_inbound_ts_by_chat, chat, str(message_id))
         except Exception:
             pass
 

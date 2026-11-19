@@ -682,7 +682,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
-| `POST /api/ops/debug-share` | Upload a redacted debug report + full logs to a public paste and return the URLs (synchronous). Body: `{consent: true, redact?, lines?}`; without `"consent": true` it returns `400` and uploads nothing |
+| `POST /api/ops/debug-share` | Upload the allowlisted debug summary (no log lines or message text) to a public paste and return the URL (synchronous). Body: `{consent: true, redact?, lines?}`; without `"consent": true` it returns `400` and uploads nothing |
 | `PUT /api/webhooks/{name}/enabled` | Enable / disable a webhook route |
 | `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
 | `GET /api/skills/hub/search` | Search the skill hub across all sources |

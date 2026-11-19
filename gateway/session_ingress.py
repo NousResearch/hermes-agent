@@ -11,7 +11,9 @@ from gateway.session_producer_lifecycle import (
     close_observed_turn, close_producer_turn, close_settled_turn, producer_turn)
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,9 @@ _CONTENT_CLAUSES = frozenset({
 # Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
 QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversation; '
                     'send this again after the current reply.')
+# Nothing new was committed: the message id is already admitted with other content.
+ALREADY_ADMITTED_REPLY = ('⚠️ Hermes already received a different message under this message id, so this '
+                          'version was not saved. Send it again as a new message to continue.')
 
 
 async def admit_message(authority, event):
@@ -47,7 +52,7 @@ async def admit_message(authority, event):
         receipt = await authority.admit_native(event)
         if committed is not None and not committed.done():
             committed.set_result(None)  # the row is durable (any status): a barrier may go on
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
         if exc.reason == 'invalid_params' and exc.field:
@@ -57,6 +62,18 @@ async def admit_message(authority, event):
             named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')
+        runner = authority.runner
+        if exc.reason == 'runtime_draining' and runner._draining:
+            # A restart's after-turn wait or a stop refused it before commit: the same notice the
+            # in-process path gives, not a turn error that offers a /retry into the drain (#152410).
+            from agent.i18n import t
+            return t('gateway.busy.drain_rejected_new_work', action=runner._status_action_gerund())
+        if exc.reason == 'admission_conflict' and exc.field == ADMITTED_REQUEST_CONFLICT['field']:
+            # The provider id is already admitted with other content (a redelivery of the same message
+            # resolves to its row in ``reconcile_native_retry``): the earlier message is the one that runs.
+            logger.warning('Native message %s refused: its id is already admitted with other content',
+                           getattr(event, 'message_id', None))
+            return ALREADY_ADMITTED_REPLY
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
@@ -75,10 +92,10 @@ async def admit_message(authority, event):
         adopters[receipt.admission_id] = event
     # A drain already running can claim, run and settle the row before this caller resumes; one
     # that settled it already sent (or owes) the reply itself and resolves no waiter registered now.
-    from hermes_state_runtime import get_session_admission
-    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-    status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
-    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))
+    admissions = authority_persistence(authority).admissions
+    row = admissions.get(admission_id=receipt.admission_id)
+    status = 'terminal' if row is None else row.status  # None: deleted with its chat, nothing owed
+    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.outcome)
     if status in ('terminal', 'unknown'):
         authority.native_waiters.discard(receipt.admission_id)
         if authority.waiters.get(receipt.admission_id) is waiter:
@@ -90,9 +107,9 @@ async def admit_message(authority, event):
         accepted.set_result(None)
     try:
         return await asyncio.shield(waiter)
-    except RuntimeStoreError as exc:
-        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-        if row is not None and row['status'] == 'terminal':
+    except AuthorityRefusal as exc:
+        row = admissions.get(admission_id=receipt.admission_id)
+        if row is not None and row.status == 'terminal':
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')
@@ -120,10 +137,14 @@ async def _hand_over_turn_marker(authority, admission_id, event):
     is owed). A kill between the terminal commit and that ledger write then leaves a marked turn
     whose persisted reply the next unclean boot ledgers and sends once, without new inference,
     instead of a settled answer nobody owes. The waiting adapter lifecycle adopts it; a recovered
-    no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here."""
+    no-waiter reply keeps it until ``deliver_settled``; any other turn releases it here.
+
+    The adopter also takes the turn's run generation: it runs this turn's post-delivery callbacks
+    after its send, and the executed ``event`` is a restored copy, never the adopter itself."""
     adopter = _marker_adopters(authority).get(admission_id)
     if adopter is not None:
         _move_marker(event, adopter)
+        adopter._hermes_run_generation = getattr(event, '_hermes_run_generation', None)
         return
     if admission_id in authority.pending_deliveries:
         # Released by ``deliver_settled``, also when settlement failed and dropped the delivery.
@@ -460,6 +481,7 @@ async def deliver_settled(authority, admission_id):
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
+            adopter._hermes_run_generation = getattr(held, '_hermes_run_generation', None)
             held = None
         delivery = None
     if delivery is None:
@@ -503,6 +525,20 @@ async def deliver_response(adapter, event, session_key, response):
     return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
+async def _run_own_post_delivery(adapter, session_key, event):
+    """A busy follow-up's observer is its turn's native waiter (``admit_message``), so the drain leaves
+    the turn's post-delivery slot (temp-bubble cleanup, background-review release, a deferred /goal
+    notice) on the adapter for it (``_take_post_delivery``): run it after the send, as
+    ``_process_message_background`` does. Only by the turn's own generation: this task holds no
+    session guard, and an unowned pop could run the callbacks of a turn another task still delivers."""
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback, turn_run_generation
+    generation, pop = turn_run_generation(event), getattr(adapter, 'pop_post_delivery_callback', None)
+    if generation is not None and callable(pop):
+        await run_post_delivery_callback(
+            pop(session_key, generation=generation), _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
     once the follow-up is committed to the FIFO, or queued behind an earlier input of its chat still
@@ -544,6 +580,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
+            await _run_own_post_delivery(adapter, session_key, event)
 
     token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:

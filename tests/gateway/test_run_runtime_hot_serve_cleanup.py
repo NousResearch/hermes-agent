@@ -10,9 +10,9 @@ import pytest
 
 from gateway import run_runtime
 from gateway.session_authority import LiveSession
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch
 from tools.bot_live_delivery import _locked, _write
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _Registry:
@@ -38,11 +38,10 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
         session_control_server=object(),
     )
 
-    db = SessionDB(home / "state.db")
-    db.create_session("s", source="gui")
-    epoch = begin_runtime_epoch(db, instance_id="hot-serve")
-    admission = admit_session_input(
-        db,
+    db = storage_handle(home)
+    seed_session(db, "s", "gui")
+    epoch = db.runtime.begin_epoch(instance_id="hot-serve")
+    admission, _created = db.admissions.admit(
         epoch=epoch,
         principal_id="owner",
         session_id="s",
@@ -53,7 +52,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
     live = LiveSession(SimpleNamespace(platform=None, user_id='owner'), 'route')
     authority = SimpleNamespace(
         runner=runner,
-        db=db,
+        db=db, persistence=storage_handle(home),
         profile_id="default",
         sessions={"s": live},
         waiters={},
@@ -66,7 +65,7 @@ async def test_failed_hot_serve_retires_session_and_bot_recovery_tasks(monkeypat
             root / f"{'a' * 32}.json",
             {
                 "status": "canonical",
-                "admission_id": admission["admission_id"],
+                "admission_id": admission.admission_id,
                 "delivery_id": "a" * 32,
                 "profile_home": str(home),
                 "session_id": "s",

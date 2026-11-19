@@ -12,163 +12,22 @@
  *    every later open after a create or cancel silently started fresh.
  */
 
-import type * as HermesSdk from '@hermes/plugin-sdk'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
-import type * as DataModule from './data'
+import { controlUnder, createAgentHarness } from './create-agent-test-utils'
 import { translateBots } from './i18n-test-helper'
-import type { RosterRow } from './types'
 
-interface CapabilitiesViewProps {
-  fixedConnection?: string
-  fixedProfile?: string
-}
+const mocks = await vi.hoisted(async () => (await import('./create-agent-test-utils')).createMocks())
 
-const mocks = vi.hoisted(() => ({
-  connections: vi.fn(async () => [] as { id: string; label: string }[]),
-  createCanonicalChat: vi.fn(async () => 'session-1'),
-  deleteBot: vi.fn(async () => undefined),
-  dropLeftoverProfilePrefs: vi.fn(),
-  /** Flipped off to model a desktop build that predates the live surface. */
-  hasCapabilitiesView: { value: true },
-  notify: vi.fn(),
-  notifyError: vi.fn(),
-  request: vi.fn(),
-  requestProfile: vi.fn(async () => ({})),
-  saveBotMeta: vi.fn(),
-  skillsView: [] as CapabilitiesViewProps[]
-}))
-
-vi.mock('@hermes/plugin-sdk', async importOriginal => {
-  const original = await importOriginal<typeof HermesSdk>()
-
-  const CapabilitiesViewStub = (props: CapabilitiesViewProps) => {
-    mocks.skillsView.push(props)
-
-    return null
-  }
-
-  // Builds that route `fixedConnection` get the live Capabilities tab for
-  // remote targets too, pinned to the target machine's backend.
-  CapabilitiesViewStub.supportsFixedConnection = true
-
-  const mocked: Record<string, unknown> = {
-    ...original,
-    host: {
-      ...original.host,
-      connections: mocks.connections,
-      dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
-      notify: mocks.notify,
-      notifyError: mocks.notifyError,
-      request: mocks.request,
-      requestProfile: mocks.requestProfile
-    },
-    // The plugin bundle normally lands via `ctx.i18n.register` at load.
-    usePluginI18n: () => translateBots
-  }
-
-  Object.defineProperty(mocked, 'CapabilitiesView', {
-    configurable: true,
-    enumerable: true,
-    get: () => (mocks.hasCapabilitiesView.value ? CapabilitiesViewStub : undefined)
-  })
-
-  return mocked
-})
-
+vi.mock('@hermes/plugin-sdk', async importOriginal =>
+  (await import('./create-agent-test-utils')).sdkMock(await importOriginal(), mocks, () => translateBots)
+)
 vi.mock('./canonical-chat', () => ({ createCanonicalChat: mocks.createCanonicalChat }))
 vi.mock('./profile-ops', () => ({ deleteBot: mocks.deleteBot }))
-vi.mock('./data', async importOriginal => {
-  const original = await importOriginal<typeof DataModule>()
+vi.mock('./data', async importOriginal => ({ ...(await importOriginal<object>()), saveBotMeta: mocks.saveBotMeta }))
 
-  return { ...original, saveBotMeta: mocks.saveBotMeta }
-})
-
-// Each build re-imports the dialog's whole module graph.
-vi.setConfig({ testTimeout: 30_000 })
-
-const roster: RosterRow[] = [{ connectionId: 'local', name: 'default' }]
-
-/** A catalog entry that needs an API key — the only row that renders setup. */
-const catalog = { auth: null, installed: false, name: 'linear', requires: ['LINEAR_API_KEY'] }
-
-function withQueryClient(children: ReactNode) {
-  return (
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      {children}
-    </QueryClientProvider>
-  )
-}
-
-async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void) {
-  mocks.hasCapabilitiesView.value = hasCapabilitiesView
-  vi.resetModules()
-
-  const { CreateAgentDialog } = await import('./create-dialog')
-
-  const view = render(
-    withQueryClient(
-      <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
-    )
-  )
-
-  fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
-  fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-
-  return view
-}
-
-function createCalls() {
-  return mocks.request.mock.calls.filter(([method]) => method === 'profiles.create')
-}
-
-/** The control under a `labeled(...)` caption — the label is presentational,
- *  so it carries no `for`/`id` pair to query by. */
-function controlUnder(caption: string) {
-  return screen.getByText(caption).parentElement!.querySelector('[role="combobox"]') as HTMLElement
-}
-
-beforeAll(async () => {
-  // Radix Select/Dialog reach for APIs jsdom does not implement.
-  Element.prototype.scrollIntoView = () => undefined
-  Element.prototype.hasPointerCapture = () => false
-  Element.prototype.releasePointerCapture = () => undefined
-  Element.prototype.setPointerCapture = () => undefined
-  // Warm the transform cache so the first test isn't charged for it.
-  await import('./create-dialog')
-}, 120_000)
-
-beforeEach(() => {
-  vi.clearAllMocks()
-  mocks.skillsView.length = 0
-  mocks.connections.mockResolvedValue([])
-  mocks.requestProfile.mockResolvedValue({})
-  mocks.request.mockImplementation(async (method: string) => {
-    switch (method) {
-      case 'mcp.catalog':
-        return { servers: [catalog] }
-
-      case 'mcp.servers.test':
-        return { ok: true }
-
-      case 'profiles.describe':
-        return { mcp_servers: [], skills: [], toolsets: [] }
-
-      default:
-        return {}
-    }
-  })
-})
-
-afterEach(async () => {
-  cleanup()
-  // Radix's focus scope dispatches its unmount event from a 0 ms timer; let it fire
-  // here, or it lands in the next test file's jsdom window and throws there.
-  await new Promise(resolve => setTimeout(resolve, 0))
-})
+const { createCalls, renderDialog } = createAgentHarness(mocks)
 
 describe('materializing the draft profile', () => {
   it.each([

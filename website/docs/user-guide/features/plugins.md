@@ -440,6 +440,8 @@ hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
                                              # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+hermes plugins idle-tasks [my-plugin]        # background idle jobs plugins registered: last run, next run
+hermes plugins idle-tasks my-plugin --pause suggest   # stop one until --resume
 hermes plugins check-updates                 # read-only: is any installed plugin outdated?
 hermes plugins adopt my-plugin               # track a self-cloned plugin dir (read its git origin)
 hermes plugins trust-update-url my-plugin    # confirm a changed update_url after review
@@ -451,6 +453,9 @@ Hermes records Git install source and revision in `.install-metadata.json`.
 Unpinned tracked installs compare the saved source's remote HEAD, or a matching
 saved `update_url` feed. Pinned installs remain pinned. Self-cloned directories
 need `hermes plugins adopt NAME` before they become tracked installations.
+A plugin directory that is a link to a checkout somewhere else is never
+tracked, because Hermes does not change files outside the plugins directory:
+pull updates in that checkout, and delete the link to remove the plugin.
 Manually copied or provenance-drifted directories receive diagnostic guidance.
 Pip entry-point plugins can report an owning distribution's available version;
 that check does not turn them into Git-managed installs.
@@ -646,8 +651,8 @@ working but are **deprecated** in favor of the consent flow:
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
-`llm.side_question` has no legacy key: it is open only when declared and
-granted through the consent flow.
+`llm.side_question` and `llm.session_fork` have no legacy key: each is open
+only when declared and granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -935,6 +940,10 @@ What changes in `host` mode:
   model-provider profiles that build their own SDK client (`create_client`), terminal backends (the
   backend's commands fail with this reason; the `singularity` plugin is one), streaming and websocket
   dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+- **No cookies.** A hosted plugin's API answers are served from the gateway's own address, so Hermes
+  drops any `Set-Cookie` header they carry (logging it once per plugin) rather than let a plugin set or
+  overwrite the dashboard's cookies. This also applies to another profile's plugins, which always run in
+  a host.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
 edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from

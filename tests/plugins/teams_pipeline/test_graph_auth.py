@@ -189,7 +189,7 @@ class TestGraphCredentialsEdgeCases:
     def test_is_frozen(self):
         creds = GraphCredentials("t", "c", "s")
         with pytest.raises((AttributeError, TypeError)):
-            creds.tenant_id = "changed"  # type: ignore[misc]
+            creds.tenant_id = "changed"  # ty: ignore[invalid-assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +423,8 @@ class TestTokenFetchErrorPaths:
         )
         token = await provider.get_access_token()
         assert token == "tok"
-        assert provider._cached_token.token_type == "Custom"  # type: ignore[union-attr]
+        assert provider._cached_token is not None
+        assert provider._cached_token.token_type == "Custom"
 
     async def test_empty_token_type_defaults_to_bearer(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -436,7 +437,8 @@ class TestTokenFetchErrorPaths:
             transport=httpx.MockTransport(handler),
         )
         await provider.get_access_token()
-        assert provider._cached_token.token_type == "Bearer"  # type: ignore[union-attr]
+        assert provider._cached_token is not None
+        assert provider._cached_token.token_type == "Bearer"
 
     async def test_negative_expires_in_clamped_to_zero(self):
         import time

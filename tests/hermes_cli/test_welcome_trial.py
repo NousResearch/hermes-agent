@@ -58,14 +58,13 @@ def test_the_trial_is_never_claimed_outside_a_first_desktop_install(portal, monk
 
 
 def _person_at_terminal(mp):
-    """A person answering ``hermes setup``: both ends a TTY, no container, no CI, not spawned."""
+    """A person answering ``hermes setup``: a TTY stdin, no container, no CI, not spawned."""
     import io
     import sys
 
-    for stream in ("stdin", "stdout"):
-        tty = io.StringIO()
-        tty.isatty = lambda: True
-        mp.setattr(sys, stream, tty)
+    tty = io.StringIO()
+    tty.isatty = lambda: True
+    mp.setattr(sys, "stdin", tty)
     mp.setattr("hermes_constants.is_container", lambda: False)
     mp.delenv("CI", raising=False)
     mp.delenv("HERMES_NONINTERACTIVE", raising=False)
@@ -407,3 +406,15 @@ def test_a_configured_model_beats_the_trial_for_cron_jobs_and_kanban_workers(por
 
     assert _cron_model() == "anthropic/claude-sonnet-4"
     assert _kanban_worker_model(monkeypatch, tmp_path) == "anthropic/claude-sonnet-4"
+
+
+def test_first_run_on_the_free_tier_says_which_model_actually_answers(portal, monkeypatch, capsys):
+    """The free tier serves only ``nous/welcome``; the setup summary names it even when the seeded
+    config.yaml still carries the template's ``model.default``."""
+    from hermes_cli import setup_quick
+
+    _person_at_terminal(monkeypatch)
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    setup_quick._print_first_run_primer({"model": {"default": "anthropic/claude-opus-4.6"}})
+
+    assert f"Model: {anon_auth.GUEST_MODEL} (free)" in capsys.readouterr().out

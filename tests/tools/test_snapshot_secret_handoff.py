@@ -52,12 +52,16 @@ def test_secret_exports_never_reach_the_snapshot_file(env):
     env.execute("unset ODD_CUSTOM_NAME")
     (Path(os.environ["HERMES_HOME"]) / ".env").write_text("")
     env.execute("export ODD_CUSTOM_NAME=SYNTH-reintroduced")
+    # A command that leaves IFS empty, then failed publishes, must neither leak nor lose them.
+    env.execute("export IFS=''")
+    for _ in range(10):
+        env.execute("mv() { return 1; }")
 
     snapshot = _snapshot_text(env)
     assert "SYNTH" not in snapshot
     assert 'KEEP_ME="ordinary"' in snapshot  # ordinary shell state is still persisted
     # readonly and array secrets keep their shape through memory
-    out = env.execute('echo "[$RO_TOKEN][$ODD_CUSTOM_NAME][${#API_TOKEN[@]}|${API_TOKEN[1]}]"; '
+    out = env.execute('unset -f mv; IFS=$\' \\t\\n\'; echo "[$RO_TOKEN][$ODD_CUSTOM_NAME][${#API_TOKEN[@]}|${API_TOKEN[1]}]"; '
                       '(RO_TOKEN=x) 2>/dev/null || echo readonly')["output"]
     assert out.splitlines() == ["[SYNTH-ro][SYNTH-reintroduced][2|SYNTH two]", "readonly"]
 

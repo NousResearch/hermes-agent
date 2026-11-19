@@ -49,6 +49,12 @@ _SECRET_SHAPED_NAME_GLOBS = (
 # Names whose value may embed ``user:pass@`` (``DATABASE_URL=postgres://u:pw@db/app``): only these
 # have their VALUE checked, so the dump never reads every variable's value.
 _URL_SHAPED_NAME_GLOBS = ("*URL*", "*URI*", "*_DSN*", "*PROXY*", "*DATABASE*", "*CONN*", "*_HOST*")
+# A cheap superset of both lists for ``compgen -X``: bash tests every export against every pattern
+# there, and the exact lists above as per-letter classes cost ~5 ms of CPU per command. The loop
+# then applies the exact lists to the few names this lets through.
+_CANDIDATE_NAME_GLOBS = (
+    "*TOKEN*", "*KEY*", "*SECRET*", "*PASS*", "*PWD*", "*AUTH*", "*BEARER*", "*DSN*", "*CRED*",
+    "*COOKIE*", "*WEBHOOK*", "*_CLIENT_ID", "*UR[LI]*", "*PROXY*", "*DATABASE*", "*CONN*", "*_HOST*")
 
 
 def _secret_fd_token(session_id: str) -> str:
@@ -58,6 +64,11 @@ def _secret_fd_token(session_id: str) -> str:
 def _secret_gen_token(session_id: str) -> str:
     """Placeholder the backend swaps for a fresh dump generation id at each spawn."""
     return f"__HERMES_SGEN_{session_id}__"
+
+
+def _secret_src_token(session_id: str) -> str:
+    """Placeholder the backend swaps for the fd of the snapshot it opened for this command."""
+    return f"__HERMES_SSRC_{session_id}__"
 
 
 def _cwd_marker(session_id: str) -> str:
@@ -124,19 +135,22 @@ def _cwd_marker_printf(marker: str) -> str:
 
 
 def _any_case(glob: str) -> str:
-    """*glob* with every letter as a ``[Xx]`` class, so it matches a name in any case
-    (``GitHub_Token``) with no ``nocasematch``: bash 3.2's ``compgen -X`` ignores that option."""
-    return "".join(f"[{c.upper()}{c.lower()}]" if c.isalpha() else c for c in glob)
+    """*glob* with every letter as a ``[Xx]`` class (bracket expressions kept as written, then
+    both cases of their letters), so ``compgen -X`` matches a name in any case: bash 3.2's
+    ``compgen -X`` ignores ``nocasematch``, which ``case`` honours on every version."""
+    return re.sub(r"\[([^]]*)\]|([A-Za-z])", lambda m: (
+        f"[{''.join(dict.fromkeys(c for ch in m[1] for c in (ch.upper(), ch.lower())))}]" if m[1] is not None
+        else f"[{m[2].upper()}{m[2].lower()}]"), glob)
 
 
 def _secret_handoff_snippet(secret_fd: str, secret_names: Iterable[str], generation: str) -> str:
     """Dump-subshell lines that send each secret export to fd *secret_fd* and drop it, so the
     ``export -p`` after them never puts the value in the file on disk. Each record is
     ``NAME=<declare -p NAME>\\0`` (bash's own re-readable declaration, so arrays and the
-    readonly/integer/case attributes survive), one empty record closes the set. The file gets
-    ``__hermes_sgen=<generation>``: the next command applies only the declarations recorded under
-    the generation of the file it actually sourced (``_secret_restore_lines``), so a file and its
-    secrets always come from the same dump, whichever of two overlapping commands published last.
+    readonly/integer/case attributes survive), one empty record closes the set, before the file is
+    published. The file's first line is ``__hermes_sgen=<generation>``: the backend opens the file
+    the next command will source, reads that line and hands the shell the open file plus that
+    dump's declarations only, so the two always come from the same dump.
     A secret is a name the profile's ``.env``/secret sources define or the session ever held
     (*secret_names*), a credential-shaped name (``_SECRET_SHAPED_NAME_GLOBS``, any case) or a
     URL-shaped name whose value holds ``user:pass@``. One ``compgen -X`` picks the candidates inside
@@ -146,29 +160,31 @@ def _secret_handoff_snippet(secret_fd: str, secret_names: Iterable[str], generat
     record, so the backend keeps nothing from that dump (fail closed: lost, never on disk). IFS /
     ``set -e`` are pinned: the user's command may have changed either, or shadowed a command name."""
     names = sorted({n for n in secret_names if isinstance(n, str) and _SHELL_ENV_NAME_RE.fullmatch(n)})
-    secret = "|".join((*map(_any_case, _SECRET_SHAPED_NAME_GLOBS), *names))
-    candidates = "|".join((secret, *map(_any_case, _URL_SHAPED_NAME_GLOBS)))
+    secret = "|".join((*_SECRET_SHAPED_NAME_GLOBS, *names))
+    url = "|".join(_URL_SHAPED_NAME_GLOBS)
+    candidates = "|".join((*map(_any_case, _CANDIDATE_NAME_GLOBS), *names))
     return (
         "builtin set +e; builtin trap '' PIPE; builtin shopt -s extglob; "
         "__hermes_ifs=${IFS-}; IFS=$'\\n'; __hermes_bad=; "
         f"builtin printf '__hermes_sgen=%s\\n' {generation}; "
-        f"for __hermes_v in $(builtin compgen -A export -X '!@({candidates})'); do "
-        f'case "$__hermes_v" in {secret}) ;; '
-        '*) case "${!__hermes_v-}" in *://*:*@*) ;; *) continue ;; esac ;; esac; '
+        f"__hermes_c=$(builtin compgen -A export -X '!@({candidates})'); builtin shopt -s nocasematch; "
+        "for __hermes_v in $__hermes_c; do "
+        f'case "$__hermes_v" in {secret}) ;; {url}) '
+        'case "${!__hermes_v-}" in *://*:*@*) ;; *) continue ;; esac ;; *) continue ;; esac; '
         "{ builtin printf '%s=' \"$__hermes_v\" && builtin declare -p \"$__hermes_v\" && builtin printf '\\0'; } "
         f">&{secret_fd} 2>/dev/null || __hermes_bad=1; "
         'builtin export -n "$__hermes_v"; builtin unset "$__hermes_v" 2>/dev/null; done; '
         f"[ -z \"$__hermes_bad\" ] && builtin printf '\\0' >&{secret_fd} 2>/dev/null; "
-        "IFS=$__hermes_ifs; builtin unset __hermes_v __hermes_ifs __hermes_bad; ")
+        "IFS=$__hermes_ifs; builtin unset __hermes_v __hermes_c __hermes_ifs __hermes_bad; ")
 
 
 def _secret_restore_lines() -> str:
-    """Run right after the snapshot is sourced: apply the secret declarations the backend passed as
-    ``__HERMES_SD_<generation>_<NAME>`` env entries for the generation the sourced file names, then
-    drop every such entry and the marker, so the user's command never sees either."""
+    """Run right after the snapshot is sourced: apply each secret declaration the backend passed
+    as a ``__HERMES_SD_<NAME>`` env entry, then drop the entry and the generation marker, so the
+    user's command never sees either. The quoted ``@`` expansion keeps one word per entry whatever
+    ``IFS`` the sourced snapshot restored."""
     return (
-        "for __hermes_d in ${!__HERMES_SD_*}; do "
-        'case $__hermes_d in "__HERMES_SD_${__hermes_sgen-}_"?*) builtin eval "${!__hermes_d}" ;; esac; '
+        'for __hermes_d in "${!__HERMES_SD_@}"; do builtin eval "${!__hermes_d}"; '
         'builtin unset "$__hermes_d"; done; builtin unset __hermes_d __hermes_sgen')
 
 
@@ -217,7 +233,7 @@ def _export_dump_excluding_session_vars(
 
 def _snapshot_bootstrap_script(
     *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str, excluded_names: Iterable[str], cwd_marker: str,
-    secret_fd: str = "", secret_names: Iterable[str] = (), secret_gen: str = "",
+    secret_fd: str = "", secret_names: Iterable[str] = (), secret_gen: str = "", secret_src: str = "",
 ) -> str:
     """Login-shell bootstrap that captures env/functions/aliases into the snapshot. Atomic publish:
     assemble in a ``mktemp`` file, then ``mv`` over the final path so a concurrent ``source`` never
@@ -264,7 +280,7 @@ def _wrap_command_script(
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
     pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = (),
     cwd_fallback_marker: str = "", secret_fd: str = "", secret_names: Iterable[str] = (),
-    secret_gen: str = "") -> str:
+    secret_gen: str = "", secret_src: str = "") -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
@@ -279,20 +295,22 @@ def _wrap_command_script(
     while *quoted_snap* does not exist yet: a delegated child's own snapshot starts as a copy of
     its parent's shell state and its re-dump never writes the parent's file. *secret_fd* is
     closed for the user's command, so nothing it starts (``server &``) holds the channel open.
+    With *secret_src* the backend already opened the snapshot to source (its own, else the first
+    ancestor's) and the script reads that open file, never a newer one published meanwhile.
     """
     escaped = command.replace("'", "'\\''")
     capture = bool(pipe_marker) and _can_capture_pipestatus(command)
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     seeds = list(seed_snaps)
-    if snapshot_ready and seeds:
+    if snapshot_ready and secret_src:
+        parts += [f"source /dev/fd/{secret_src} >/dev/null 2>&1 || true", _secret_restore_lines()]
+    elif snapshot_ready and seeds:
         parts.append(
             f"for __hermes_s in {quoted_snap} {' '.join(seeds)}; do "
             'if [ -f "$__hermes_s" ]; then source "$__hermes_s" >/dev/null 2>&1 || true; break; fi; done')
     elif snapshot_ready:
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
-    if snapshot_ready and secret_fd:
-        parts.append(_secret_restore_lines())
     parts += restore
     run = _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'"
     parts += [
@@ -300,7 +318,7 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         _cd_with_fallback(quoted_cwd, cwd_fallback_marker),
-        f"{run} {secret_fd}>&-" if secret_fd else run,
+        f"{run} {secret_fd}>&-{f' {secret_src}>&-' if snapshot_ready and secret_src else ''}" if secret_fd else run,
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:

@@ -77,6 +77,7 @@ import {
 } from '@/store/layout'
 import { $penLibraryOpen, openPenCanvas, openPenLibrary, watchPenSession } from '@/store/pen'
 import { watchPenImport } from '@/store/pen-import'
+import { watchPenSelection } from '@/store/pen-selection'
 import { $profiles } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
@@ -535,6 +536,7 @@ if (!isPopoutWindow() && !isHudWindow()) {
   watchPreviewTiles()
   watchCanvasTiles()
   watchPenSession()
+  watchPenSelection()
   watchPenImport()
 }
 

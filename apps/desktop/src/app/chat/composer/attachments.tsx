@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
+import { revealCanvasTile } from '@/app/chat/canvas-tile'
 import { useSessionView } from '@/app/chat/session-view'
+import penMark from '@/assets/pen-mark.png'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -43,6 +45,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   const c = t.composer
 
   const Icon = {
+    canvas: PenMarkIcon,
     file: FileText,
     folder: FolderOpen,
     image: ImageIcon,
@@ -156,7 +159,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
                 : 'border-border/60 hover:border-primary/35 hover:bg-accent/45'
             )}
             disabled={!canPreview}
-            onClick={() => void openAttachment()}
+            onClick={() => (attachment.kind === 'canvas' ? revealCanvasTile('pen') : void openAttachment())}
             type="button"
           >
             <span className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-border/55 bg-muted/35 text-muted-foreground">
@@ -228,4 +231,9 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       )}
     </>
   )
+}
+
+/** The canvas tab's own mark, so the chip reads as "from the canvas". */
+function PenMarkIcon({ className }: { className?: string }) {
+  return <img alt="" className={className} draggable={false} src={penMark} />
 }

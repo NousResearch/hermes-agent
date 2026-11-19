@@ -38,10 +38,7 @@ import { openSession } from '../open-session'
 import { Panel } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { SETTINGS_ROUTE } from '../routes'
-import { RoutineDialogs } from '../routines/routine-dialogs'
-import { useAgentRoutineSource } from '../routines/routine-source'
-import { openRoutineEditor } from '../routines/routines-store'
-import { useRoutineActions } from '../routines/use-routine-actions'
+import { useRoutinesPageLinks } from '../routines/agent-routines'
 import { getNested } from '../settings/helpers'
 import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
@@ -639,12 +636,12 @@ interface AgentRoutinesProps {
   owner: AgentRouteOwner
 }
 
-/** The overview's routines open the one routine editor Settings › Routines uses, on this agent. */
+/** The overview's routines, read only: each opens on the Routines page, where routines are created and
+ *  changed, and New routine starts one there for this agent. */
 function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
-  const source = useAgentRoutineSource(owner)
-  const actions = useRoutineActions(source)
+  const links = useRoutinesPageLinks(owner)
 
   return (
     <div id="agent-routines">
@@ -653,7 +650,7 @@ function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
           <SettingRow
             detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
             key={job.id}
-            onClick={() => openRoutineEditor({ job, mode: 'edit' })}
+            onClick={() => links.open(job)}
             title={job.name || job.id}
           />
         ))}
@@ -665,16 +662,12 @@ function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
           )
         )}
         <div className="agent-overview-footer">
-          <Button
-            onClick={() => openRoutineEditor({ lockProfile: true, mode: 'pick', profile: owner.profile })}
-            variant="textStrong"
-          >
+          <Button onClick={links.create} variant="textStrong">
             <Codicon name="add" />
             {t.cron.newCron}
           </Button>
         </div>
       </Section>
-      <RoutineDialogs actions={actions} source={source} />
     </div>
   )
 }

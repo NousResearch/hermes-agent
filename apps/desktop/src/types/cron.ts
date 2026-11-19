@@ -64,6 +64,8 @@ export interface CronJobCreatePayload {
   provider?: string
   repeat?: number
   schedule: string
+  /** Skills each run loads first (a template's own, kept when the routine starts from it). */
+  skills?: string[]
 }
 
 export interface CronJobSchedule {
@@ -132,4 +134,15 @@ export interface AutomationBlueprint {
   source?: 'builtin' | 'plugin'
   /** The registering plugin's name when source is 'plugin' (key is `<plugin>:<key>`). */
   plugin?: null | string
+  /** The job its defaults would create (`blueprint_prefill`): null while a required slot has no
+   *  default, absent on backends that predate it. */
+  prefill?: AutomationBlueprintPrefill | null
+}
+
+export interface AutomationBlueprintPrefill {
+  deliver: string
+  name: string
+  prompt: string
+  schedule: string
+  skills?: string[]
 }

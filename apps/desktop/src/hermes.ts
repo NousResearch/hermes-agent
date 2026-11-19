@@ -35,6 +35,7 @@ export * from './api/webapp-access'
 export type {
   AutomationBlueprint,
   AutomationBlueprintField,
+  AutomationBlueprintPrefill,
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,

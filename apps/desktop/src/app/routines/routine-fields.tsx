@@ -12,7 +12,7 @@ import { $profiles } from '@/store/profile'
 
 import { agentChatTarget, deliveryTargets, toggleDelivery } from './routine-model'
 import { useAgentLabel } from './routine-parts'
-import { describePick, FREQUENCIES, type Frequency, type SchedulePick } from './routine-schedule'
+import { defaultPick, describePick, FREQUENCIES, type Frequency, type SchedulePick } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
 import { useRoutinesCopy } from './routines-copy'
 
@@ -50,27 +50,31 @@ const WEEKDAY_ORDER = ['1', '2', '3', '4', '5', '6', '0']
 const NEEDS_TIME = new Set<Frequency>(['daily', 'monthly', 'once', 'weekdays', 'weekly'])
 
 interface ScheduleFieldProps {
-  pick: SchedulePick
+  /** null until a frequency is picked. */
+  pick: null | SchedulePick
   onChange: (pick: SchedulePick) => void
+  /** The form asked for a schedule and this one would not save. */
+  invalid?: boolean
 }
 
-/** When to run (R4): a frequency, then only the detail it needs, read back in plain words. Custom
- *  takes plain words ("every 2 hours"); developer mode also documents cron expressions there. */
-export function ScheduleField({ onChange, pick }: ScheduleFieldProps) {
+/** Frequency (rev 1394:21355): a frequency "at" a time, then only the detail it needs, and the
+ *  schedule read back in words under it once a frequency is set. Custom takes plain words ("every 2
+ *  hours"); developer mode also documents cron expressions there. */
+export function ScheduleField({ invalid = false, onChange, pick }: ScheduleFieldProps) {
   const { locale, t } = useI18n()
   const copy = useRoutinesCopy()
   const developer = useStore($interfaceMode) === 'advanced'
-  const set = (patch: Partial<SchedulePick>) => onChange({ ...pick, ...patch })
+  const set = (patch: Partial<SchedulePick>) => onChange({ ...(pick ?? defaultPick()), ...patch })
   const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
-  const readBack = describePick(pick, words)
+  const readBack = pick ? describePick(pick, words) : null
 
   return (
-    <fieldset className="routines-field">
-      <legend>{copy.whenToRun}</legend>
+    <fieldset aria-invalid={invalid || undefined} className="routines-field" id="routine-frequency">
+      <legend>{copy.frequency}</legend>
       <div className="routines-when">
-        <Select onValueChange={value => set({ frequency: value as Frequency })} value={pick.frequency}>
-          <SelectTrigger aria-label={copy.whenToRun} className="routines-when-frequency">
-            <SelectValue />
+        <Select onValueChange={value => set({ frequency: value as Frequency })} value={pick?.frequency ?? ''}>
+          <SelectTrigger aria-invalid={invalid || undefined} aria-label={copy.frequency} className="routines-when-frequency">
+            <SelectValue placeholder={copy.selectFrequency} />
           </SelectTrigger>
           <SelectContent>
             {FREQUENCIES.map(frequency => (
@@ -80,64 +84,17 @@ export function ScheduleField({ onChange, pick }: ScheduleFieldProps) {
             ))}
           </SelectContent>
         </Select>
-        {pick.frequency === 'weekly' && (
-          <Select onValueChange={weekday => set({ weekday })} value={pick.weekday}>
-            <SelectTrigger aria-label={copy.frequencies.weekly} className="routines-when-day">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {WEEKDAY_ORDER.map(day => (
-                <SelectItem key={day} value={day}>
-                  {t.cron.days[day] ?? day}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        {pick.frequency === 'monthly' && (
-          <label className="routines-when-inline">
-            <span>{copy.onDay}</span>
-            <Input
-              className="routines-when-number"
-              inputMode="numeric"
-              max={31}
-              min={1}
-              onChange={event => set({ monthday: event.target.value.replace(/\D/g, '').slice(0, 2) })}
-              type="number"
-              value={pick.monthday}
-            />
-          </label>
-        )}
-        {pick.frequency === 'once' && (
-          <Input
-            aria-label={copy.frequencies.once}
-            className="routines-when-date"
-            onChange={event => set({ date: event.target.value })}
-            type="date"
-            value={pick.date}
-          />
-        )}
-        {NEEDS_TIME.has(pick.frequency) && (
-          <label className="routines-when-inline">
-            <span>{copy.at}</span>
-            <Input
-              className="routines-when-time"
-              onChange={event => set({ time: event.target.value })}
-              type="time"
-              value={pick.time}
-            />
-          </label>
-        )}
-        {readBack && (
-          <span aria-live="polite" className="routines-readback">
-            <span aria-hidden className="routines-dot" data-tone="good" />
-            {readBack}
-          </span>
-        )}
+        {pick && <ScheduleDetail pick={pick} set={set} />}
       </div>
-      {pick.frequency === 'custom' && (
+      {readBack && (
+        <p aria-live="polite" className="routines-readback">
+          {readBack}
+        </p>
+      )}
+      {pick?.frequency === 'custom' && (
         <>
           <Input
+            aria-invalid={invalid || undefined}
             aria-label={copy.frequencies.custom}
             className={developer ? 'font-mono' : undefined}
             onChange={event => set({ custom: event.target.value })}
@@ -147,7 +104,67 @@ export function ScheduleField({ onChange, pick }: ScheduleFieldProps) {
           <FieldHint>{developer ? copy.customHintDeveloper : copy.customHint}</FieldHint>
         </>
       )}
+      {invalid && <FieldHint error>{copy.scheduleRequired}</FieldHint>}
     </fieldset>
+  )
+}
+
+/** What a picked frequency needs besides itself: the day of the week or month, the date, the time. */
+function ScheduleDetail({ pick, set }: { pick: SchedulePick; set: (patch: Partial<SchedulePick>) => void }) {
+  const { t } = useI18n()
+  const copy = useRoutinesCopy()
+
+  return (
+    <>
+      {pick.frequency === 'weekly' && (
+        <Select onValueChange={weekday => set({ weekday })} value={pick.weekday}>
+          <SelectTrigger aria-label={copy.frequencies.weekly} className="routines-when-day">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WEEKDAY_ORDER.map(day => (
+              <SelectItem key={day} value={day}>
+                {t.cron.days[day] ?? day}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {pick.frequency === 'monthly' && (
+        <label className="routines-when-inline">
+          <span>{copy.onDay}</span>
+          <Input
+            className="routines-when-number"
+            inputMode="numeric"
+            max={31}
+            min={1}
+            onChange={event => set({ monthday: event.target.value.replace(/\D/g, '').slice(0, 2) })}
+            type="number"
+            value={pick.monthday}
+          />
+        </label>
+      )}
+      {pick.frequency === 'once' && (
+        <Input
+          aria-label={copy.frequencies.once}
+          className="routines-when-date"
+          onChange={event => set({ date: event.target.value })}
+          type="date"
+          value={pick.date}
+        />
+      )}
+      {NEEDS_TIME.has(pick.frequency) && (
+        <label className="routines-when-inline">
+          <span>{copy.at}</span>
+          <Input
+            className="routines-when-time"
+            onChange={event => set({ time: event.target.value })}
+            type="time"
+            value={pick.time}
+          />
+        </label>
+      )}
+    </>
   )
 }
 
@@ -158,7 +175,7 @@ interface DeliveryFieldProps {
   onChange: (deliver: string) => void
 }
 
-/** Send results to (R4): the agent's own chat and the messaging channels its machine has connected,
+/** Send results to: the agent's own chat and the messaging channels its machine has connected,
  *  as checkboxes. Nothing checked keeps today's save-only behaviour: every run is kept in Runs. */
 export function DeliveryField({ onChange, profile, source, value }: DeliveryFieldProps) {
   const { t } = useI18n()

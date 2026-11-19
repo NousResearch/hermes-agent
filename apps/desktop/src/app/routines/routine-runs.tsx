@@ -1,18 +1,17 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { type CronJob, getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 
 import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../cron/open-cron-run'
-import { ListRow } from '../settings/primitives'
-import { SettingsCard, SettingsCardSkeleton, SettingsEmptyRow, SettingsGroup } from '../settings/settings-card'
 
 import { plainRunError } from './routine-error'
-import { outputRunStatus, runChip, runDurationSeconds } from './routine-model'
+import { outputRunStatus, RUN_TONE, runChip, runDurationSeconds } from './routine-model'
 import { useAgentLabel } from './routine-parts'
 import { capitalized, formatDuration, formatMoment } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
@@ -24,6 +23,11 @@ const RUNS_POLL_MS = 8000
 const RUNS_BACKSTOP_MS = 60_000
 const LIVE_POLL_MS = 1500
 
+/** The run history loads a batch at a time as it scrolls into view. The endpoint pages by `limit`
+ *  alone (newest first, at most 100), so each batch re-reads the newest N, N growing by a batch. */
+export const RUNS_BATCH = 20
+export const RUNS_CAP = 100
+
 interface RoutineRunsProps {
   job: CronJob
   live: boolean
@@ -31,24 +35,30 @@ interface RoutineRunsProps {
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
 }
 
-/** R2's Runs: newest first, each run opens as a chat (the existing run → session door, `openCronRun`).
- *  Runs never join the Chats sidebar; this card is where they live. */
+/** What changes when the routine makes a new attempt or one settles. */
+function runAttemptKey(job: CronJob): string {
+  const execution = job.latest_execution
+
+  return [execution?.id, execution?.status, job.last_run_at, job.last_status].map(part => part ?? '').join('|')
+}
+
+/** Run history (rev 1383:21029): When · Duration · Outcome, newest first, each run opening as a chat
+ *  (`openCronRun`); its View / View error shows on hover, on keyboard focus, and always on touch. */
 export function RoutineRuns({ job, live, onOpenSession, source }: RoutineRunsProps) {
-  const { locale } = useI18n()
   const copy = useRoutinesCopy()
   const changeEvents = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const scope = source.scopeFor(job)
+  const [limit, setLimit] = useState(RUNS_BATCH)
 
   const runs = useQuery({
     // The routine row is the authority that an attempt happened: a run the scheduler refuses up front
-    // (its agent not running here) records a failed attempt and its output without a cron.changed
-    // event, so a new attempt is a new read rather than a wait for the slow poll. This routine's list
-    // stays on screen while it loads; another routine's never stands in for it.
-    queryKey: ['routine-runs', source.connectionId ?? '', job.profile ?? '', job.id, runAttemptKey(job)],
+    // records a failed attempt without a cron.changed event, so a new attempt is a new read. A bigger
+    // batch keeps the shorter list on screen while it loads; another routine's never stands in.
+    queryKey: ['routine-runs', source.connectionId ?? '', job.profile ?? '', job.id, runAttemptKey(job), limit],
     placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[3] === job.id ? previous : undefined),
     queryFn: async () => {
-      const result = await getCronJobRuns(job.id, 20, scope)
+      const result = await getCronJobRuns(job.id, limit, scope)
       // A fresh read re-evaluates every run already opened (#88443).
       reconcileCronRunVerdicts(result)
 
@@ -68,77 +78,157 @@ export function RoutineRuns({ job, live, onOpenSession, source }: RoutineRunsPro
 
   const list = runs.data ?? []
   const starting = live && !list.some(run => runChip(run, job) === 'running')
+  // A full batch may have more behind it; a short one is the whole history.
+  const more = list.length >= limit && limit < RUNS_CAP
+  const loadingMore = runs.isFetching && runs.isPlaceholderData
 
   return (
-    <SettingsGroup description={copy.runsHint} title={copy.runs}>
+    <section aria-labelledby="routine-runs-title" className="routines-runs">
+      <h2 className="routines-section-title" id="routine-runs-title">
+        {copy.runs}
+      </h2>
       {runs.isPending ? (
-        <SettingsCardSkeleton rows={3} />
+        <RunsSkeleton />
+      ) : list.length === 0 && !starting ? (
+        <p className="routines-runs-empty">{copy.noRuns}</p>
       ) : (
-        <SettingsCard>
-          {starting && <ListRow description={copy.startingRun} title={copy.runChips.running} />}
-          {list.length === 0 && !starting && <SettingsEmptyRow title={copy.noRuns} />}
-          {list.map(run => (
-            <RunRow job={job} key={run.id} locale={locale} onOpenSession={onOpenSession} run={run} />
-          ))}
-        </SettingsCard>
+        <table className="routines-runs-table">
+          <thead>
+            <tr>
+              <th scope="col">{copy.runColumns.when}</th>
+              <th scope="col">{copy.runColumns.duration}</th>
+              <th scope="col">{copy.runColumns.outcome}</th>
+              <td />
+            </tr>
+          </thead>
+          <tbody>
+            {starting && <StartingRow />}
+            {list.map(run => (
+              <RunRow job={job} key={run.id} onOpenSession={onOpenSession} run={run} />
+            ))}
+          </tbody>
+        </table>
       )}
-    </SettingsGroup>
+      {more && <MoreRuns loading={loadingMore} onReach={() => setLimit(current => Math.min(current + RUNS_BATCH, RUNS_CAP))} />}
+      {!more && list.length >= RUNS_CAP && <p className="routines-runs-note">{copy.newestRuns(RUNS_CAP)}</p>}
+    </section>
+  )
+}
+
+/** The end of the loaded history: reaching it (scrolled into view) loads the next batch. */
+function MoreRuns({ loading, onReach }: { loading: boolean; onReach: () => void }) {
+  const copy = useRoutinesCopy()
+  const ref = useRef<HTMLParagraphElement>(null)
+  const reach = useRef(onReach)
+  reach.current = onReach
+
+  useEffect(() => {
+    const element = ref.current
+
+    if (!element || loading) {
+      return
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        reach.current()
+      }
+    })
+
+    observer.observe(element)
+
+    return () => observer.disconnect()
+  }, [loading])
+
+  return (
+    <p aria-live="polite" className="routines-runs-note" data-runs-more="" ref={ref}>
+      {loading ? copy.loadingMoreRuns : ' '}
+    </p>
+  )
+}
+
+function StartingRow() {
+  const copy = useRoutinesCopy()
+
+  return (
+    <tr>
+      <td>{copy.startingRun}</td>
+      <td />
+      <td>
+        <span className="routines-chip" data-tone={RUN_TONE.running}>
+          {copy.runChips.running}
+        </span>
+      </td>
+      <td />
+    </tr>
   )
 }
 
 interface RunRowProps {
   job: CronJob
-  locale: string
   run: SessionInfo
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
 }
 
-/** What changes when the routine makes a new attempt or one settles. */
-function runAttemptKey(job: CronJob): string {
-  const execution = job.latest_execution
-
-  return [execution?.id, execution?.status, job.last_run_at, job.last_status].map(part => part ?? '').join('|')
-}
-
-function RunRow({ job, locale, onOpenSession, run }: RunRowProps) {
+function RunRow({ job, onOpenSession, run }: RunRowProps) {
+  const { locale } = useI18n()
   const copy = useRoutinesCopy()
   const agentLabel = useAgentLabel()
-  const plain = (raw: string) => plainRunError(raw, copy, agentLabel(job.profile ?? ''))
+  const [showError, setShowError] = useState(false)
   const chip = runChip(run, job)
   const seconds = runDurationSeconds(run)
   const when = capitalized(formatMoment((run.started_at || run.last_active) * 1000, locale), locale)
+  const opens = isCronRunRow(run) && Boolean(onOpenSession)
+  const failed = chip === 'failed' || chip === 'delivery' || chip === 'missed'
+  // A run with no chat behind it says what went wrong in place.
+  const reason = failed && !opens ? plainRunError(outputRunStatus(run)?.reason ?? run.preview ?? '', copy, agentLabel(job.profile ?? '')) : ''
 
-  const output = outputRunStatus(run)
-
-  const description =
-    chip === 'running'
-      ? copy.runningNow
-      : output
-        ? plain(output.reason)
-        : seconds !== null && run.source === 'cron'
-          ? copy.finishedIn(formatDuration(seconds, locale))
-          : plain(run.title || run.preview || '')
+  const action = opens ? (
+    <Button onClick={() => onOpenSession && openCronRun(run, onOpenSession)} size="sm" variant="secondary">
+      {failed ? copy.actions.viewError : copy.actions.view}
+    </Button>
+  ) : reason ? (
+    <Button aria-expanded={showError} onClick={() => setShowError(!showError)} size="sm" variant="secondary">
+      {copy.actions.viewError}
+    </Button>
+  ) : null
 
   return (
-    <ListRow
-      action={
-        (chip || (isCronRunRow(run) && onOpenSession)) && (
-          <>
-            {chip && (
-              <span className="routines-chip" data-tone={chip === 'running' ? 'running' : chip === 'stopped' ? 'muted' : 'bad'}>
-                {copy.runChips[chip]}
-              </span>
-            )}
-            {isCronRunRow(run) && onOpenSession && (
-              <Button onClick={() => openCronRun(run, onOpenSession)} variant="secondary">
-                {copy.actions.view}
-              </Button>
-            )}
-          </>
-        )
-      }
-      description={description}
-      title={when}
-    />
+    <>
+      <tr className="routines-runs-row">
+        <td>{when}</td>
+        <td className="routines-runs-muted">{seconds === null ? '—' : formatDuration(seconds, locale)}</td>
+        <td>
+          {chip ? (
+            <span className="routines-chip" data-tone={RUN_TONE[chip]}>
+              {copy.runChips[chip]}
+            </span>
+          ) : (
+            <span className="routines-runs-muted">—</span>
+          )}
+        </td>
+        <td className="routines-runs-action">{action}</td>
+      </tr>
+      {showError && reason && (
+        <tr className="routines-runs-reason">
+          <td colSpan={4}>{reason}</td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+/** The loaded table's geometry while the first read is out. */
+function RunsSkeleton() {
+  return (
+    <div aria-hidden className="routines-runs-skeleton">
+      {Array.from({ length: 3 }, (_, index) => (
+        <div className="routines-runs-skeleton-row" key={index}>
+          <Skeleton className="h-3 w-32 max-w-full" />
+          <Skeleton className="h-3 w-12 max-w-full" />
+          <Skeleton className="h-3 w-16 max-w-full" />
+        </div>
+      ))}
+    </div>
   )
 }

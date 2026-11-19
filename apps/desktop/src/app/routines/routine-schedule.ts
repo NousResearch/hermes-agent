@@ -330,6 +330,29 @@ export function formatMoment(at: Date | number | string, locale: string, nowMs =
   return `${day}, ${time}`
 }
 
+/** The day a run happened, for a sentence about it: today, yesterday, or its date ("Nov 12"). */
+export function runDay(
+  at: number | string,
+  locale: string,
+  nowMs = Date.now()
+): null | { kind: 'date' | 'today' | 'yesterday'; date: string } {
+  const date = new Date(at)
+
+  if (Number.isNaN(date.valueOf())) {
+    return null
+  }
+
+  const days = Math.round((startOfDay(date.getTime()) - startOfDay(nowMs)) / DAY_MS)
+
+  const day = date.toLocaleDateString(locale, {
+    day: 'numeric',
+    month: 'short',
+    ...(new Date(nowMs).getFullYear() === date.getFullYear() ? {} : { year: 'numeric' })
+  })
+
+  return { date: day, kind: days >= 0 ? 'today' : days === -1 ? 'yesterday' : 'date' }
+}
+
 /** Sentence-initial form of a moment (a table cell, a run row's heading). */
 export function capitalized(text: string, locale: string): string {
   return text ? text.charAt(0).toLocaleUpperCase(locale) + text.slice(1) : text

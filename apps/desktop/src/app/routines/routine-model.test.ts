@@ -6,9 +6,11 @@ import {
   deliveryTargets,
   filterRoutines,
   groupRoutines,
+  neighbourInList,
   remembersLastRun,
   routineGroup,
   routineIssue,
+  routinesInPanelOrder,
   routineStatus,
   routineTitle,
   runChip,
@@ -78,13 +80,21 @@ describe('grouping by status', () => {
     expect(routineGroup(job({ latest_execution: failedRun, state: 'paused' }), NOW)).toBe('attention')
   })
 
-  it('filters by the segment, then by every word of the search in name, instruction or agent', () => {
+  it('searches every word in name, instruction or agent', () => {
     const label = (profile: string) => (profile === 'ops' ? 'PED operations' : profile)
     const list = [...jobs, job({ name: 'Inbox sweep', profile: 'ops', prompt: 'Summarize urgent mail' })]
 
-    expect(filterRoutines(list, 'paused', '', label, NOW).map(routineTitle)).toEqual(['Candidate follow-ups', 'Switched off'])
-    expect(filterRoutines(list, 'all', 'urgent mail', label, NOW).map(routineTitle)).toEqual(['Inbox sweep'])
-    expect(filterRoutines(list, 'all', 'operations', label, NOW).map(routineTitle)).toEqual(['Inbox sweep'])
+    expect(filterRoutines(list, 'urgent mail', label).map(routineTitle)).toEqual(['Inbox sweep'])
+    expect(filterRoutines(list, 'operations', label).map(routineTitle)).toEqual(['Inbox sweep'])
+  })
+
+  it('lists routines in the panel’s order, and lands on the next one when one leaves', () => {
+    const order = routinesInPanelOrder(jobs, NOW).map(routineTitle)
+
+    expect(order).toEqual(['Flight price monitor', 'Daily brief', 'Weekly review', 'Candidate follow-ups', 'Switched off', 'Done once'])
+    expect(neighbourInList(order, title => title === 'Daily brief')).toBe('Weekly review')
+    expect(neighbourInList(order, title => title === 'Done once')).toBe('Switched off')
+    expect(neighbourInList(['Only'], title => title === 'Only')).toBeNull()
   })
 })
 
@@ -121,6 +131,9 @@ describe('run chips', () => {
 
     expect(runChip(run({ ended_at: null, scheduler_owned: true }), subject)).toBe('running')
     expect(runChip(run({ cron_execution_id: 'exec-2' }), subject)).toBe('delivery')
+    expect(runChip(run({ cron_execution_id: 'exec-2' }), job({ latest_execution: { id: 'exec-2', status: 'completed' } }))).toBe(
+      'succeeded'
+    )
     expect(runChip(run({ cron_execution_id: 'exec-1' }), subject)).toBeNull()
     expect(runChip(run({}), job({}))).toBeNull()
   })
@@ -130,5 +143,6 @@ describe('run chips', () => {
 
     expect(runChip(output, job({}))).toBe('failed')
     expect(runChip(run({ source: 'cron_output', title: 'CANCELLED · Stopped' }), job({}))).toBe('stopped')
+    expect(runChip(run({ source: 'cron_output', title: 'COMPLETED · Script-only run' }), job({}))).toBe('succeeded')
   })
 })

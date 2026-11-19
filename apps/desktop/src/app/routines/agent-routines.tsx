@@ -1,75 +1,87 @@
 import './routines.css'
 
-import { useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router'
+
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import type { CronJob } from '@/hermes'
+import { useI18n } from '@/i18n'
 
 import type { AgentSettingsOwner } from '../agent-settings/data'
-import { openSession } from '../open-session'
+import { agentOverviewQueries } from '../agent-settings/overview-queries'
+import { CRON_ROUTE } from '../routes'
+import { SettingsCard, SettingsCardSkeleton, SettingsEmptyRow, SettingsLinkRow } from '../settings/settings-card'
 
-import { RoutineDetail } from './routine-detail'
-import { RoutineDialogs } from './routine-dialogs'
-import { useAgentRoutineSource } from './routine-source'
-import { RoutinesOverview } from './routines-overview'
-import { openRoutineEditor, type RoutineRef, sameRoutine } from './routines-store'
-import { useRoutineActions } from './use-routine-actions'
+import { compareRoutines, routineStatus, routineTitle, STATUS_TONE } from './routine-model'
+import { describeSchedule } from './routine-schedule'
+import { useRoutinesCopy } from './routines-copy'
+import { openRoutineSheet, refOf, selectRoutine } from './routines-store'
 
-/** Agent › Settings › Routines in the redesign: the rail page's list filtered to this agent, with the
- *  same detail and the same editor (agent fixed). */
-export function AgentRoutines({ owner }: { owner: AgentSettingsOwner }) {
+/** The Routines page is the only place a routine is created or changed: an agent's surfaces link
+ *  there, with that routine open or a new one started for that agent. An agent page only shows on
+ *  the machine this window is on (another machine's agent waits behind "Open agent"), which is the
+ *  machine the Routines page lists. */
+export function useRoutinesPageLinks(owner: AgentSettingsOwner) {
   const navigate = useNavigate()
-  const location = useLocation()
-  const source = useAgentRoutineSource(owner)
-  const actions = useRoutineActions(source)
-  const params = new URLSearchParams(location.search)
-  const linked = params.get('routine')
-  // The rail page links here (its "Edit in <agent> settings"): `routine` opens it, `edit` its editor.
-  const [selection, setSelection] = useState<null | RoutineRef>(() => (linked ? { id: linked, profile: owner.profile } : null))
-  const selected = selection ? (source.jobs.find(job => sameRoutine(job, selection)) ?? null) : null
-  const editRequested = params.get('edit') === '1'
 
-  useEffect(() => {
-    if (!editRequested || !selected) {
-      return
+  return {
+    create: () => {
+      openRoutineSheet({ mode: 'create', profile: owner.profile })
+      navigate(CRON_ROUTE)
+    },
+    open: (job: CronJob) => {
+      selectRoutine(refOf({ ...job, profile: job.profile ?? owner.profile }))
+      navigate(CRON_ROUTE)
     }
+  }
+}
 
-    openRoutineEditor({ job: selected, mode: 'edit' })
-    const next = new URLSearchParams(location.search)
-    next.delete('edit')
-    navigate({ pathname: location.pathname, search: `?${next}` }, { replace: true })
-  }, [editRequested, location.pathname, location.search, navigate, selected])
-  const create = () => openRoutineEditor({ lockProfile: true, mode: 'pick', profile: owner.profile })
+/** One agent's routines, read from its own machine. */
+export function useAgentRoutineList(owner: AgentSettingsOwner) {
+  return useQuery(agentOverviewQueries.routines(owner))
+}
+
+/** Agent › Settings › Routines in the redesign: the agent's routines, read only, each opening on the
+ *  Routines page, and New routine starting one there for this agent. */
+export function AgentRoutines({ owner }: { owner: AgentSettingsOwner }) {
+  const { locale, t } = useI18n()
+  const copy = useRoutinesCopy()
+  const links = useRoutinesPageLinks(owner)
+  const routines = useAgentRoutineList(owner)
+  const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
+  const jobs = [...(routines.data ?? [])].sort(compareRoutines)
 
   return (
-    <>
-      {selected ? (
-        <RoutineDetail
-          actions={actions}
-          embedded
-          job={selected}
-          onBack={() => setSelection(null)}
-          onOpenSession={id =>
-            openSession(id, navigate, 'in-place', {
-              ownerRoute: { connectionId: owner.connectionId ?? 'local', profile: owner.profile },
-              workspaceMode: 'sessions'
-            })
-          }
-          source={source}
-        />
+    <div className="routines-agent-list">
+      <div className="routines-agent-list-head">
+        <p className="routines-field-note">{copy.agentRoutinesHint}</p>
+        <Button onClick={links.create} variant="secondary">
+          <Codicon name="add" />
+          {t.cron.newCron}
+        </Button>
+      </div>
+      {routines.isPending ? (
+        <SettingsCardSkeleton rows={2} />
       ) : (
-        <RoutinesOverview
-          actions={actions}
-          agentScoped
-          headerCreate={false}
-          onCreate={create}
-          onOpen={job => setSelection({ id: job.id, profile: job.profile ?? owner.profile })}
-          source={source}
-        />
+        <SettingsCard>
+          {routines.isError && <SettingsEmptyRow title={t.cron.failedLoad} />}
+          {!routines.isError && jobs.length === 0 && <SettingsEmptyRow title={t.cron.emptyTitleNew} />}
+          {jobs.map(job => (
+            <SettingsLinkRow
+              description={describeSchedule(job.schedule, words, job.next_run_at)}
+              key={job.id}
+              meta={
+                <span className="routines-chip" data-tone={STATUS_TONE[routineStatus(job, false)]}>
+                  {copy.status[routineStatus(job, false)]}
+                </span>
+              }
+              onClick={() => links.open(job)}
+              title={routineTitle(job)}
+            />
+          ))}
+        </SettingsCard>
       )}
-      <RoutineDialogs
-        actions={actions}
-        onSaved={job => setSelection({ id: job.id, profile: job.profile ?? owner.profile })}
-        source={source}
-      />
-    </>
+    </div>
   )
 }

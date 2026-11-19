@@ -677,8 +677,9 @@ class CLIStatusBarMixin:
             scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
             cols = constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
             configured_mode = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
-            # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
-            # while detect_terminal_graphics() still says kitty, hence the narrower gate.
+            # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE, and
+            # Zellij refuses them, while detect_terminal_graphics() still says kitty there, hence
+            # the narrower gate.
             use_kitty = (
                 configured_mode in ("", "auto", "kitty") and terminal_image.supports_kitty_placeholders()
             )

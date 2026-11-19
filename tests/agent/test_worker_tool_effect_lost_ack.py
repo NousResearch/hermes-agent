@@ -13,10 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.agent.test_worker_rpc_lost_ack_recovery import (
-    _fast_receipts,
-    receipt_owner,
-)
+from tests.agent.test_worker_rpc_lost_ack_recovery import _fast_receipts
+
+pytest_plugins = ("tests.agent.test_worker_rpc_lost_ack_recovery",)
 
 
 @pytest.fixture

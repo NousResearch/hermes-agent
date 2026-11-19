@@ -237,8 +237,12 @@ def format_banner_version_label() -> str:
         return base
     upstream, local = state["upstream"], state["local"]
     ahead = int(state.get("ahead") or 0)
-    if ahead <= 0 or upstream == local:
+    if upstream == local:
         return f"{base} · upstream {upstream}"
+    if ahead <= 0:
+        # HEAD is not origin/main and carries nothing of its own: an older checkout, or a fetch
+        # moved origin/main. Name the commit that is actually running.
+        return f"{base} · upstream {upstream} · local {local} (behind)"
     return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
 
 

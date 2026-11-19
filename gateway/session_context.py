@@ -69,11 +69,19 @@ _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", de
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Per-occurrence process containment (cron/containment.py): the registry dir the
+# occurrence's driver registers its systemd scope into, and the systemd user
+# service unit hosting this process ("" when not service-hosted). Set per-job in
+# _CronRunScope — ContextVars, NOT os.environ, so concurrent jobs don't clobber;
+# the terminal tool bridges them into child env so the driver can discover them.
+_CRON_CONTAINMENT_DIR = ContextVar("HERMES_CRON_CONTAINMENT_DIR", default=_UNSET)
+_CRON_HOST_UNIT = ContextVar("HERMES_CRON_HOST_UNIT", default=_UNSET)
+
 # Legacy env-var name -> ContextVar for get_session_env (_SESSION_ASYNC_DELIVERY deliberately
 # absent: it is a bool capability, read via async_delivery_supported).
 _VAR_MAP = {var.name: var for var in (
     *_SESSION_VARS, _CRON_AUTO_DELIVER_PLATFORM, _CRON_AUTO_DELIVER_CHAT_ID,
-    _CRON_AUTO_DELIVER_THREAD_ID,
+    _CRON_AUTO_DELIVER_THREAD_ID, _CRON_CONTAINMENT_DIR, _CRON_HOST_UNIT,
 )}
 
 

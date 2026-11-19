@@ -1896,6 +1896,17 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         f"— last activity: {_last_desc}")
 
 
+def _containment_execution_still_running(execution_id: str) -> bool:
+    """True while an execution is claimed/running — its containment registries
+    belong to a live fire and must NOT be swept (stale-claim bookkeeping turns
+    abandoned claims terminal, after which the sweep stops their scopes)."""
+    try:
+        record = get_execution(execution_id) or {}
+    except Exception:
+        return True  # probe failure: leave the registry alone
+    return record.get("status") in ("claimed", "running")
+
+
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
     worker_state: Optional[dict] = None,
@@ -2333,6 +2344,24 @@ class _CronRunScope:
         self._cron_session_token = None
         self._non_dispatcher_token = None
         self._spend_token = None
+        # Per-occurrence process containment (cron/containment.py): registry for
+        # this execution + the host service unit. ContextVars, not os.environ —
+        # concurrent jobs must not clobber each other. Best-effort: begin()
+        # returns None (and NO env is exported) when the registry is unavailable;
+        # the driver-side supervisor then fails closed instead.
+        self._containment_execution_id = str(execution_id or job.get("execution_id") or "").strip()
+        self._containment_info = None
+        self._containment_tokens: list = []
+        if self._containment_execution_id:
+            try:
+                from cron import containment as _containment
+                # Lazy stale sweep: registries of executions that are no longer
+                # running (host died without teardown) are torn down before this
+                # fire begins, so leftovers never accumulate unbounded.
+                _containment.sweep_stale(_containment_execution_still_running)
+                self._containment_info = _containment.begin(self._containment_execution_id)
+            except Exception:  # containment must never block the fire
+                logger.debug("Job '%s': containment begin failed", job_id, exc_info=True)
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
@@ -2346,6 +2375,13 @@ class _CronRunScope:
         # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
         from tools.mcp_tool_costs import bind_run
         self._spend_token = bind_run(self.task_id)
+        # Publish containment discovery for this run's children: empty host_unit
+        # is a valid explicit value (non-service-hosted process).
+        if self._containment_info is not None:
+            self._containment_tokens = [
+                self._var_map["HERMES_CRON_CONTAINMENT_DIR"].set(self._containment_info["dir"]),
+                self._var_map["HERMES_CRON_HOST_UNIT"].set(self._containment_info["host_unit"]),
+            ]
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2362,6 +2398,14 @@ class _CronRunScope:
             unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
+        for token in reversed(self._containment_tokens):
+            try:
+                token.var.reset(token)
+            except ValueError:
+                # Set from a different context: fall back to the explicit _UNSET.
+                from gateway.session_context import _UNSET
+                token.var.set(_UNSET)
+        self._containment_tokens = []
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
@@ -2624,9 +2668,36 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        # Per-occurrence containment teardown (cron/containment.py): synchronously
+        # stop and verify every scope the occurrence's driver registered, BEFORE
+        # the session is finalized. When the conversation thread outlives run_job
+        # (deferred teardown), the conversation is still live — attach teardown to
+        # the future's completion instead of killing in-flight roles now. Runs on
+        # every exit path, including exceptions and cancellation. The deferred vs
+        # future decision itself is made inside finish_cron_run, which invokes the
+        # hook at the same point in the cleanup order this block used to own.
+        _containment_execution_id = getattr(scope, "_containment_execution_id", "")
+        _containment_teardown_hook = None
+        if _containment_execution_id:
+            def _containment_teardown_hook(deferred: bool, future) -> None:
+                def _teardown(execution_id: str = _containment_execution_id) -> None:
+                    try:
+                        from cron import containment as _containment
+                        _report = _containment.end(execution_id)
+                        if _report["leftover"]:
+                            logger.error(
+                                "Job '%s': containment teardown left survivors: %s",
+                                job_id, _report["leftover"])
+                    except Exception:
+                        logger.exception("Job '%s': containment teardown failed", job_id)
+                if deferred and future is not None:
+                    future.add_done_callback(lambda _f: _teardown())
+                else:
+                    _teardown()
         from cron.scheduler_session_cleanup import finish_cron_run
         finish_cron_run(job, job_name, _cron_session_id, owner_execution, scope, _session_db,
-                        agent, _worker_state.get("future"), defer_agent_teardown)
+                        agent, _worker_state.get("future"), defer_agent_teardown,
+                        containment_teardown=_containment_teardown_hook)
 
 
 def _teardown_cron_agent(

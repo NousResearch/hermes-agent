@@ -33,7 +33,7 @@ def _end_suppressed_cron_session(db, job: dict, job_id: str, job_name: str, cron
 
 
 def finish_cron_run(job, job_name, session_id, owner_execution, scope, session_db,
-                    agent, worker_future, defer_agent_teardown):
+                    agent, worker_future, defer_agent_teardown, containment_teardown=None):
     """One cleanup decision: a live worker owns teardown, otherwise finalize this fire now."""
     from cron.scheduler import _finalize_cron_session, _teardown_cron_agent
     from cron.scheduler_detached_worker import defer_teardown_to_running_worker
@@ -42,6 +42,12 @@ def finish_cron_run(job, job_name, session_id, owner_execution, scope, session_d
     workdir = scope.workdir if scope is not None else None
     deferred = defer_teardown_to_running_worker(
         worker_future, session_db, agent, job_id, job_name, session_id, workdir=workdir)
+    # Per-occurrence containment teardown, at the same point in the order the old
+    # inline finally held: after the deferred decision, before scope.exit() and the
+    # session finalize. The callable receives the decision so it can attach to the
+    # live worker's future instead of stopping in-flight roles.
+    if containment_teardown is not None:
+        containment_teardown(deferred, worker_future)
     try:
         if scope is not None:
             scope.exit()

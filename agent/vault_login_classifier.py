@@ -73,6 +73,7 @@ class LoginControl:
     name: str
     type: str
     max_length: Optional[int] = None
+    focused: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
@@ -86,6 +87,7 @@ class LoginControl:
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
             max_length=int(max_length) if max_length is not None else None,
+            focused=bool(raw.get("focused")),
         )
 
 
@@ -272,6 +274,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
       autocomplete: element.autocomplete || "",
+      focused: document.activeElement === element,
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,
@@ -369,6 +372,39 @@ def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstam
     )
     return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
             .replace("__UNSTAMP__", "true" if unstamp else "false"))
+
+
+_CHECK_CHAR_JS_TEMPLATE = """
+(() => {
+  const STAMP = "__STAMP__";
+  const index = __INDEX__;
+  const controls = Array.from(document.querySelectorAll("input,textarea,select"));
+  const el = controls[index];
+  if (!el || el.getAttribute("data-hermes-vault-slot") !== STAMP) {
+    return JSON.stringify({found: false});
+  }
+  const focused = document.activeElement === el;
+  let value = "";
+  try { value = String(el.value == null ? "" : el.value); } catch (e) { value = ""; }
+  try { el.setSelectionRange(value.length, value.length); } catch (e) { /* not a text control */ }
+  const type = String(el.getAttribute("type") || "").toLowerCase();
+  const digits = type === "password" ? null : value.replace(/\\D+/g, "");
+  return JSON.stringify({found: true, focused: focused, digits: digits});
+})()
+"""
+
+
+def build_check_char_js(fill: dict[str, Any], nonce: str = "") -> str:
+    """One evaluate per typed character: is the stamped field still there, focused, and holding
+    which digits?
+
+    Typing a masked field character by character needs a check per character. Three round-trips
+    per character would triple the evaluate budget, so this answers all three questions at once.
+    ``digits`` is ``null`` for password controls: a password never crosses into a comparison.
+    """
+    return (_CHECK_CHAR_JS_TEMPLATE
+            .replace("__STAMP__", f"{nonce}:{fill['index']}")
+            .replace("__INDEX__", str(fill["index"])))
 
 
 def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:

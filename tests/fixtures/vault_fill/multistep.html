@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8"><title>two-step login: identifier, then password</title>
+<body>
+<div id="step1"><label>Телефон <input id="user" type="tel" autocomplete="tel"></label>
+<button id="next" type="button">Далее</button></div>
+<div id="step2" hidden><label>Пароль <input id="pw" type="password" autocomplete="current-password"></label></div>
+<script>
+document.getElementById("next").addEventListener("click", () => {
+  document.getElementById("step1").hidden = true;
+  document.getElementById("step2").hidden = false;
+});
+</script>

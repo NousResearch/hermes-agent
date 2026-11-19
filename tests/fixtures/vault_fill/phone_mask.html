@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8"><title>phone mask that processes keystrokes one at a time</title>
+<body>
+<form><label>Телефон <input id="phone" type="text" inputmode="tel"></label>
+<label>Пароль <input id="pw" type="password" autocomplete="current-password"></label></form>
+<p id="log"></p>
+<script>
+// Models a mask that drives itself from keystrokes: it takes ONE character per input event and
+// re-renders from its own digit state. A bulk insertText (data = the whole string) therefore keeps
+// only the first character — which is exactly the failure seen on a real cabinet's phone field.
+const phone = document.getElementById("phone");
+const log = document.getElementById("log");
+let digits = "";
+function render() {
+  let out = "+7 ";
+  if (digits.length) out += "(" + digits.slice(0, 3);
+  if (digits.length >= 3) out += ") " + digits.slice(3, 6);
+  if (digits.length >= 6) out += "-" + digits.slice(6, 8);
+  if (digits.length >= 8) out += "-" + digits.slice(8, 10);
+  phone.value = out;
+}
+phone.addEventListener("input", (e) => {
+  const chunk = (e.data == null ? "" : String(e.data)).replace(/\D/g, "");
+  if (!chunk) { render(); return; }
+  digits = (digits + chunk[0]).slice(0, 10);   // one character per event, first one wins
+  render();
+  log.textContent = "digits=" + digits.length + " chunk=" + chunk.length + " trusted=" + e.isTrusted;
+});
+render();
+</script>

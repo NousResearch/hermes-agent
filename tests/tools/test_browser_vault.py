@@ -497,6 +497,9 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}          # in-page origin assert
+            if "setSelectionRange" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"found": True, "focused": True, "digits": None})}
             if "document.activeElement === el" in expression:
                 return {"success": True, "result": json.dumps(focus_result)}          # focus assert
             if "reverted" in expression:
@@ -602,6 +605,9 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
+            if "setSelectionRange" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"found": True, "focused": True, "digits": None})}
             if "document.activeElement === el" in expression:
                 match = re.search(r'"index":\s*(\d+)', expression)
                 return {"success": True, "result": json.dumps({"focused": int(match.group(1)) if match else -1})}
@@ -659,6 +665,9 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
+            if "setSelectionRange" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"found": True, "focused": True, "digits": None})}
             if "document.activeElement === el" in expression:
                 match = re.search(r'"index":\s*(\d+)', expression)
                 return {"success": True, "result": json.dumps({"focused": int(match.group(1)) if match else -1})}
@@ -708,6 +717,9 @@ class TestBrowserVaultTools:
         def fake_eval_secret(task_id, expression):
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
+            if "setSelectionRange" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"found": True, "focused": True, "digits": None})}
             if "document.activeElement === el" in expression:
                 return {"success": True, "result": json.dumps({"focused": 1})}
             if "reverted" in expression:
@@ -739,7 +751,135 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is True
         assert typed == ["s3cret-pw"]          # the bulk insert only
-        assert keyed == [("s3cret-pw", 0.06)]  # the retype went through key events
+        assert keyed == [(c, 0.0) for c in "s3cret-pw"]  # one key event per character
+
+    def test_character_check_keeps_passwords_out_of_the_comparison(self):
+        """The per-character check must return null digits for a password control."""
+        from agent.vault_login_classifier import build_check_char_js
+
+        js = build_check_char_js({"index": 3, "token": "current-password", "value": "s3cret"}, nonce="abc")
+        assert 'type === "password" ? null' in js       # password -> null, never the characters
+        assert "abc:3" in js                            # bound to this fill's stamp
+        assert ".setSelectionRange(" in js              # caret parked at the end before reading
+        assert "focused" in js and "found" in js
+
+    def _identifier_only_backend(self, *, identifier="user@example.com", origin="https://example.com"):
+        """A fake backend whose password resolution FAILS the test if it is ever called."""
+        from agent.vault_store import VaultItemMeta
+
+        calls = []
+
+        class _Backend:
+            name, display_name, needs_unlock = "local", "Local", False
+
+            def is_unlocked(self):
+                return True
+
+            def get_meta(self, handle):
+                return VaultItemMeta(id="fake", kind="login", label="Example",
+                                     origin=origin, created_at="2026-01-01T00:00:00Z",
+                                     identifier_type="email", identifier=identifier)
+
+            def fill_context(self):
+                return nullcontext()
+
+            def resolve_password(self, handle):
+                calls.append("password")
+                raise AssertionError("identifier-only fill must not resolve the password")
+
+            def resolve_secret(self, handle):
+                calls.append("secret")
+                raise AssertionError("identifier-only fill must not resolve the secret payload")
+
+        return _Backend(), calls
+
+    def test_identifier_only_fill_writes_the_identifier_and_no_password(self):
+        """A phone-then-password form has no password field: the fill writes the identifier alone."""
+        from tools import browser_vault_tool
+
+        backend, calls = self._identifier_only_backend()
+        controls = [{"autocomplete": "tel", "formIndex": 0, "index": 0,
+                     "label": "", "name": "phone", "type": "tel"}]
+        secret_exprs = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": 1, "reverted": 0, "missing": [], "failed": []})}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://example.com"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill("fake", identifier_only=True))
+        assert out["success"] is True
+        assert out["filled_fields"] == 1
+        assert calls == []                                   # no password resolution at all
+        assert out["field"]["kind"] == "identifier"          # the result says what it filled
+        assert "user@example.com" in secret_exprs[0] or any("user@example.com" in e for e in secret_exprs)
+
+    def test_identifier_only_refuses_a_foreign_origin(self):
+        """The identifier is personal data: the origin guard must hold on this path too."""
+        from tools import browser_vault_tool
+
+        backend, _ = self._identifier_only_backend()
+        with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"):
+            out = json.loads(browser_vault_tool.browser_vault_fill("fake", identifier_only=True))
+        assert out["success"] is False
+        assert out["error_type"] == "origin_mismatch"
+
+    def test_identifier_only_with_with_identifier_false_is_refused(self):
+        """Two contradicting flags are an argument error, not silent precedence."""
+        from tools import browser_vault_tool
+
+        out = json.loads(browser_vault_tool.browser_vault_fill("fake", with_identifier=False,
+                                                               identifier_only=True))
+        assert out["success"] is False
+        assert out["error_type"] == "invalid_arguments"
+
+    def test_identifier_only_on_an_ambiguous_page_names_the_error(self):
+        """Two text boxes and nothing focused: no guessing."""
+        from tools import browser_vault_tool
+
+        backend, _ = self._identifier_only_backend()
+        controls = [
+            {"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+            {"formIndex": 0, "index": 1, "label": "", "name": "", "type": "text", "autocomplete": ""},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://example.com"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+            out = json.loads(browser_vault_tool.browser_vault_fill("fake", identifier_only=True))
+        assert out["success"] is False
+        assert out["error_type"] == "identifier_ambiguous"
+        assert out["next"]
+
+    def test_identifier_only_without_a_stored_identifier_names_the_error(self):
+        """An item with no identifier saved cannot fill one, and says so."""
+        from tools import browser_vault_tool
+
+        backend, _ = self._identifier_only_backend(identifier="")
+        with patch("agent.vault_backends.backend_for_handle", return_value=backend), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://example.com"):
+            out = json.loads(browser_vault_tool.browser_vault_fill("fake", identifier_only=True))
+        assert out["success"] is False
+        assert out["error_type"] == "no_identifier_stored"
 
     def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
         """A framework login form can expose a phone box with no autocomplete, name, id, label or
@@ -851,6 +991,9 @@ class TestBrowserVaultTools:
         def fake_eval_secret(task_id, expression):
             if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
                 return {"success": True, "result": json.dumps({"ok": True})}
+            if "setSelectionRange" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"found": True, "focused": True, "digits": None})}
             if "document.activeElement === el" in expression:
                 return {"success": True, "result": json.dumps({"focused": 1})}
             if "reverted" in expression:

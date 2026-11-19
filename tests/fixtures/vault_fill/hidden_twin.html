@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8"><title>hidden twin before the real password field</title>
+<body>
+<form>
+  <!-- A decoy: same autocomplete tokens, display:none. The fill must pick the visible one. -->
+  <input type="password" autocomplete="current-password" style="display:none" id="decoy">
+  <label>Логин <input id="user" type="text" autocomplete="username"></label>
+  <label>Пароль <input id="pw" type="password" autocomplete="current-password"></label>
+</form>

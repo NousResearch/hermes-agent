@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8"><title>controlled input rejects untrusted events</title>
+<body>
+<form id="f"><label>Password <input id="pw" type="password" autocomplete="current-password"></label>
+<button id="go" disabled>Войти</button></form>
+<p id="log"></p>
+<script>
+// Minimal model of a framework-controlled input: the DOM value follows React state, and a
+// synthetic (untrusted) input event is ignored, so the field is re-rendered empty.
+let state = "";
+const el = document.getElementById("pw");
+const btn = document.getElementById("go");
+function render() { el.value = state; btn.disabled = state.length === 0; }
+el.addEventListener("input", (e) => {
+  if (!e.isTrusted) { render(); document.getElementById("log").textContent = "reverted: untrusted"; return; }
+  state = el.value; render(); document.getElementById("log").textContent = "kept: " + state.length + " chars";
+});
+render();
+</script>

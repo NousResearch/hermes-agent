@@ -3,7 +3,7 @@ repo: https://github.com/VGFreakXBL/hermes-sieve
 sha: 9d9ca4c9a49cc5929835f1d4c6a73269f435b124
 subdir: ""
 title: SIEVE
-description: 'User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran.'
+description: "User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran. Disclosure — sends notifications by running `hermes send` to the chats you set with `/sieve target` (default `telegram`), sets phone alarms/timers through the Hermes mobile_device tools for T4/T5 events, runs `tailscale status --json` from the Desktop status poll, and ships an optional macOS launchd watchdog (`scripts/watch.py`) that you render with `scripts/install-watchdog.sh` and load yourself with `launchctl bootstrap`."
 maintainer: VGFreakXBL
 tier: community
 category: automation
@@ -35,3 +35,4 @@ capabilities:
     - post_approval_response
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.6"

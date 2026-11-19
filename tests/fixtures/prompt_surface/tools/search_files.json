@@ -47,7 +47,7 @@
         "type": "string"
       },
       "pattern": {
-        "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search.",
+        "description": "Regex for content search (prefix (?i) for case-insensitive); glob (e.g. '*.py', '*config*') for file search.",
         "type": "string"
       },
       "target": {

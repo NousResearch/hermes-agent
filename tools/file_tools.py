@@ -1318,7 +1318,7 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search."},
+            "pattern": {"type": "string", "description": "Regex for content search (prefix (?i) for case-insensitive); glob (e.g. '*.py', '*config*') for file search."},
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside files, 'files' finds files by name.", "default": "content"},
             "path": {"type": "string", "description": "Directory or file to search in.", "default": "."},
             "file_glob": {"type": "string", "description": "Content search only: filter files by pattern (e.g. '*.py')."},

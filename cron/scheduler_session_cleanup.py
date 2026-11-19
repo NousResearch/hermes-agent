@@ -42,6 +42,28 @@ def finish_cron_run(job, job_name, session_id, owner_execution, scope, session_d
     workdir = scope.workdir if scope is not None else None
     deferred = defer_teardown_to_running_worker(
         worker_future, session_db, agent, job_id, job_name, session_id, workdir=workdir)
+    # Per-occurrence containment teardown (cron/containment.py): synchronously
+    # stop and verify every scope the occurrence's driver registered, BEFORE the
+    # session is finalized. When the conversation thread outlives run_job
+    # (deferred teardown), the conversation is still live — attach teardown to
+    # the future's completion instead of killing in-flight roles now. Runs on
+    # every exit path, including exceptions and cancellation.
+    execution_id = getattr(scope, "_containment_execution_id", "") if scope is not None else ""
+    if execution_id:
+        def _containment_teardown(execution_id: str = execution_id) -> None:
+            try:
+                from cron import containment as _containment
+                _report = _containment.end(execution_id)
+                if _report["leftover"]:
+                    logger.error(
+                        "Job '%s': containment teardown left survivors: %s",
+                        job_id, _report["leftover"])
+            except Exception:
+                logger.exception("Job '%s': containment teardown failed", job_id)
+        if deferred and worker_future is not None:
+            worker_future.add_done_callback(lambda _f: _containment_teardown())
+        else:
+            _containment_teardown()
     try:
         if scope is not None:
             scope.exit()

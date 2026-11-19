@@ -95,7 +95,8 @@ class OpenCodeGoProfile(ProviderProfile):
                 continue
             reset_raw = str(window.get("resetsAt") or "").replace("Z", "+00:00")
             reset_at = datetime.fromisoformat(reset_raw) if reset_raw else None
-            windows.append(AccountUsageWindow(label=label, used_percent=float(window["percent"]), reset_at=reset_at))
+            windows.append(AccountUsageWindow(label=label, used_percent=float(window["percent"]),
+                                             reset_at=reset_at, key=key))
         return AccountUsageSnapshot(provider=self.name, source="go_usage_api",
                                     fetched_at=datetime.now(UTC), windows=tuple(windows))
 

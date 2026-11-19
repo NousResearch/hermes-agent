@@ -33,6 +33,9 @@ class AccountUsageWindow:
     # ``model``: the window caps only one model family (Anthropic Opus/Sonnet weekly) and can
     # never imply the account itself is out of quota.
     scope: str = "account"
+    # Stable machine name of the allowance (``rolling``/``weekly``/``monthly``), when the fetcher knows
+    # one: consumers key on THIS, never on ``label`` — display copy is free to be reworded.
+    key: Optional[str] = None
 
 
 @dataclass(frozen=True)

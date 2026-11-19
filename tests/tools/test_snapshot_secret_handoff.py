@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import glob
 import os
+import threading
 from pathlib import Path
 
 import pytest
 
 from tools.environments.base import shell_state_scope
 from tools.environments.local import LocalEnvironment
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -43,19 +45,21 @@ def test_secret_exports_never_reach_the_snapshot_file(env):
         "export CAROL_CLIENT_ID=SYNTH-id CAROL_CLIENT_SECRET='SYNTH-a b' github_token=SYNTH-lower "
         "GitHub_Token=SYNTH-mixed SESSION_COOKIE=SYNTH-cookie slack_webhook_url=https://hooks/SYNTH-hook "
         "DATABASE_URL=postgres://u:SYNTH-pw@db/app MULTI_TOKEN=$'SYNTH-l1\\nSYNTH-l2' KEEP_ME=ordinary; "
-        "readonly RO_TOKEN=SYNTH-ro; export RO_TOKEN")
+        "readonly RO_TOKEN=SYNTH-ro; export RO_TOKEN; declare -ax API_TOKEN=(SYNTH-one 'SYNTH two')")
     with shell_state_scope(("child",)):
         env.execute("export CHILD_API_KEY=SYNTH-child")
-    # A name the session already holds stays a secret after it leaves the profile's .env.
+    # A name the session ever held stays a secret after it is unset, leaves .env and comes back.
+    env.execute("unset ODD_CUSTOM_NAME")
     (Path(os.environ["HERMES_HOME"]) / ".env").write_text("")
-    env.execute("true")
+    env.execute("export ODD_CUSTOM_NAME=SYNTH-reintroduced")
 
     snapshot = _snapshot_text(env)
     assert "SYNTH" not in snapshot
     assert 'KEEP_ME="ordinary"' in snapshot  # ordinary shell state is still persisted
-    # readonly survives the trip through memory
-    out = env.execute('echo "[$RO_TOKEN][$ODD_CUSTOM_NAME]"; (RO_TOKEN=x) 2>/dev/null || echo readonly')["output"]
-    assert out.split() == ["[SYNTH-ro][SYNTH-dotenv-custom]", "readonly"]
+    # readonly and array secrets keep their shape through memory
+    out = env.execute('echo "[$RO_TOKEN][$ODD_CUSTOM_NAME][${#API_TOKEN[@]}|${API_TOKEN[1]}]"; '
+                      '(RO_TOKEN=x) 2>/dev/null || echo readonly')["output"]
+    assert out.splitlines() == ["[SYNTH-ro][SYNTH-reintroduced][2|SYNTH two]", "readonly"]
 
 
 def test_secret_exports_still_carry_to_the_next_command(env):
@@ -69,3 +73,17 @@ def test_secret_exports_still_carry_to_the_next_command(env):
 
     env.execute("unset CAROL_CLIENT_SECRET")
     assert env.execute('echo "[${CAROL_CLIENT_SECRET-unset}]"')["output"].strip() == "[unset]"
+
+
+def test_overlapping_commands_never_mix_one_dump_with_another(env, tmp_path):
+    """The next command's ordinary exports and secrets come from the same dump, even when an
+    earlier command publishes its file, stalls, and reports its secrets after a later one."""
+    published = tmp_path / "published"
+    slow = (f'export PAIR=A SERVICE_TOKEN=SYNTH-A; mv() {{ command mv "$@"; : > {published}; '
+            'sleep 1; }')
+    first = threading.Thread(target=env.execute, args=(slow,))
+    first.start()
+    wait_until(published.exists, timeout=10, what="first command published its snapshot")
+    env.execute("export PAIR=B SERVICE_TOKEN=SYNTH-B")
+    first.join()
+    assert env.execute('echo "$PAIR $SERVICE_TOKEN"')["output"].strip() in {"A SYNTH-A", "B SYNTH-B"}

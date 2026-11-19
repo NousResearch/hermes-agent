@@ -33,7 +33,7 @@ from tools.environments.local_env_policy import (
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
-from tools.environments.base_session_env import _secret_fd_token
+from tools.environments.base_session_env import _secret_fd_token, _secret_gen_token
 from tools.environments.local_secret_handoff import SecretHandoff, profile_secret_names
 from hermes_cli._startup_fast import project_root_str
 
@@ -1148,7 +1148,8 @@ class LocalEnvironment(BaseEnvironment):
         if _IS_WINDOWS or getattr(self, "_secret_handoff", None) is None:
             return {}
         names = (*profile_secret_names(), *self._secret_handoff.names())
-        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": names}
+        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": names,
+                "secret_gen": _secret_gen_token(self._session_id)}
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
@@ -1228,7 +1229,8 @@ class LocalEnvironment(BaseEnvironment):
         bash = _find_bash()
         run_env = _make_run_env(self.env)
         handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
-        token = _secret_fd_token(getattr(self, "_session_id", ""))
+        session_id = getattr(self, "_session_id", "")
+        token = _secret_fd_token(session_id)
         secret_fd, secret_reader = -1, None
         if handoff is not None and token in cmd_string:
             # This session's secret exports ride the command's own env, never the snapshot file;
@@ -1236,11 +1238,11 @@ class LocalEnvironment(BaseEnvironment):
             # wrapper save/restores (declared key holders, profile passthrough) take the run env's
             # value, exactly as when the snapshot carried them, so a scrubbed key stays scrubbed.
             if not login:
-                kept = set(self._snapshot_excluded_passthrough_names())
-                run_env.update((name, value) for name, value in handoff.values_for(self._shell_state_paths()).items()
-                               if name not in kept)
-            secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login))
-            cmd_string = cmd_string.replace(token, str(secret_fd))
+                run_env.update(handoff.declaration_env(
+                    self._shell_state_paths(), skip=self._snapshot_excluded_passthrough_names()))
+            generation = handoff.new_generation()
+            secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login), generation)
+            cmd_string = cmd_string.replace(token, str(secret_fd)).replace(_secret_gen_token(session_id), generation)
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
         # spawn env's dirs a resetting profile dropped are re-appended (#56634).

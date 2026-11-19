@@ -142,11 +142,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
                 # printing a placeholder for something the user is about to lose.
                 print(f"  {_orphan_label(p)}  ({p.get('commits', 0)} commit(s))")
             for p in pre_v2_orphans:
-                # Pre-v2 records are identified by their shadow repo path (that
-                # is also what the allowlist binds), so fall back to it when the
-                # recorded workdir is blank/missing — the path is the only hint
-                # a human has to locate the directory before confirming.
-                print(f"  {_orphan_label(p, pre_v2=True)}  (pre-v2 shadow repo)")
+                # A confirmable pre-v2 record always has a recorded workdir
+                # (`_orphan_verdict` never confirms a blank or absent marker),
+                # so the destructive preview names the workdir. The
+                # shadow-repo-path fallback is real only in `cmd_status`, which
+                # also lists the non-confirmable records this prompt omits.
+                print(f"  {_orphan_label(p)}  (pre-v2 shadow repo)")
             print()
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")

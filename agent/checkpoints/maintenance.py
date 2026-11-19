@@ -232,6 +232,14 @@ def _orphan_verdict(
     (``require_parent_identity=False``) and keeps a blank workdir
     (``blank_workdir_confirmable=False``); the v2 shared store carries a
     recorded parent identity and treats a blank/missing workdir as confirmable.
+
+    The v2 asymmetry is deliberate and pre-existing: ``_write_project_meta``
+    always records ``workdir`` at project creation, and ``list_all_checkpoints``
+    skips entries without one, so a v2 row with no workdir has no restorable
+    target — it is residue from a hand-edited or migrated meta file that
+    retention would reclaim anyway. Pre-v2 has no such write-time guarantee
+    (the marker may be absent or blank on disk), so an unrecorded workdir
+    there is genuinely no evidence and stays conservative.
     """
     if marker_unreadable:
         return False, "shadow repo marker is unreadable"

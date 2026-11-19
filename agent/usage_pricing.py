@@ -8,7 +8,8 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
-from agent.reasoning_effort import GPT62_MODEL_IDS
+from agent.reasoning_effort import on_gpt62_contract
+from hermes_cli.model_catalog import manifest_table
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -517,14 +518,50 @@ def _normalize_anthropic_model_name(model: str) -> str:
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
 
 
-def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+_RATE_FIELDS = tuple(field.name for field in fields(PricingEntry) if "cost" in field.name)
+
+
+def _manifest_pricing_entry(*path: str) -> Optional[PricingEntry]:
+    """The entry the cached model catalog publishes at ``pricing.<path>``, for a model this install
+    ships no rates for. Every rate present must be a finite, non-negative decimal and both token
+    rates must be there, else there is no entry: a malformed rate is unknown, never a price."""
+    raw = manifest_table("pricing", *path)
+    rates: dict[str, Decimal] = {}
+    for name in _RATE_FIELDS:
+        if raw.get(name) is None:
+            continue
+        value = _to_decimal(raw[name])
+        if value is None or not value.is_finite() or value < 0:
+            return None
+        rates[name] = value
+    if not {"input_cost_per_million", "output_cost_per_million"} <= rates.keys():
+        return None
+    threshold, url, version = raw.get("tier_threshold_tokens"), raw.get("source_url"), raw.get("pricing_version")
+    valid_threshold = threshold if type(threshold) is int and threshold > 0 else None
+    if valid_threshold is None and (threshold is not None or any(name.endswith("_above") for name in rates)):
+        return None
+    return PricingEntry(
+        **rates, source="official_docs_snapshot", source_url=url if isinstance(url, str) else None,
+        pricing_version=version if isinstance(version, str) else None,
+        tier_threshold_tokens=valid_threshold)
+
+
+def _snapshot_names(route: BillingRoute) -> tuple[str, ...]:
+    """The names a standard-tier snapshot may hold the route's model under: its own, then normalized."""
     model = route.model.lower()
-    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
-    if entry:
-        return entry
     normalize = _MODEL_NORMALIZERS.get(route.provider)
-    normalized = normalize(model) if normalize else model
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    return tuple(dict.fromkeys((model, normalize(model) if normalize else model)))
+
+
+def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    return next((e for name in _snapshot_names(route) if (e := _OFFICIAL_DOCS_PRICING.get((route.provider, name)))), None)
+
+
+def _published_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
+    """The standard-tier rate the cached model catalog publishes, for a model the bundled snapshot
+    has no row for."""
+    return next(
+        (e for name in _snapshot_names(route) if (e := _manifest_pricing_entry("official_docs", route.provider, name))), None)
 
 
 def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalUsage:
@@ -536,15 +573,25 @@ def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalU
     return replace(usage, raw_usage={**(usage.raw_usage or {}), "service_tier": tier.strip().lower()})
 
 
-def _served_openai_tier(usage: CanonicalUsage) -> Optional[str]:
-    return usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
+def _served_openai_tier(usage: CanonicalUsage, model: str) -> Optional[str]:
+    """The billed tier the response reports: ``priority`` (GPT-6.2 contract models bill ``fast`` as
+    Priority) or ``ultrafast``; None when the standard rate applies."""
+    tier = usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
+    if tier in ("fast", "priority") and on_gpt62_contract(model):
+        return "priority"
+    return "ultrafast" if tier == "ultrafast" else None
 
 
-def _openai_served_tier_entry(model: str, tier: Optional[str]) -> Optional[PricingEntry]:
+def _openai_served_tier_entry(model: str, tier: str, entry: Optional[PricingEntry]) -> Optional[PricingEntry]:
     """GPT-6.2's launch Ultrafast discount expires March 1, 2027, Pacific time; older tiers stay fixed."""
-    if model not in GPT62_MODEL_IDS:
-        return _OPENAI_ULTRAFAST_PRICING.get(model) if tier == "ultrafast" else None
-    entry = _OFFICIAL_DOCS_PRICING[("openai", model)]
+    if not on_gpt62_contract(model):
+        if tier != "ultrafast":
+            return None
+        return _OPENAI_ULTRAFAST_PRICING.get(model) or _manifest_pricing_entry("openai_ultrafast", model)
+    # The vendor's multiplier applies to the vendor's snapshot (bundled or published by the model
+    # catalog), not to another tariff selected for this route: then the tier cost is unknown.
+    if entry is None or entry.source != "official_docs_snapshot":
+        return None
     multiplier = 2 if tier == "priority" else (
         3 if _UTC_NOW() < datetime(2027, 3, 1, 8, tzinfo=UTC) else 6)
     rates = {field.name: value * multiplier for field in fields(PricingEntry)
@@ -558,9 +605,9 @@ def _served_fast(usage: CanonicalUsage) -> bool:
 
 
 def _anthropic_fast_mode_entry(model: str) -> Optional[PricingEntry]:
-    name = model.lower()
-    return _ANTHROPIC_FAST_MODE_PRICING.get(name) or _ANTHROPIC_FAST_MODE_PRICING.get(
-        _normalize_anthropic_model_name(name))
+    names = dict.fromkeys((model.lower(), _normalize_anthropic_model_name(model.lower())))
+    return next((e for name in names if (e := _ANTHROPIC_FAST_MODE_PRICING.get(name))), None) or next(
+        (e for name in names if (e := _manifest_pricing_entry("anthropic_fast_mode", name))), None)
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
@@ -660,7 +707,9 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _models_dev_pricing_entry(route)
+    # Below a rate the configured endpoint advertises for itself: a relay's own tariff is better
+    # evidence of what it charges than the vendor's list price.
+    return _published_docs_pricing(route) or _models_dev_pricing_entry(route)
 
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache
@@ -816,15 +865,10 @@ def estimate_usage_cost(
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    served_tier = _served_openai_tier(usage)
-    if served_tier == "fast" and route.model in GPT62_MODEL_IDS:
-        served_tier = "priority"
-    if route.provider == "openai" and served_tier in {"ultrafast", "priority"}:
-        served_entry = _openai_served_tier_entry(route.model, served_tier)
-        if served_entry:
-            entry = served_entry
-        elif served_tier == "ultrafast":
-            return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
+    if route.provider == "openai" and (served_tier := _served_openai_tier(usage, route.model)):
+        entry = _openai_served_tier_entry(route.model, served_tier, entry)
+        if entry is None:
+            return _unknown_cost("official_docs_snapshot", f"{served_tier} pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")
 

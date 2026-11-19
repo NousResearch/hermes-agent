@@ -19,6 +19,15 @@ def raw_holder(store):
     return _sqlite_store(store).holder()
 
 
+def omit_session_list_revision(conn):
+    """Make a test store predate the derived list revision before simulating old schema."""
+    from persistence.sqlite._schema_ddl import SESSIONS_LIST_REVISION_KEY, SESSIONS_LIST_REVISION_TRIGGERS
+
+    for trigger in SESSIONS_LIST_REVISION_TRIGGERS:
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    conn.execute("DELETE FROM state_meta WHERE key = ?", (SESSIONS_LIST_REVISION_KEY,))
+
+
 def holder_type():
     """The SQLite backend's holder class, for a test that wraps every holder's writes."""
     from persistence.sqlite._holder import StoreHolder

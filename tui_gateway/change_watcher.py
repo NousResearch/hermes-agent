@@ -188,7 +188,7 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-# path -> (database/WAL mtime, signature, whether that is a fallback rather than a read answer). The
+# path -> ((file identity, database/WAL mtime), signature, whether that is a fallback). The
 # mtime guard keeps the normal 0.5 s watch pass stat-only; the store is read only after another process
 # actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None, bool]] = {}
@@ -197,26 +197,49 @@ _sessions_db_sig_cache: dict[str, tuple[object, tuple | None, bool]] = {}
 _MTIME_FALLBACK = "mtime-fallback"
 
 
-def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: None):
+def _session_db_stamp(db_path: Path, wal_path: Path):
+    """Use the same stat to get the mtime and the identity of the database being watched."""
+    try:
+        info = db_path.stat()
+    except OSError:
+        return None, _watcher_mtime_ns(wal_path)
+    wal_mtime = _watcher_mtime_ns(wal_path)
+    mtime = info.st_mtime_ns if wal_mtime is None else max(info.st_mtime_ns, wal_mtime)
+    return (info.st_dev, info.st_ino), mtime
+
+
+def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: None, track_identity=False):
     """``read(db_path, mtime)``, cached behind the DB/WAL mtime so a watch pass stays stat-only until another
     process commits. ``read`` returns ``(signature, is_fallback)``. A failed read after a good answer keeps it and
     leaves the cached mtime stale so the next pass re-reads (answer -> fallback -> answer would broadcast twice);
     otherwise the answer is ``fallback(mtime)``."""
-    mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
+    wal_path = db_path.with_name(f"{db_path.name}-wal")
+    if track_identity:
+        identity, mtime = _session_db_stamp(db_path, wal_path)
+        stamp = (identity, mtime)
+    else:
+        mtime = stamp = _newest_mtime_ns((db_path, wal_path))
     cache_key = str(db_path)
     cached = cache.get(cache_key)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == stamp:
         return cached[1]
-    if not db_path.exists():
-        cache[cache_key] = (mtime, None, True)
+    exists = identity is not None if track_identity else db_path.exists()
+    if not exists:
+        cache[cache_key] = (stamp, None, True)
         return None
+    # Judge the tick before reading: a same-tick commit may be absent from the
+    # read's snapshot even if the timestamp has settled by the time it returns.
+    settled = _settled_mtime(mtime)
     try:
         signature, is_fallback = read(db_path, mtime)
     except Exception:  # health: allow BLE001 -- any failed read (busy, locked, foreign schema) falls back like a busy one
         if cached is not None and not cached[2]:
             return cached[1]
         signature, is_fallback = fallback(mtime), True
-    cache[cache_key] = (_settled_mtime(mtime), signature, is_fallback)
+    if track_identity and not is_fallback:
+        # Separate restored stores even if both committed the same number of changes.
+        signature = (identity, signature)
+    cache[cache_key] = ((identity, settled) if track_identity else settled, signature, is_fallback)
     return signature
 
 
@@ -224,6 +247,9 @@ def _session_rows_sig(db_path: Path, mtime):
     from persistence_assembly import open_persistence_reader
 
     with open_persistence_reader(db_path) as persistence:
+        revision = persistence.maintenance.session_projection_revision(busy_timeout_s=0.05)
+        if revision is not None:
+            return ("revision", revision), False
         projection = persistence.maintenance.session_projection_digest(busy_timeout_s=0.05)
     if projection is None:
         # A state.db without a readable sessions table (foreign schema, legacy or transient file): keep
@@ -233,7 +259,7 @@ def _session_rows_sig(db_path: Path, mtime):
 
 
 def _session_db_content_sig(db_path: Path):
-    """Digest list/transcript-relevant session rows, excluding unrelated tables.
+    """Identify changes to the session projection, excluding unrelated writes.
 
     ``gateway_heartbeats`` shares state.db and writes every minute. Using the
     database mtime directly therefore emits sessions.changed while no session
@@ -243,7 +269,9 @@ def _session_db_content_sig(db_path: Path):
     digest -> mtime -> digest would broadcast twice.
     """
     return _db_content_sig(
-        db_path, _sessions_db_sig_cache, _session_rows_sig, fallback=lambda mtime: (_MTIME_FALLBACK, mtime))
+        db_path, _sessions_db_sig_cache, _session_rows_sig,
+        fallback=lambda mtime: (_MTIME_FALLBACK, mtime), track_identity=True,
+    )
 
 
 # Filesystem timestamps come from a coarse clock (~4 ms ticks; whole seconds on some filesystems) and

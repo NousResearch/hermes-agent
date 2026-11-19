@@ -12,6 +12,7 @@ import pytest
 from hermes_cli.sqlite_safe_read import offline_file_access
 from persistence.core.errors import DeclarativeDrift
 from persistence_assembly import open_persistence, open_persistence_reader, open_store_admin, profile_scope
+from tests.fixtures.storage_holder import omit_session_list_revision
 from tests.fixtures.storage_seed import seed_session
 from tests.persistence_sqlite.conftest import profile_home
 
@@ -27,6 +28,7 @@ def _lagging(name: str):
     path = _store(name)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        omit_session_list_revision(conn)
         conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
         conn.commit()
     return path

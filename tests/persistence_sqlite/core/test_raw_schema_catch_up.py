@@ -6,6 +6,7 @@ from contextlib import closing
 from persistence.sqlite import _schema
 from persistence.sqlite._schema import reconcile_state_schema
 from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import omit_session_list_revision
 from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
@@ -19,6 +20,7 @@ def _lagging_store_with_history(home, rows=5):
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        omit_session_list_revision(conn)
         conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

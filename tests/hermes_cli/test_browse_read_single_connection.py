@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 from persistence.conversation.messages import TranscriptRead
 from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import omit_session_list_revision
 from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
@@ -59,6 +60,7 @@ def _lagging(home: Path) -> Path:
     path = _seeded(home)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
+        omit_session_list_revision(conn)
         conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
         conn.commit()
     return path

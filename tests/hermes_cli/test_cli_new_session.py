@@ -1031,3 +1031,139 @@ def test_provider_only_new_session_restores_named_endpoint_without_model_drift(
     assert (cli.model, cli.provider, cli.base_url) == (
         llama_model, "myllama", llama_url)
     assert cli.agent.switch_calls[-1]["base_url"] == llama_url
+
+
+# --- Gateway-backed /new: the next session.create carries the launch route ---
+
+class _CreateRecordingClient:
+    """Scripted gateway: records session.create params, answers with a fresh session."""
+
+    def __init__(self):
+        import asyncio
+
+        self.events = asyncio.Queue()
+        self.creates = []
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "session.create":
+            self.creates.append(params)
+            sid = f"local-{len(self.creates)}"
+            return {"session_id": sid, "stored_session_id": sid, "messages": [], "revision": 1,
+                    "execution_generation": 0, "subscription_id": "sub-" + sid, "info": {"model": "m"}}
+        return {"status": "ok"}
+
+
+@pytest.fixture
+def _gateway_store():
+    from contextlib import asynccontextmanager
+
+    from hermes_cli.gateway_connection import GatewayConnection
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+
+    client = _CreateRecordingClient()
+
+    @asynccontextmanager
+    async def connect():
+        yield client
+
+    conn = GatewayConnection(connect=connect)
+    conn.start(5)
+    yield GatewaySessionStore(conn), client
+    conn.close()
+
+
+_ROFFILD_ROUTER_URL = "http://router.local/api/v1"
+_ROFFILD_LLAMA_URL = "http://127.0.0.1:8080/v1"
+_ROFFILD_LLAMA_MODEL = "ggml-org/gemma-4-E4B-it-GGUF:Q4_0"
+_ROFFILD_ROUTER_MODEL = "openai/gpt-6-luna"
+
+
+def _roffild_cli(monkeypatch, **flags):
+    """#150748's config: a router default plus a named local ``myllama`` entry."""
+    providers = {
+        "router": {"base_url": _ROFFILD_ROUTER_URL, "default_model": _ROFFILD_ROUTER_MODEL},
+        "myllama": {"base_url": _ROFFILD_LLAMA_URL, "api_key": "test-local-key",
+                    "default_model": _ROFFILD_LLAMA_MODEL},
+    }
+    config_yaml = (
+        "model:\n"
+        f"  default: {_ROFFILD_ROUTER_MODEL}\n"
+        "  provider: custom:router\n"
+        "providers:\n"
+        "  router:\n"
+        f"    base_url: {_ROFFILD_ROUTER_URL}\n"
+        f"    default_model: {_ROFFILD_ROUTER_MODEL}\n"
+        "  myllama:\n"
+        f"    base_url: {_ROFFILD_LLAMA_URL}\n"
+        "    api_key: test-local-key\n"
+        f"    default_model: {_ROFFILD_LLAMA_MODEL}\n"
+    )
+    return _make_startup_cli(
+        monkeypatch, config_yaml=config_yaml,
+        model_cfg={"provider": "custom:router", "default": _ROFFILD_ROUTER_MODEL},
+        extra_cli_cfg={"providers": providers}, **flags)
+
+
+def test_provider_only_launch_is_gateway_session_policy(_offline_route, monkeypatch):
+    """#150748: a typed --provider without -m must reach session.create, with the entry's default
+    model the CLI resolved; dropped, the gateway opens the profile's router route instead."""
+    from hermes_cli.cli_init_mixin import _gateway_launch
+
+    cli = _roffild_cli(monkeypatch, provider="myllama")
+    launch = _gateway_launch(cli)
+    assert (launch["provider"], launch["model"]) == ("myllama", _ROFFILD_LLAMA_MODEL)
+    assert cli._startup_launch_route == {"provider": "myllama", "model": _ROFFILD_LLAMA_MODEL}
+
+    # No route flags: the gateway resolves the profile default, as before.
+    plain = _roffild_cli(monkeypatch)
+    assert (_gateway_launch(plain)["provider"], _gateway_launch(plain)["model"]) == (None, None)
+    assert plain._startup_launch_route == {}
+    auto = _roffild_cli(monkeypatch, provider="auto")
+    assert _gateway_launch(auto)["provider"] is None and auto._startup_launch_route == {}
+
+
+def test_gateway_new_session_reopens_on_the_startup_route(_offline_route, monkeypatch, _gateway_store):
+    """#74329 on a gateway store: /new is a session.create, so the startup route must ride it. A
+    session-scoped switch (and the ended -m override) must not change what the next session runs."""
+    store, client = _gateway_store
+    cli = _roffild_cli(monkeypatch, provider="myllama")
+    cli._session_db, cli._gateway_session_open = store, True
+    # A /model --session switch to the router, then /new.
+    cli.model, cli.provider, cli.base_url = _ROFFILD_ROUTER_MODEL, "custom:router", _ROFFILD_ROUTER_URL
+    cli._explicit_provider, cli._explicit_base_url = "custom:router", _ROFFILD_ROUTER_URL
+
+    cli._new_session_id(None)
+
+    created = client.creates[-1]
+    assert (created["provider"], created["model"]) == ("myllama", _ROFFILD_LLAMA_MODEL)
+    assert "base_url" not in created and "api_key" not in created
+
+
+def test_gateway_new_session_keeps_explicit_model_endpoint_and_launch_key(
+        _offline_route, monkeypatch, _gateway_store):
+    store, client = _gateway_store
+    cli = _make_startup_cli(
+        monkeypatch, config_yaml="model:\n  default: config-default-model\n  provider: openrouter\n",
+        model_cfg={"provider": "openrouter", "default": "config-default-model"},
+        model="startup-model", base_url="https://startup.example/v1", api_key="sk-launch")
+    cli._session_db, cli._gateway_session_open = store, True
+    store.connection.launch_api_key = "sk-launch"  # what open_session recorded at startup
+    cli._explicit_model_override = False  # main clears it at every /new
+    cli._explicit_base_url, cli._explicit_api_key = "https://session.example/v1", "sk-session"
+
+    cli._new_session_id(None)
+
+    created = client.creates[-1]
+    assert (created["model"], created["base_url"], created["api_key"]) == (
+        "startup-model", "https://startup.example/v1", "sk-launch")
+
+
+def test_gateway_new_session_without_launch_flags_stays_on_the_profile_default(
+        _offline_route, monkeypatch, _gateway_store):
+    store, client = _gateway_store
+    cli = _roffild_cli(monkeypatch)
+    cli._session_db, cli._gateway_session_open = store, True
+
+    cli._new_session_id(None)
+
+    assert not {"model", "provider", "base_url", "api_key"} & set(client.creates[-1])

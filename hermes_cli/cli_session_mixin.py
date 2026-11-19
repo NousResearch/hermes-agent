@@ -690,7 +690,8 @@ class CLISessionMixin:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
-        # An explicit -m/--model was for the previous session only.
+        # A later /resume uses that session's stored model; this new session's route is the startup
+        # selection restored below (and, on a gateway store, the launch route _new_session_id sent).
         self._explicit_model_override = False
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider from the startup selection (launch flags) or

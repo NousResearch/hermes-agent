@@ -88,6 +88,7 @@ import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal, profileScreenCommand } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+import { TeammateWaits } from './teammate-waits'
 import type { GroupChat, RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
@@ -438,6 +439,10 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+
+    // Above a Bot Chat's composer: that bot's unsettled teammate deliveries (renders nothing
+    // in any other chat, or when none are pending).
+    ctx.register({ id: 'teammate-waits', area: COMPOSER_AREAS.top, render: () => <TeammateWaits /> })
 
     // Sessions sidebar: where the shell hosts the Bots pane (classic), each gateway/profile group
     // gets the profile's Screen portal above its sessions. The redesign's agent cards render the

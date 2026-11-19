@@ -1135,14 +1135,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const nextActions: WiringActions = {
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
-    // The sidebar row menu reuses this verb in the Archived view too, where the
-    // row is already archived — dispatch by state so the verb restores there
-    // instead of re-archiving (#98813), across every slice (#126732).
+    // The row menu reuses this verb on archived rows, so it restores there
+    // (#98813). The clicked row's flag is what the menu showed, so it decides;
+    // the caches are only a fallback for callers that pass no row. The row
+    // also carries the owner, so either verb reaches the machine that owns it.
     onArchiveSession: (sessionId, row) => {
-      const listed = row ?? ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, sessionId))
-
-      const isArchived =
-        listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
+      const isArchived = row
+        ? row.archived === true
+        : ownerLookupSessionRows().some(r => r.archived === true && sessionMatchesStoredId(r, sessionId)) ||
+          $archivedSessions.get().some(r => sessionMatchesStoredId(r, sessionId))
 
       void (isArchived ? unarchiveSession(sessionId, row) : archiveSession(sessionId, row))
     },

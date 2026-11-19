@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.codex_responses_adapter import extract_developer_prompt
+
 logger = logging.getLogger(__name__)
 
 PRE_AUXILIARY_CALL = "pre_auxiliary_call"
@@ -45,6 +47,9 @@ def _parent_turn_identity() -> dict[str, str]:
 def _system_prompt(messages: Any, kwargs: dict[str, Any]) -> str:
     if isinstance(kwargs.get("system"), str):  # Anthropic
         return kwargs["system"]
+    dev_prompt = extract_developer_prompt(messages)
+    if dev_prompt is not None:
+        return dev_prompt
     if isinstance(kwargs.get("instructions"), str):  # Responses
         return kwargs["instructions"]
     if isinstance(messages, list) and messages and isinstance(messages[0], dict):

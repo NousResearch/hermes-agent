@@ -50,12 +50,15 @@ def local_source(authority, chat_id, user_id):
 
 
 def _refused_check(exc):
-    """``<reason or error> at <function>:<line>``: where a receipt check raised, and why, followed
+    """``<reason[field: detail] at <function>:<line>``: where a receipt check raised, and why, followed
     through every chained ``__cause__`` (``restore_policy`` and ``local_receipt`` wrap the check
-    that failed into a bare ``storage_unavailable``)."""
+    that failed into a bare ``storage_unavailable``). A refusal that names its field shows it here,
+    so the log identifies the check rather than only its line (#148540)."""
     import traceback
     frames = traceback.extract_tb(exc.__traceback__)
     cause = exc.reason if isinstance(exc, AuthorityRefusal) else f'{type(exc).__name__}: {exc}'
+    if isinstance(exc, AuthorityRefusal) and exc.field:
+        cause += f'[{exc.field}]' + (f': {exc.detail}' if exc.detail else '')
     where = f' at {frames[-1].name}:{frames[-1].lineno}' if frames else ''
     chained = f', caused by {_refused_check(exc.__cause__)}' if exc.__cause__ is not None else ''
     return f'{cause}{where}{chained}'
@@ -478,7 +481,7 @@ def recover_local_sessions(authority, *, schedule=False):
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
         except AuthorityRefusal as exc:
-            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
+            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, _refused_check(exc))
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
         from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close

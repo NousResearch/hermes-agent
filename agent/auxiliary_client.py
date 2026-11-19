@@ -1368,7 +1368,7 @@ class _CodexCompletionsAdapter:
             _responses_tools,
             _role_message_item,
             _wire_model_identity,
-            classify_responses_route,
+            apply_developer_instructions_if_needed, classify_responses_route,
         )
         from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
@@ -1501,8 +1501,8 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
-        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
+        apply_developer_instructions_if_needed(resp_kwargs, wire_model, is_xai_responses=is_xai)
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
@@ -6589,7 +6589,7 @@ def _build_call_kwargs(
 
 
 def _validate_llm_response(
-    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None, client: Any = None,
 ) -> Any:
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
@@ -6600,15 +6600,15 @@ def _validate_llm_response(
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
     hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    an empty route. See #23270. *client* produced *response*; only its credential's cost lookup reads it.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     response = _unwrap_data_envelope(response, task)
-    from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    from agent.aux_accounting import ServingCredential, record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url, serving=ServingCredential.of(client))
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -8027,7 +8027,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8048,9 +8048,8 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
-        )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info)
+            task, provider=request_provider, base_url=req.base_info, client=client)
+    resp, exc = _outcome(_primary)
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8199,12 +8198,13 @@ async def _async_call_llm_impl(
         return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async,
                                             provider=request_provider)
 
-    async def _primary(**validate_kw: Any) -> Any:
+    async def _primary() -> Any:
         import asyncio
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
-            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
+            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate),
+            task, provider=request_provider, base_url=req.base_info, client=client)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
+    resp, exc = await _aoutcome(_primary())
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

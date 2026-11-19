@@ -16,7 +16,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.display import redact_tool_args_for_display
+from agent.reasoning_summaries import redact_reasoning_fields
 from agent.redact import redact_sensitive_text
+from agent.redact_phone_policy import redact_assistant_reply
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -693,6 +695,19 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     )
 
 
+def _redact_projected_assistant_row(message: dict[str, Any]) -> None:
+    """Storage-boundary scrub of one projected assistant row, as ``build_assistant_message`` does on the
+    chat path (#43666): ``content`` and the unsigned ``reasoning`` copy are masked in place (no-op with
+    ``security.redact_secrets`` off). Runs after ``_transform_codex_reply``, which finds the final row by
+    its raw text. Tool-call arguments stay verbatim (#43083)."""
+    if message.get("role") != "assistant":
+        return
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        message["content"] = redact_assistant_reply(content)
+    redact_reasoning_fields(message)
+
+
 def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
@@ -712,6 +727,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
             and first.get("content") == submitted_user_text):
         projected_messages = projected_messages[1:]
     for projected_message in projected_messages:
+        _redact_projected_assistant_row(projected_message)
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return False

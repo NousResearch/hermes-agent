@@ -32,7 +32,7 @@ def _staged(tmp_path, monkeypatch, weights: dict[str, int]):
     for stem in weights:
         (mdir / f"{stem}.gguf").touch()
     monkeypatch.setattr(presets, "read_gguf_header",
-                        lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+                        lambda p: SimpleNamespace(path=p, sampling_defaults={}, has_unknown_quant_types=False))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: ModelProfile(
         name=Path(h.path).stem, weights_bytes=weights[Path(h.path).stem],
         embd_table_bytes=0, n_ctx_train=65536, layers=[]))

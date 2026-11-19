@@ -84,7 +84,14 @@ def commit_local_session(holder, *, epoch, receipt, client_request, created_sour
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt, True
-    return holder._execute_write(write)
+    from .._state.lineage_fence import SessionLineageError, session_write_budget
+
+    try:
+        # The route and immutable creation receipt carry the same chosen session id.
+        with session_write_budget(holder, sid) as remaining:
+            return holder._execute_write(write, patience_s=remaining)
+    except SessionLineageError as exc:
+        raise AuthorityRefusal(exc.code) from exc
 
 
 def _row_cwd(policy):

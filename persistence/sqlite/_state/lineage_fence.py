@@ -678,3 +678,26 @@ def session_write_budget(holder, ids: str | Iterable[str], patience_s: float | N
     deadline = time.monotonic() + patience
     with session_lineage_guard(holder.db_path, ids, timeout_s=patience):
         yield max(0.0, deadline - time.monotonic())
+
+
+def guarded_discovered_write(holder, discover, write, *, patience_s: float):
+    """Recheck the discovered write set on the actual writer before any mutation."""
+    deadline = time.monotonic() + patience_s
+    ids: set[str] = set()
+    expand = object()
+    for _ in range(8):
+        with holder._read_ctx() as conn:
+            ids.update(discover(conn))
+        if time.monotonic() >= deadline:
+            break
+        needed: set[str] = set()
+        with session_lineage_guard(holder.db_path, ids, timeout_s=max(0.0, deadline - time.monotonic())):
+            def guarded(conn):
+                needed.update(discover(conn))
+                return expand if needed - ids else write(conn)
+
+            result = holder._execute_write(guarded, patience_s=max(0.0, deadline - time.monotonic()))
+            if result is not expand:
+                return result
+        ids.update(needed)
+    raise SessionLineageInventoryError("Session write set did not settle within its ownership budget")

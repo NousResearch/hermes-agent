@@ -1,13 +1,13 @@
 name: dsh
 repo: https://github.com/haroon0x/hermes-dsh
-sha: 7e73350f712bffb68c79d5a9e86bdfcd1b7124f6
+sha: abd16e617808cb453f2849f02534d65197017ce6
 description: "Drive DeepSeek Harness (dsh) agents from Hermes: one-shot headless runs and live ACP sessions with per-turn cancel, permissions, model config, parallel fanout, and resumable sessions."
 maintainer: haroon0x
 tier: community
 category: automation
 requires_hermes: ">=0.22"
 docs_url: https://github.com/haroon0x/hermes-dsh#readme
-version: "2.0.1"
+version: "2.0.2"
 platforms: [linux, macos]
 capabilities:
   provides_tools: [dsh_agent, dsh_session]

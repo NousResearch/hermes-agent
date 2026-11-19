@@ -180,6 +180,14 @@ class EventConflictError(_OneMessage, HostedRoomError, Conflict):
     """Raised when an event id is reused with different immutable content."""
 
 
+class RoomMembershipBusyError(HostedRoomError):
+    reason = "room_membership_busy"
+
+
+class RoomMembershipConflictError(HostedRoomError):
+    reason = "room_membership_conflict"
+
+
 class EventCursorConflictError(_OneMessage, HostedRoomError, Conflict):
     """Raised when new room events invalidate an uncommitted publication plan."""
 
@@ -489,6 +497,12 @@ class HostedRoomRepository(Protocol):
 
     def rename_room(self, *, placement: HostedPlacement, room_id: str, event_id: str, name: str, now: float | None = None) -> Mapping[str, JsonValue]:
         """Rename a live room and append its ``room.renamed`` event in one write. A missing or disbanded room refuses ``RoomNotFoundError`` (``RoomHistoryExpiredError`` for a retired id with no row); an existing ``event_id`` replays with ``idempotent=True`` when it is the same rename, else ``EventConflictError``. Returns the room with ``latest_seq`` and ``event``."""
+        ...
+
+    def replace_members(self, *, placement: HostedPlacement, room_id: str, event_id: str,
+                        members: list[dict[str, JsonValue]], expected_revision: int, expected_latest_seq: int,
+                        authority_gateway_id: str, authority_epoch: int, ready: bool) -> Mapping[str, JsonValue]:
+        """Replace the roster and append its before/after event in one fenced write."""
         ...
 
     def append_event(self, *, placement: HostedPlacement, room_id: str, event_id: str, kind: str, actor: Mapping[str, str], payload: Mapping[str, JsonValue], authority_gateway_id: str, authority_epoch: int, expected_latest_seq: int | None = None, control_reserve: bool = False, now: float | None = None) -> Mapping[str, JsonValue]:

@@ -9,6 +9,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { CanonicalGroupMemberEditor } from './canonical-group-member-editor'
 import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
@@ -654,8 +655,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const replyTo = (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => {
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
-    if (member) {
-      const tag = `@${member.handle}`
+    const activeMember = members.find(candidate => candidate.member_id === member?.member_id)
+
+    if (activeMember) {
+      const tag = `@${activeMember.handle}`
       setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
     }
 
@@ -728,7 +731,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       </RoomComposer>
       </div>
     </div>
-    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
+    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels}
+      memberEditor={methods?.has('groups.members.update') && state.room.revision !== undefined
+        ? <CanonicalGroupMemberEditor binding={binding} onSaved={refreshAfterChange} room={state.room} /> : undefined}
+      onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
       <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refreshAfterChange} />
     </CanonicalGroupDetails>}
   </section>

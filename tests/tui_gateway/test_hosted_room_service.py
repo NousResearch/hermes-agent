@@ -406,6 +406,54 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
     assert service.status("room-1")["working"] is False
 
 
+def test_membership_edit_keeps_old_replies_and_allows_same_thread_after_restart(store):
+    def service_for(profiles):
+        service = HostedRoomService(_server(), store=store, placement="profile")
+        service.rpc = _FakeRPC()
+        service.runtime.rpc = service.rpc
+        service.local_profiles = lambda: profiles
+        return service
+
+    def send(service, event_id, text):
+        return service.send(room_id="team", event_id=event_id, payload={"thread_id": "topic", "text": text})
+
+    service = service_for(("default", "helper", "reviewer"))
+    created = service.create_room(room_id="team", name="Release", members=[
+        {"member_id": "default", "profile": "default", "handle": "hermes"},
+        {"member_id": "helper", "profile": "helper", "handle": "helper"},
+    ])
+    change = {"room_id": "team", "event_id": "roster", "expected_revision": created["revision"],
+              "members": [created["members"][0],
+                          {"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}]}
+    send(service, "first", "@helper inspect the release")
+    with pytest.raises(hosted_rooms.HostedRoomError, match="Finish the current"):
+        service.replace_members(**change)
+    service.start()
+    try:
+        _wait_for(lambda: any(event["kind"] == "room.activity" for event in service._events("team")), timeout=5)
+    finally:
+        assert service.stop()
+    before = service._events("team")
+    assert any(event["kind"] == "message.member" and event["actor"]["id"] == "helper" for event in before)
+
+    updated = service.replace_members(**change)
+    assert updated["room_id"] == created["room_id"]
+    assert service._events("team")[:-1] == before
+
+    restarted = service_for(("default", "reviewer"))
+    restarted.start()
+    try:
+        followup = send(restarted, "second", "@reviewer follow up")
+        _wait_for(lambda: any(event["kind"] == "room.activity" and
+                             event["payload"]["discussion_event_id"] == followup["event_id"]
+                             for event in restarted._events("team")), timeout=5)
+    finally:
+        assert restarted.stop()
+    after = restarted._events("team")
+    assert after[:len(before)] == before
+    assert [event["actor"]["id"] for event in after if event["kind"] == "message.member"] == ["helper", "reviewer"]
+
+
 def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path, store):
     service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("default", "ops")

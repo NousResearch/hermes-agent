@@ -44,6 +44,7 @@ export interface CanonicalRoom {
   disbanded_at?: number | null
   /** Seconds; the last change to the room (`groups.list` orders by it). */
   updated_at?: number
+  revision?: number
 }
 
 export interface CanonicalPendingAction {
@@ -234,6 +235,8 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
   return { member_id: handle, profile: pin.profile, handle, display_name: peerLabel(member), target: {
     kind: 'peer', peer_id: pin.installationId, installation_id: pin.installationId, profile: pin.profile, capability_digest: pin.catalogDigest } }
 }
+
+export const canonicalLocalGroupMember = (member: GroupMember) => rosterEntry(member, [member], null, false)
 
 /** The members `groups.create` would receive, or why these Bots cannot form a gateway group. A Bot on
  *  another connection is seated only when `peer` pins it to its own gateway (`rosterEntry`). Local

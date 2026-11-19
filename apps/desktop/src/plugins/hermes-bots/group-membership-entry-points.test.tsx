@@ -9,6 +9,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { CanonicalGroupMemberEditor } from './canonical-group-member-editor'
 import { GroupDialog } from './create-dialog'
 import { $botMeta, $lastRoster } from './data'
 import { GroupMemberPicker } from './group-chat-view-members'
@@ -176,4 +177,30 @@ it('New Group Chat stays offered for a selection that can span connections', asy
   expect(item.hasAttribute('data-disabled')).toBe(false)
   fireEvent.click(item)
   expect(setGroupCreateOpen).toHaveBeenCalledOnce()
+})
+
+it('edits a gateway roster against its original revision and keeps the room ID', async () => {
+  const binding = { roomId: 'room-1', profile: 'default', connectionId: 'local' }
+  const current = [{ member_id: 'alpha', profile: 'alpha', handle: 'alpha' }, { member_id: 'old', profile: 'old', handle: 'old' }]
+  const room = { room_id: 'room-1', name: 'Launch team', revision: 4, members: current }
+  const refreshed = vi.fn(async () => {})
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return { seatable_profiles: ['alpha', 'beta'] }}
+
+    if (method === 'groups.members.update') {return { room }}
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+  $lastRoster.set([alpha, beta, remote('off-machine')])
+  render(<CanonicalGroupMemberEditor binding={binding} onSaved={refreshed} room={room} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Manage members' }))
+  fireEvent.click(await screen.findByRole('checkbox', { name: /^beta/ }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /^old/ }))
+  expect(screen.queryByRole('checkbox', { name: /^off-machine/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Save members' }))
+
+  await waitFor(() => expect(refreshed).toHaveBeenCalledOnce())
+  expect(request).toHaveBeenCalledWith(expect.anything(), 'groups.members.update', {
+    room_id: 'room-1', profile: 'default', expected_revision: 4, event_id: expect.any(String),
+    members: [current[0], { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }]
+  })
 })

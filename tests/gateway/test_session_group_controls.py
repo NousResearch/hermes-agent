@@ -21,9 +21,10 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
     home.mkdir(mode=0o700)
     user.mkdir()
     (home / 'profiles' / 'helper').mkdir(parents=True)
+    (home / 'profiles' / 'reviewer').mkdir(parents=True)
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False},
-        'hosted_rooms': {'profiles': {'helper': str(home / 'profiles' / 'helper')}},
+        'hosted_rooms': {'profiles': {name: str(home / 'profiles' / name) for name in ('helper', 'reviewer')}},
         'model': {'provider': 'custom', 'default': 'no-inference',
                   'base_url': 'http://127.0.0.1:1/v1'},
         'auxiliary': {'title_generation': {'enabled': False}},
@@ -53,10 +54,33 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
             state = await rpc(ws, 'groups.state', room_id='room-fixture')
             log = await rpc(ws, 'groups.log', room_id='room-fixture')
             assert state['result']['room']['latest_seq'] == log['result']['cursor']
+            prior_room = state['result']['room']
+            proposed = [prior_room['members'][0],
+                        {'member_id': 'reviewer', 'profile': 'reviewer', 'handle': 'reviewer'}]
+            edit = dict(room_id=prior_room['room_id'], event_id='edit-fixture',
+                        expected_revision=prior_room['revision'], members=proposed)
+            updated = await rpc(ws, 'groups.members.update', **edit)
+            assert 'result' in updated, updated
+            updated_room = updated['result']['room']
+            assert updated_room['room_id'] == prior_room['room_id']
+            assert [member['member_id'] for member in updated_room['members']] == ['one', 'reviewer']
+            replayed = await rpc(ws, 'groups.members.update', **edit)
+            assert replayed['result']['room']['idempotent']
+            stale = await rpc(ws, 'groups.members.update', **{**edit, 'event_id': 'stale-edit'})
+            assert stale['error']['data']['reason'] == 'room_membership_conflict', stale
+            unknown = await rpc(ws, 'groups.members.update', **{
+                **edit, 'event_id': 'unknown-bot', 'expected_revision': updated_room['revision'],
+                'members': [proposed[0], {'member_id': 'unknown', 'profile': 'unknown', 'handle': 'unknown'}]})
+            assert unknown['error']['data']['reason'] == 'invalid_params', unknown
+            next_log = (await rpc(ws, 'groups.log', room_id=prior_room['room_id']))['result']['events']
+            assert next_log[:-1] == log['result']['events']
+            assert next_log[-1]['kind'] == 'room.members_changed'
+            assert next_log[-1]['actor'] == {'kind': 'system', 'id': 'room-control'}
             denied = await rpc(ws, 'groups.rename', profile='foreign', room_id='room-fixture', event_id='forbidden', name='Wrong')
             assert denied['error']['message'] == 'profile_mismatch', denied
             profiles = await rpc(ws, 'profiles.list', include_sessions=False)
-            assert [p['path'] for p in profiles['result']['profiles']] == [str(home), str(home / 'profiles' / 'helper')], profiles
+            assert [p['path'] for p in profiles['result']['profiles']] == [
+                str(home), str(home / 'profiles' / 'helper'), str(home / 'profiles' / 'reviewer')], profiles
             disbanded = await rpc(ws, 'groups.disband', room_id='room-fixture')
             assert 'result' in disbanded, disbanded
             assert (await rpc(ws, 'groups.list'))['result']['rooms'] == []

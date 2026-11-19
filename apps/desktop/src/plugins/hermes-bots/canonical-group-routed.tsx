@@ -110,7 +110,7 @@ export function pausedDiscussions(events: readonly CanonicalGroupEvent[], maxCon
   const moved = movedOnPauses(ordered)
   // A Stop, or a newer user message in its thread, after the discussion's own message fences it for
   // good, even one older than the cap notice (the gateway refuses that Continue).
-  const lastStop = ordered.reduce((seq, event) => event.kind === 'room.stop_requested' ? event.seq : seq, 0)
+  const lastStop = ordered.reduce((seq, event) => ['room.stop_requested', 'room.members_changed'].includes(event.kind) ? event.seq : seq, 0)
   const sourceSeq = new Map(ordered.flatMap(event => event.kind === 'message.user' && event.event_id ? [[event.event_id, event.seq] as const] : []))
   const lastUserInThread = new Map(ordered.flatMap(event => event.kind === 'message.user' && typeof event.payload.thread_id === 'string' ? [[event.payload.thread_id, event.seq] as const] : []))
   const result = new Map<number, CanonicalPausedDiscussion>()

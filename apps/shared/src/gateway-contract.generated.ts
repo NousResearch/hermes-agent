@@ -1720,6 +1720,13 @@ export interface GroupsRenameParams {
 export interface GroupsRenameResult {
   room: Room
 }
+export interface GroupsMembersUpdateParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  expected_revision: number
+  members: RoomMemberInput[]
+}
 export interface GroupsContextParams {
   profile?: string | null
   room_id: string
@@ -6517,6 +6524,8 @@ export interface RpcMethods {
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
   'groups.log': { params: GroupsLogParams; result: GroupsLogResult }
+  /** Replace the local roster of an idle hosted room while preserving the room and its history. */
+  'groups.members.update': { params: GroupsMembersUpdateParams; result: GroupsRenameResult }
   /** Mint one target-issued room/profile grant for a prospective room home. */
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
@@ -6974,6 +6983,7 @@ export const RPC_METHODS = [
   'groups.discard',
   'groups.list',
   'groups.log',
+  'groups.members.update',
   'groups.peer.invite',
   'groups.peer.register',
   'groups.peer.revoke',

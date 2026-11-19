@@ -4,6 +4,16 @@ There is one kind of new group chat: a **gateway group chat** (the gateway owns 
 
 The Bots roster lists the selected connection/profile's gateway rooms as ordinary Group Chat rows beside legacy renderer rooms. The list keeps itself current (a poll, every socket or source change, and right after a create or disband here); a failed read keeps the last good list and never shows transport text. Opening a room binds and captures that exact authority; changing the foreground profile does not retarget its controls.
 
+## Editing members
+
+Open the group details from the room title and select **Manage members**. On gateways that advertise
+`groups.members.update`, you can change local seats while the group has no active or retryable work.
+The room ID, transcript, attachments and existing member sessions are kept. A new Bot sees the usual
+bounded shared thread context when it takes its first turn. A paused discussion from before a roster
+change can be followed up with a new message in the same thread. The room must keep two to six Bots.
+Change the lead in room settings before removing it. Bots on other gateways are selected at room
+creation and their existing seats are kept when editing local members.
+
 ## Which group chats are gateway group chats
 
 One classifier, `groupExecutionMode`, reads `groups.capabilities`. The gateway (`gateway/session_group_controls.py`) answers directly or through the server used by remote connections (`tui_gateway/methods_groups.py`); a standalone server may instead own its own group chats.
@@ -64,7 +74,7 @@ ordinary owed revokes. Capacity failures preserve earlier holds.
 
 History shows messages and notices for failed, cancelled and deferred turns (a deferred turn names its reason, such as `member_unavailable`), a stop, the work limit (`room.activity` with status `bounded`), the group chat's end and lost ownership; Other events feed the member chips, handoffs and round strip without adding raw transport rows. Your own messages read as **You**. Group chat text may come from another machine: its `MEDIA:` paths, Markdown images, file links and directive cards stay inert, rich code fences (`listing`, `mermaid`, `svg`) show their source, and an explicit web link to a public host (not loopback, link-local or a private network) opens only on a click.
 
-Read timeouts explain that the gateway may be waiting for a bot’s computer and offer Refresh, without showing raw request text. Errors stay visible, and no failed gateway group chat action falls back to Desktop-run execution. Membership editing is not offered.
+Read timeouts explain that the gateway may be waiting for a bot’s computer and offer Refresh, without showing raw request text. Errors stay visible, and no failed gateway group chat action falls back to Desktop-run execution.
 
 ## Contract tests
 

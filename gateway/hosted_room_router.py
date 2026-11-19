@@ -137,7 +137,7 @@ def paused_discussion(events: Sequence[Mapping[str, Any]], discussion_event_id: 
     # message owns the thread, and Continue reopening the old discussion would strand it.
     source_seq = next((int(event["seq"]) for event in events if event.get("event_id") == discussion_event_id),
                       int(bounded["seq"]))
-    if any(int(event["seq"]) > source_seq and (event.get("kind") == "room.stop_requested" or (
+    if any(int(event["seq"]) > source_seq and (event.get("kind") in {"room.stop_requested", "room.members_changed"} or (
             event.get("kind") == "message.user" and (event.get("payload") or {}).get("thread_id") == thread_id))
            for event in events):
         return None

@@ -18,7 +18,8 @@ from persistence.conversation.sessions import TitleConflict, sanitize_title
 from persistence.gateway.hosted_rooms import (
     AuthorityConflictError, EventConflictError, EventCursorConflictError, HostedMemberGuard, HostedOwnerClaim,
     HostedPlacement, HostedRoomError, HostedRoomRefusal, RoomConflictError, RoomHeldGrantsPendingError,
-    RoomHistoryExpiredError, RoomNotFoundError, RoomProbeUnavailableError,
+    RoomHistoryExpiredError, RoomMembershipBusyError, RoomMembershipConflictError, RoomNotFoundError,
+    RoomProbeUnavailableError,
 )
 from session_rules.hosted_rooms import (
     CONTEXT_EVENT_KIND, CONTROL_EVENT_BYTE_RESERVE, CONTROL_EVENT_COUNT_RESERVE, DISBANDED_ROOM_RETENTION_SECONDS,
@@ -136,6 +137,30 @@ def _latest_payload(conn: sqlite3.Connection, room_id: str, kind: str, before_se
         sql, params = sql + " AND seq<?", (*params, int(before_seq))
     row = conn.execute(sql + " ORDER BY seq DESC LIMIT 1", params).fetchone()
     return None if row is None else json.loads(row["payload_json"])
+
+
+def _check_member_identities(conn: sqlite3.Connection, room_id: str, members: list, previous: list) -> None:
+    proposed = {member["member_id"].casefold(): member for member in members}
+    retained = {member["member_id"].casefold(): member for member in previous}
+    for member_id, member in proposed.items():
+        old = retained.get(member_id)
+        if old is not None and old != member and not _legacy_members_match(json.dumps([old]), [member]):
+            raise HostedRoomError("Existing member identities must be kept unchanged.")
+        if old is None and (member.get("target") or {}).get("kind") == "peer":
+            raise HostedRoomError("Adding a Bot from another gateway is only available when creating a room.")
+    if any((member.get("target") or {}).get("kind") == "peer" and member_id not in proposed
+           for member_id, member in retained.items()):
+        raise HostedRoomError("A Bot from another gateway cannot be removed from this room yet.")
+    added = {key: member for key, member in proposed.items() if key not in retained}
+    if not added:
+        return
+    for row in conn.execute("""SELECT payload_json FROM hosted_room_events
+                         WHERE room_id=? AND kind='room.members_changed' ORDER BY seq DESC""", (room_id,)):
+        for old in json.loads(row["payload_json"])["previous_members"]:
+            if (member := added.get(old["member_id"].casefold())) is not None and (
+                    old["member_id"] != member["member_id"] or old["profile"] != member["profile"]
+                    or (old.get("target") and old["target"] != member.get("target")) or old["handle"] != member["handle"]):
+                raise HostedRoomError("A former member's identity cannot be reused for a different Bot.")
 
 
 def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:
@@ -685,6 +710,48 @@ class SQLiteHostedRoomRepository:
         with translated():
             return self._files._hosted_write(placement, write, immediate=True)
 
+    def replace_members(self, *, placement: HostedPlacement, room_id: str, event_id: str,
+                        members: list[dict[str, JsonValue]], expected_revision: int, expected_latest_seq: int,
+                        authority_gateway_id: str, authority_epoch: int, ready: bool) -> Mapping[str, JsonValue]:
+        members, members_json = _validate_members(members)
+        now = _now(None)
+        kind = "room.members_changed"
+        actor = {"kind": "system", "id": "room-control"}
+        actor_json = _actor_json(actor)
+
+        def write(conn: sqlite3.Connection) -> dict[str, Any]:
+            room = _room_row(conn, _SELECT_ROOM, (room_id,), room_id)
+            if room["disbanded_at"] is not None:
+                raise RoomNotFoundError("hosted room not found")
+            _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
+            if (existing := _load_event(conn, room_id, event_id)) is not None:
+                payload = json.loads(existing["payload_json"])
+                if existing["kind"] != kind or payload.get("members") != members or (
+                        payload.get("expected_revision") != expected_revision):
+                    raise EventConflictError("event_id already exists with different immutable content")
+                return _room_from_row(room, idempotent=True)
+            if room["revision"] != expected_revision or room["next_seq"] - 1 != expected_latest_seq:
+                raise RoomMembershipConflictError("This Group Chat changed. Reopen Manage members and try again.")
+            if not ready:
+                raise RoomMembershipBusyError("Finish the current Group Chat work before editing members.")
+            previous = json.loads(room["members_json"])
+            _check_member_identities(conn, room_id, members, previous)
+            settings = context_from_payload(_latest_payload(conn, room_id, CONTEXT_EVENT_KIND, None))
+            if settings["routing"] == "lead" and settings["lead_member_id"] not in {
+                    member["member_id"] for member in members}:
+                raise HostedRoomError("Change the room's lead before removing it.")
+            _append_locked(
+                conn, room_id=room_id, event_id=event_id, kind=kind, actor=actor, actor_json=actor_json,
+                payload_json=_payload_json({"previous_members": previous, "members": members,
+                                            "expected_revision": expected_revision}),
+                authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
+                expected_latest_seq=expected_latest_seq, control_reserve=False, now=now)
+            conn.execute("UPDATE hosted_rooms SET members_json=?, revision=revision+1 WHERE room_id=?",
+                         (members_json, room_id))
+            return _room_from_row(_reload(conn, _SELECT_ROOM, (room_id,), "updated room could not be reloaded"))
+        with translated():
+            return self._files._hosted_write(placement, write, immediate=True)
+
     # The caller validates the event first. Appends it under the room's authority; the same id and content replays.
     def append_event(self, *, placement: HostedPlacement, room_id: str, event_id: str, kind: str, actor: Mapping[str, str], payload: Mapping[str, JsonValue], authority_gateway_id: str, authority_epoch: int, expected_latest_seq: int | None = None, control_reserve: bool = False, now: float | None = None) -> Mapping[str, JsonValue]:
         normalized_actor = dict(actor)
@@ -714,8 +781,11 @@ class SQLiteHostedRoomRepository:
             context = validate_context(
                 purpose, notes, current["routing"] if routing is None else routing,
                 current["lead_member_id"] if lead_member_id is None else lead_member_id)
-            if first is None and context["routing"] == "lead" and context["lead_member_id"] not in seated:
-                raise HostedRoomError("the lead must be a member of this Group Chat")
+            if first is None and context["routing"] == "lead":
+                room = _room_row(conn, _SELECT_ROOM, (room_id,), room_id)
+                active = {member["member_id"] for member in json.loads(room["members_json"])}
+                if context["lead_member_id"] not in seated & active:
+                    raise HostedRoomError("the lead must be a member of this Group Chat")
             payload = context if original is None else retry_fields(context, original)
             event = _append_locked(
                 conn, room_id=room_id, event_id=event_id, kind=CONTEXT_EVENT_KIND, actor=actor, actor_json=actor_json,

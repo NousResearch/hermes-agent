@@ -182,6 +182,8 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
 def test_linux_build_results_never_gate_canary_publication():
     jobs = workflow_jobs()
     publisher = jobs[canary_publisher(jobs)]
+    assert set(needs_of(publisher)) == set(channel_releases.CANARY_NEEDS)
+    assert set(needs_of(publisher)).isdisjoint(DIAGNOSTIC_JOBS)
     needs = admitted(needs_of(publisher))
     for name in DIAGNOSTIC_JOBS:
         needs[name] = {"result": "failure"}

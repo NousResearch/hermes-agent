@@ -2,6 +2,7 @@
 root; off-shape rows must fail closed before any rmtree/publish (#138359)."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -50,6 +51,16 @@ def test_well_formed_pin_still_reads_back(tmp_path):
     lock = _lock_with_pin(tmp_path, GOOD)
     assert lock.artifacts("faketool", "any") == [
         {"url": "https://example.com/a.zip", "sha256": GOOD}]
+
+
+def test_npm_universal_fallback_matches_declared_version():
+    repo_root = Path(__file__).resolve().parents[2]
+    packages = json.loads((repo_root / "pm" / "lock.json").read_text())["packages"]
+    npm = packages["npm"]
+    universal = npm["artifacts"]["any"]
+
+    assert universal == npm["artifacts"]["darwin-arm64"]
+    assert universal["url"].endswith(f"/npm-{npm['version']}.tgz")
 
 
 @pytest.mark.parametrize("digest", [

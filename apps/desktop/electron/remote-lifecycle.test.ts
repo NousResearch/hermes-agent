@@ -627,6 +627,56 @@ test('pidIsOurDashboard accepts the venv entrypoint an installer wrapper execs i
 })
 
 test.skipIf(process.platform === 'win32')(
+  'pidIsOurDashboard fails closed when argv is unavailable instead of parsing flattened ps output',
+  async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes-ps-boundary-'))
+    const home = path.join(temp, 'home')
+    const bin = path.join(temp, 'bin')
+    const fakePs = path.join(bin, 'ps')
+    const tokenPath = path.join(home, spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+
+    const flattenedCommand = [
+      '/usr/bin/python3',
+      '/foreign/worker.py',
+      '--profile',
+      'ops',
+      'serve',
+      '--isolated',
+      '--ssh-session-token-file',
+      tokenPath,
+      '--ssh-owner-nonce',
+      SPAWN_NONCE
+    ].join(' ')
+
+    const shell = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      HERMES_TEST_PS_COMMAND: flattenedCommand,
+      PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`
+    }
+
+    await mkdir(bin, { recursive: true })
+    await writeFile(fakePs, '#!/bin/sh\nprintf \'%s\\n\' "$HERMES_TEST_PS_COMMAND"\n', 'utf8')
+    await chmod(fakePs, 0o755)
+
+    try {
+      const ssh: Pick<SshConnection, 'exec'> = {
+        exec: async (command: string): Promise<string> => (await exec(command, { shell, env })).stdout
+      }
+
+      assert.equal(
+        await pidIsOurDashboard(ssh, 2147483647, SPAWN_NONCE, '/expected/hermes', '', OWNERSHIP_ID, 'ops'),
+        false
+      )
+    } finally {
+      await rm(temp, { force: true, recursive: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
   'pidIsOurDashboard recognizes an installer wrapper after it execs python + entrypoint',
   async (): Promise<void> => {
     const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
@@ -693,6 +743,31 @@ test.skipIf(process.platform === 'win32')(
         await pidIsOurDashboard(ssh, child.pid, SPAWN_NONCE, launcher, '/unrelated/hermes-home', OWNERSHIP_ID, 'ops'),
         true
       )
+
+      const emptyProfileArgument = spawnInstaller([
+        '--profile',
+        '',
+        'ops',
+        'serve',
+        '--isolated',
+        ...backendFlags
+      ])
+
+      assert.equal(await waitForEntrypoint(emptyProfileArgument), true)
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          emptyProfileArgument.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
+        false,
+        'an empty profile argument must not be discarded when matching argv'
+      )
+
       assert.equal(
         await pidIsOurDashboard(
           ssh,

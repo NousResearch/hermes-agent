@@ -1249,11 +1249,13 @@ def compute_next_run(
         # got a "next run" up to an hour in the PAST. Return the earliest instant strictly
         # after the base, trying the second pass (fold=1) only for a job that runs in it:
         # a fixed-time job whose run ended in the second pass fired a second time that
-        # night (jobs_time.repeated_hour_folds). Two candidate wall clocks always suffice.
+        # night (jobs_time.repeated_hour_folds). A fixed-time job can have several slots in
+        # the repeated hour (``0,15,30,45 1 * * *``), so keep advancing until a candidate is
+        # strictly later; the repeated hour holds at most 60 minute slots, so 62 bounds it.
         base_ts = base_time.timestamp()
         repeat = jobs_time.repeated_hour_second_pass(croniter, expr, base_time.astimezone(zone), zone)
         next_wall = it.get_next(datetime)
-        for _ in range(2):
+        for _ in range(62):
             for fold in jobs_time.repeated_hour_folds(expr):
                 candidate = next_wall.replace(tzinfo=zone, fold=fold)
                 if candidate.timestamp() > base_ts:

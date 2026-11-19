@@ -62,3 +62,16 @@ def _fires_over_fall_back_night(monkeypatch, expr: str, run_minutes: int) -> lis
 def test_fixed_time_job_runs_once_in_the_repeated_hour(new_york, monkeypatch, expr, run_minutes, wall):
     fires = _fires_over_fall_back_night(monkeypatch, expr, run_minutes)
     assert fires == [f"2026-11-01T{wall}:00-04:00"]
+
+
+@pytest.mark.parametrize("expr", ["0,15,30,45 1 * * *", "10-50/10 1 * * *"])
+def test_fixed_slot_list_never_schedules_the_past(new_york, expr):
+    """Several fixed slots in the repeated hour: a base early in the second pass skips every
+    second-pass slot, and the next run must still be strictly later (tomorrow), never a
+    first-pass slot already behind it."""
+    base = datetime(2026, 11, 1, 1, 1, tzinfo=NEW_YORK, fold=1)
+    raw = compute_next_run({"kind": "cron", "expr": expr}, last_run_at=base.isoformat())
+    assert raw is not None
+    nxt = datetime.fromisoformat(raw)
+    assert nxt.timestamp() > base.timestamp()
+    assert nxt.date().isoformat() == "2026-11-02"

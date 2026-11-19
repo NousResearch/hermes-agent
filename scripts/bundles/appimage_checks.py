@@ -1,4 +1,4 @@
-"""Worker for linux_appimage_acceptance.py. Run only inside its private namespace."""
+"""Acceptance worker for scripts/ci/linux_x64_userland.sh accept. Run only inside its offline sandbox."""
 
 from __future__ import annotations
 
@@ -14,6 +14,19 @@ import subprocess
 import sys
 import time
 from urllib.request import Request, urlopen
+
+
+def check_image(image: Path, sha256: str) -> None:
+    with image.open("rb") as stream:
+        header = stream.read(64)
+        if (header[:6] != b"\x7fELF\x02\x01" or header[8:11] != b"AI\x02"
+                or header[18:20] != b"\x3e\x00"):
+            raise ValueError("expected a packaged x86-64 type 2 AppImage")
+        digest = hashlib.sha256(header)
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != sha256:
+        raise ValueError("AppImage SHA-256 does not match the producer")
 
 
 _TRACE = re.compile(r'^execve(?:at\(([^,]+), |\()"([^"\n]*)", (.*)')
@@ -189,11 +202,11 @@ def check_desktop(work: Path, image: Path) -> None:
     check_execs(work, "desktop", set(), floor=True)
 
 
-def main(ubuntu: str) -> None:
+def main(ubuntu: str, sha256: str, *, image: Path = Path("/image.AppImage")) -> None:
     if not hasattr(os, "geteuid") or os.geteuid() == 0 or {name for _, name in socket.if_nameindex()} != {"lo"}:
         raise SystemExit("refusing to run outside the offline non-root sandbox")
     work = Path.cwd()
-    image = Path("/image.AppImage")
+    check_image(image, sha256)
     subprocess.run([image, "--appimage-extract"], stdout=subprocess.DEVNULL, check=True, timeout=300)
     root = work / "squashfs-root"
     check_payload(work, contained(root, "resources/agent-payload"), ubuntu == "22.04")
@@ -206,4 +219,4 @@ if __name__ == "__main__":
     if sys.argv[1] == 'cpu-completion':
         cpu_completion(Path(sys.argv[2]), Path('/stories260K.gguf'))
     else:
-        main(sys.argv[1])
+        main(sys.argv[1], sys.argv[2])

@@ -63,10 +63,9 @@ case "$phase" in
         "$image" bash -ec '
           . /etc/os-release
           [[ $ID == ubuntu && $VERSION_ID == "$1" && $(uname -m) == x86_64 ]] || exit 1
-          printf "%s  /image.AppImage\n" "$2" | sha256sum --check --strict
           mkdir -m 700 /work/home /work/runtime
-          ubuntu=$1; shift 2
-          exec "$@" python3 -I /checks.py "$ubuntu"
+          ubuntu=$1 digest=$2; shift 2
+          exec "$@" python3 -I /checks.py "$ubuntu" "$digest"
         ' bash "$ubuntu" "$digest" "${start[@]}"
       printf 'Accepted Ubuntu %s x64 AppImage sha256=%s\n' "$ubuntu" "$digest"
     done ;;

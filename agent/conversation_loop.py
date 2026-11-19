@@ -1758,6 +1758,8 @@ def _run_conversation_turn(
                 return _ri.result
             if _ri.action == "continue":
                 continue
+            # A response is in hand: the guardrail wrap-up's one tool-free call is spent.
+            agent._toolguard_suppress_tools_next_call = False
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )

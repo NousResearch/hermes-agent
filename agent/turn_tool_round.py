@@ -182,7 +182,7 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
-    if agent._tool_guardrail_halt_decision is not None:
+    if agent._tool_guardrail_halt_decision is not None and not start_guardrail_wrapup(agent, api_call_count):
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
@@ -237,6 +237,44 @@ def run_tool_round(
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")
+
+
+def start_guardrail_wrapup(agent: Any, api_call_count: Any) -> bool:
+    """Turn the turn's first guardrail halt into one tool-free wrap-up call.
+
+    Returns True when it took the halt (the turn continues into that call through the
+    ordinary post-tool path), False when the wrap-up is already spent and the caller ends
+    the turn on the canned halt response.
+
+    The canned response discards everything the model actually observed (partial results,
+    the concrete blocker) and reads as a crash to the user, so the model gets one more call
+    with no tools offered (turn_request_assembly) to write the real final answer. No
+    synthetic user message is injected: the guardrail explanation already reached the
+    model on the tool RESULT (append_toolguard_guidance), so the wrap-up continues the
+    normal assistant -> tool -> assistant alternation. The loop stays bounded: a second
+    halt after the wrap-up falls through to the canned response."""
+    if getattr(agent, "_toolguard_wrapup_used", True) is not False:
+        return False
+    decision = agent._tool_guardrail_halt_decision
+    agent._toolguard_wrapup_used = True
+    # Preserved for turn_finalizer's ``guardrail`` metadata: the live attribute is cleared
+    # so the loop can make the final call.
+    agent._toolguard_last_halt_decision = decision
+    agent._tool_guardrail_halt_decision = None
+    agent._toolguard_suppress_tools_next_call = True
+    # The wrap-up is an ordinary iteration, paid from the same iteration budget, so a
+    # guardrailed turn costs one API call more than it used to. When the halt lands on the
+    # LAST budgeted call the loop condition is already false and the turn would fall out of
+    # the loop with neither the wrap-up nor the canned fallback (and no ``guardrail_halt``
+    # exit reason). Borrow the one-more-chance grace flag for that case: it re-opens the
+    # loop condition, skips the budget consume and is cleared on entry to the iteration, so
+    # the turn still ends right after.
+    if not (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0):
+        agent._budget_grace_call = True
+    agent._emit_diagnostic_status(
+        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code} — requesting a final summary"
+    )
+    return True
 
 
 def stage_tool_call_message(

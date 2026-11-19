@@ -63,13 +63,15 @@ def test_held_turns_show_only_the_rewritten_final(hold, turn):
 def test_a_held_guardrail_halt_reply_is_not_streamed_ahead_of_the_rewrite():
     """A turn the tool-loop guardrail halts ends with Hermes' halt explanation, pushed straight to
     the display callback so SSE/TUI clients see why the agent stopped. Held, it arrives only as the
-    final (after ``transform_llm_output``), never as a stream delta first."""
+    final (after ``transform_llm_output``), never as a stream delta first. The halt now gets one
+    tool-free wrap-up call (the fake answers tool-less requests from ``aux``), and that reply is
+    held the same way."""
     from hermes_cli import plugins
     from run_agent import AIAgent
 
     home = Path(os.environ["HERMES_HOME"])
     failing = ToolCall("read_file", {"path": str(home / "missing" / "SECRET-9.txt")})
-    with FakeLLMServer([failing] * 6 + [Text(RAW)]) as srv:
+    with FakeLLMServer([failing] * 6) as srv:
         redactor_home(home, srv.base_url, hold=True)
         with (home / "config.yaml").open("a", encoding="utf-8") as config:
             config.write("tool_loop_guardrails:\n  hard_stop_enabled: true\n  hard_stop_after:\n    exact_failure: 2\n")
@@ -83,5 +85,6 @@ def test_a_held_guardrail_halt_reply_is_not_streamed_ahead_of_the_rewrite():
         finally:
             plugins._reset_plugin_managers_for_tests()
 
-    assert result["turn_exit_reason"] == "guardrail_halt" and result["final_response"]
+    assert result.get("guardrail") and result["final_response"]
+    assert any(body["messages"][-1]["role"] == "tool" for body in srv.aux_requests()), "no wrap-up call"
     assert [text for text in shown if text] == []

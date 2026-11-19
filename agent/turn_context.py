@@ -668,6 +668,9 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_reused_response_text", None),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
+    # Guardrail-halt wrap-up: one tool-free summary call per turn (turn_tool_round).
+    ("_toolguard_wrapup_used", False), ("_toolguard_suppress_tools_next_call", False),
+    ("_toolguard_last_halt_decision", None),
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),

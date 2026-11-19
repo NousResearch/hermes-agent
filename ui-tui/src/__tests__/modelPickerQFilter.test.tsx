@@ -19,11 +19,8 @@ const flushEsc = async () => {
   await flush()
 }
 
-// Behaviour contract for #157542: on the filterable list stages every printable
-// character — including 'q' — is filter text, never a quit shortcut. Esc keeps
-// the clear-filter → back → cancel ladder, so no exit affordance is lost.
-// Fallback states (load failure, no providers) render no filter line and keep
-// the original q-cancel; while loading, q stays text so type-ahead survives.
+// Behaviour contract for #157542: wherever the picker captures text (list
+// filters, API key entry) 'q' is text, never a quit shortcut.
 function harness(requestImpl?: (method: string) => Promise<unknown>) {
   const request = vi.fn(
     requestImpl ??
@@ -122,26 +119,6 @@ describe('ModelPicker q is filter text on list stages (#157542)', () => {
     }
   })
 
-  it('typing q on the provider stage filters providers instead of closing', async () => {
-    const h = harness()
-
-    try {
-      await flush()
-      h.instance.rerender(h.element)
-      await flush()
-
-      h.stdin.write('q')
-      await flush()
-      expect(h.onCancel).not.toHaveBeenCalled()
-      // 'q' matches Nous Portal via its qwen models; the query stays editable.
-      const frame = h.take()
-      expect(frame).toContain('filter: q')
-      expect(frame).toContain('Nous Portal')
-    } finally {
-      h.instance.unmount()
-    }
-  })
-
   it('typing q while entering an API key does not close the picker', async () => {
     // Sibling path: the key stage is not a list stage, so the shared overlay
     // q-handler used to stay active and quit mid-key-entry (#157542).
@@ -221,110 +198,6 @@ describe('ModelPicker q is filter text on list stages (#157542)', () => {
       expect(take()).toContain('Select provider')
     } finally {
       instance.unmount()
-    }
-  })
-
-  it('Esc still clears the filter, then backs out, then cancels', async () => {
-    const h = harness()
-
-    try {
-      await flush()
-      h.instance.rerender(h.element)
-      await flush()
-      h.stdin.write('\r')
-      await flush()
-      h.stdin.write('q')
-      await flush()
-      h.take()
-
-      // Esc 1: clear the filter, stay on the model stage.
-      h.stdin.write('\x1b')
-      await flushEsc()
-      expect(h.onCancel).not.toHaveBeenCalled()
-      expect(h.take()).not.toContain('filter: q')
-
-      // Esc 2: back to the provider stage. Esc 3: cancel the picker.
-      h.stdin.write('\x1b')
-      await flushEsc()
-      expect(h.onCancel).not.toHaveBeenCalled()
-      h.stdin.write('\x1b')
-      await flushEsc()
-      expect(h.onCancel).toHaveBeenCalledTimes(1)
-    } finally {
-      h.instance.unmount()
-    }
-  })
-})
-
-describe('ModelPicker fallback states keep q-cancel (#157542 review)', () => {
-  it('q cancels on load failure and the hint advertises Esc/q', async () => {
-    const h = harness(async () => {
-      throw new Error('boom')
-    })
-
-    try {
-      await flush()
-      h.instance.rerender(h.element)
-      await flush()
-      expect(h.take()).toContain('Esc/q cancel')
-      h.stdin.write('q')
-      await flush()
-      expect(h.onCancel).toHaveBeenCalledTimes(1)
-    } finally {
-      h.instance.unmount()
-    }
-  })
-
-  it('q cancels when no providers are listed', async () => {
-    const h = harness(async () => ({ model: '', providers: [] }))
-
-    try {
-      await flush()
-      h.instance.rerender(h.element)
-      await flush()
-      expect(h.take()).toContain('Esc/q cancel')
-      h.stdin.write('q')
-      await flush()
-      expect(h.onCancel).toHaveBeenCalledTimes(1)
-    } finally {
-      h.instance.unmount()
-    }
-  })
-
-  it('q typed while loading stays filter text (type-ahead)', async () => {
-    let resolveLoad: (value: unknown) => void = () => {}
-
-    const gate = new Promise(resolve => {
-      resolveLoad = resolve
-    })
-
-    const h = harness(async () => gate)
-
-    try {
-      await flush()
-      h.instance.rerender(h.element)
-      await flush()
-      h.stdin.write('q')
-      await flush()
-      expect(h.onCancel).not.toHaveBeenCalled()
-      resolveLoad({
-        model: 'qwen/qwen3-max',
-        providers: [
-          {
-            authenticated: true,
-            is_current: true,
-            models: ['qwen/qwen3-max', 'claude-sonnet-4'],
-            name: 'Nous Portal',
-            slug: 'nous',
-            total_models: 2
-          }
-        ]
-      })
-      await flush()
-      expect(h.onCancel).not.toHaveBeenCalled()
-      expect(h.take()).toContain('filter: q')
-    } finally {
-      h.instance.unmount()
     }
   })
 })

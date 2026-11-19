@@ -732,9 +732,12 @@ class SQLiteHostedRoomRepository:
                 return _room_from_row(room, idempotent=True)
             if room["revision"] != expected_revision or room["next_seq"] - 1 != expected_latest_seq:
                 raise RoomMembershipConflictError("This Group Chat changed. Reopen Manage members and try again.")
+            previous = json.loads(room["members_json"])
+            if previous == members:
+                # An unchanged roster must not fence Continue on a paused discussion.
+                return _room_from_row(room)
             if not ready:
                 raise RoomMembershipBusyError("Finish the current Group Chat work before editing members.")
-            previous = json.loads(room["members_json"])
             _check_member_identities(conn, room_id, members, previous)
             settings = context_from_payload(_latest_payload(conn, room_id, CONTEXT_EVENT_KIND, None))
             if settings["routing"] == "lead" and settings["lead_member_id"] not in {

@@ -284,6 +284,26 @@ def test_the_cap_pauses_and_continue_grants_one_more_budget_even_after_a_restart
     assert len(_kinds(service, "message.member")) == 4 and _queued(service) == []
 
 
+@pytest.mark.parametrize("change", [False, True], ids=["unchanged", "removed-member"])
+def test_only_an_actual_membership_change_closes_a_paused_discussion(tmp_path, change):
+    service = _bounded_room(tmp_path)
+    room = service._room(ROOM_ID)
+    discussion_id = _kinds(service, "room.activity")[0]["payload"]["discussion_event_id"]
+    members = room["members"][:-1] if change else room["members"]
+    updated = service.replace_members(room_id=ROOM_ID, event_id="edit", expected_revision=room["revision"],
+                                      members=members)
+
+    if change:
+        assert updated["revision"] == room["revision"] + 1
+        assert len(_kinds(service, "room.members_changed")) == 1
+        with pytest.raises(hosted_rooms.HostedRoomError, match="not paused"):
+            service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
+    else:
+        assert updated["revision"] == room["revision"]
+        assert _kinds(service, "room.members_changed") == []
+        assert service.continue_room(ROOM_ID, discussion_event_id=discussion_id)["kind"] == "room.continued"
+
+
 @pytest.mark.parametrize("after", ["stop", "new_message", "twice"])
 def test_continue_is_refused_once_the_pause_is_moot(tmp_path, after):
     service = _bounded_room(tmp_path)

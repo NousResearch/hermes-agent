@@ -956,21 +956,27 @@ class HostedRoomService:
             gateway_id, epoch = _authority(room)
             if gateway_id != hosted_rooms.local_authority_gateway_id():
                 raise AuthorityConflictError("This Group Chat is managed by another gateway.")
-            old_local_profiles = {member["profile"] for member in room["members"]
-                                  if (member.get("target") or {}).get("kind") != "peer"}
+            previous_edit = self.store.hosted_rooms.event_by_id(
+                placement=self.placement, room_id=room_id, event_id=event_id)
+            recorded_members = (previous_edit["payload"]["members"]
+                                if previous_edit is not None and previous_edit["kind"] == "room.members_changed" else [])
+            known_local_profiles = {member["profile"] for member in (*room["members"], *recorded_members)
+                                    if (member.get("target") or {}).get("kind") != "peer"}
             # The authenticated caller's roster applies to new seats. Existing seats can be kept
-            # when their profile is currently offline or unavailable to this caller.
+            # when their profile is offline. An exact replay can also name a since-retired Bot.
             eligible = set(self.local_profiles() if eligible_profiles is None else eligible_profiles)
-            normalized = discussion.validate_roster(members, local_profiles=eligible | old_local_profiles)
+            normalized = discussion.validate_roster(members, local_profiles=eligible | known_local_profiles)
             roster = [{"member_id": m.member_id, "profile": m.profile, "handle": m.handle, "target": dict(m.target),
                        **({"display_name": m.display_name} if m.display_name else {})} for m in normalized]
-            old_ids = {member["member_id"] for member in room["members"]}
-            additions = [member for member in roster
-                         if member["target"]["kind"] == "local" and member["member_id"] not in old_ids]
-            refuse_unseatable(additions, refused_profiles or {})
-            if any(member["profile"] not in eligible for member in additions):
-                raise discussion.DiscussionValidationError("A new Bot must be eligible on this gateway.")
-            ready = not self._policy_snapshot(room).events and self._room_outcomes_published(room_id)
+            ready = False
+            if previous_edit is None:
+                old_ids = {member["member_id"] for member in room["members"]}
+                additions = [member for member in roster
+                             if member["target"]["kind"] == "local" and member["member_id"] not in old_ids]
+                refuse_unseatable(additions, refused_profiles or {})
+                if any(member["profile"] not in eligible for member in additions):
+                    raise discussion.DiscussionValidationError("A new Bot must be eligible on this gateway.")
+                ready = not self._policy_snapshot(room).events and self._room_outcomes_published(room_id)
             return self.store.hosted_rooms.replace_members(
                 placement=self.placement, room_id=room_id, event_id=event_id, members=roster,
                 expected_revision=expected_revision, expected_latest_seq=int(room["latest_seq"]),

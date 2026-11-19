@@ -454,6 +454,33 @@ def test_membership_edit_keeps_old_replies_and_allows_same_thread_after_restart(
     assert [event["actor"]["id"] for event in after if event["kind"] == "message.member"] == ["helper", "reviewer"]
 
 
+def test_membership_retry_survives_a_later_edit_and_profile_retirement(store):
+    service = HostedRoomService(_server(), store=store, placement="profile")
+    service.local_profiles = lambda: ("default", "helper", "reviewer")
+    initial = service.create_room(room_id="team", name="Release", members=[
+        {"member_id": "default", "profile": "default", "handle": "hermes"},
+        {"member_id": "helper", "profile": "helper", "handle": "helper"},
+    ])
+    replace = {"room_id": "team", "event_id": "add-reviewer", "expected_revision": initial["revision"],
+               "members": [initial["members"][0],
+                           {"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}]}
+    edited = service.replace_members(**replace)
+    restored = service.replace_members(room_id="team", event_id="restore-helper", expected_revision=edited["revision"],
+                                       members=initial["members"])
+    service.local_profiles = lambda: ("default", "helper")
+    events = service._events("team")
+
+    replay = service.replace_members(**replace)
+    assert replay["idempotent"] is True
+    assert replay["members"] == restored["members"]
+    assert replay["revision"] == restored["revision"]
+    with pytest.raises(hosted_rooms.EventConflictError):
+        service.replace_members(**{**replace, "members": [initial["members"][0], {
+            **replace["members"][1], "handle": "different-handle",
+        }]})
+    assert service._events("team") == events
+
+
 def test_restart_republishes_terminal_task_before_admitting_more(tmp_path: Path, store):
     service = HostedRoomService(_server(), store=store, placement="profile")
     service.local_profiles = lambda: ("default", "ops")
@@ -1036,7 +1063,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
     assert service.status("room-1")["pending_actions"] == []
 
 
-def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
+def test_headless_peer_room_keeps_working_after_a_local_roster_edit(
     tmp_path: Path, store,
 ):
     peer = _FakePeerClient()
@@ -1059,7 +1086,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
     )
     service.rpc = _FakeRPC()
     service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("default",)
+    service.local_profiles = lambda: ("default", "ops")
     room = service.create_room(
         room_id="room-1",
         name="Review room",
@@ -1091,11 +1118,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
         event_id="user-peer-1",
         payload={"text": "@reviewer inspect this", "thread_id": "thread-1"},
     )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member" for event in service._events("room-1")
-        )
-    )
+    _wait_for(lambda: any(event["kind"] == "room.activity" for event in service._events("room-1")))
     assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
@@ -1104,6 +1127,29 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
     assert reply["payload"]["text"] == "Remote review complete."
     assert reply["actor"]["connection_id"] == "peer-review"
     assert peer.dispatches[0]["target_profile"] == "reviewer"
+
+    saved_peer = room["members"][1]
+    ops = {"member_id": "ops", "profile": "ops", "handle": "ops"}
+    with pytest.raises(hosted_rooms.HostedRoomError, match="another gateway cannot be removed"):
+        service.replace_members(room_id="room-1", event_id="drop-peer", expected_revision=room["revision"],
+                                members=[room["members"][0], ops])
+    assert service._events("room-1") == events
+    updated = service.replace_members(room_id="room-1", event_id="swap-local", expected_revision=room["revision"],
+                                      members=[ops, saved_peer])
+    assert updated["members"][1] == saved_peer
+    assert service._events("room-1")[:-1] == events
+
+    service.start()
+    try:
+        followup = service.send(room_id="room-1", event_id="after-edit", payload={
+            "text": "@reviewer please follow up", "thread_id": "thread-1"})
+        _wait_for(lambda: any(event["kind"] == "room.activity" and
+                             event["payload"]["discussion_event_id"] == followup["event_id"]
+                             for event in service._events("room-1")))
+    finally:
+        assert service.stop(timeout=5.0)
+    assert service._events("room-1")[:len(events)] == events
+    assert [dispatch["target_profile"] for dispatch in peer.dispatches] == ["reviewer", "reviewer"]
 
 
 def test_unadmitted_peer_failure_does_not_block_next_healthy_member(

@@ -5,7 +5,7 @@ One model-facing tool, ``browser_vault``, deferred behind tool_search (only its 
 paid per request) and available wherever a browser is. Its actions:
 
 - ``list``  → handles + metadata (for logins this includes the
-  identifier — it is NOT a secret; the agent types it itself). Passwords are
+  identifier — it is NOT a secret; ``fill`` types it with the password). Passwords are
   never returned.
 - ``fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
@@ -491,7 +491,7 @@ def browser_vault_unlock(backend_name: str) -> str:
 
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
-    vault bound to that origin, and fill the password at once. The values never enter the conversation."""
+    vault bound to that origin, and fill the login at once. The values never enter the conversation."""
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
     from agent.vault_store import get_vault_store
 
@@ -525,7 +525,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
     return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
                        "identifier_type": id_type, "fill": filled,
-                       "next": "Type the identifier into the username field if the form has one, then submit."},
+                       "next": filled.get("next") or "The login is saved but the fill did not land (see fill); call "
+                                                     "browser_vault action=fill with this handle once the form is ready."},
                       ensure_ascii=False)
 
 

@@ -1462,6 +1462,32 @@ class TestSaveLoginPrompt:
         [meta] = store.list_items()
         assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
 
+    @pytest.mark.parametrize("fill", [
+        {"success": True, "filled_fields": 2, "next": "Submit."},
+        {"success": False, "error_type": "focus_lost", "filled_fields": 0, "error": "focus moved"},
+    ], ids=["filled", "not-filled"])
+    def test_next_follows_the_fill_and_never_asks_to_type_the_identifier(self, store, monkeypatch, fill):
+        """The fill already types the identifier: a model told to type it again would write it a second
+        time into a field the vault just filled. A failed fill says the login is saved and how to retry."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        unlock_mod.set_save_login_prompt_callback(lambda origin, site: {"identifier": "tek@acme.test", "password": "pw-x"})
+        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "browser_vault_fill", lambda handle, task_id=None: json.dumps(fill))
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True and out["fill"] == fill
+        if fill["success"]:
+            assert out["next"] == "Submit."
+        else:
+            assert "saved" in out["next"] and "handle" in out["next"] and "action=fill" in out["next"]
+        assert "Type the identifier" not in out["next"]
+
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

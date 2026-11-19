@@ -17,6 +17,8 @@ from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
 from hermes_constants import openrouter_variant_base
+from hermes_cli.model_catalog import manifest_additions
+from hermes_cli.models_detect import relay_lists_live_only
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -616,6 +618,33 @@ def _profile_catalog(normalized: str, base_url: Optional[str] = None) -> tuple[l
     return catalog, own_endpoint and bool(catalog)
 
 
+# Built-in catalogs whose picker joins the curated row to a healthy live listing, keyed to whether the
+# endpoint is the one that merge applies to. Every other built-in fetcher lists the live response alone.
+_CURATED_JOINS_LIVE: dict[str, Callable[[str], bool]] = {
+    "stepfun": lambda base_url: True,  # Step Plan's /models is a subset of the catalog (#41147)
+    "anthropic": lambda base_url: not base_url or base_url_host_matches(base_url, "api.anthropic.com"),
+}
+
+
+def _picker_offers_added_row(normalized: str, lookup: str, listing: list[str], base_url: str) -> bool:
+    """Whether the picker, given the ``listing`` this validation just fetched, offers ``lookup`` as a
+    row the remote manifest added. Each provider decides whether curated rows join a healthy live
+    listing (StepFun, DeepSeek) or the listing stands alone (GMI), and the decision is made on this
+    listing, never on an older cached picker row or on manifest membership alone."""
+    from hermes_cli import models as _m
+    from providers import get_provider_profile
+
+    if lookup not in {mid.lower() for mid in manifest_additions(normalized, _m.static_catalog(normalized))}:
+        return False
+    if relay_lists_live_only(normalized, base_url):
+        return False
+    if (joins := _CURATED_JOINS_LIVE.get(normalized)) is not None:
+        return joins(base_url)
+    profile = None if normalized in _m._PROVIDER_CATALOG_FETCHERS else get_provider_profile(normalized)
+    rows = _m.merge_profile_catalog(normalized, profile, list(listing)) if profile is not None else None
+    return lookup in {str(mid).lower() for mid in rows or ()}
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
     tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
@@ -660,9 +689,10 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
         from hermes_cli.providers import is_official_openai_host
 
         listing_authoritative = is_official_openai_host(req.base_url)
-    if not listing_authoritative and _m._model_in_provider_catalog(
-        (variant_base or req.lookup).lower(), _m._provider_keys(req.normalized)
-    ):
+    curated_lookup = (variant_base or req.lookup).lower()
+    if not listing_authoritative and (
+            _m._model_in_provider_catalog(curated_lookup, _m._provider_keys(req.normalized))
+            or _picker_offers_added_row(req.normalized, curated_lookup, api_models, req.base_url)):
         return _accept_with_note(f"Note: `{req.requested}` was not found in the live /v1/models listing "
                                  "but exists in the curated catalog — accepted.")
     # Nous: the Portal's recommended-models feed can list a model before the curated list or the

@@ -2,10 +2,67 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from tools.bot_desktop import placement, runtime, sandbox_host
+
+
+def test_owner_identity_records_effective_docker_user(monkeypatch):
+    env = SimpleNamespace(_container_id="recorded-container", _docker_exe="docker.exe")
+
+    monkeypatch.setattr(sandbox_host, "_user_for", lambda value: "pn")
+    assert sandbox_host._owner_identity(env) == {
+        "backend": "SimpleNamespace", "container": "recorded-container",
+        "docker": "docker.exe", "user": "pn",
+    }
+
+    monkeypatch.setattr(sandbox_host, "_user_for", lambda value: None)
+    assert sandbox_host._owner_identity(env) == {
+        "backend": "SimpleNamespace", "container": "recorded-container",
+        "docker": "docker.exe", "user": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("user_field", "expected_prefix"),
+    [
+        ("pn", ["docker.exe", "exec", "--user", "pn"]),
+        (None, ["docker.exe", "exec"]),
+        ("missing", ["docker.exe", "exec", "--user", "pn"]),
+    ],
+    ids=["explicit-pn", "docker-default", "legacy-marker"],
+)
+def test_marker_status_probes_use_recorded_user(monkeypatch, user_field, expected_prefix):
+    marker = {
+        "backend": "DockerEnvironment", "container": "recorded-container", "docker": "docker.exe",
+        "dir": "/tmp/hermes-bot-desktop/lena-tabwright",
+    }
+    if user_field != "missing":
+        marker["user"] = user_field
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if "Published" in argv[-1] or "launcher.pid" in argv[-1]:
+            output = b"DISPLAY=:20\nXAUTHORITY=/tmp/xauth\n"
+        else:
+            output = b"Xvnc\n"
+        return subprocess.CompletedProcess(argv, 0, output, b"")
+
+    monkeypatch.setattr(sandbox_host.subprocess, "run", run)
+
+    published = sandbox_host.published_env_from_marker(marker)
+    missing = sandbox_host.docker_marker_missing_binaries(marker)
+
+    assert published == {"DISPLAY": ":20", "XAUTHORITY": "/tmp/xauth"}
+    assert missing == ["Xvnc"]
+    assert len(calls) == 2
+    for argv, kwargs in calls:
+        assert argv[:len(expected_prefix)] == expected_prefix
+        assert argv[len(expected_prefix):len(expected_prefix) + 2] == ["recorded-container", "bash"]
+        assert kwargs["check"] is False
 
 
 def test_published_env_from_marker_execs_only_the_recorded_container(monkeypatch):
@@ -14,6 +71,7 @@ def test_published_env_from_marker_execs_only_the_recorded_container(monkeypatch
         "container": "recorded-container",
         "docker": "docker.exe",
         "dir": "/tmp/hermes-bot-desktop/lena-tabwright",
+        "user": "pn",
     }
     calls = []
 

@@ -83,6 +83,7 @@ def _owner_identity(env: Any) -> dict[str, Any]:
     if container:
         ident["container"] = container
         ident["docker"] = getattr(env, "_docker_exe", "docker")
+        ident["user"] = _user_for(env)  # None means use Docker's default exec user
     return ident
 
 
@@ -272,9 +273,11 @@ def published_env_from_marker(marker: dict[str, Any]) -> dict[str, str]:
         return {}
     script = (f"kill -0 $(cat {shlex.quote(rdir)}/launcher.pid 2>/dev/null) 2>/dev/null "
               f"&& test -S {shlex.quote(rdir)}/rfb.sock && cat {shlex.quote(rdir)}/env")
+    user = marker.get("user", DESKTOP_USER)
+    exec_prefix = [str(docker), "exec"] + (["--user", str(user)] if user else [])
     try:
         proc = subprocess.run(
-            [str(docker), "exec", "--user", DESKTOP_USER, str(container), "bash", "-c", script],
+            [*exec_prefix, str(container), "bash", "-c", script],
             capture_output=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -287,9 +290,11 @@ def docker_marker_missing_binaries(marker: dict[str, Any]) -> list[str]:
     if not container or not docker:
         return []
     script = "for b in " + " ".join(_REQUIRED) + '; do command -v "$b" >/dev/null 2>&1 || echo "$b"; done'
+    user = marker.get("user", DESKTOP_USER)
+    exec_prefix = [str(docker), "exec"] + (["--user", str(user)] if user else [])
     try:
         proc = subprocess.run(
-            [str(docker), "exec", "--user", DESKTOP_USER, str(container), "bash", "-c", script],
+            [*exec_prefix, str(container), "bash", "-c", script],
             capture_output=True, timeout=20, check=False, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return []

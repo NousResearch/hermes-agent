@@ -24,4 +24,6 @@ def build_webapp_parser(subparsers, *, cmd_webapp: Callable) -> None:
     action.add_argument("--status", action="store_true", help="Show whether the gateway is serving the Webapp")
     action.add_argument("--sign-out", action="store_true",
                         help="Sign out every Webapp tab (each needs a new link from hermes webapp)")
+    parser.add_argument("command", nargs="?", choices=["setup"],
+                        help="setup: guided publishing for headless hosts (local mDNS or HTTPS domain)")
     parser.set_defaults(func=cmd_webapp)

@@ -359,6 +359,10 @@ def cmd_webapp(args) -> int:
     if (refusal := _deleted_profile_refusal(home)) is not None:
         print(f"Error: {refusal}", file=sys.stderr)
         return 1
+    if getattr(args, "command", None) == "setup":
+        from hermes_cli.webapp_publish.flow import interactive_setup
+        interactive_setup()
+        return 0
     target = _gateway_home(home)
     if args.status:
         return _status(target)

@@ -25,7 +25,7 @@ def _home(path: Path, config: str = "") -> Path:
 
 def _args(**overrides) -> Namespace:
     values = {"no_open": False, "status": False, "sign_out": False, "build_only": False,
-              "force_build": False, "skip_build": False}
+              "force_build": False, "skip_build": False, "command": None}
     values.update(overrides)
     return Namespace(**values)
 

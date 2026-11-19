@@ -1921,7 +1921,7 @@ def _read_nous_auth() -> Optional[dict]:
         return {
             "access_token": getattr(entry, "access_token", ""),
             "refresh_token": getattr(entry, "refresh_token", None),
-            "agent_key": getattr(entry, "agent_key", None),
+            "agent_key": getattr(entry, "agent_key", None), "obtained_at": getattr(entry, "obtained_at", None), "agent_key_obtained_at": getattr(entry, "agent_key_obtained_at", None),
             "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
             "portal_base_url": getattr(entry, "portal_base_url", None),
             "client_id": getattr(entry, "client_id", None),
@@ -1949,11 +1949,11 @@ def _read_nous_auth() -> Optional[dict]:
 def _nous_api_key(provider: dict) -> str:
     """Extract a usable Nous inference JWT from stored auth state."""
     from hermes_cli.auth import _nous_invoke_jwt_is_usable
-    for token_key, expiry_key in (("agent_key", "agent_key_expires_at"), ("access_token", "expires_at")):
+    for token_key, expiry_key, arrival_key in (("agent_key", "agent_key_expires_at", "agent_key_obtained_at"), ("access_token", "expires_at", "obtained_at")):
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
             continue
-        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key)):
+        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key), obtained_at=provider.get(arrival_key)):
             return token
     return ""
 
@@ -1978,7 +1978,7 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
     def _entry_state(e: Any) -> dict[str, Any]:
         return {k: getattr(e, k, None) for k in (
-            "agent_key", "agent_key_expires_at", "access_token", "expires_at", "scope")}
+            "agent_key", "agent_key_expires_at", "agent_key_obtained_at", "access_token", "expires_at", "scope")}
 
     if force_refresh or not _agent_key_is_usable(_entry_state(entry), _nous_min_key_ttl_seconds()):
         try:

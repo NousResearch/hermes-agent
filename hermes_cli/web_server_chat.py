@@ -553,6 +553,10 @@ def _resolve_chat_argv(
     # chalk in the child picks its color depth from the SERVER env; hosted
     # deploys have no COLORTERM, so hex colors would snap to the 256 palette.
     env.setdefault("COLORTERM", "truecolor")
+    # xterm.js has no bidi support, so the TUI reorders RTL text (Arabic,
+    # Hebrew) into visual order itself (#157750). setdefault: a server-side
+    # HERMES_TUI_BIDI=0 still turns it off.
+    env.setdefault("HERMES_TUI_BIDI", "1")
     env["HERMES_TUI_DASHBOARD"] = "1"
 
     if resume:

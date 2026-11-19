@@ -559,21 +559,32 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
     """Search-in-session shape: FTS5 scoped in SQL to ``session_id``'s compression lineage.
 
     One result per matching message (no per-session dedup), each with a
-    ``match_message_id`` the scroll shape accepts. Rows still in the caller's live
-    context are skipped by the same rule the scroll guard uses, so every returned id
-    scrolls; compaction-archived rows and compression-ended ancestors stay searchable.
+    ``match_message_id``. Inside the caller's own session only rows that left its live
+    transcript match (compaction-archived rows, and the superseded original of a tool
+    result demoted at compaction), selected in SQL so live rows can't fill the scan;
+    those lead, then the other lineage sessions under the scroll guard's live-context rule.
     """
     if not _get_session_meta(persistence, session_id):
         return _read_scoped(persistence, session_id, profile)  # same not-found error + cross-profile hint
     scope = list(_quiet(lambda: persistence.lineage.lineage(session_id), (),
                         "compression lineage lookup failed for %s", session_id)) or [session_id]
-    raw_results, err = _loud(lambda: persistence.search.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"], limit=_DISCOVER_SCAN_LIMIT, offset=0,
-        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
-        after_ts=after_ts, before_ts=before_ts, session_ids=scope), "FTS5 search failed: %s", "Search failed")
+
+    def _search(**narrow):
+        return persistence.search.search_messages(
+            query=query, role_filter=role_filter or ["user", "assistant"], limit=_DISCOVER_SCAN_LIMIT, offset=0,
+            sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
+            after_ts=after_ts, before_ts=before_ts, **narrow)
+    own_sid = current_session_id if current_session_id in scope else None
+    own, err = (_loud(lambda: _search(compacted_in_session=own_sid), "FTS5 search failed: %s", "Search failed")
+                if own_sid else ((), None))
     if err:
         return err
-    hits, live_skipped = [], 0
+    others = [sid for sid in scope if sid != own_sid]
+    raw_results, err = (_loud(lambda: _search(session_ids=others), "FTS5 search failed: %s", "Search failed")
+                        if others else ((), None))
+    if err:
+        return err
+    hits, live_skipped = list(own[:limit]), 0
     for r in raw_results:
         if len(hits) >= limit:
             break

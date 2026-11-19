@@ -14,6 +14,10 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+# Bytes sent inline in a data URL: the native Desktop reader's own attach cap (Electron reads at most
+# 256 MiB), which also bounds the base64 text and its decoded copy held in memory. A host file named
+# by path is copied in chunks and has no cap; a browser upload's copy has the tighter browser cap.
+_ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024
 _ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
 _PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
 _PDF_ATTACH_MAX_PAGES = 25
@@ -28,22 +32,43 @@ _ATTACHMENT_REF_NEEDS_QUOTING_RE = _re.compile(r"""[\s()\[\]{}<>"'`]""")
 del _re  # bodies are rebound onto server globals: import inside functions only
 
 
-def _b64_payload(raw: str, data_url_re: str, flags: int) -> bytes:
-    """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode."""
+def _too_large(label: str, size: int, max_bytes: int) -> str:
+    """The refusal of a payload over its cap: ``image too large (31457280 bytes; cap is 25 MB)``."""
+    return f"{label} too large ({size} bytes; cap is {max_bytes // (1024 * 1024)} MB)"
+
+
+def _b64_payload(
+    raw: str, data_url_re: str, flags: int, *, max_bytes: int, label: str = "attachment",
+) -> bytes:
+    """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode.
+    Over *max_bytes* raises ``OverflowError`` with the refusal, before decoding when the base64
+    text is already too long."""
     import base64 as _base64
     import re as _re
     cleaned = (raw or "").strip()
     if m := _re.match(data_url_re, cleaned, flags):
         cleaned = m.group(1)
-    return _base64.b64decode(_re.sub(r"\s+", "", cleaned), validate=True)
+    cleaned = _re.sub(r"\s+", "", cleaned)
+    if len(cleaned) > 4 * ((max_bytes + 2) // 3):
+        padding = len(cleaned) - len(cleaned.rstrip("="))
+        raise OverflowError(_too_large(label, len(cleaned) * 3 // 4 - padding, max_bytes))
+    payload = _base64.b64decode(cleaned, validate=True)
+    if len(payload) > max_bytes:
+        raise OverflowError(_too_large(label, len(payload), max_bytes))
+    return payload
 
 
-def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
+def _decode_attach_base64(
+    raw: str, *, mime_prefix: str, max_bytes: int, label: str = "attachment",
+) -> bytes | None:
     """Decode a (``data:<mime_prefix>...;base64,``-wrapped) payload; None when invalid."""
     import re as _re
     try:
         return _b64_payload(
-            raw, rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$", _re.DOTALL)
+            raw, rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$", _re.DOTALL,
+            max_bytes=max_bytes, label=label)
+    except OverflowError:
+        raise
     except Exception:
         return None
 
@@ -51,14 +76,15 @@ def _decode_attach_base64(raw: str, *, mime_prefix: str) -> bytes | None:
 def _decode_attach_payload(
     rid, raw_b64: str, *, mime_prefix: str, max_bytes: int, label: str, empty_msg: str):
     """``(bytes, None)`` or ``(None, error)``: 4017 on bad/empty base64, 4018 over *max_bytes*."""
-    data = _decode_attach_base64(raw_b64, mime_prefix=mime_prefix)
+    try:
+        data = _decode_attach_base64(
+            raw_b64, mime_prefix=mime_prefix, max_bytes=max_bytes, label=label)
+    except OverflowError as exc:
+        return None, _err(rid, 4018, str(exc))
     if data is None:
         return None, _err(rid, 4017, "data is not valid base64")
     if not data:
         return None, _err(rid, 4017, empty_msg)
-    if len(data) > max_bytes:
-        mb = max_bytes // (1024 * 1024)
-        return None, _err(rid, 4018, f"{label} too large ({len(data)} bytes; cap is {mb} MB)")
     return data, None
 
 
@@ -102,16 +128,25 @@ def _profile_attachments_storage(profile_home) -> str:
 
     Read from THAT profile's config.yaml — ``file.attach`` runs before ``prompt.submit``
     installs the profile scope, so the process config still belongs to the launch profile
-    (same reason as ``_profile_configured_cwd``)."""
+    (same reason as ``_profile_configured_cwd``).
+
+    Best-effort, including when the config backend cannot serve the profile: ``""`` keeps the
+    profile-home store, which the sandbox mounts and the vision allowlist always cover, so the
+    attachment still reaches the agent (by an absolute instead of a workspace-relative ref)."""
     import contextlib as _contextlib
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     home = Path(profile_home) if profile_home else _hermes_home
-    with _contextlib.suppress(Exception):
-        from hermes_cli.config_effective import load_user_config_effective
-        cfg_path = home / "config.yaml"
-        if cfg_path.exists():
-            attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
-            if isinstance(attachments_cfg, dict):
-                return str(attachments_cfg.get("storage") or "").strip().lower()
+    try:
+        with _contextlib.suppress(Exception):
+            from hermes_cli.config_backend import config_exists
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg_path = home / "config.yaml"
+            if config_exists(cfg_path):
+                attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
+                if isinstance(attachments_cfg, dict):
+                    return str(attachments_cfg.get("storage") or "").strip().lower()
+    except ConfigBackendUnavailable as exc:
+        logger.warning("attachments.storage for %s unavailable (%s); staging in the profile home", home, exc.code)
     return ""
 
 
@@ -196,12 +231,61 @@ def _sanitize_attachment_name(name: str) -> str:
     return candidate.strip().strip(".") or "attachment"
 
 
+def _read_attachment_bytes(path: Path, max_bytes: int) -> bytes:
+    # Bound the actual read, not just stat(): the source can grow after inspection.
+    with path.open("rb") as source:
+        payload = source.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            raise ValueError(_too_large("attachment", os.fstat(source.fileno()).st_size, max_bytes))
+    return payload
+
+
+def _stage_browser_file_attachment(session: dict, staged_upload: object, name: str) -> tuple[Path, bool]:
+    """Copy a browser upload (the Webapp upload route's ``staged_upload`` receipt) into this session.
+
+    Source and destination may be different profiles on the same installation (an owner-routed
+    tile can receive a foreground browser pick); the caller decides which source homes this
+    connection may reach. The receipt is resolved back to exactly the staged layout under its
+    source home, which must still be a live profile (``hermes_cli/staged_uploads.py``). From there
+    the copy is the native Desktop's out-of-workspace file attach, capped at the browser limit.
+    """
+    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
+
+    raw_home, raw_path = parse_staged_upload(staged_upload)
+    source = resolve_staged_upload(Path(raw_home), raw_path)
+    # Copied into attachments/ even inside the workspace: the upload route prunes its staging after
+    # 7 days. attachments/ is also visible to container/SSH terminal backends through cache mounts.
+    return _stage_session_file_attachment(
+        session, raw_path=str(source), data_url="", name=name, max_bytes=WEBAPP_ATTACHMENT_MAX_BYTES,
+        staged=True)
+
+
+def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: bool) -> bool:
+    """Whether an attached host file is referenced where it is: inside the workspace, and not a
+    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied)."""
+    if staged or not path.is_relative_to(workspace):
+        return False
+    try:
+        from hermes_cli.staged_uploads import is_staged_upload
+    except ImportError:
+        # An install without the web stack (fastapi) has no upload route that could stage one.
+        return True
+    profile_home = session.get("profile_home")
+    return not is_staged_upload(Path(profile_home) if profile_home else _hermes_home, path)
+
+
 def _stage_session_file_attachment(
-    session: dict, *, raw_path: str, data_url: str, name: str) -> tuple[Path, bool]:
+    session: dict, *, raw_path: str, data_url: str, name: str, max_bytes: int | None = None,
+    staged: bool = False,
+) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
     Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``."""
+    gateway -> ``data_url`` bytes decoded into ``attachments/``. A browser upload (*staged*, or a
+    path in the profile's ``uploads/``) is always copied. ``max_bytes`` caps the copy of a
+    browser upload; a host file is copied whatever its size, inline bytes up to
+    ``_ATTACHMENT_MAX_BYTES``."""
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
@@ -218,21 +302,22 @@ def _stage_session_file_attachment(
                 found = _resolve_attachment_path(path_token)
                 resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
-        try:
-            resolved.relative_to(workspace)
+        if _referenced_in_place(session, resolved, workspace, staged=staged):
             return resolved, False
-        except ValueError:
-            payload = resolved.read_bytes()
-            filename = resolved.name
+        # Without a cap the copy below streams the file, so its size never reaches memory.
+        payload = None if max_bytes is None else _read_attachment_bytes(resolved, max_bytes)
+        filename = resolved.name
     else:
         if not data_url:
             raise ValueError("file not found on gateway and no data_url provided")
         # Any media type (unlike the image-specific decoder); bare base64 also accepted.
         import binascii as _binascii
         import re as _re
+        inline_max = _ATTACHMENT_MAX_BYTES if max_bytes is None else min(max_bytes, _ATTACHMENT_MAX_BYTES)
         try:
             payload = _b64_payload(
-                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE)
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE,
+                max_bytes=inline_max)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
@@ -258,7 +343,12 @@ def _stage_session_file_attachment(
             break
     try:
         with upload:
-            upload.write(payload)
+            if payload is None:
+                import shutil as _shutil
+                with resolved.open("rb") as source:
+                    _shutil.copyfileobj(source, upload, 1024 * 1024)
+            else:
+                upload.write(payload)
     except Exception:
         target.unlink(missing_ok=True)
         raise

@@ -93,7 +93,7 @@ def test_refresh_restores_baked_extras_a_volume_lost(install, monkeypatch, recor
     monkeypatch.setattr(pm.install, "venv_is_current", lambda **kwargs: True)
 
     assert refresh_dependencies(root) == "restored all, messaging, otlp"
-    assert calls == [(["all", "messaging", "otlp"], {"explicit": True})]
+    assert calls == [(["all", "messaging", "otlp"], {"explicit": True, "automatic": ["all", "messaging", "otlp"]})]
 
 
 def test_refresh_leaves_a_complete_selection_alone(install, monkeypatch):

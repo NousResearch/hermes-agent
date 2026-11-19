@@ -56,7 +56,7 @@ class TestBuildChannelDirectoryWrites:
         })
         previous = json.loads(cache_file.read_text())
 
-        import utils
+        import utils.files
 
         def broken_dump(data, fp, *args, **kwargs):
             fp.write('{"updated_at":')
@@ -65,7 +65,7 @@ class TestBuildChannelDirectoryWrites:
 
         # Fault the canonical writer's serializer (the seam the directory writes through), not
         # json.dump — the helper serializes to a str first, so a stdlib patch never fires.
-        monkeypatch.setattr(utils, "_dump_json", broken_dump)
+        monkeypatch.setattr(utils.files, "_dump_json", broken_dump)
 
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             asyncio.run(build_channel_directory({}))

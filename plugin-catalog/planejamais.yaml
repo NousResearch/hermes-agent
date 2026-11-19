@@ -1,0 +1,19 @@
+name: planejamais
+repo: https://github.com/hendrykcosta75/planejamais-codex-plugin
+sha: e3a5736d22e890c8c343f693b1f6bb40e9892ac2
+subdir: plugins/planejamais
+title: Planeja+
+description: "Review and update strategic plans (perspectives, objectives, initiatives, steps), Kanban boards, tasks and checklists, events, meetings, reports and support tickets in Planeja+ through its official hosted MCP server (Streamable HTTP at https://planejamais.planejareconsultoria.com.br/api/mcp, OAuth 2.1 sign-in with DCR and PKCE, no keys), with the planejamais workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no Python or executables; needs a Planeja+ account. Disclosure — the server exposes write and delete tools limited to the signed-in account's companies and role, invite_company_user e-mails an invitation and mentions notify members; the plugin marks its server untrusted, but the documented OAuth setup (`hermes mcp add planejamais`) replaces that entry with a native one at the default trust unless the user sets `mcp_servers.planejamais.trust: untrusted`; chats sharing a Hermes profile share the Planeja+ sign-in; the tool set is served by the remote MCP server at runtime and is not covered by the pinned sha; no telemetry."
+maintainer: hendrykcosta75
+tier: community
+category: tools
+docs_url: https://github.com/hendrykcosta75/planejamais-codex-plugin/tree/e3a5736d22e890c8c343f693b1f6bb40e9892ac2#hermes-agent
+version: "1.0.8"
+image: https://raw.githubusercontent.com/hendrykcosta75/planejamais-codex-plugin/e3a5736d22e890c8c343f693b1f6bb40e9892ac2/docs/media/banner.png
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

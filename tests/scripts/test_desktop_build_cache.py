@@ -17,16 +17,35 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/ci/desktop_build_cache.py"
 
 
+_LOCK = """\
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  apps/editor:
+    dependencies:
+      helper:
+        specifier: workspace:*
+        version: link:../../ui/packages/helper
+
+  ui/packages/helper: {}
+"""
+
+
 def source_tree(root):
     root.mkdir()
-    packages = {"": {}, "apps/editor": {"name": "editor"}, "ui/packages/helper": {"name": "helper"}}
-    packages["node_modules/editor"] = {"link": True, "resolved": "apps/editor"}
-    packages["node_modules/helper"] = {"link": True, "resolved": "ui/packages/helper"}
     for package in ("", "apps/editor", "ui/packages/helper"):
         directory = root / package
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "package.json").write_text(json.dumps({"name": package or "root"}), encoding="utf-8")
-    (root / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": packages}), encoding="utf-8")
+    (root / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n  - ui/packages/*\n", encoding="utf-8")
+    (root / "pnpm-lock.yaml").write_text(_LOCK, encoding="utf-8")
     for name in ("pyproject.toml", "uv.lock", "pm/lock.json", "pm/pyproject.toml", "pm/uv.lock"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,8 +76,8 @@ def test_stdlib_description_has_stable_allowlisted_paths_before_bootstrap(tmp_pa
     description, outputs = describe(source, cache, tmp_path)
 
     expected = {str(cache / domain) for domain in (
-        "tools", "python/runtime", "python/build", "npm/_cacache", "native", "packager",
-    )} | {str(source / package / "node_modules") for package in ("", "apps/editor", "ui/packages/helper")}
+        "tools", "python/runtime", "python/build", "pnpm/store", "native", "packager",
+    )}
     assert set(description["paths"]) == expected
     assert json.loads(outputs["cache-paths"]) == description["paths"]
     assert outputs["cache-key"] == description["key"]
@@ -85,7 +104,8 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     monkeypatch.setenv("GITHUB_REF", "refs/tags/v9.0.0")
     assert describe_cache(source, cache, "desktop-production") == first
 
-    for relative in ("apps/editor/package.json", "package-lock.json", "pm/lock.json", "uv.lock",
+    for relative in ("apps/editor/package.json", "ui/packages/helper/package.json", "pnpm-lock.yaml",
+                     "pnpm-workspace.yaml", "pm/lock.json", "uv.lock",
                      "scripts/build/node-deps.mjs", "apps/desktop/scripts/stage-native-deps.mjs",
                      "scripts/bundles/desktop_prepare.py", "scripts/bundles/native_prepared.py",
                      "apps/desktop/scripts/prepared-native-deps.mjs", "pm/build_operations.py"):
@@ -110,17 +130,67 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     assert describe_cache(source, cache, "payload-only")["restore_keys"][1] != rerun["restore_keys"][1]
 
 
-@pytest.mark.parametrize("workspace", ["../private", "/tmp/private", "C:/private", "apps\\private", "apps/*", "apps/../private", "apps/secret\npath"])
-def test_foreign_workspace_paths_cannot_expand_the_snapshot(tmp_path, workspace):
+# The Python entry points of desktop preparation. Importing them shows their module-level imports
+# at runtime; the late imports inside functions are covered by keying the preparation packages whole
+# (_INPUT_GLOBS), and shared modules a function imports late are listed by hand.
+_PYTHON_ENTRIES = ("scripts.bundles.desktop_prepare", "scripts.bundles.desktop", "scripts.bundles.native",
+                   "scripts.ci.desktop_build_cache")
+_LOADED_MODULES = """
+import importlib, json, sys
+from pathlib import Path
+root = Path.cwd().resolve()
+sys.path.insert(0, str(root))
+for entry in sys.argv[1:]:
+    importlib.import_module(entry)
+files = (Path(getattr(module, "__file__", None) or "").resolve() for module in list(sys.modules.values()))
+print(json.dumps(sorted(path.relative_to(root).as_posix() for path in files
+                        if path.is_file() and path.is_relative_to(root) and "site-packages" not in path.parts)))
+"""
+
+
+def _stale_modules(tmp_path, modules):
+    import shutil
     from scripts.ci.desktop_build_cache import describe_cache
 
     source = source_tree(tmp_path / "source")
-    lock_path = source / "package-lock.json"
-    lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
-    lock["packages"]["node_modules/editor"]["resolved"] = workspace
-    lock_path.write_text(json.dumps(lock), encoding="utf-8")
-    with pytest.raises(ValueError, match="workspace"):
-        describe_cache(source, tmp_path / "cache", "test")
+    for module in modules:
+        (source / module).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / module, source / module)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    stale = []
+    for module in modules:
+        old = (source / module).read_bytes()
+        (source / module).write_bytes(old + b"\n")
+        if describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] == first:
+            stale.append(module)
+        (source / module).write_bytes(old)
+    return stale
+
+
+def test_keys_follow_every_python_module_desktop_preparation_imports(tmp_path):
+    """Editing a repo module that preparation's Python loads must miss the input cache."""
+    graph = subprocess.run([sys.executable, "-c", _LOADED_MODULES, *_PYTHON_ENTRIES], cwd=ROOT,
+                           capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert graph.returncode == 0, graph.stdout + graph.stderr
+    modules = json.loads(graph.stdout)
+    assert {"scripts/bundles/desktop_prepare.py", "scripts/bundles/desktop.py"} < set(modules)
+    stale = _stale_modules(tmp_path, modules)
+    assert not stale, f"desktop cache key ignores imported modules: {stale}"
+
+
+@pytest.mark.parametrize("package", ["scripts/bundles", "scripts/build", "pm", "apps/desktop/scripts"])
+def test_a_new_module_in_a_preparation_package_misses_the_input_cache(tmp_path, package):
+    """A late import of a module added to a preparation package needs no key-list edit."""
+    from scripts.ci.desktop_build_cache import describe_cache
+
+    source = source_tree(tmp_path / "source")
+    (source / package).mkdir(parents=True, exist_ok=True)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    (source / package / "new_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    added = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    assert added != first
+    (source / package / "new_helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] != added
 
 
 def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tmp_path, monkeypatch):
@@ -135,11 +205,6 @@ def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tm
         describe_cache(source, tmp_path / "*", "test")
     with pytest.raises(ValueError, match="producer"):
         describe_cache(source, tmp_path / "cache", "test\nOTHER=value")
-    # A normal Node workspace link lives INSIDE node_modules and is preserved;
-    # a symlink replacing a selected tree itself must not export outside data.
-    (source / "apps/editor/node_modules").symlink_to(home, target_is_directory=True)
-    with pytest.raises(ValueError, match="path"):
-        describe_cache(source, tmp_path / "cache", "test")
 
 
 def test_composite_transports_only_and_uses_the_restore_key_for_save(tmp_path):
@@ -219,8 +284,6 @@ def test_job_state_cannot_be_nested_in_a_transport_domain(tmp_path):
     cache = tmp_path / "cache"
     with pytest.raises(ValueError, match="work"):
         describe_cache(source, cache, "test", work=cache / "native/job")
-    with pytest.raises(ValueError, match="work"):
-        describe_cache(source, cache, "test", work=source / "node_modules/job")
 
 
 def test_private_home_and_source_cannot_be_children_of_cached_roots(tmp_path, monkeypatch):
@@ -238,68 +301,97 @@ def test_private_home_and_source_cannot_be_children_of_cached_roots(tmp_path, mo
         describe_cache(nested, cache, "test")
 
 
-def test_direct_snapshot_preserves_node_receipt_and_excludes_job_secrets(tmp_path):
+def test_restored_pnpm_store_installs_offline_and_excludes_job_secrets(tmp_path):
+    """node_modules is not transported; pnpm's store alone must let a fresh
+    checkout install offline, and job-local secrets never ride along."""
+    import base64
+    import hashlib
+    import http.server
+    import io
     import shutil
+    import tarfile
+    import threading
     from scripts.ci.desktop_build_cache import describe_cache
 
     node = shutil.which("node")
-    assert node, "the transport integration test requires the build's Node prerequisite"
-    source = tmp_path / "old/source"
-    source.mkdir(parents=True)
-    manifest = {"name": "cache-fixture", "private": True, "workspaces": ["editor"], "scripts": {
-        "postinstall": 'node -e "require(\'fs\').writeFileSync(\'node_modules/installed-id\', require(\'crypto\').randomUUID())"',
-    }}
-    (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (source / "editor").mkdir()
-    (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
-    cache = tmp_path / "old/cache"
-    env = {**os.environ, "npm_config_cache": str(cache / "npm"), "npm_config_offline": "true"}
+    assert node and shutil.which("pnpm"), "the transport integration test requires the build's Node and pnpm"
+    package = json.dumps({"name": "left-pad", "version": "1.0.0"}).encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        member = tarfile.TarInfo("package/package.json")
+        member.size = len(package)
+        tar.addfile(member, io.BytesIO(package))
+    tarball = archive.getvalue()
+
+    class Registry(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            origin = f"http://127.0.0.1:{self.server.server_port}"
+            documents = {
+                "/left-pad": json.dumps({
+                    "name": "left-pad", "dist-tags": {"latest": "1.0.0"},
+                    "time": {"1.0.0": "2020-01-01T00:00:00.000Z"},
+                    "versions": {"1.0.0": {"name": "left-pad", "version": "1.0.0", "dist": {
+                        "tarball": f"{origin}/left-pad/-/left-pad-1.0.0.tgz",
+                        "integrity": "sha512-" + base64.b64encode(hashlib.sha512(tarball).digest()).decode(),
+                    }}},
+                }).encode(),
+                "/left-pad/-/left-pad-1.0.0.tgz": tarball,
+            }
+            body = documents.get(self.path)
+            self.send_response(200 if body else 404)
+            self.send_header("Content-Length", str(len(body or b"")))
+            self.end_headers()
+            self.wfile.write(body or b"")
+
+        def log_message(self, *args):
+            pass
+
+    registry = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Registry)
+    threading.Thread(target=registry.serve_forever, daemon=True).start()
     owner = ROOT / "scripts/build/node-deps.mjs"
 
-    def npm(*args):
+    def run(source, cache, *args, offline):
+        env = {**os.environ, "pnpm_config_registry": f"http://127.0.0.1:{registry.server_port}/",
+               "pnpm_config_store_dir": str(cache / "pnpm/store"), "pnpm_config_cache_dir": str(cache / "pnpm/cache"),
+               "pnpm_config_state_dir": str(cache / "pnpm/state"), "pnpm_config_offline": str(offline).lower()}
         return subprocess.run([node, str(owner), *args], cwd=source, env=env,
-                              capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+                              capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
 
-    locked = npm("--npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund")
-    assert locked.returncode == 0, locked.stdout + locked.stderr
-    prepared = npm("--source", str(source), "--workspace", "editor", "--reuse")
-    assert prepared.returncode == 0, prepared.stdout + prepared.stderr
-    identity = (source / "node_modules/installed-id").read_bytes()
-
-    for path in (source / ".env", source / "editor/private.key",
-                 cache / "npm/_logs/secret.log", cache / "npm/.npmrc", cache / "prepared.json"):
+    source, cache = tmp_path / "old/source", tmp_path / "old/cache"
+    (source / "editor").mkdir(parents=True)
+    manifest = {"name": "cache-fixture", "private": True, "dependencies": {"left-pad": "1.0.0"}}
+    (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (source / "pnpm-workspace.yaml").write_text("packages:\n  - editor\n", encoding="utf-8")
+    (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
+    # node-deps requires PM's pnpm pin; pin the pnpm this test runs.
+    pnpm_version = subprocess.run(["pnpm", "--version"], capture_output=True, text=True, encoding="utf-8",
+                                  timeout=60, check=True).stdout.strip()
+    (source / "pm").mkdir()
+    (source / "pm/lock.json").write_text(json.dumps({"packages": {"pnpm": {"version": pnpm_version}}}), encoding="utf-8")
+    try:
+        locked = run(source, cache, "--pnpm", "install", "--lockfile-only", offline=False)
+        assert locked.returncode == 0, locked.stdout + locked.stderr
+        prepared = run(source, cache, "--source", str(source), "--workspace", "editor", "--reuse", offline=False)
+        assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+    finally:
+        # Only the transported store can satisfy the warm install.
+        registry.shutdown()
+        registry.server_close()
+    for path in (source / ".env", cache / "pnpm/state/secret.log", cache / "pnpm/.npmrc", cache / "prepared.json"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("planted-secret", encoding="utf-8")
 
-    wheel = cache / "python/runtime/wheels/completed.whl"
-    wheel.parent.mkdir(parents=True)
-    wheel.write_bytes(b"completed wheel fixture")
-
     description = describe_cache(source, cache, "test")
-    restored_source = tmp_path / "new/source"
-    restored_cache = tmp_path / "new/cache"
-    for name in ("package.json", "package-lock.json", "editor/package.json"):
-        path = restored_source / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / name, path)
-    # Replay the selected direct directories, preserving relative workspace
-    # symlinks as Actions' tar transport does; no nested archive format.
+    assert not any(Path(path).is_relative_to(source) for path in description["paths"])
+    restored_source, restored_cache = tmp_path / "new/source", tmp_path / "new/cache"
+    for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "editor/package.json", "pm/lock.json"):
+        (restored_source / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, restored_source / name)
     for name in description["paths"]:
         path = Path(name)
-        if not path.exists():
-            continue
-        destination = ((restored_cache / path.relative_to(cache)) if path.is_relative_to(cache)
-                       else (restored_source / path.relative_to(source)))
-        shutil.copytree(path, destination, symlinks=True)
+        if path.exists():
+            shutil.copytree(path, restored_cache / path.relative_to(cache), symlinks=True)
     assert not any(b"planted-secret" in path.read_bytes() for path in (tmp_path / "new").rglob("*") if path.is_file())
-    assert (restored_cache / wheel.relative_to(cache)).read_bytes() == wheel.read_bytes()
-    assert (restored_source / "node_modules/editor").resolve() == restored_source / "editor"
-    warm = npm("--source", str(restored_source), "--workspace", "editor", "--reuse", "--no-install")
+    warm = run(restored_source, restored_cache, "--source", str(restored_source), "--workspace", "editor", "--reuse", offline=True)
     assert warm.returncode == 0, warm.stdout + warm.stderr
-    assert (restored_source / "node_modules/installed-id").read_bytes() == identity
-    (restored_source / "node_modules/editor").unlink()
-    stale = npm("--source", str(restored_source), "--workspace", "editor", "--reuse", "--no-install")
-    assert stale.returncode != 0
-    repaired = npm("--source", str(restored_source), "--workspace", "editor", "--reuse")
-    assert repaired.returncode == 0, repaired.stdout + repaired.stderr
-    assert (restored_source / "node_modules/installed-id").read_bytes() != identity
+    assert (restored_source / "node_modules/left-pad/package.json").is_file()

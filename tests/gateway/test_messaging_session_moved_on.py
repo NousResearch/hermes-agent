@@ -6,6 +6,7 @@ and an old conversation opened read-only for a refused delete is not a live sess
 import pytest
 
 from tests.gateway.test_authority_cold_route_recovery import _cold, _compressed_lane, _ref, _superseded
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +22,8 @@ async def test_the_control_card_of_a_compressed_messaging_session_reads_its_curr
     cold = await _cold(tmp_path)
     cold.authority.authorize(cold.actor, _ref('lane-root'), 'session:read')
     # Compression moves automation state to the continuation and archives the root's copy.
-    cold.authority.db.set_meta('goal:lane-root', GoalState('ROOT_GOAL', status='cleared').to_json())
-    cold.authority.db.set_meta('goal:lane-tip', GoalState('TIP_GOAL').to_json())
+    cold.authority.persistence.state_meta.set('goal:lane-root', GoalState('ROOT_GOAL', status='cleared').to_json())
+    cold.authority.persistence.state_meta.set('goal:lane-tip', GoalState('TIP_GOAL').to_json())
 
     snapshot = control_snapshot(cold.authority, _ref('lane-root'))
 
@@ -38,7 +39,7 @@ async def test_an_unviewed_superseded_mount_is_not_listed_live(tmp_path):
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read']})
     resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old'}})
-    assert cold.authority.sessions['old'].superseded, resumed
+    assert cold.authority.sessions['old'].detached, resumed
     listed = await connection.dispatch({'id': 2, 'method': 'session.list', 'params': {}})
     assert 'old' in {row['id'] for row in listed['result']['sessions']}, 'a viewed historic mount stays listed'
 
@@ -61,8 +62,9 @@ async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read', 'session:control']})
     resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old'}})
-    assert cold.authority.sessions['old'].superseded, resumed
-    cold.authority.runner._evict_cached_agent = lambda key, **kw: pytest.fail('evicted the chat route')
+    assert cold.authority.sessions['old'].detached, resumed
+    lane = cold.store._generate_session_key(successor.origin)
+    cold.authority.runner._evict_cached_agent = lambda key, **kw: key != lane or pytest.fail('evicted the chat route')
 
     deleted = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
         'session_id': 'old', 'request_id': 'delete-old', 'operation': 'delete', 'payload': {},
@@ -70,13 +72,13 @@ async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_
         'expected_generation': resumed['result']['execution_generation']}})
 
     assert 'result' in deleted, deleted
-    assert cold.authority.db.get_session('old') is None
+    assert session_row(cold.authority.persistence, 'old') is None
     assert 'old' not in cold.authority.sessions
     assert cold.store.get_or_create_session(successor.origin).session_id == successor.session_id
 
 
 @pytest.mark.asyncio
-async def test_an_old_messaging_conversation_still_refuses_every_other_write(tmp_path):
+async def test_an_old_messaging_conversation_takes_every_other_write(tmp_path):
     from gateway.session_controls import AuthorityConnection
     cold, _successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
@@ -86,7 +88,7 @@ async def test_an_old_messaging_conversation_still_refuses_every_other_write(tmp
     renamed = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
         'session_id': 'old', 'request_id': 'rename-old', 'operation': 'rename', 'payload': {'title': 'x'},
         'expected_revision': resumed['result']['revision']}})
-    assert renamed.get('error', {}).get('message') == 'session_superseded', renamed
+    assert 'result' in renamed, renamed  # Teknium's ruling: the apps keep a chat's old conversation
 
 
 @pytest.mark.asyncio
@@ -97,7 +99,7 @@ async def test_an_unopened_old_messaging_conversation_deletes_on_the_first_attem
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read', 'session:control']})
-    row = cold.authority.db.get_session('old')
+    row = session_row(cold.authority.persistence, 'old')
     assert 'old' not in cold.authority.sessions
 
     deleted = await connection.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
@@ -105,7 +107,7 @@ async def test_an_unopened_old_messaging_conversation_deletes_on_the_first_attem
         'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})
 
     assert 'result' in deleted, deleted
-    assert cold.authority.db.get_session('old') is None
+    assert session_row(cold.authority.persistence, 'old') is None
 
 
 @pytest.mark.asyncio
@@ -118,11 +120,11 @@ async def test_a_compressed_messaging_conversation_deletes_by_its_listed_segment
     connection = AuthorityConnection(cold.authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read', 'session:control']})
-    row = cold.authority.db.get_session('lane-tip')
+    row = session_row(cold.authority.persistence, 'lane-tip')
 
     deleted = await connection.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
         'session_id': 'lane-tip', 'request_id': 'delete-tip', 'operation': 'delete', 'payload': {},
         'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})
 
     assert 'result' in deleted, deleted
-    assert cold.authority.db.get_session('lane-tip') is None
+    assert session_row(cold.authority.persistence, 'lane-tip') is None

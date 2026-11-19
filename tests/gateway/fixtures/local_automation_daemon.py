@@ -3,15 +3,14 @@ import os
 import runpy
 import signal
 
-from gateway.session_authority import SessionAuthority
-from hermes_state_runtime import list_session_admissions
+from gateway.session_authority import SessionAuthority, admission_row
 
 original = SessionAuthority._schedule
 
 
 def schedule(self, ref):
     original(self, ref)
-    rows = list_session_admissions(self.db, session_id=ref.session_id)
+    rows = [admission_row(record) for record in self.persistence.admissions.list(session_id=ref.session_id)]
     if any(r['principal_id'].startswith('automation:') for r in rows):
         os.kill(os.getpid(), signal.SIGSTOP)
 

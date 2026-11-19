@@ -49,15 +49,23 @@ def probe(base, source):
             return db.execute("SELECT display_kind, json_extract(display_metadata, '$.display_text') FROM messages"
                               " WHERE role='user' AND content LIKE ?", ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
 
+    def noted():
+        # The completion written as a note (no model call), not the input row of a turn over it.
+        with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+            return db.execute("SELECT display_kind FROM messages WHERE role='user' AND content LIKE ?"
+                              " AND json_extract(display_metadata, '$.completion_note') IS NOT NULL",
+                              ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
+
     def completion_turns():
         # Model calls whose newest user input is the completion: an automation turn for it.
         return [r for r in model.requests if r.get('messages') and 'REAL_TERMINAL_COMPLETION' in str(next(
             (m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user'), ''))]
 
     async def unviewed(desc, sid):
-        # No viewer is left (#134889 LC-7): the completion is committed behind the running turn and the
-        # human follower, in FIFO order, and when it reaches the head it is written into the session as a
-        # note (no model call) instead of an automation turn; the next turn sees it.
+        # No viewer is left: the completion is committed behind the running turn and the human follower,
+        # in FIFO order. When it reaches the head a process exit resumes the parent as one automation turn
+        # (the work goes on while no client is connected); a watch match is written into the session as a
+        # note (no model call, #134889 LC-7). Either way the next turn sees it.
         await wait(lambda: any(r['principal_id'].startswith('automation:') for r in rows()))
         automatic = [r for r in rows() if r['principal_id'].startswith('automation:')]
         assert len(automatic) == 1 and automatic[0]['status'] == 'queued', automatic
@@ -66,14 +74,17 @@ def probe(base, source):
         assert not notes()
         model.release.set()
         await wait(lambda: all(r['status'] == 'terminal' for r in rows()))
-        await async_wait_until(notes, timeout=120)
-        await asyncio.sleep(8)  # health: allow HX013 -- proves no automation turn or second note arrives
-        assert completion_turns() == [], 'an unviewed completion started a model turn'
+        await async_wait_until(noted if watch else completion_turns, timeout=120)
+        await asyncio.sleep(8)  # health: allow HX013 -- proves no second turn or note arrives
         assert all(r['outcome'] == 'completed' for r in rows()), rows()
         found = notes()
         if watch:  # a watch match is a notice, not the async-result card
+            assert completion_turns() == [], 'an unviewed watch match started a model turn'
             assert len(found) == 1 and found[0][0] == 'internal_notification', found
+            assert len(noted()) == 1, noted()
         else:
+            assert len(completion_turns()) == 1, 'the unviewed completion must resume the parent once'
+            assert noted() == [], 'a resumed completion is not also a note'
             assert len(found) == 1 and found[0][0] == 'process_complete', found
             assert str(found[0][1]).startswith('Background Process Finished: '), found
         async with websocket(home, desc) as ws:
@@ -140,9 +151,9 @@ def probe(base, source):
                     asyncio.run(recovered(desc))
             texts = [next((m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user'), '')
                      for r in model.requests if r.get('messages')]
-            # The committed completion outlived two owners; with no viewer it ran once, as one note.
-            assert completion_turns() == [], texts
-            assert len(notes()) == 1, notes()
+            # The committed completion outlived two owners; with no viewer it resumed the parent once.
+            assert len(completion_turns()) == 1, texts
+            assert len(notes()) == 1 and noted() == [], notes()
             assert len(set(pids)) == 3 and epochs == sorted(set(epochs))
             print(json.dumps({'pids': pids, 'epochs': epochs, 'ledger': rows(),
                               'model_inputs': texts, 'lost_producer_ack': True}))

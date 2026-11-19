@@ -10,11 +10,12 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import logging
+import os
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.session_ingress_media import capture_native_media, restore_native_media
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ _EVENT_FIELDS = (
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
 # ``reply_anchor_override`` = '' is Telegram topic transfer's "do not quote the root DM" (#139136).
-_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override')
+_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'reply_anchor_override',
+                   'edit_revision')
 # Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
 # (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
@@ -32,7 +34,7 @@ _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'what
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
                                    'reaction', 'poll', 'pollUpdate'})
 _WHATSAPP_NATIVE_MAX_BYTES = 16 * 1024
-_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined')
+_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined', 'media_filenames')
 
 
 def _native_metadata(event):
@@ -64,7 +66,25 @@ def _adapter_event(event, **changes):
     """An adapter's event at the envelope boundary: an absent media list (``None``) is no media.
     Any other non-list still reaches ``_validate_native`` and refuses."""
     changes.update({name: [] for name in _MEDIA_FIELDS if getattr(event, name) is None})
-    return replace(event, **changes) if changes else event
+    return _drop_remote_media(replace(event, **changes) if changes else event)
+
+
+def _drop_remote_media(event):
+    """An adapter that could not cache a download leaves its remote URL in ``media_urls`` (DingTalk
+    always does). Capture takes only local files, so that one entry refused the whole message, text
+    included: drop it and tell the agent instead. Malformed media lists still reach validation."""
+    urls, types = event.media_urls, event.media_types
+    if not isinstance(event.text, str) or _media_clause(event) is not None or all(map(os.path.isabs, urls)):
+        return event
+    kept = [index for index, url in enumerate(urls) if os.path.isabs(url)]
+    notes = [f"[The user sent an attachment ({types[index] if types else 'file'}) that could not be retrieved.]"
+             for index in range(len(urls)) if index not in kept]
+
+    def keep(values):
+        return [values[index] for index in kept] if values else values
+    return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined),
+                   media_filenames=keep(event.media_filenames))
 
 
 def _refuse(event, reason, clause):
@@ -73,7 +93,7 @@ def _refuse(event, reason, clause):
     logger.warning('Native admission refused: %s (%s) platform=%s chat=%s message=%s', reason, clause,
                    getattr(getattr(source, 'platform', None), 'value', None), getattr(source, 'chat_id', None),
                    event.message_id)
-    raise RuntimeStoreError(reason, field=clause)
+    raise AuthorityRefusal(reason, field=clause)
 
 
 def _media_clause(event):
@@ -88,6 +108,11 @@ def _media_clause(event):
         return 'media_types_length'
     if len(inlined) not in (0, len(urls)):
         return 'media_text_inlined_length'
+    names = event.media_filenames
+    if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
+        return 'media_filenames'
+    if len(names) not in (0, len(urls)):
+        return 'media_filenames_length'
     return None
 
 
@@ -100,7 +125,7 @@ def _event_clause(runner, event, provenance, fresh_roles):
     if not isinstance(event.message_type, MessageType):
         return 'message_type'
     # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-    if event.message_type == MessageType.COMMAND or event.get_command():
+    if event.get_command():
         return 'command'
     if event.internal:
         return 'internal'
@@ -217,7 +242,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
         if provenance is None:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         delivery = snapshot_destination(adapter, adapter._delivery_info.get(event.source.chat_id))
         envelope['webhook_delivery'] = delivery
         envelope['webhook_route'] = route_digest(adapter, event.source.chat_id)
@@ -233,27 +258,30 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
-    if event.message_type != MessageType.TEXT:
+    # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.
+    if event.message_type not in (MessageType.TEXT, MessageType.COMMAND):
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)
         envelope['event'].update(media_types=list(event.media_types),
                                  media_text_inlined=list(event.media_text_inlined))
+        if any(event.media_filenames):  # absent when unnamed: older admissions keep their fingerprint
+            envelope['event']['media_filenames'] = list(event.media_filenames)
     # Keep the private dispatch key so previously committed text-only rows recover
     # under the same authority; optional media/context fields extend that envelope.
     payload = {'text': event.text, 'native_text_v1': envelope}
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
     if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
-        from hermes_state_runtime import list_session_admissions
         from gateway.session_authorities import active_authority
+        from gateway.session_persistence import authority_persistence
         authority = active_authority(runner)
         entry = runner.session_store.lookup_by_session_key(envelope['route'])
         if entry is not None:
             legacy = deepcopy(payload)
             legacy['native_text_v1'].pop('provenance')
-            for row in list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False):
-                if row['request_id'] == event.message_id and row['payload'] == legacy:
+            for row in authority_persistence(authority).admissions.list(session_id=entry.session_id, pending_only=False):
+                if row.request_id == event.message_id and row.payload == legacy:
                     return legacy
     return payload
 
@@ -286,6 +314,8 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    from gateway.session_moa_turn import restore_moa_turn
+    restore_moa_turn(envelope, event)
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):
@@ -313,16 +343,16 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     store = runner.session_store
     if (store._generate_session_key(event.source) != route
             or store._generate_session_key(available_source) != route):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     entry = store.lookup_by_session_key(route)
     if entry is None or entry.session_id != session_id:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     if adapter is None or runner._adapter_for_source(event.source) is not adapter:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, validate_destination
         envelope = payload['native_text_v1']
         validate_destination(envelope.get('webhook_delivery'))
         if envelope.get('webhook_route') != route_digest(adapter, event.source.chat_id):
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
     return event.source, route

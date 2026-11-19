@@ -128,6 +128,10 @@ class CatalogEntry:
     # False lists the entry for explicit choice only: it is never the automatic recommendation or
     # quickstart's pick on any machine, so it needs no quality ordering.
     recommend: bool = True
+    # Reasoning-effort levels this model's chat template accepts; empty when it accepts every
+    # level. Qwen3.8's template raises on any other level and llama-server answers HTTP 500, so
+    # Hermes sends the nearest listed level in its place.
+    reasoning_efforts: tuple = ()
 
     @property
     def mtp_capable(self) -> bool:
@@ -330,7 +334,7 @@ _SCALAR_FIELDS = {
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
     "quality": (int, 0), "decode_fraction": (float, 1.0), "architecture": (str, ""),
     "recommend": (bool, True), "draft_spec_type": (str, "draft-dspark"), "draft_depth": (int, 3),
-    "draft_min_engine": (str, ""),
+    "draft_min_engine": (str, ""), "reasoning_efforts": (tuple, ()),
 }
 
 

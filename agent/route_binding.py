@@ -8,23 +8,109 @@ is the inverse that ``restore_primary_runtime`` runs once its gates pass.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
 
-def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
-    """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
-    old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
-    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
+class StartupPrimary(NamedTuple):
+    """The configured route and the fallback cursor while startup runs on a backup."""
+
+    model: str
+    resolve_kwargs: dict[str, Any]
+    overrides: dict[str, Any]
+    fallback_index: int
+
+
+def apply_persisted_runtime_overrides(model: str, runtime: dict, overrides: dict) -> None:
+    """Apply a session's saved route fields to a successfully resolved provider."""
+    # The local supervisor owns its current loopback endpoint.
+    if runtime.get("source") == "local-runtime":
+        overrides = {key: value for key, value in overrides.items() if key != "base_url"}
+    applied = {key: value for key, value in overrides.items() if value}
+    if not applied:
+        return
+    runtime.update(applied)
+    # A session row can carry the wire for a different model on a per-model provider (#96066).
+    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_cli.models import normalize_opencode_base_url
+    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    if api_mode := model_derived_api_mode(provider, model):
+        runtime["api_mode"] = api_mode
+        runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
+
+
+def restore_startup_primary(agent: Any, intent: StartupPrimary) -> bool:
+    """Retry the configured primary on the cached agent while its startup backup is usable."""
+    from agent.agent_runtime_helpers import switch_model
+    from agent.fallback_notice import announce_primary_restored
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    if not intent.model:
+        return False
+    previous_model, previous_provider = agent.model, agent.provider
+    try:
+        runtime = resolve_runtime_provider(**intent.resolve_kwargs)
+        pool = runtime.get("credential_pool")
+        if pool is not None and pool.has_credentials() and not pool.has_available(model=intent.model):
+            return False
+        apply_persisted_runtime_overrides(intent.model, runtime, intent.overrides)
+        provider = runtime.get("requested_provider") or runtime.get("provider")
+        if provider == "auto":
+            provider = runtime.get("provider")
+        if not provider:
+            return False
+        switch_model(
+            agent, intent.model, provider,
+            api_key=runtime.get("api_key") or "", base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "", capabilities=runtime.get("capabilities"),
+            supersede_pre_agent_primary=False,
+        )
+    except AuthError:
+        return False
+    except Exception as exc:  # health: allow BLE001 -- a resolver or adapter failure must leave the working backup usable
+        logger.warning("Could not retry the startup primary (%s)", type(exc).__name__)
+        return False
+
+    agent._pre_agent_primary = None
+    agent._fallback_index = 0
+    agent._unavailable_fallback_keys = set()
+    agent._rate_limited_until = 0
+    agent._rate_limit_backoff_count = 0
+    agent._restore_wait_logged = False
+    logger.info("Pre-agent primary restored for new turn: %s (%s)", agent.model, agent.provider)
+    if getattr(agent, "_pending_fallback_notice", None):
+        agent._pending_fallback_notice = None  # Recovery before the startup switch was shown.
+    else:
+        announce_primary_restored(agent, previous_model, previous_provider)
+    return True
+
+
+class RouteEntryClient(NamedTuple):
+    """What the fallback swap builds for an entry. ``client`` is None when the provider has no
+    usable client; ``model`` is normalized for the provider (a MoA entry keeps its preset name)."""
+
+    client: Any
+    model: str
+    api_mode_explicit: bool
+    api_mode: str
+    pool_choice: Any = None  # hermes_cli.runtime_provider.PoolChoice: the pool entry whose key the client carries
+
+
+def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str, *,
+                               raw_codex: bool = True) -> RouteEntryClient:
+    """The client :func:`bind_route_entry` binds for ``entry``, shared with ``hermes fallback check
+    --live`` so a readiness probe talks to exactly what the swap would. ``raw_codex=False`` returns
+    the chat-completions adapter for Codex/Responses providers. A registry API-key provider's key
+    comes from its credential pool the way a direct pick takes it; the pool is not touched until the
+    caller commits ``pool_choice``."""
     from agent.auxiliary_client import resolve_provider_client
-    from agent.chat_completion_helpers import (
-        _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
-        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
-    )
+    from agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_cli.runtime_provider import PoolChoice
     # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
     # of falling through to OpenRouter defaults.
     base_url_hint = (entry.get("base_url") or "").strip() or None
@@ -35,10 +121,33 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     if base_url_hint and base_url_host_matches(base_url_hint, "ollama.com") and not api_key_hint:
         from agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
-    # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+    choice = PoolChoice(model) if provider != "moa" else None  # MoA keys stay with the preset's own resolution
     client, _resolved_model = resolve_provider_client(
-        provider, model=model, raw_codex=True, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode)
+        provider, model=model, raw_codex=raw_codex, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
+        api_mode=api_mode, pool_choice=choice)
+    if client is not None and provider != "moa":
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+            model = normalize_model_for_provider(model, provider)
+        except Exception as norm_err:  # health: allow BLE001 -- a bad catalog entry keeps the raw id
+            logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
+    return RouteEntryClient(client, model, api_mode_explicit, api_mode, choice if client is not None else None)
+
+
+def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
+                     commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
+    """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
+    old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
+    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap.
+    ``commit_pool_choice=False`` leaves the pool's pick uncounted in ``agent._route_pool_choice``
+    for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it)."""
+    from agent.chat_completion_helpers import (
+        _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
+        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
+    )
+    # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+    route = resolve_route_entry_client(entry, provider, model)
+    client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode
     if client is None:
         return None
     if provider == "moa":
@@ -47,11 +156,6 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         # same pins every other MoA build site uses (#112525, #112623).
         base_url, api_mode = "moa://local", "chat_completions"
     else:
-        try:
-            from hermes_cli.model_normalize import normalize_model_for_provider
-            model = normalize_model_for_provider(model, provider)
-        except Exception as norm_err:  # health: allow BLE001 -- moved verbatim from try_activate_fallback; a bad catalog entry keeps the raw id
-            logger.warning("Could not normalize fallback model %r for provider %r: %s", model, provider, norm_err)
         base_url = str(client.base_url)
         from hermes_cli.providers import is_actual_route
         if is_actual_route(provider, base_url):
@@ -59,6 +163,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         elif not api_mode_explicit and api_mode == "chat_completions":
             api_mode = _fallback_api_mode_resolved(agent, provider, model, base_url)
 
+    from agent.route_verdicts import reset_route_verdicts, save_primary_route_verdicts
+    save_primary_route_verdicts(agent)  # before the swap: stamped with the endpoint that earned them
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
     # Clear the per-config context_length override so the new model's own context window is
     # resolved instead of the previous model's stale value (#22387).
@@ -69,11 +175,11 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery_codex import reset_codex_reasoning_replay
-    reset_codex_reasoning_replay(agent)
+    reset_route_verdicts(agent)
     agent._fallback_activated = True
 
-    _rebind_fallback_credential_pool(agent, provider, model)
+    choice = agent._route_pool_choice = route.pool_choice
+    _rebind_fallback_credential_pool(agent, provider, model, choice.pool if choice is not None else None)
     if provider == "moa":
         from agent.moa_loop import bind_moa_runtime
         bind_moa_runtime(agent, model)
@@ -90,6 +196,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+    if commit_pool_choice and choice is not None:
+        choice.commit()
     return old_model, old_provider
 
 
@@ -101,8 +209,8 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
         _apply_primary_runtime_fields, _rebuild_primary_client, _restore_runtime_capabilities,
     )
     _apply_primary_runtime_fields(agent, rt)
-    from agent.turn_recovery_codex import reset_codex_reasoning_replay
-    reset_codex_reasoning_replay(agent)
+    from agent.route_verdicts import reset_route_verdicts
+    reset_route_verdicts(agent)
     _restore_runtime_capabilities(agent, rt)
     agent._use_prompt_caching = rt["use_prompt_caching"]
     # Default to native layout for snapshots predating the native-vs-proxy split.
@@ -122,7 +230,7 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     )
     # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
     if getattr(agent, "_compression_feasibility_checked", False) is True:
-        from agent.conversation_compression import revalidate_compression_feasibility
+        from agent.conversation_compression_feasibility import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
     # Older snapshots have no reasoning_config; keep the current value.
     saved_reasoning = rt.get("reasoning_config")
@@ -146,6 +254,8 @@ def reinstall_primary_runtime(
     _rebind_primary_credential_pool(
         agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched
     )
+    from agent.route_verdicts import restore_primary_route_verdicts
+    restore_primary_route_verdicts(agent, rt)
     agent._fallback_activated = False
     agent._fallback_index = 0
     agent._rate_limit_backoff_count = 0

@@ -16,6 +16,7 @@
  */
 import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
+import { noteUserSessionOpen } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -140,6 +141,9 @@ export function openSession(
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
   }
+
+  // A chat opened in this window: the launch restore must not close it.
+  noteUserSessionOpen()
 
   if (resolved === 'main') {
     // Canonical relationship chats explicitly own the main workspace. Route

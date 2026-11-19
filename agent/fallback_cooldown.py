@@ -33,12 +33,48 @@ def candidate_pool_exhausted(provider: str, model: str, *, pool=None) -> bool:
         try:
             from agent.credential_pool import load_pool
             pool = load_pool(provider)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- an unavailable pool lookup cannot disqualify a fallback route
             return False
     if pool is None or not pool.has_credentials() or pool.has_available(model=model):
         return False
     until = pool.next_available_at(model=model)
     return until is None or until - time.time() > 600
+
+
+def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
+    """True when a Codex quota window that the primary pool still has benched has reopened.
+
+    A Codex 429 benches the entry, and arms ``_rate_limited_until``, until a ``resets_at`` that can be
+    days out (weekly window). The window can reopen sooner (redeemed reset, top-up, plan change); the
+    pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
+    fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
+
+    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
+    it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
+    fail, and fall back again on every turn of the cached window. Checks in between could only
+    replay that cached verdict, so they return before loading the pool.
+    """
+    if primary_provider != "openai-codex":
+        return False
+    from hermes_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
+    now = time.monotonic()
+    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
+        return False
+    agent._codex_reopen_checked_at = now
+    try:
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None or not matches_primary(pool):
+            pool = load_primary_pool()
+        if pool is None:
+            return False
+        model = primary_model or None
+        benched_until = pool.next_available_at(model=model)
+        if benched_until is None or benched_until <= time.time():
+            return False
+        return pool.lift_reopened_cooldowns(model=model)
+    except Exception:  # health: allow BLE001 -- any failure to verify reopening leaves the cooldown in force
+        logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)
+        return False
 
 
 def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
@@ -62,6 +98,22 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     return True
 
 
+def _on_primary_route(agent) -> bool:
+    """True when the agent's live route IS the ``_primary_runtime`` snapshot: provider, model and
+    endpoint, the triple that keys a fallback entry (``_fallback_entry_key``). A provider name
+    alone is not an identity: two ``custom`` endpoints (or one provider's other model) share it."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    if not str(rt.get("provider") or "").strip():
+        return False
+
+    def ident(provider, model, base_url):
+        return (str(provider or "").strip().lower(), str(model or "").strip(), normalize_route_base_url(base_url or ""))
+
+    live = ident(getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""))
+    return live == ident(rt.get("provider"), rt.get("model"), rt.get("base_url"))
+
+
 def _arm_rate_limit_cooldown(
     agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:
@@ -75,9 +127,7 @@ def _arm_rate_limit_cooldown(
     """
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-    if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
+    if getattr(agent, "_fallback_activated", False) and not _on_primary_route(agent):
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1

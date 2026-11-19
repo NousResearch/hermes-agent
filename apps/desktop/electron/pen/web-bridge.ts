@@ -285,6 +285,7 @@ export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'd
       if (message?.kind === 'notification') {
         if (message.method === 'selection-changed') {
           own.selection = Array.isArray(message.payload?.nodes) ? message.payload.nodes : []
+          events.emit('selection-changed', { docId: doc.docId, nodes: own.selection })
         }
 
         return

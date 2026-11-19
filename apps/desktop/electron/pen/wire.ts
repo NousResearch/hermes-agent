@@ -91,7 +91,8 @@ function wirePenIpc(): void {
   // Renderers clear the reopen pill on open and put the pane away on the last
   // close. The tie itself is written by `front()` below, which knows the
   // session an open belongs to — the event fires before that is decided.
-  for (const event of ['open-document', 'close-document']) {
+  // selection-changed feeds the composer's canvas-selection chip.
+  for (const event of ['open-document', 'close-document', 'selection-changed']) {
     onPenEvent(event, payload => broadcastPenEvent(event, payload))
   }
 

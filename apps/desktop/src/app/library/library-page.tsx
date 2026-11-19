@@ -174,11 +174,16 @@ function LibraryState({ body, error, loading, noMatches, onRetry, shown }: Libra
   return (
     <>
       {Boolean(error) && (
-        <div className="library-error" role="alert">
-          <EmptyState description={copy.errorDescription} title={copy.errorTitle} />
-          <Button onClick={onRetry} variant="secondary">
-            {copy.retry}
-          </Button>
+        <div role="alert">
+          <EmptyState
+            action={
+              <Button onClick={onRetry} variant="secondary">
+                {copy.retry}
+              </Button>
+            }
+            description={copy.errorDescription}
+            title={copy.errorTitle}
+          />
         </div>
       )}
       {loading ? (
@@ -186,15 +191,12 @@ function LibraryState({ body, error, loading, noMatches, onRetry, shown }: Libra
       ) : shown > 0 ? (
         body
       ) : (
-        !error && (
-          <div className="library-empty">
-            {noMatches ? (
-              <EmptyState description={copy.noMatchesDescription(noMatches)} title={copy.noMatchesTitle} />
-            ) : (
-              <EmptyState description={copy.emptyDescription} title={copy.emptyTitle} />
-            )}
-          </div>
-        )
+        !error &&
+        (noMatches ? (
+          <EmptyState description={copy.noMatchesDescription(noMatches)} title={copy.noMatchesTitle} />
+        ) : (
+          <EmptyState description={copy.emptyDescription} title={copy.emptyTitle} />
+        ))
       )}
     </>
   )

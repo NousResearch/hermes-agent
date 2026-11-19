@@ -20,18 +20,20 @@
   }
 }
 
-/* Its column is the page stage contract's (portal-pages.css). */
+/* Its column is the page stage contract's (portal-pages.css). The header keeps the page rhythm under
+   it, as on every page; the body under it stacks a card pad apart. */
 .ds-stage {
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: var(--portal-settings-card-pad);
   padding-block: var(--portal-page-top) var(--portal-page-end-space);
 }
 
-.ds-stage > .portal-page-header {
-  margin-bottom: 0;
+.ds-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-settings-card-pad);
 }
 
 .ds-nav-group + .ds-nav-group {

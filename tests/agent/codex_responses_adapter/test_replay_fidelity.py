@@ -24,6 +24,13 @@ def _call(call_id):
     return Item(type="function_call", call_id=call_id, name="fixture_read", arguments="{}", status="completed")
 
 
+def _turn_wire(wire_input):
+    """Items strictly between the opening and closing user messages (independent of leading developer items)."""
+    user_indices = [i for i, item in enumerate(wire_input) if item.get("role") == "user"]
+    assert len(user_indices) == 2
+    return wire_input[user_indices[0] + 1 : user_indices[1]]
+
+
 @pytest.fixture
 def agent(tmp_path):
     store = open_persistence(profile_scope(home=tmp_path))
@@ -57,7 +64,7 @@ def roundtrip(agent):
         for msg in [user, row, *outputs, {"role": "user", "content": "Continue."}]:
             transcript.append(agent.session_id, NewMessage.from_live(msg))
         history = [m.as_openai_message() for m in transcript.read_conversation(agent.session_id)]
-        return normalized.content, request(history)[1:-1]
+        return normalized.content, _turn_wire(request(history))
 
     return replay
 
@@ -103,7 +110,7 @@ def test_split_tool_call_batch_keeps_siblings_at_parent_output_position(agent):
     history = [m.as_openai_message() for m in transcript.read_conversation(agent.session_id)]
     kwargs = transport.build_kwargs(model=agent.model, provider=agent.provider, base_url=agent.base_url,
                                     is_codex_backend=True, messages=history, instructions="Stay concise.")
-    wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)["input"][1:-1]
+    wire = _turn_wire(transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)["input"])
 
     assert [item["type"] for item in wire] == [
         "reasoning", "function_call", "function_call", "reasoning", "function_call",

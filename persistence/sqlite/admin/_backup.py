@@ -7,7 +7,6 @@ import logging
 import os
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -16,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from persistence.sqlite._state.holders import read_only_db_uri
+from persistence.sqlite._state.holders import foreign_state_db_holders, read_only_db_uri
 from hermes_cli.sqlite_safe_read import connect_tracked, read_header_bytes_preopen
 
 from .._backend import translated
@@ -316,52 +315,6 @@ def verify_sqlite_integrity(
     return _done("header check passed", valid=True, size=size)
 
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
-    """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
-
-    Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
-    kernel's ``(deleted)`` suffix so an already-unlinked sidecar generation
-    (the split-brain fingerprint) still counts as held. Returns
-    ``None`` when the scan is unavailable (non-Linux, or /proc unreadable);
-    callers must treat ``None`` as "unknown", not as "no holders".
-    """
-    if not sys.platform.startswith("linux"):
-        return None
-
-    def _canonical(path: str) -> str:
-        return os.path.normcase(
-            os.path.abspath(path.removesuffix(" (deleted)"))
-        )
-
-    canonical_db = _canonical(os.fspath(db_path))
-    watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
-    pids: list[int] = []
-    try:
-        own_pid = os.getpid()
-        for pid_str in os.listdir("/proc"):
-            if not pid_str.isdigit():
-                continue
-            pid = int(pid_str)
-            if pid == own_pid:
-                continue
-            fd_dir = f"/proc/{pid}/fd"
-            try:
-                fds = os.listdir(fd_dir)
-            except OSError:
-                continue
-            for fd in fds:
-                try:
-                    target = os.readlink(f"{fd_dir}/{fd}")
-                except OSError:
-                    continue
-                if _canonical(target) in watched:
-                    pids.append(pid)
-                    break
-    except OSError:
-        return None
-    return pids
-
-
 def _restore_epoch(path: Path) -> int:
     if not path.exists():
         return 0
@@ -484,7 +437,9 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         )
 
         try:
-            holders = _foreign_db_holder_pids(dst)
+            # A scan that cannot finish reports a (-1, reason) holder, so an
+            # unknown answer refuses here the same as a live holder does.
+            holders = foreign_state_db_holders(dst)
             if holders:
                 # Replacing the inode under a live holder is the split-brain
                 # corruption class: the holder keeps writing through a
@@ -493,8 +448,9 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
                 # backup-API path above is the live-safe route; if it failed,
                 # fail closed rather than corrupt.
                 logger.error(
-                    "Refusing unlink+move restore of %s: process(es) %s still "
-                    "hold the database or its WAL open. Stop them and retry.",
+                    "Refusing unlink+move restore of %s: other processes hold "
+                    "the database or its WAL open, or the holder scan could not "
+                    "rule them out (%s). Stop them and retry.",
                     dst, holders,
                 )
                 return False

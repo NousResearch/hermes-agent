@@ -287,7 +287,15 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         )
 
         try:
-            holders = _foreign_db_holder_pids(dst)
+            # The store admin's scan covers Linux, macOS and Windows and reports
+            # a scan it could not finish as a (-1, reason) holder. A backend
+            # with no admin cannot scan at all, which is unknown, not clear.
+            admin = open_store_admin(dst)
+            holders = (
+                [(-1, f"{admin.capability} is unsupported by the {admin.backend_kind} storage backend")]
+                if isinstance(admin, AdminUnsupported)
+                else admin.foreign_holders()
+            )
             if holders:
                 # Replacing the inode under a live holder is the #90950
                 # corruption class: the holder keeps writing through a
@@ -296,8 +304,9 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
                 # backup-API path above is the live-safe route; if it failed,
                 # fail closed rather than corrupt.
                 logger.error(
-                    "Refusing unlink+move restore of %s: process(es) %s still "
-                    "hold the database or its WAL open. Stop them and retry.",
+                    "Refusing unlink+move restore of %s: other processes hold "
+                    "the database or its WAL open, or the holder scan could not "
+                    "rule them out (%s). Stop them and retry.",
                     dst, holders,
                 )
                 return False

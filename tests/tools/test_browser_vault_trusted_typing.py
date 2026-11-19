@@ -122,3 +122,55 @@ def test_a_takeover_during_the_focus_check_stops_the_keystroke(tmp_path):
     out = _fill(sup, tmp_path, bot_desktop=True)
     assert out["success"] is False and out["error_type"] == "human_has_control"
     assert sup.typed == []
+
+
+def test_a_session_moved_during_the_focus_check_reports_the_move(tmp_path):
+    """The supervisor moved to another tab while the focus check ran: the fill says the browser
+    moved (retry), not that focus was lost on the page."""
+    sup = _Supervisor([_PW])
+    real = sup.evaluate_runtime
+
+    def moving(expression, **kwargs):
+        if 'refused: "focus_lost"' in expression:
+            sup.sid = "S2"  # focus_page from another browser call, before the check is sent
+        return real(expression, **kwargs)
+
+    sup.evaluate_runtime = moving
+    out = _fill(sup, tmp_path)
+    assert out["success"] is False and out["error_type"] == "supervisor_required"
+    assert sup.typed == []
+
+
+def test_a_channel_change_during_the_focus_check_reports_the_move(tmp_path):
+    """A plugin page that appears mid-fill takes the operation off its checked channel: the next
+    script is refused with supervisor_required, and that is the cause the fill reports."""
+    sup = _Supervisor([_PW])
+    plugin: dict[str, Any] = {"page": None}
+
+    class _Plugin:
+        name = "fakeplugin"
+
+    sup.on_focus = lambda: None
+    real = sup.evaluate_runtime
+
+    def appear(expression, **kwargs):
+        out = real(expression, **kwargs)
+        if "ok: true" in expression:
+            plugin["page"] = _Plugin()  # appears right after the in-page origin check
+        return out
+
+    sup.evaluate_runtime = appear
+    out = _fill(sup, tmp_path, page=lambda t: plugin["page"])
+    assert out["success"] is False and out["error_type"] == "supervisor_required"
+    assert sup.typed == []
+
+
+def test_a_read_back_refused_for_a_moved_channel_reports_the_move():
+    from tools import browser_vault_tool
+
+    moved = dict(browser_vault_tool._MOVED)
+    with patch.object(browser_vault_tool, "_eval_js_secret", return_value=moved), \
+         patch.object(browser_vault_tool, "_eval_js", return_value={"success": True}), \
+         patch.object(browser_vault_tool.time, "sleep"):
+        out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
+    assert out["success"] is False and out["error_type"] == "supervisor_required"

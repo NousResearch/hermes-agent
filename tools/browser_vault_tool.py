@@ -282,7 +282,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     return {
         "success": False,
         "error_type": "supervisor_required"
-        if "supervisor" in str(sup.get("error") or "").lower()
+        if "supervisor" in str(sup.get("error") or "").lower() or sup.get("code") == "session_changed"
         else "eval_failed",
         "error": str(sup.get("error") or "eval failed"),
     }
@@ -743,17 +743,23 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     )
     from agent.vault_store import scrub_secret_from_text
 
+    last = {"failure": None, "document": None}  # the latest script's refusal, and its document
+
     def _abort(error_type: str, message: str) -> dict[str, Any]:
+        # A script refused because the channel moved or a human took over names that cause, not the
+        # check it broke (focus_lost, origin_changed): the caller retries or stops on it.
+        moved = _channel_refusal(last["failure"])
         # Remove every stamp: a stamp left behind would let a later read address the control
         # this fill just targeted.
         _eval_js_secret(task_id, build_unstamp_js(nonce))
+        if moved is not None:
+            return {"ok": False, **moved}
         return {"ok": False, "success": False, "error_type": error_type, "filled_fields": 0,
                 "error": scrub_secret_from_text(message, secret)}
 
-    last = {"document": None}  # the document the latest script ran on (CDP supervisor)
-
     def _script(expression: str) -> Any:
         res = _eval_js_secret(task_id, expression)
+        last["failure"] = None if res.get("success") else res
         last["document"] = res.get("document")
         if not res.get("success"):
             return None
@@ -884,6 +890,18 @@ _INSERT_REFUSALS = {
 }
 
 
+def _channel_refusal(failure: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The refusal to report when a failed script names a moved channel or a human takeover, else None.
+
+    A move is reported with the fixed ``_MOVED`` text (the browser's own error text stays out of the
+    result); a takeover with the lease's text, which is Hermes's.
+    """
+    if not failure or failure.get("error_type") not in ("supervisor_required", "human_has_control"):
+        return None
+    text = failure.get("error") if failure["error_type"] == "human_has_control" else _MOVED["error"]
+    return {"success": False, "error_type": failure["error_type"], "filled_fields": 0, "error": str(text or "")}
+
+
 def _typing_channel(task_id: str) -> tuple[Any, Any, Any]:
     """The trusted-typing channel for a task: ``(supervisor, insert_text, page_backend)``.
 
@@ -958,6 +976,9 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
         time.sleep(_FILL_VERIFY_INTERVAL_S)
         verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, expected_origin=page_origin,
                                                                unstamp=False))
+        moved = _channel_refusal(verify)
+        if moved is not None:
+            return moved
         verified = _parse_json_result(verify.get("result")) if verify.get("success") else None
         if isinstance(verified, str):
             verified = _parse_json_result(verified)

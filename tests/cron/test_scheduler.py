@@ -41,8 +41,7 @@ def _run_owned_job(job, tmp_path, db=None):
         persistence = storage_handle(tmp_path)
         seed_session(persistence, ref.session_id, "cron")
     else:
-        persistence = SimpleNamespace(scope=profile_scope(home=tmp_path), serves_same_store=lambda _store: True,
-                                      sessions=db.sessions)
+        persistence = SimpleNamespace(scope=profile_scope(home=tmp_path), serves_same_store=lambda _store: True, sessions=db.sessions)
     authority = SimpleNamespace(
         persistence=persistence,
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},

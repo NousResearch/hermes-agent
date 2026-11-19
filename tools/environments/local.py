@@ -33,6 +33,8 @@ from tools.environments.local_env_policy import (
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from tools.environments.base_session_env import _secret_fd_token
+from tools.environments.local_secret_handoff import SecretHandoff, profile_secret_names
 from hermes_cli._startup_fast import project_root_str
 
 
@@ -1135,7 +1137,17 @@ class LocalEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
+        self._secret_handoff = SecretHandoff()
         self.init_session()
+
+    def _secret_dump_args(self) -> dict:
+        """Secret exports leave the snapshot file through a pipe ``_run_bash`` hands the shell and
+        reach the next command as process env (``local_secret_handoff``, #62336). The script names
+        the pipe by a per-session token; ``_run_bash`` swaps in the fd number it opened. Windows has
+        no ``pass_fds``, so Git Bash keeps the on-disk snapshot as it was."""
+        if _IS_WINDOWS or getattr(self, "_secret_handoff", None) is None:
+            return {}
+        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": profile_secret_names()}
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
@@ -1214,6 +1226,20 @@ class LocalEnvironment(BaseEnvironment):
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
         run_env = _make_run_env(self.env)
+        handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
+        token = _secret_fd_token(getattr(self, "_session_id", ""))
+        secret_fd, secret_reader = -1, None
+        if handoff is not None and token in cmd_string:
+            # This session's secret exports ride the command's own env, never the snapshot file;
+            # the dump writes the new set to the pipe (``local_secret_handoff``, #62336). Names the
+            # wrapper save/restores (declared key holders, profile passthrough) take the run env's
+            # value, exactly as when the snapshot carried them, so a scrubbed key stays scrubbed.
+            if not login:
+                kept = set(self._snapshot_excluded_passthrough_names())
+                run_env.update((name, value) for name, value in handoff.values_for(self._shell_state_paths()).items()
+                               if name not in kept)
+            secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login))
+            cmd_string = cmd_string.replace(token, str(secret_fd))
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
         # spawn env's dirs a resetting profile dropped are re-appended (#56634).
@@ -1223,13 +1249,19 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
-            args, text=True, env=run_env, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self._spawn_cwd(),
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=run_env, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                # detached-spawn: ok — owned via own_process_groups right below
+                start_new_session=True, cwd=self._spawn_cwd(),
+                pass_fds=(secret_fd,) if secret_fd >= 0 else (),
+                creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
+        finally:
+            if secret_fd >= 0:
+                os.close(secret_fd)  # the child holds its copy; the reader sees EOF once it is gone
+        proc._hermes_secret_reader = secret_reader
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
@@ -1251,10 +1283,13 @@ class LocalEnvironment(BaseEnvironment):
         """Base wait, then hand the command's group back from the owner-death supervisor: once the
         command returned, what it left running in the background (`server &`) is not ours to kill,
         exactly as on a graceful exit. A command that yielded to background took the group with it
-        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
+        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``). The secret hand-off reader
+        is joined first, so the next command sees what this one exported."""
         try:
             return super()._wait_for_process(proc, *args, **kwargs)
         finally:
+            if (reader := getattr(proc, "_hermes_secret_reader", None)) is not None:
+                reader.join(timeout=2)
             if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
                 proc._hermes_owned_pgid = None
                 release_process_groups([owned_pgid])
@@ -1328,3 +1363,5 @@ class LocalEnvironment(BaseEnvironment):
         for f in (self._snapshot_path, self._cwd_file, *stale):
             with contextlib.suppress(OSError):
                 os.unlink(f)
+        if (handoff := getattr(self, "_secret_handoff", None)) is not None:
+            handoff.forget()

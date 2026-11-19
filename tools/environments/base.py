@@ -428,6 +428,18 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
 
+    def _secret_dump_args(self) -> dict:
+        """``secret_fd`` / ``secret_names`` for the snapshot script builders. A backend with an
+        in-memory secret channel (``LocalEnvironment``) returns them, so secret exports leave the
+        file on disk and still reach the next command. Empty here: without a channel, removing the
+        values would drop the user's exports from every later command."""
+        return {}
+
+    def _snapshot_write_path(self, login: bool) -> str:
+        """The snapshot file the script being spawned writes: the bootstrap always writes the
+        environment's own; a wrapped command writes its task's (``_shell_state_paths``)."""
+        return self._snapshot_path if login else self._shell_state_paths()[0]
+
     def _task_snapshot_path(self, task_id: str) -> str:
         """Per-task snapshot beside the environment's own (``cleanup`` globs the prefix)."""
         digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
@@ -449,7 +461,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         under ``bash -l``. On failure, fall back to ``bash -l`` per command — unless a non-login
         probe shows login bash itself is dead, in which case prefer ``bash -c``."""
         bootstrap = _snapshot_bootstrap_script(
-            excluded_names=self._snapshot_excluded_passthrough_names(), **self._snapshot_script_kwargs(self.cwd))
+            excluded_names=self._snapshot_excluded_passthrough_names(), **self._secret_dump_args(),
+            **self._snapshot_script_kwargs(self.cwd))
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
@@ -502,11 +515,17 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         rewrite native/mixed Windows paths to ``/c/...``; remote backends are POSIX."""
         return shlex.quote(path)
 
+    def _shell_state_paths(self) -> list[str]:
+        """Snapshot files this command reads, in source order; the first is the one it writes: the
+        task's own (``_task_snapshot_path``), then its delegation ancestors', then the env's own."""
+        chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
+        return [*chain, self._snapshot_path] if chain else [self._snapshot_path]
+
     def _wrap_command(self, command: str, cwd: str, *, cwd_fallback: bool = False) -> str:
         """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers.
         ``cwd_fallback`` lets the ``cd`` walk up from a missing *cwd* (see ``execute``)."""
-        chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
-        seeds = [self._quote_shell_path(p) for p in (*chain[1:], self._snapshot_path)] if chain else []
+        own, *seed_paths = self._shell_state_paths()
+        seeds = [self._quote_shell_path(p) for p in seed_paths]
         return _wrap_command_script(
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
@@ -515,7 +534,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             pipe_marker=self._pipe_marker,
             seed_snaps=seeds,
             cwd_fallback_marker=self._cwd_fallback_marker if cwd_fallback else "",
-            **self._snapshot_script_kwargs(cwd, chain[0] if chain else None))
+            **self._secret_dump_args(),
+            **self._snapshot_script_kwargs(cwd, own))
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
@@ -580,9 +600,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             drain_thread.join(timeout=2)
 
         try:
-            # Adaptive poll: start at 5ms so fast commands return in ~6ms, back
+            # Adaptive poll: start at 1ms so fast commands return in ~1-2ms, back
             # off exponentially toward 200ms so long builds don't pay poll CPU.
-            _poll_sleep = 0.005
+            _poll_sleep = 0.001
             while proc.poll() is None:
                 trace.iterations += 1
                 if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):

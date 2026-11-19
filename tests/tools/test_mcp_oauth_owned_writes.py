@@ -144,3 +144,39 @@ async def test_late_native_response_cannot_overwrite_published_grant(tmp_path, p
         assert _read_state(storage) == before
     finally:
         await flow.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publish_before_cleanup", [False, True])
+async def test_post_discovery_issuer_cleanup_preserves_publication_and_own_write_progress(
+        tmp_path, monkeypatch, publish_before_cleanup):
+    import httpx2
+
+    auth, storage, _ = provider(tmp_path / "live")
+    storage.bind_issuer("https://old.example")
+    await storage.set_tokens(OAuthToken(access_token="old-access", refresh_token="old-refresh",
+                                       token_type="Bearer", expires_in=3600))
+    client_type = httpx2.AsyncClient
+    monkeypatch.setattr(httpx2, "AsyncClient", lambda **kwargs: client_type(
+        transport=httpx2.MockTransport(response), **kwargs))
+    persisted = auth._persist_oauth_metadata_if_changed
+    replacement_state = None
+
+    async def persist_then_publish(meta=None):
+        nonlocal replacement_state
+        await persisted(meta)
+        if publish_before_cleanup:
+            replacement_state = await replacement(tmp_path / "candidate", storage)
+
+    monkeypatch.setattr(auth, "_persist_oauth_metadata_if_changed", persist_then_publish)
+    if publish_before_cleanup:
+        with pytest.raises(RuntimeError, match="grant changed"):
+            await auth._initialize()
+        assert _read_state(storage) == replacement_state
+    else:
+        await auth._initialize()
+        assert (await storage.get_tokens()).refresh_token is None
+        # Own cleanup must advance ownership for the next native token response.
+        request = httpx2.Request("POST", ISSUER + "/token")
+        await auth._handle_token_response(response(request))
+        assert (await storage.get_tokens()).refresh_token == "fixture-refresh"

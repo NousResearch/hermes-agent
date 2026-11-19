@@ -96,7 +96,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 self._log_nonfatal("pre-flight metadata discovery", exc)
             else:
                 from tools.mcp_oauth_provider import enforce_refresh_token_issuer
-                enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
+                if self._hermes_storage() is not None:
+                    await self._hermes_owned_write(lambda: enforce_refresh_token_issuer(self.context))
+                else:
+                    enforce_refresh_token_issuer(self.context)
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL

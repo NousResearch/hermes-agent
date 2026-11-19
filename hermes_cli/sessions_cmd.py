@@ -527,7 +527,7 @@ def _export_trace(db, args, filters):
 
     def _render_trace(sid):
         meta = db.get_session(sid) or {}
-        messages = db.get_messages_as_conversation(sid)
+        messages = db.get_messages_as_conversation(sid, include_held=True)
         if not messages:
             return None
         return build_trace_jsonl(messages, session_id=sid, model=meta.get("model") or "", cwd="", redact=redact_trace)

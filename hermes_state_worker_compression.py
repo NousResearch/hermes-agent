@@ -194,6 +194,11 @@ def worker_history(db, conn, sid, payload):
     display = payload['include_compacted'] and not payload['include_inactive']
     rows = conn.execute(f'SELECT {"session_id, compacted, display_order, " if display else ""}{db._CONVERSATION_ROW_COLUMNS} FROM messages '
                         f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
+    if not display:
+        # Model-restore parity with get_messages_as_conversation: a HELD row
+        # (desktop intake screen; the turn never ran) never feeds a model.
+        from hermes_state_messages import HELD_ROW_DISPLAY_KIND
+        rows = [r for r in rows if r["display_kind"] != HELD_ROW_DISPLAY_KIND]
     if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
         from hermes_state_messages import SessionMessagesMixin
         rows = SessionMessagesMixin._with_removed_identities(view, rows, ids)

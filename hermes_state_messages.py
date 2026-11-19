@@ -1543,7 +1543,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> list[dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     include_held: bool = False) -> list[dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
@@ -1557,9 +1558,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
-        if not display:
+        if not display and not include_held:
             # sqlite3.Row (key access, no .get): display_kind is in
             # _CONVERSATION_ROW_COLUMNS, so the key always exists here.
+            # include_held: explicit display-side opt-in (reconnect render,
+            # rewind picker, trace export) — surfaces that must SHOW the
+            # held send while addressing its durable row id.
             rows = [row for row in rows
                     if row["display_kind"] != HELD_ROW_DISPLAY_KIND]
         if include_compacted:
@@ -1717,7 +1721,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         # never LLM input: a resuming surface that fed it to the agent would count it in the history
         # and send a prefix the previous process never sent.
         model_history = self._rows_to_conversation(
-            [r for r in rows if r["session_id"] == session_id and r["active"] and r["role"] != "session_meta"],
+            [r for r in rows if r["session_id"] == session_id and r["active"] and r["role"] != "session_meta"
+             and r["display_kind"] != HELD_ROW_DISPLAY_KIND],
             session_id=session_id,
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(

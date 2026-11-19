@@ -1993,7 +1993,8 @@ def _(rid, params: dict, session: dict) -> dict:
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
-                        row_session, include_ancestors=True, include_row_ids=True)
+                        row_session, include_ancestors=True, include_row_ids=True,
+                        include_held=True)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 

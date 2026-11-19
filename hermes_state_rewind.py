@@ -246,12 +246,15 @@ class SessionRewindMixin:
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
-        stored = self.get_messages_as_conversation(session_id, include_row_ids=True)
+        stored = self.get_messages_as_conversation(
+            session_id, include_row_ids=True, include_held=True)
         # Live replay (the pre-request repair, a resume) merges a stored ``user;user`` pair — an ask whose turn
         # ended with no reply, then the next ask — into ONE turn while both rows stay stored. Address turns on
         # that same repaired projection or the warm history is a turn short of the transcript forever
         # (#115493); the merged turn keeps the first row's identity, so the rewind starts at that row.
-        durable = self.get_messages_as_conversation(session_id, include_row_ids=True, repair_alternation=True)
+        durable = self.get_messages_as_conversation(
+            session_id, include_row_ids=True, repair_alternation=True,
+            include_held=True)
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)

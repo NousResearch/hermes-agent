@@ -93,6 +93,31 @@ class TestHeldRowExclusion(unittest.TestCase):
         contents = [r.get("content") for r in rows]
         self.assertIn("held attack", contents)  # only the HELD kind is skipped
 
+    def test_get_resume_conversations_model_excludes_display_keeps(self):
+        # Round-1 F1: the cold-resume loader must not hydrate held text into
+        # model_history (it feeds conversation_history on restart).
+        _, held, _, _ = self._seed()
+        self.db.set_message_display_kind(
+            "s", self._row_id(held), HELD_ROW_DISPLAY_KIND)
+        model_history, display_history = self.db.get_resume_conversations("s")
+        model_contents = [str(m.get("content")) for m in model_history]
+        display_contents = [str(m.get("content")) for m in display_history]
+        self.assertFalse(any("held attack" in c for c in model_contents))
+        self.assertTrue(any("held attack" in c for c in display_contents))
+
+    def test_include_held_optin_restores_row(self):
+        # Round-1 F3: display-side surfaces (session.history RPC, rewind
+        # picker, trace export) opt in and still see the held send.
+        _, held, _, _ = self._seed()
+        self.db.set_message_display_kind(
+            "s", self._row_id(held), HELD_ROW_DISPLAY_KIND)
+        rows = self.db.get_messages_as_conversation("s", include_held=True)
+        contents = [r.get("content") for r in rows]
+        self.assertIn("held attack", contents)
+        rows = self.db.get_messages_as_conversation("s")
+        self.assertNotIn("held attack",
+                         [r.get("content") for r in rows])
+
     def test_setter_guards(self):
         _, held, _, _ = self._seed()
         row_id = self._row_id(held)

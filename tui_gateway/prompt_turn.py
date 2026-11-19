@@ -1151,16 +1151,55 @@ def _hold_turn_cleanup(session, notice: str) -> None:
         # BEFORE _fail_inflight_turn pops the adoption slot: held text must not
         # ride into a later turn's context through the transcript (model-restore
         # reads skip HELD_ROW_DISPLAY_KIND rows; display reads keep them).
+        # Round-1 F0: session_workdir's module-level helpers need
+        # bind_module-injected globals a direct import does not have, so the
+        # stamp must resolve a REAL store handle: the server-bound _session_db
+        # first (production namespace), then the agent's own store, then the
+        # bare module helper. A failure to stamp LOGS a warning (an unmarked
+        # held row is a leak row - it must be visible in the log, not silent).
         staged_row = session.get("_submit_user_row")
         if isinstance(staged_row, dict) and isinstance(staged_row.get("_row_id"), int):
-            with contextlib.suppress(Exception):
-                from tui_gateway.session_workdir import (
-                    _session_db, _submit_row_owner_key)
-                with _session_db(session) as db:
-                    if db is not None and hasattr(db, "set_message_display_kind"):
-                        db.set_message_display_kind(
-                            _submit_row_owner_key(staged_row, session),
-                            staged_row["_row_id"], HELD_ROW_DISPLAY_KIND)
+            stamped = False
+            try:
+                owner_key = None
+                try:
+                    from tui_gateway.session_workdir import _submit_row_owner_key
+                    owner_key = _submit_row_owner_key(staged_row, session)
+                except Exception:
+                    owner_key = str(session.get("session_key") or "")
+                row_id = staged_row["_row_id"]
+
+                def _try(db_handle) -> bool:
+                    if db_handle is None or \
+                            not hasattr(db_handle, "set_message_display_kind"):
+                        return False
+                    return db_handle.set_message_display_kind(
+                        owner_key or "", row_id, HELD_ROW_DISPLAY_KIND) == 1
+
+                try:  # 1) the server-bound helper (bind_module namespace)
+                    from tui_gateway import server as _tui_server
+                    with _tui_server._session_db(session) as db_handle:
+                        stamped = _try(db_handle) or stamped
+                except Exception:
+                    pass
+                if not stamped:  # 2) the agent's own store handle
+                    with contextlib.suppress(Exception):
+                        stamped = _try(getattr(session.get("agent"),
+                                               "_session_db", None)) or stamped
+                if not stamped:  # 3) the bare module helper (tests/probes)
+                    with contextlib.suppress(Exception):
+                        from tui_gateway.session_workdir import _session_db
+                        with _session_db(session) as db_handle:
+                            stamped = _try(db_handle) or stamped
+            except Exception:
+                logger.warning("desktop screen hold: row stamp attempt failed",
+                               exc_info=True)
+            if not stamped:
+                logger.warning(
+                    "desktop screen hold: submit row %s could NOT be marked "
+                    "held (no store handle); the row may ride into a later "
+                    "model restore until marked",
+                    staged_row.get("_row_id"))
 
         def _apply() -> None:
             session["running"] = False

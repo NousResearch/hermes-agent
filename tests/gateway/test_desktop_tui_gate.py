@@ -264,13 +264,15 @@ class TestHoldTurnCleanup(unittest.TestCase):
         # Cycle 1e: the staged submit row is stamped HELD_ROW_DISPLAY_KIND
         # before the adoption slot is popped, so the held text cannot ride
         # into a later turn's model context through the transcript.
+        # Round-1 F0: the stamp resolves the SERVER-BOUND _session_db (the
+        # bind_module namespace) first - patch THAT, not session_workdir.
         import contextlib
         import threading
         from unittest import mock
 
         from hermes_state_messages import HELD_ROW_DISPLAY_KIND
         from tui_gateway import prompt_turn as pt
-        from tui_gateway import session_workdir
+        from tui_gateway import server as tui_server
 
         recorder = mock.Mock()
         recorder.set_message_display_kind = mock.Mock(return_value=1)
@@ -280,7 +282,7 @@ class TestHoldTurnCleanup(unittest.TestCase):
             yield recorder
 
         session = self.staged_session()
-        with mock.patch.object(session_workdir, "_session_db", fake_db):
+        with mock.patch.object(tui_server, "_session_db", fake_db):
             pt._hold_turn_cleanup(session, "held notice")
         recorder.set_message_display_kind.assert_called_once()
         args = recorder.set_message_display_kind.call_args[0]

@@ -149,24 +149,25 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         storage = self._hermes_storage()
         if meta is None or storage is None:
             return
-        from tools.mcp_oauth_login import registration_version, require_settled_publication
+        from tools.mcp_oauth_login import registration_version, require_settled_publication, state_version
         await self._hermes_acquire_refresh_fence()
         try:
             require_settled_publication(storage)
             observed = getattr(self, "_hermes_registration_version", None)
             existing = storage.load_oauth_metadata()
-            if observed is not None and registration_version(storage) != observed and existing == meta:
-                # A peer may have persisted our identical discovery metadata. It
-                # is safe to adopt only after checking the client as well.
+            if existing == meta:
+                # Nothing needs writing. A peer's equal discovery must not grant
+                # this old flow ownership of a concurrently replaced token pair.
                 await self._hermes_check_disk_registration()
-                self._hermes_registration_version = registration_version(storage)
                 return
             if observed is None or registration_version(storage) != observed:
                 raise RuntimeError("MCP OAuth registration changed during discovery; reconnect before persisting metadata")
+            if state_version(storage) != getattr(self, "_hermes_state_version", None):
+                raise RuntimeError("MCP OAuth grant changed during discovery; preserve the newer authorization")
             if existing != meta:
                 storage.save_oauth_metadata(meta)
             self.context.oauth_metadata = meta
-            self._hermes_registration_version = registration_version(storage)
+            self._hermes_capture_state()
         finally:
             await self._hermes_release_refresh_fence()
 
@@ -210,7 +211,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             self._log_nonfatal("invalid_client detection", exc)
 
     async def _invalidate_rejected_registration(self, storage):
-        from tools.mcp_oauth_login import registration_version, require_settled_publication
+        from tools.mcp_oauth_login import registration_version, require_settled_publication, state_version
         owns_fence = self._hermes_fence is None
         if owns_fence:
             await self._hermes_acquire_refresh_fence()
@@ -219,6 +220,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             observed = getattr(self, "_hermes_registration_version", None)
             if observed is None or registration_version(storage) != observed:
                 raise RuntimeError("MCP OAuth registration changed before invalid-client response; preserve the newer grant")
+            if state_version(storage) != getattr(self, "_hermes_state_version", None):
+                raise RuntimeError("MCP OAuth grant changed before invalid-client response; preserve the newer grant")
             # A rejected CIMD URL would loop if re-presented (the server already fetched and refused
             # it): drop it so the retry takes DCR, and mark it on disk so the next process doesn't walk
             # back into the same refusal (`hermes mcp login` clears the marker).
@@ -230,7 +233,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 self.context.client_metadata_url = None
                 storage.mark_cimd_rejected()
             storage.poison_client_registration()
-            self._hermes_registration_version = registration_version(storage)
+            self._hermes_capture_state()
         finally:
             if owns_fence:
                 await self._hermes_release_refresh_fence()
@@ -274,7 +277,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             await self._hermes_acquire_refresh_fence()
             try:
                 require_settled_publication(storage)
-                self._hermes_registration_version = registration_version(storage)
+                self._hermes_capture_state()
             finally:
                 await self._hermes_release_refresh_fence()
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)

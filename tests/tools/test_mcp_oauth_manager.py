@@ -129,7 +129,7 @@ async def test_owned_discovery_persists_metadata_under_the_current_generation(tm
     _set_interactive_stdin(monkeypatch)
     storage = HermesTokenStorage("shared")
     provider = MCPOAuthManager().get_or_build_provider("shared", "https://mcp.example/mcp", {})
-    provider._hermes_registration_version = registration_version(storage)
+    provider._hermes_capture_state()
     meta = OAuthMetadata(issuer="https://issuer.example", authorization_endpoint="https://issuer.example/authorize",
                          token_endpoint="https://issuer.example/token", response_types_supported=["code"])
     await provider._persist_oauth_metadata_if_changed(meta)
@@ -1023,9 +1023,11 @@ async def test_disk_watch_reinitialization_never_strips_a_new_issuer_grant(tmp_p
     assert await manager.invalidate_if_disk_changed("srv") is False
     metadata = provider.context.oauth_metadata.model_dump(mode="json", exclude_none=True)
     metadata["issuer"] = "https://new-idp.example.com"
-    storage.save_oauth_metadata(OAuthMetadata.model_validate(metadata))
-    storage.bind_issuer(metadata["issuer"])
-    await storage.set_tokens(_token("A2", "R2"))
+    from tools.mcp_oauth import HermesTokenStorage
+    external = HermesTokenStorage("srv", hermes_home=tmp_path)
+    external.save_oauth_metadata(OAuthMetadata.model_validate(metadata))
+    external.bind_issuer(metadata["issuer"])
+    await external.set_tokens(_token("A2", "R2"))
     replacement = _read_state(storage)
     assert await manager.invalidate_if_disk_changed("srv") is True
     assert manager._key("srv") not in manager._entries

@@ -496,8 +496,15 @@ class HermesTokenStorage:
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer
-        _write_json(self._tokens_path(), payload)
+        await self._owned_write(lambda: _write_json(self._tokens_path(), payload))
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    async def _owned_write(self, writer):
+        guard = getattr(self, "_hermes_write_guard", None)
+        if guard is None:
+            writer()
+        else:
+            await guard(writer)
 
     def bind_issuer(self, issuer: str | None) -> None:
         """Set the authorization-server issuer stamped on future token writes."""
@@ -551,13 +558,13 @@ class HermesTokenStorage:
             self._client_info_path(), "OAuthClientInformationFull", "client info",
             lambda data: coerced.append(self._coerce_secret_auth_method(data)))
         if info is not None and coerced[0]:
-            _write_json(self._client_info_path(), _model_json(info))  # persist so later flows skip the coercion
+            await self.set_client_info(info)  # persist so later flows skip the coercion
         return info
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
         data = _model_json(client_info)
         self._coerce_secret_auth_method(data)
-        _write_json(self._client_info_path(), data)
+        await self._owned_write(lambda: _write_json(self._client_info_path(), data))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     def save_oauth_metadata(self, metadata: "OAuthMetadata") -> None:

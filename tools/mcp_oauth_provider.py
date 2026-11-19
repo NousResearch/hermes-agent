@@ -315,6 +315,7 @@ class HermesProviderMixin:
                     # left to POST. Restart the flow so the SDK lands in 401 ->
                     # full authorization instead of raising over a dead grant.
                     raise _RefreshCompletedByPeer
+                self._hermes_capture_state()
                 if self._hermes_live_ttl() and self.context.is_token_valid():
                     # The peer's access token is live: presenting our copy of the
                     # refresh token would only burn a generation on a single-use
@@ -364,6 +365,32 @@ class HermesProviderMixin:
         fd, self._hermes_fence = self._hermes_fence, None
         if fd is not None:
             release_refresh_fence(fd)
+
+    def _hermes_capture_state(self):
+        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth_login import registration_version, state_version
+        storage = self.context.storage
+        if isinstance(storage, HermesTokenStorage):
+            self._hermes_registration_version = registration_version(storage)
+            self._hermes_state_version = state_version(storage)
+            storage._hermes_write_guard = self._hermes_owned_write
+
+    async def _hermes_owned_write(self, writer):
+        from tools.mcp_oauth_login import require_settled_publication, state_version
+        owns_fence = self._hermes_fence is None
+        if owns_fence:
+            await self._hermes_acquire_refresh_fence()
+        try:
+            storage = self.context.storage
+            require_settled_publication(storage)
+            observed = getattr(self, "_hermes_state_version", None)
+            if observed is None or state_version(storage) != observed:
+                raise RuntimeError("MCP OAuth grant changed before persistence; preserve the newer authorization")
+            writer()
+            self._hermes_capture_state()
+        finally:
+            if owns_fence:
+                await self._hermes_release_refresh_fence()
 
     async def _hermes_check_disk_registration(self) -> None:
         """A waiting old provider must not refresh a newly reauthorized grant.
@@ -425,7 +452,7 @@ class HermesProviderMixin:
         then enforce refresh-token issuer binding."""
         storage = self.context.storage
         from tools.mcp_oauth import HermesTokenStorage
-        from tools.mcp_oauth_login import require_settled_publication, registration_version
+        from tools.mcp_oauth_login import require_settled_publication
 
         await self._hermes_acquire_refresh_fence()
         try:
@@ -440,7 +467,7 @@ class HermesProviderMixin:
                     self.context.oauth_metadata = meta
             enforce_refresh_token_issuer(self.context)
             self._hermes_loaded_registration = True
-            self._hermes_registration_version = registration_version(storage) if isinstance(storage, HermesTokenStorage) else None
+            self._hermes_capture_state()
         finally:
             await self._hermes_release_refresh_fence()
 

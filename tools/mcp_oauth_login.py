@@ -44,6 +44,11 @@ def registration_version(storage):
     return tuple(version)
 
 
+def state_version(storage):
+    """Include the grant pair when admitting an authorization-code/client write."""
+    return tuple((name, hashlib.sha256(raw).digest()) for name, raw in sorted(_read_state(storage).items()))
+
+
 def _sync_directory(path):
     # POSIX directory open/fsync failures are transaction failures, unlike the
     # general-purpose best-effort writer. Windows does not expose a directory

@@ -10,12 +10,13 @@ alone; whole session or head/tail), BROWSE (no args).
 No LLM calls — every shape returns actual DB messages.
 """
 
+import heapq
 import json
 import logging
 import re
 import time
 from contextlib import ExitStack
-from itertools import zip_longest
+from itertools import islice, zip_longest
 from pathlib import Path
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
@@ -57,7 +58,7 @@ _EXCLUDE_SESSION_IDS_CAP = 20
 _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
-_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
+_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "timestamp", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
@@ -455,14 +456,20 @@ def _search_rows(persistence, query: str, role_filter: Optional[list[str]], scan
     """The search every query shape runs: ``role_filter`` (default user/assistant), the discovery projection.
 
     A tool role sends a search down the stored-row substring route, which can't read structured content (an image
-    turn's caption), so conversation roles search the word index separately and the two legs interleave."""
+    turn's caption), so conversation roles search the word index separately. A date sort merges the two legs by
+    timestamp; relevance (no score shared across the two routes) interleaves them."""
     roles = role_filter or ["user", "assistant"]
     groups = [g for g in ([r for r in roles if r != "tool"], [r for r in roles if r == "tool"]) if g]
+    order = SearchSort(sort) if sort else SearchSort.RELEVANCE
     legs = [persistence.search.search_messages(
-        query=query, role_filter=group, limit=scan_limit, offset=0,
-        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
+        query=query, role_filter=group, limit=scan_limit, offset=0, sort=order, fields=_DISCOVER_SEARCH_FIELDS,
         after_ts=after_ts, before_ts=before_ts, **narrow) for group in groups]
-    return [hit for pair in zip_longest(*legs) for hit in pair if hit is not None][:scan_limit]
+    if order is SearchSort.RELEVANCE:
+        merged = (hit for pair in zip_longest(*legs) for hit in pair if hit is not None)
+    else:
+        merged = heapq.merge(*legs, key=lambda hit: (hit.timestamp or 0.0, hit.message_id),
+                             reverse=order is SearchSort.NEWEST)
+    return list(islice(merged, scan_limit))
 
 
 def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],

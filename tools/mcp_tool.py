@@ -447,8 +447,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # True when this stdio server must have exactly ONE live child system-wide (a single-writer
         # datastore). A non-owner that finds the resource taken parks quietly instead of self-probing.
         self._single_instance: bool = False
-        # Consecutive self-probes that came back still-broken; drives the parked-probe backoff.
+        # Consecutive park revivals that came back still-broken; drives the parked-probe backoff.
         self._parked_probe_failures: int = 0
+        # True while parked with no timed self-probe (single_instance conflict).
+        self._park_quiet: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
         # during that teardown so _track_inflight_rpc turns the cancel into a retryable error.
         # In-flight RPC bookkeeping (#48069 salvage): user-visible requests registered while running so a

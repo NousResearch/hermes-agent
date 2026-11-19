@@ -195,6 +195,7 @@ class MCPServerRunMixin:
         holds a single-writer resource), so only an explicit reconnect can revive it."""
         self._was_parked = True
         self._park_reason = revival_reason
+        self._park_quiet = quiet
         self._deregister_tools()
         self._reconnect_event.clear()
         paused = False
@@ -226,9 +227,10 @@ class MCPServerRunMixin:
                 from tools.mcp_oauth import _oauth_interactive_enabled
 
                 _oauth_interactive_enabled.set(False)
-                # The probe we are about to launch is a re-attempt of a still-failed server: count it
-                # now so the NEXT park waits longer (backoff) instead of hammering at a fixed cadence.
-                self._parked_probe_failures += 1
+            # Every revival is a re-attempt of a still-failed server (a discovery nudge included):
+            # count it now so the NEXT park waits longer; a proven session resets the streak.
+            self._parked_probe_failures += 1
+            self._park_quiet = False
             logger.debug(
                 "MCP server '%s': attempting revival %s (%s); rebuilding transport.",
                 self.name,

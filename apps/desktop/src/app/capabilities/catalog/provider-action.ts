@@ -8,6 +8,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import type { CatalogAction, CatalogOperation, CatalogReview } from '@/types/skill-catalog'
 
 import type { CatalogEntry } from './catalog-data'
+import { PROVIDER_CATALOG_KEY } from './provider-catalog'
 
 export interface ProviderAction {
   identifier: string
@@ -39,7 +40,7 @@ export function useProviderAction(profile: ProfileScope) {
  return () => { alive.current = false } }, [])
 
   const refresh = () => {
-    for (const key of ['skills-list', 'official-skills', 'skill-hub-sources', 'skill-provider-catalog']) {
+    for (const key of ['skills-list', 'official-skills', 'skill-hub-sources', PROVIDER_CATALOG_KEY]) {
       void queryClient.invalidateQueries({ queryKey: [key] })
     }
 

@@ -478,3 +478,68 @@ it('retires the source facet selection together with the descriptor', async () =
   expect(screen.queryByText('No matches')).toBeNull()
   expect(screen.getAllByRole('article').some(article => article.textContent?.includes('Public lookalike'))).toBe(true)
 })
+
+const disableThenEnable = async (enabled: unknown = official) => {
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], stock) })
+  await waitFor(() => expect(screen.queryAllByText('Team skills')).toHaveLength(0))
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], enabled) })
+}
+
+const searchCalls = () => api.mock.calls.filter(([request]) => request.path.includes('/search'))
+
+it('re-enable refetches a source instead of restoring its pre-disable pages', async () => {
+  setup()
+  await teamCard()
+  const count = searchCalls().length
+  searchResponse = { results: [], next_cursor: null }
+  await disableThenEnable()
+  await waitFor(() => expect(searchCalls().length).toBeGreaterThan(count))
+  await screen.findByText('This source has no matching skills.')
+  expect(screen.queryAllByText('Team skills')).toHaveLength(0)
+})
+
+it('re-enable after paging starts from a fresh first page', async () => {
+  setup()
+  await teamCard()
+  fireEvent.click(await screen.findByRole('button', { name: 'Load more Team skills' }))
+  await screen.findByRole('button', { name: pageTwo.results[0].name })
+  const before = searchCalls().length
+  await disableThenEnable()
+  await waitFor(() => expect(searchCalls().length).toBe(before + 1))
+  expect(new URL(searchCalls()[before][0].path, 'http://fixture').searchParams.has('cursor')).toBe(false)
+  await teamCard()
+  expect(screen.queryByRole('button', { name: pageTwo.results[0].name })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Load more Team skills' })).toBeTruthy()
+})
+
+it('re-enable refetches the preview instead of serving the pre-disable one', async () => {
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Example skill' }))
+  await screen.findByText(/Follow the approved plan/)
+  fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0])
+  await disableThenEnable()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Example skill' }))
+  await screen.findByText(/Follow the approved plan/)
+  expect(api.mock.calls.filter(([request]) => request.path.includes('/preview'))).toHaveLength(2)
+})
+
+it('a replacement owner never inherits the retired source pages', async () => {
+  const replacement = { ...source, id: source.id.replace(source.id.split('.')[1], 'b'.repeat(64)), provider: { ...source.provider, plugin_id: 'replacement-owner' } }
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.includes('/search') && new URL(request.path, 'http://fixture').searchParams.get('source') === replacement.id) {
+      return Promise.resolve({ results: [{ ...search.results[0], name: 'Replacement skill', source: replacement.id, identifier: `${replacement.id}:replacement-skill`, provider: { ...search.results[0].provider, plugin_id: 'replacement-owner' } }], next_cursor: null })
+    }
+
+    return original(request)
+  })
+  setup()
+  await teamCard()
+  await disableThenEnable({ skills: [], provider_sources: [replacement] })
+  await screen.findByRole('button', { name: 'Replacement skill' })
+  expect(screen.getAllByRole('article').filter(article => article.textContent?.includes('Team skills'))).toHaveLength(1)
+  expect(screen.getAllByRole('article').some(article => article.textContent?.includes('Team skills') && article.textContent.includes('Example skill'))).toBe(false)
+  const searched = searchCalls().map(([request]) => new URL(request.path, 'http://fixture').searchParams.get('source'))
+  expect(searched.filter(id => id === source.id)).toHaveLength(1)
+  expect(searched.at(-1)).toBe(replacement.id)
+})

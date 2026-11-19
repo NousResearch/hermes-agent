@@ -1,17 +1,46 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
 
 import { type ProfileScope, profileScopeKey } from '@/api/client'
 import { searchProvider } from '@/api/skill-catalog'
+import { queryClient } from '@/lib/query-client'
 import type { CatalogSource } from '@/types/skill-catalog'
 
 import { parseCatalog } from './catalog-data'
 
+export const PROVIDER_CATALOG_KEY = 'skill-provider-catalog'
+export const PROVIDER_PREVIEW_KEY = 'skill-provider-preview'
+
+/**
+ * Discovery data (search pages, previews) lives only while its source is live. When a
+ * source's lifecycle ends (disable, owner replacement, loss of readiness) its pages and
+ * previews are dropped, so a reappearance fetches a new first page before any entry,
+ * cursor or action is shown as current. Exact-token operation recovery is not discovery
+ * data; `useProviderAction` keeps it separately and nothing here touches it.
+ */
+export function retireSourceCaches(scope: string, live: string[]) {
+  queryClient.removeQueries({
+    queryKey: [PROVIDER_CATALOG_KEY, scope],
+    predicate: query => (query.queryKey[2] as string[]).some(id => !live.includes(id))
+  })
+  queryClient.removeQueries({
+    queryKey: [PROVIDER_PREVIEW_KEY, scope],
+    predicate: query => !live.some(id => String(query.queryKey[2]).startsWith(`${id}:`))
+  })
+}
+
 /** Provider pages have their own scoped cache; public discovery never waits on them. */
 export function useProviderCatalog(sources: CatalogSource[], profile: ProfileScope, query: string) {
   const ready = sources.filter(source => source.state === 'ready' && source.searchable)
+  const scope = profileScopeKey(profile)
+  const liveKey = ready.map(source => source.id).join('\n')
+
+  useEffect(() => {
+    retireSourceCaches(scope, liveKey ? liveKey.split('\n') : [])
+  }, [scope, liveKey])
 
   const result = useInfiniteQuery({
-    queryKey: ['skill-provider-catalog', profileScopeKey(profile), ready.map(source => source.id), query],
+    queryKey: [PROVIDER_CATALOG_KEY, scope, ready.map(source => source.id), query],
     queryFn: async ({ pageParam }) => Promise.all(Object.entries(pageParam).map(async ([source, cursor]) => {
       try { return { source, ...await searchProvider(profile, source, query, cursor) } }
       catch (error) { return { source, results: [], next_cursor: null, provider_errors: [{ source, code: 'provider_unavailable', message: String(error instanceof Error ? error.message : error) }] } }

@@ -8,7 +8,7 @@ import type { CatalogAction, CatalogSource } from '@/types/skill-catalog'
 
 import { CatalogAlert } from './catalog-alert'
 import type { CatalogEntry } from './catalog-data'
-import type { useProviderCatalog } from './provider-catalog'
+import { PROVIDER_PREVIEW_KEY, type useProviderCatalog } from './provider-catalog'
 
 export function ProviderActions({ entry, onAction, disabled }: { entry: CatalogEntry; onAction: (entry: CatalogEntry, action: CatalogAction) => void; disabled: boolean }) {
   const { t } = useI18n()
@@ -38,7 +38,7 @@ export function ProviderDetail({ entry, profile }: { entry: CatalogEntry; profil
   const c = t.catalog.provider
 
   const query = useQuery({
-    queryKey: ['skill-provider-preview', profileScopeKey(profile), entry.identifier, entry.version],
+    queryKey: [PROVIDER_PREVIEW_KEY, profileScopeKey(profile), entry.identifier, entry.version],
     queryFn: () => previewProvider(profile, entry.identifier, entry.version || undefined),
     staleTime: 60_000, retry: false
   })

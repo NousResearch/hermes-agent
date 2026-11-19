@@ -2,6 +2,7 @@
 receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in config.yaml (see website docs)."""
 
 import asyncio
+import functools
 import email as email_lib
 from contextlib import contextmanager, suppress
 import imaplib
@@ -1017,7 +1018,8 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         thread_id = (metadata or {}).get("thread_id")
         explicit_subject = (metadata or {}).get("subject")
-        return await self._run_send(self._send_email, (chat_id, content, reply_to, thread_id, explicit_subject), "[Email] Send failed to %s: %s", chat_id)
+        sender = functools.partial(self._send_email, thread_id=thread_id, explicit_subject=explicit_subject)
+        return await self._run_send(sender, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""

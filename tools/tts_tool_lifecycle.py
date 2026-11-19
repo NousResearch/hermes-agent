@@ -37,14 +37,15 @@ logger = logging.getLogger("tools.tts_tool")
 
 _tts_lease_lock = threading.Lock()
 _tts_leases: set = set()
-# Profile home key -> its latest acquisition context; claimed (cleared) by the unload that releases it.
+# Profile home key -> its latest acquisition context; an unload claims the whole map up front.
 _tts_owners: dict[str, Context] = {}
 # Monotonic generation per profile home, kept past claim so an outer unload skips a home superseded
 # even by a nested acquire+zero-window release that already cleared its new ``_tts_owners`` entry.
 _tts_owner_generations: dict[str, int] = {}
-# Held across an unload's release hooks instead of the lease lock, so an acquire that registers after
-# the unload claimed its owners warms only once those hooks are done. Taken before the lease lock;
-# re-entrant so a plugin's release() may itself acquire or release a lease.
+# Held across an unload's release hooks instead of the lease lock, so another thread's acquire warms
+# only once those hooks are done. Taken before the lease lock. Re-entrant: a release() hook may
+# acquire or release a lease on the same thread (warming at once); the unload then skips owners that
+# hook superseded and keeps the models if a holder or new keep-warm window came back.
 _tts_teardown_lock = threading.RLock()
 
 # Pending keep-warm unload; the generation lets a timer that already woke up see it was superseded.
@@ -267,7 +268,7 @@ def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -
         _tts_owners[home] = owner
         _tts_owner_generations[home] = _keep_warm_generation
         holders = len(_tts_leases)
-    with _tts_teardown_lock:  # an unload that already claimed its owners finishes before this warm
+    with _tts_teardown_lock:  # another thread's running unload finishes before this warm
         pass
     result = warm_tts_provider(tts_config)
     with _tts_lease_lock:

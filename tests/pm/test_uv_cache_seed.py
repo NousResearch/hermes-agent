@@ -294,3 +294,18 @@ def test_seed_bytes_measure_the_pending_merge_without_writing_it(payload_cache_w
 
     packages.uv_cache_dir()
     assert packages.uv_cache_seed_bytes() == 0
+
+
+def test_seed_bytes_count_a_link_that_leaves_the_cache(payload_cache):
+    """The seed copies the bytes of a link into the payload venv, so sizing the merge counts them."""
+    payload = paths.store_root().parent
+    installed = payload / "venv" / "lib" / "site-packages" / "pkg" / "core.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(b"x" * 5000)
+    shipped = payload / "uv-cache" / "archive-v0" / "bucket" / "pkg" / "core.py"
+    shipped.parent.mkdir(parents=True)
+    _symlink_or_skip(os.path.relpath(installed, shipped.parent), shipped)
+
+    assert packages.uv_cache_seed_bytes() == 3 * 4096  # module.py, and core.py's 5000 bytes
+    packages.uv_cache_dir()
+    assert packages.uv_cache_seed_bytes() == 0

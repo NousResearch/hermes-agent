@@ -446,29 +446,34 @@ def _uv_cache_seed() -> tuple[Path, str, Path]:
 def uv_cache_seed_bytes() -> int:
     """Disk the next ``uv_cache_dir()`` merge would take, read without writing; 0 once merged.
 
-    Counts what ``_copy_seed_file`` would copy (a destination of the same size is done), each
-    file rounded up to a 4 KiB block: uv's unpacked archives are mostly small files.
+    Counts what ``_seed_entry`` hands ``_copy_seed_file`` (a destination of the same size is
+    done), each file rounded up to a 4 KiB block: uv's unpacked archives are mostly small files.
     """
-    import stat
-
     _, pending, payload_cache = _uv_cache_seed()
     if not pending or not payload_cache.is_dir():
         return 0
     seeded = long_root(uv_cache_path())
+    root = Path(os.path.realpath(payload_cache))
     total = 0
-    # Links are recreated, not copied, and a linked directory is never followed (as in _seed_tree).
+    # A linked directory is never followed (as in _seed_tree).
     for dirpath, _, filenames in os.walk(payload_cache):
         relative = os.path.relpath(dirpath, payload_cache)
         for name in filenames:
-            source = os.lstat(os.path.join(dirpath, name))
-            if stat.S_ISLNK(source.st_mode) or (relative == "." and name == ".seeded"):
+            path = os.path.join(dirpath, name)
+            # A link inside the cache is recreated; one leaving it has its target's bytes copied.
+            if (relative == "." and name == ".seeded") or (
+                    os.path.islink(path) and Path(os.path.realpath(path)).is_relative_to(root)):
                 continue
             try:
-                if os.stat(os.path.join(seeded, relative, name)).st_size == source.st_size:
+                size = os.stat(path).st_size
+            except OSError:
+                continue  # a dangling link: the seed fails on it and copies nothing
+            try:
+                if os.stat(os.path.join(seeded, relative, name)).st_size == size:
                     continue
             except OSError:
                 pass
-            total += -(-source.st_size // 4096) * 4096
+            total += -(-size // 4096) * 4096
     return total
 
 

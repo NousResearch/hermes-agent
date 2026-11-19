@@ -4,8 +4,9 @@ server shutdown and draining of the background MCP loop."""
 import logging
 import asyncio
 import os
+import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
@@ -122,13 +123,39 @@ def _clear_connect_cooldowns(keys=None) -> None:
             _core._server_connect_failures.pop(key, None)
 
 
+def _remember_orphaned_adopters(keys: Iterable, owner_scope: Optional[str]) -> None:
+    """Record profiles that ADOPTED the shared connections under *keys*, so a later drain
+    (``_reregister_orphaned_adopters``) re-runs their discovery under their own home + secret
+    scope. A teardown drops the adopters' overlays along with the owner's (``_deregister_tools``
+    removes every scope); without the record nothing re-runs their discovery until they reload
+    themselves. Called from ``shutdown_mcp_servers`` (owner reload) and from ``MCPServerTask.
+    _park`` (park/revive, #141223). Caller holds ``_core._lock``."""
+    from tools.mcp_tool_scope import _key_name
+    for key in keys:
+        for adopter in _core._server_tool_scopes.get(key, ()):
+            if adopter != owner_scope:
+                _core._orphaned_adopters.setdefault(adopter, set()).add(_key_name(key))
+
+
 def _reregister_orphaned_adopters() -> None:
     """Re-run MCP registration for profiles whose ADOPTED shared connection an owner's
-    ``/reload-mcp`` just tore down. Their tools vanished with the owner's teardown and nothing
-    re-runs their discovery until THEY reload, so they sat tool-less behind a healthy-looking
-    status (#106005). Runs after the owner's rediscovery, under each adopter's own home + secret
-    scope (its ``${VAR}`` refs must resolve to ITS credentials): the adopter re-adopts the owner's
-    new identical connection or connects its own."""
+    ``/reload-mcp`` just tore down, or whose shared connection parked (#141223). Their tools
+    vanished with the owner's teardown and nothing re-runs their discovery until THEY reload,
+    so they sat tool-less behind a healthy-looking status (#106005). Runs after the owner's
+    rediscovery, under each adopter's own home + secret scope (its ``${VAR}`` refs must resolve
+    to ITS credentials): the adopter re-adopts the owner's new identical connection or connects
+    its own. Safe to call from any thread: on the MCP loop thread (a revival's re-registration
+    runs there) the drain is handed to a context thread (``spawn_context_thread``), because it
+    may CONNECT servers and ``_run_on_mcp_loop`` blocks its calling thread until the pass
+    completes."""
+    from tools import mcp_tool as _origin
+    if _origin._mcp_thread is not None and threading.current_thread() is _origin._mcp_thread:
+        with _core._lock:
+            pending = bool(_core._orphaned_adopters)
+        if pending:
+            from agent.memory_provider import spawn_context_thread
+            spawn_context_thread(_reregister_orphaned_adopters, name="mcp-adopter-rereg").start()
+        return
     with _core._lock:
         pending = dict(_core._orphaned_adopters)
         _core._orphaned_adopters.clear()
@@ -190,10 +217,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         # ``_deregister_tools``; remember them so the next discovery pass re-registers them
         # (``_reregister_orphaned_adopters``).
         if not wildcard:
-            for key in selected:
-                for adopter in _core._server_tool_scopes.get(key, ()):
-                    if adopter != scope:
-                        _core._orphaned_adopters.setdefault(adopter, set()).add(_key_name(key))
+            _remember_orphaned_adopters(selected, scope)
 
     def clear_selected_status():
         _core._server_connecting.difference_update(selected_status)

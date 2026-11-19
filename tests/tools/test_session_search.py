@@ -412,6 +412,7 @@ class TestCompactionRecoveryPointersRecover:
                               ("TOOLMARK_0923", "fatal: TOOLMARK_0923"), ("TOOLMARK_0923", "second value 2222")):
             kwargs = _emitted_session_search_kwargs(footer, query)
             result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
+            assert result["mode"] == "discover"
             assert self._recovered(result, sid, marker), (marker, result)
             assert {r["session_id"] for r in result["results"]} == {sid}
 
@@ -1667,18 +1668,3 @@ class TestSearchWithinSession:
         assert [h.session_id for h in hits] == ["s_target"]
         result = json.loads(session_search(query="saffron kernel", session_id="s_target", persistence=persistence))
         assert result["count"] == 1
-
-    def test_compressor_recovery_footer_shape_searches_the_session(self, db, persistence):
-        import re
-
-        from agent.context_compressor import _build_recovery_footer
-        seed_session(db, "s_foot", "cli")
-        seed_messages(db, "s_foot", {"role": "user", "content": "the umber gateway port is 7781"},
-                      {"role": "assistant", "content": "umber gateway port noted"})
-        _compact(db, "s_foot", {"role": "user", "content": "summary"})
-        footer = _build_recovery_footer("s_foot", 2)
-        sid = re.search(r"session_search\(query='<keywords>', session_id='([^']+)'", footer).group(1)
-        result = json.loads(session_search(
-            query="umber gateway", session_id=sid, current_session_id="s_foot", persistence=persistence))
-        assert result["mode"] == "discover"
-        assert result["count"] >= 1

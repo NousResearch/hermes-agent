@@ -556,7 +556,7 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
                     sort: Optional[str], detail: str, current_session_id: str | None = None,
                     profile: str | None = None, after_ts: Optional[int] = None,
                     before_ts: Optional[int] = None) -> str:
-    """Search-in-session shape: FTS5 scoped in SQL to ``session_id``'s compression lineage.
+    """Search-in-session shape: message search scoped in SQL to ``session_id``'s compression lineage.
 
     One result per matching message (no per-session dedup), each with a
     ``match_message_id``. Inside the caller's own session only rows that left its live
@@ -569,22 +569,23 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
     scope = list(_quiet(lambda: persistence.lineage.lineage(session_id), (),
                         "compression lineage lookup failed for %s", session_id)) or [session_id]
 
-    def _search(**narrow):
+    def _search(scan_limit: int, **narrow):
         return persistence.search.search_messages(
-            query=query, role_filter=role_filter or ["user", "assistant"], limit=_DISCOVER_SCAN_LIMIT, offset=0,
+            query=query, role_filter=role_filter or ["user", "assistant"], limit=scan_limit, offset=0,
             sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
             after_ts=after_ts, before_ts=before_ts, **narrow)
+    # The own leg needs no Python filtering, so `limit` rows suffice; the other leg over-fetches for the guard.
     own_sid = current_session_id if current_session_id in scope else None
-    own, err = (_loud(lambda: _search(compacted_in_session=own_sid), "FTS5 search failed: %s", "Search failed")
+    own, err = (_loud(lambda: _search(limit, compacted_in_session=own_sid), "FTS5 search failed: %s", "Search failed")
                 if own_sid else ((), None))
     if err:
         return err
     others = [sid for sid in scope if sid != own_sid]
-    raw_results, err = (_loud(lambda: _search(session_ids=others), "FTS5 search failed: %s", "Search failed")
-                        if others else ((), None))
+    raw_results, err = (_loud(lambda: _search(_DISCOVER_SCAN_LIMIT, session_ids=others), "FTS5 search failed: %s",
+                              "Search failed") if others and len(own) < limit else ((), None))
     if err:
         return err
-    hits, live_skipped = list(own[:limit]), 0
+    hits, live_skipped = list(own), 0
     for r in raw_results:
         if len(hits) >= limit:
             break
@@ -885,7 +886,7 @@ SESSION_SEARCH_SCHEMA = {
         "Search or read past Hermes conversations (FTS5), or scroll inside one. Five shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
-        "`query` + `session_id` = search inside that session (matching messages, "
+        "`query` + `session_id` = search inside that session's compression lineage (matching messages, "
         "with ids to scroll around); "
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
@@ -905,7 +906,7 @@ SESSION_SEARCH_SCHEMA = {
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
                     "expressions to find in past sessions. With session_id, searches "
-                    "inside that session only. Omit to browse recent "
+                    "inside that session's compression lineage. Omit to browse recent "
                     "sessions. Ignored when session_id + around_message_id are set "
                     "(scroll shape)."
                 ),
@@ -971,7 +972,8 @@ SESSION_SEARCH_SCHEMA = {
                 "description": (
                     "Session to scroll, search, or read. Use the session_id returned "
                     "from a prior discovery call. With around_message_id: scroll. "
-                    "With query: search inside this session. Alone: read it whole."
+                    "With query: search its compression lineage; each hit's session_id is the one to scroll. "
+                    "Alone: read it whole."
                 ),
             },
             "around_message_id": {

@@ -597,7 +597,6 @@ def parked_provider_notice(name: str) -> Optional[str]:
     if provider_dir is None or not _explicitly_disabled(name, provider_dir):
         return None
     from hermes_cli.config import load_config
-    from hermes_constants import profile_cli_selector
     from pm.plugins_state import RECORD
     record = cfg_get(load_config(), "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
@@ -606,7 +605,23 @@ def parked_provider_notice(name: str) -> Optional[str]:
     effect = (", so external memory is off (built-in memory still works)"
               if _get_active_memory_provider() == name else "")
     return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it{effect}.{why} "
-            f"Turn it back on with `hermes {profile_cli_selector()}plugins enable {name}`.")
+            f"Turn it back on with {_enable_command(name)}.")
+
+
+def _enable_command(name: str) -> str:
+    """How to run ``plugins enable`` against the active home from a shell. A bare ``hermes`` follows
+    the sticky ``active_profile``, so the default home drops ``-p`` only while no other profile is
+    sticky. A home that is no profile is reached through HERMES_HOME plus ``-p default``: without the
+    flag the sticky profile of the root that contains it still wins."""
+    from hermes_cli.profiles import get_active_profile
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    home = get_hermes_home()
+    profile = profile_name_for_home(home)
+    if profile is None:
+        return f"`hermes -p default plugins enable {name}` run with HERMES_HOME set to {home}"
+    if profile == "default" and get_active_profile(home) == "default":
+        return f"`hermes plugins enable {name}`"
+    return f"`hermes -p {profile} plugins enable {name}`"
 
 
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:

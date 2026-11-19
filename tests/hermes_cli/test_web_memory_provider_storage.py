@@ -272,3 +272,70 @@ def test_a_secondary_profile_panel_names_that_profile_and_its_refused_save_chang
         assert "work-key" not in ((home / ".env").read_text(encoding="utf-8") if (home / ".env").exists() else "")
     assert ((default_home / "config.yaml").read_bytes()
             if (default_home / "config.yaml").exists() else None) == default_config
+
+
+def test_a_default_home_panel_under_a_sticky_secondary_names_default_and_its_command_enables_default(
+        client, monkeypatch):
+    import os
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+    from hermes_cli import profiles
+    from hermes_constants import get_hermes_home
+
+    default_home = get_hermes_home()
+    work_home = default_home / "profiles" / "work"
+    work_home.mkdir(parents=True)
+    (work_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"disabled": ["ownprov"]}}), encoding="utf-8")
+    (default_home / "active_profile").write_text("work\n", encoding="utf-8")  # the shell's sticky profile
+    (default_home / "plugins" / "ownprov" / "plugin.yaml").write_text("name: ownprov\n", encoding="utf-8")
+    _park(default_home, "ownprov", provider="ownprov")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: default_home / "profiles")
+    work_config = (work_home / "config.yaml").read_bytes()
+
+    url = f"{_URL}&profile=default"
+    got = client.get(url)
+    put = client.put(url, json={"values": {"workspace": "w", "apiKey": "default-key"}})
+
+    assert got.status_code == put.status_code == 503, (got.text, put.text)
+    for detail in (got.json()["detail"], put.json()["detail"]):
+        assert "`hermes -p default plugins enable ownprov`" in detail and "external memory is off" in detail, detail
+    assert not (default_home / "ownprov.json").exists()
+    for home in (work_home, default_home):
+        assert "default-key" not in ((home / ".env").read_text(encoding="utf-8") if (home / ".env").exists() else "")
+
+    # Run the suggested command as a shell under the sticky profile would: same root, no -p of its own.
+    command = re.search(r"`hermes (.+?)`", got.json()["detail"]).group(1).split()
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "HERMES_HOME": str(default_home), "PYTHONPATH": str(repo)}
+    run = subprocess.run([sys.executable, "-m", "hermes_cli.main", *command], cwd=repo, env=env,
+                         capture_output=True, text=True, timeout=120, check=False)
+
+    assert run.returncode == 0, (run.stdout, run.stderr)
+    default_plugins = yaml.safe_load((default_home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert "ownprov" not in (default_plugins.get("disabled") or ()), default_plugins
+    assert (work_home / "config.yaml").read_bytes() == work_config  # the sticky profile is untouched
+
+
+def test_a_home_that_is_no_profile_names_its_home_with_the_enable_command(client):
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from plugins.memory import parked_provider_notice
+
+    custom = get_hermes_home() / "custom-home"
+    plugin_dir = custom / "plugins" / "ownprov"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(_INIT, encoding="utf-8")
+    (plugin_dir / "config_schema.py").write_text(_SCHEMA, encoding="utf-8")
+    _park(custom, "ownprov", provider="ownprov")
+
+    token = set_hermes_home_override(custom)
+    try:
+        notice = parked_provider_notice("ownprov")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert f"`hermes -p default plugins enable ownprov` run with HERMES_HOME set to {custom}" in notice, notice

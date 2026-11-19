@@ -7,6 +7,13 @@
     "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798)"
   },
   {
+    "repo": "https://github.com/erosika/rom-studio",
+    "sha": "2c07ad28539231defd46bad8d2e6b868a5f909d3",
+    "path": "kit/kit.ts",
+    "sha256": "f9f2a6623802f7ae6665a86ef87601fd87dcf93a885b8809b339946a27b96c08",
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: same fixed poryscript 3.6.1 download and sha256 check, the delta only adds new subcommands and help text)"
+  },
+  {
     "repo": "https://github.com/Pukujan/swarm-studio",
     "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
     "path": "dyad/makers/MakerAppImage.ts",

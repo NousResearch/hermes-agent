@@ -88,6 +88,10 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     """Admit a process notice. A completion and the withdrawal of its process's waiting ticks hold
     the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
     identity = producer_identity(runner, evt)
+    # Native Discord needs a typing owner for workers launched by this notice.
+    # Other transports retain their existing automation UI, not inbound typing cards.
+    if adapter.platform == Platform.DISCORD:
+        event._producer_delivery = True
     if evt.get('type') == 'heartbeat':
         # The tick's raw output rides its stored admission: a later tick folds from the ledger.
         event.metadata['heartbeat_tick'] = {'output': str(evt.get('output') or ''),

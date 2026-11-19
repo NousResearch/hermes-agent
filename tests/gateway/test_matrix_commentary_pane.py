@@ -183,13 +183,60 @@ def test_interim_callback_skips_already_streamed_and_empty():
     host._delivery_adapter_for = lambda source: adapter
     host._build_stream_consumer_config = lambda *args, **kwargs: (SimpleNamespace(), None)
     with patch("gateway.stream_consumer.GatewayStreamConsumer", _Consumer):
-        _, _, cb, want = runner._setup_stream_consumer("matrix")
+        consumer, _, cb, want = runner._setup_stream_consumer("matrix")
     assert want is True
+    consumer.stream_deltas_enabled = True  # this consumer showed the streamed deltas
     cb("   ")
     cb("shown already", already_streamed=True)
     assert scheduled == []
     assert breaks == ["break"]
     cb("I'll inspect the config next.")
+    assert len(scheduled) == 1
+
+
+def test_interim_callback_sends_commentary_the_consumer_never_streamed_to_the_pane():
+    adapter = _FakeAdapter()
+    pane = MatrixCommentaryPane(adapter=adapter, chat_id="!room:example")
+    ctx = TurnContext()
+    ctx._run_still_current = lambda: True
+    ctx.scheduled_heartbeat = False
+    ctx.interim_assistant_messages_enabled = True
+    ctx.streaming_tts_consumer_holder = [None]
+    ctx.stream_consumer_holder = [None]
+    ctx.user_config = {}
+    ctx.source = SimpleNamespace(chat_id="!room:example", platform=Platform.MATRIX)
+    ctx.matrix_commentary_pane = pane
+    ctx.resolve_display_setting = lambda *a, **k: None
+    ctx.progress_queue = None
+    ctx.event_message_id = None
+    scheduled = []
+    runner = TurnRunner(SimpleNamespace(config=None, _adapter_for_source=lambda s: adapter), ctx)
+
+    def _schedule(coro, log_message, loop=None):
+        scheduled.append(True)
+        coro.close()
+
+    runner._schedule = _schedule  # type: ignore[method-assign]
+    consumer_calls = []
+
+    class _Consumer:
+        def __init__(self, *args, **kwargs):
+            # The agent's deltas fed an observer, not this consumer.
+            self.stream_deltas_enabled = False
+
+        def on_segment_break(self):
+            consumer_calls.append("break")
+
+        def on_commentary(self, text):
+            consumer_calls.append(text)
+
+    host = runner._runner
+    host._delivery_adapter_for = lambda source: adapter
+    host._build_stream_consumer_config = lambda *args, **kwargs: (SimpleNamespace(), None)
+    with patch("gateway.stream_consumer.GatewayStreamConsumer", _Consumer):
+        _, _, cb, _ = runner._setup_stream_consumer("matrix")
+    cb("streamed to an observer only", already_streamed=True)
+    assert consumer_calls == []
     assert len(scheduled) == 1
 
 

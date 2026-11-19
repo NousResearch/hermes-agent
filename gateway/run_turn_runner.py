@@ -394,7 +394,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if unseen:
                 return
             pane = getattr(ctx, "matrix_commentary_pane", None)
-            if pane is not None and not already_streamed:
+            # Text the consumer already streamed keeps its segment break below; text it never took
+            # (deltas fed an observer) goes to the pane, not a second generic commentary root.
+            if pane is not None and not (already_streamed and stream_consumer is not None
+                                         and (stream_consumer.stream_deltas_enabled or local_viewer_route)):
                 if str(text or "").strip():
                     self._schedule(pane.append(text), "matrix commentary pane scheduling error")
                 return

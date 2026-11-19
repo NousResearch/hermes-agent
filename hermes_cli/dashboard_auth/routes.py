@@ -4,7 +4,8 @@ Mounted at root (no prefix) by ``web_server.py``; ``gated_auth_middleware``
 allowlists the public ones.
 
   GET  /login                  server-rendered login page
-  GET  /auth/login?provider=N  302 to IDP, sets PKCE cookie
+  GET  /auth/login?provider=N  302 to IDP, sets PKCE cookie (started on another host than
+                                the public URL's: 302 to the same start there first)
   GET  /auth/native/authorize  RFC 8252 native-app (desktop) login start
   GET  /auth/callback          completes login, sets session cookies
   POST /auth/password-login    username/password login (JSON)
@@ -23,7 +24,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from typing import Any, Deque, Dict
-from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlencode, urlparse, urlsplit, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -83,6 +84,37 @@ def _redirect_uri(request: Request) -> str:
         return base
     parsed = urlparse(base)
     return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
+
+
+#: Marks a sign-in start already sent to the public URL's host, so a proxy that hides the
+#: browser's host (rewrites Host, sends no X-Forwarded-Host) costs one extra hop, never a loop.
+_PUBLIC_HOST_HOP = "public_host_hop"
+
+
+def _browser_hostname(request: Request) -> str:
+    """The hostname the browser addressed: the first ``X-Forwarded-Host`` (a proxy that rewrites
+    Host, like the agent router in front of Azure, keeps the browser's there), else ``Host``."""
+    forwarded = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    try:
+        return urlsplit(f"//{forwarded or request.headers.get('host', '')}").hostname or ""
+    except ValueError:
+        return ""
+
+
+def _public_host_redirect(request: Request) -> RedirectResponse | None:
+    """302 to this same sign-in start on the public URL's host, or ``None``.
+
+    The PKCE cookie belongs to the host that set it and the IDP returns to
+    ``{public_url}/auth/callback``, so a sign-in started on any other name for this listener (an
+    alias the operator still routes here) would end in "Missing PKCE state cookie". Moving the
+    start keeps the cookie and the callback on one host; the user lands signed in there."""
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
+    if not public_url or request.query_params.get(_PUBLIC_HOST_HOP):
+        return None
+    if urlsplit(public_url).hostname == _browser_hostname(request):
+        return None
+    query = urlencode([*request.query_params.multi_items(), (_PUBLIC_HOST_HOP, "1")])
+    return RedirectResponse(url=f"{public_url}{request.url.path}?{query}", status_code=302)
 
 
 def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
@@ -230,6 +262,8 @@ async def api_auth_providers() -> Any:
 
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
+    if (moved := _public_host_redirect(request)) is not None:
+        return moved
     p = get_provider(provider)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -312,6 +346,8 @@ async def auth_native_authorize(
     opaque ``broker_state`` riding in the gateway's own PKCE cookie (the desktop's
     challenge/state never touch it), then run the normal upstream round trip. Password providers
     go to the ``/login`` form instead."""
+    if (moved := _public_host_redirect(request)) is not None:
+        return moved
     if code_challenge_method.upper() != "S256":
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:

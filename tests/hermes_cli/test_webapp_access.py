@@ -410,6 +410,8 @@ def portal(monkeypatch):
         return {"client_id": client_id, "name": name or "kept"}
 
     monkeypatch.delenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", raising=False)
+    # Registration saves the dashboard's public URL into the process env; undone at teardown.
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
     monkeypatch.setenv("HERMES_DASHBOARD_PORTAL_URL", "https://portal.example.test")
     monkeypatch.setattr(dashboard_register, "_register_self_hosted_client", register)
     monkeypatch.setattr(auth, "resolve_nous_access_token", lambda: "throwaway-access-token")

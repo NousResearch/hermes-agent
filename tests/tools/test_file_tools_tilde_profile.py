@@ -44,6 +44,31 @@ class TestExpandTilde:
         with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
             assert ft._expand_tilde("") == ""
 
+    @pytest.mark.platforms("posix")
+    def test_consecutive_slashes_keep_profile_home(self):
+        """~//scratch must stay under the profile home, not become /scratch (#53432)."""
+        home = "/opt/data/profiles/coder/home"
+        with patch("hermes_constants.get_subprocess_home", return_value=home):
+            one = ft._expand_tilde("~/scratch/file.txt")
+            two = ft._expand_tilde("~//scratch/file.txt")
+            many = ft._expand_tilde("~///scratch/file.txt")
+            bare = ft._expand_tilde("~")
+            named = ft._expand_tilde("~nosuchuser123/file.txt")
+            traversed = os.path.normpath(
+                ft._expand_tilde("~/" + ("../" * 8) + "etc/passwd"))
+            not_root = os.path.normpath(ft._expand_tilde("~//etc/passwd"))
+        expected = os.path.join(home, "scratch/file.txt")
+        assert one == expected
+        assert two == expected
+        assert many == expected
+        assert bare == home
+        # ~user is not the profile-home branch; unknown users stay unexpanded.
+        assert named == "~nosuchuser123/file.txt"
+        # Stripping only the extra slashes must leave `..` for the sensitive-prefix
+        # guards, while ~//etc must not collapse to the real /etc.
+        assert traversed == "/etc/passwd"
+        assert not_root == os.path.join(home, "etc/passwd")
+
 
 # ---------------------------------------------------------------------------
 # Integration: _resolve_path_for_task uses profile home

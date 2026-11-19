@@ -90,7 +90,11 @@ describe('a re-attach page that commits the reply before its completion', () => 
 // the stored reply while the live row's tail (and its completion) is still on
 // the wire. Release CI caught the reply drawn twice in that window.
 describe('a reconnect page that stores a plain reply the live row is still short of', () => {
-  const prompt: ChatMessage = { id: 'user-optimistic', role: 'user', parts: [{ type: 'text', text: 'U8 across a drop' }] }
+  const prompt: ChatMessage = {
+    id: 'user-optimistic',
+    role: 'user',
+    parts: [{ type: 'text', text: 'U8 across a drop' }]
+  }
 
   const stream = (text: string): ChatMessage =>
     ({ id: 'assistant-stream-9-1', role: 'assistant', pending: true, parts: [{ type: 'text', text }] }) as ChatMessage

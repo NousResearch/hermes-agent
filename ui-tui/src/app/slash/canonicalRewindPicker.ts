@@ -193,7 +193,9 @@ export async function rewindAndSend(
       // The view moved to another session first: the edit is not sent there and not dropped
       // silently. Its text is in input history (↑) for when the user goes back. Only a definite
       // refusal can say nothing was removed.
-      return ctx.transcript.sys(t(unknown ? 'slashCmd.core.rewind.editNotSentUnknown' : 'slashCmd.core.rewind.editNotSent'))
+      return ctx.transcript.sys(
+        t(unknown ? 'slashCmd.core.rewind.editNotSentUnknown' : 'slashCmd.core.rewind.editNotSent')
+      )
     }
 
     // Nothing was cut: the draft goes back whole, chips and their images and pastes included, so a

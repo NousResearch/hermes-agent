@@ -16,7 +16,8 @@ const shortcuts = [
 
 const setPlatform = (value: string) => Object.defineProperty(navigator, 'platform', { configurable: true, value })
 
-const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+const CHROME_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
 const FIREFOX_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0'
 
 const setUserAgent = (value: string) => Object.defineProperty(navigator, 'userAgent', { configurable: true, value })
@@ -109,7 +110,7 @@ it('follows a live display-mode change and leaves a user rebind alone', async ()
   expect($bindings.get()['view.closeTab']).toEqual(['mod+shift+q'])
 })
 
-it('keeps a rebind that equals the other window kind\'s default across flips and a reload', async () => {
+it("keeps a rebind that equals the other window kind's default across flips and a reload", async () => {
   setPlatform('Win32')
   const moveTo = stubDisplayMode('standalone')
   const { bindingsFor, setBinding } = await import('@/store/keybinds')

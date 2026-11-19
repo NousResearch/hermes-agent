@@ -276,8 +276,19 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
 
         return poll_until(_try_flock, timeout, 0.1)
     if msvcrt is not None:
-        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
-        return True
+        # Windows parity with the POSIX branch: LK_LOCK blocks ~10s internally and ignores
+        # *timeout*, so a wedged holder surfaces as an OSError the caller treats as
+        # "unavailable", skipping the designed timeout-degraded path. Poll non-blocking
+        # against the same deadline so the caller's degraded mode works on Windows too.
+        def _try_msvcrt_lock() -> bool:
+            if msvcrt is None:  # narrowed for type-checkers; the branch above guarantees it
+                return False
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except PermissionError:
+                return False  # contention — retry until the deadline
+        return poll_until(_try_msvcrt_lock, timeout, 0.1)
     return None
 
 

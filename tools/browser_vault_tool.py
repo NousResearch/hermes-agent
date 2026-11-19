@@ -80,11 +80,25 @@ _FILL_VERIFY_CEILING_S = 0.5
 # a framework can show the value for a frame and revert it on its next commit.
 _FILL_VERIFY_STABLE_S = 0.2
 
-# The CDP page session the running fill validated. Every script of that fill goes to it: the
+@dataclass(frozen=True)
+class _Pin:
+    """The page channel a running vault operation checked its origin on: the plugin page backend
+    (``page``), or the CDP supervisor (``page`` None) on page session ``session``."""
+
+    page: Any
+    session: Optional[str]
+
+
+# The channel the running fill or enter_code validated. Every script of it goes there: the
 # inspection, the write, each focus check, the read-back that carries the expected values, and the
-# cleanup. The supervisor refuses once it has moved to another session (focus_page, a reconnect), so
-# no script of the fill runs on a page the fill never inspected. None = no fill is running.
-_fill_session: ContextVar[Optional[str]] = ContextVar("vault_fill_session", default=None)
+# cleanup. The supervisor refuses a session it has moved off (focus_page, a reconnect), and
+# ``_eval_channel`` refuses once ``_page_backend`` names another channel, so no script runs on a page
+# the operation never inspected. None = no operation is running.
+_fill_pin: ContextVar[Optional[_Pin]] = ContextVar("vault_fill_pin", default=None)
+
+_MOVED = {"success": False, "error_type": "supervisor_required",
+          "error": "The browser moved to another tab or is reconnecting since the page origin was checked. "
+                   "Nothing was written; retry in a moment."}
 
 # Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
 # one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
@@ -120,50 +134,72 @@ def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> 
 
 @dataclass(frozen=True)
 class _CheckedPage:
-    """A page origin and the CDP page session it was checked on. ``session`` is None when there is
-    no session to check: a plugin page backend owns its page, and without a supervisor there is no CDP."""
+    """A page origin and the channel it was checked on: the plugin page backend (``page``), or the
+    CDP page session (``session``). ``session`` is None when there is no session to check: a plugin
+    page backend owns its page, and without a supervisor there is no CDP."""
 
     origin: str
     session: Optional[str] = None
+    page: Any = None
+
+
+def _holds_checked_session(task_id: str, checked: Optional[str]) -> bool:
+    """True when the CDP side still holds ``checked``: the supervisor is on that session, or there is
+    neither a supervisor nor a checked session (nothing to move)."""
+    supervisor = _ensure_supervisor(task_id)
+    if supervisor is None:
+        return checked is None
+    return checked is not None and supervisor.current_page_session() == checked
 
 
 @contextmanager
-def _pinned_page_session(task_id: str, checked: Optional[str]) -> Iterator[Optional[dict[str, Any]]]:
-    """Pin every eval inside this block to ``checked``, the page session the origin check ran on.
+def _pinned_page_session(task_id: str, checked: _CheckedPage) -> Iterator[Optional[dict[str, Any]]]:
+    """Pin every eval inside this block to the channel the origin check ran on.
 
-    The pin is that session, not the one the supervisor holds when the block is entered: a
+    The pin is that plugin page or CDP session, not the one current when the block is entered: a
     reconnect or a ``focus_page`` in between (a payment prompt can last minutes) moves the
-    supervisor to a tab the origin check never looked at. A plugin page backend owns its page and
-    has no CDP session, so there is nothing to pin.
-    Yields the refusal to return when the supervisor no longer holds the checked session (it moved
-    or is reconnecting, or it is gone), or when there was a supervisor but no session to check.
+    supervisor to a tab the origin check never looked at, and a plugin page that closed or opened
+    moves the operation between the plugin and CDP. ``_eval_channel`` holds every script inside the
+    block to the same channel, because ``enter_code`` waits for the user while inside it.
+    Yields the refusal to return when the channel is no longer the checked one (the supervisor moved,
+    is reconnecting or is gone, a plugin page came or went), or when there was a supervisor but no
+    session to check.
     """
-    supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
-    attached = supervisor.current_page_session() if supervisor is not None else None
-    cdp = supervisor is not None or checked is not None
-    refusal = None
-    if cdp and (checked is None or attached != checked):
-        refusal = {"success": False, "error_type": "supervisor_required",
-                   "error": "The browser moved to another tab or is reconnecting since the page origin "
-                            "was checked. Nothing was written; retry in a moment."}
-    token = _fill_session.set(checked)
+    page = _page_backend(task_id)
+    moved = page is not checked.page or (page is None and not _holds_checked_session(task_id, checked.session))
+    token = _fill_pin.set(_Pin(checked.page, checked.session))
     try:
-        yield refusal
+        yield dict(_MOVED) if moved else None
     finally:
-        _fill_session.reset(token)
+        _fill_pin.reset(token)
+
+
+def _eval_channel(task_id: str) -> tuple[Any, Optional[str], Optional[dict[str, Any]]]:
+    """``(page backend or None for CDP, CDP session to pin, refusal)`` for the next script. Inside a
+    pinned block the channel is the checked one; a channel that changed since is refused, so a
+    script is never re-routed between the plugin page and the supervisor mid-operation."""
+    page = _page_backend(task_id)
+    pin = _fill_pin.get()
+    if pin is None:
+        return page, None, None
+    if page is not pin.page:
+        return None, None, dict(_MOVED)
+    return page, pin.session, None
 
 
 def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads): on the plugin browser
     holding the task's page, else over the task's CDP supervisor. Without either the call reports it."""
-    page = _page_backend(task_id)
+    page, session, refusal = _eval_channel(task_id)
+    if refusal is not None:
+        return refusal
     if page is not None:
         return _page_eval(page, task_id, expression, secret=False)
     supervisor = _ensure_supervisor(task_id)
     if supervisor is None:
         return {"success": False, "error": "no supervised browser session for this task; open the page with "
                                            "browser_exec first"}
-    sup = supervisor.evaluate_runtime(expression, session_id=_fill_session.get())
+    sup = supervisor.evaluate_runtime(expression, session_id=session)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {"success": False, "error": str(sup.get("error") or "evaluate failed")}
@@ -202,8 +238,11 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     the caller gets a typed refusal (``error_type='supervisor_required'``) and
     nothing is written. A plugin browser holding the task's page (no CDP endpoint) carries the
     expression over its own transport instead; see ``agent.browser_page_backend``.
+    Inside a pinned block the script goes only to the checked channel (``_eval_channel``).
     """
-    page = _page_backend(task_id)
+    page, session, refusal = _eval_channel(task_id)
+    if refusal is not None:
+        return refusal
     supervisor = None
     if page is None:
         try:
@@ -237,7 +276,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     if page is not None:
         return _page_eval(page, task_id, expression, secret=True)
     try:
-        sup = supervisor.evaluate_runtime(expression, session_id=_fill_session.get())
+        sup = supervisor.evaluate_runtime(expression, session_id=session)
     except Exception as exc:  # health: allow BLE001 -- its text can quote the expression, i.e. the secret
         logger.debug("vault fill: secret-bearing evaluate raised %s", type(exc).__name__)
         return {"success": False, "error_type": "eval_failed",
@@ -313,16 +352,18 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[_Check
 
 
 def _current_page_check(task_id: str) -> Optional[_CheckedPage]:
-    """The current page's origin, read on the session the supervisor holds now and returned with it
-    (the read is pinned to it, so a reconnect during the read cannot answer for another tab)."""
-    supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
+    """The current page's origin, read on the channel current now (the plugin page, or the session the
+    supervisor holds) and returned with it. The read is pinned to that channel, so a reconnect or a
+    plugin page coming or going during the read cannot answer for another tab."""
+    page = _page_backend(task_id)
+    supervisor = None if page is not None else _ensure_supervisor(task_id)
     session = supervisor.current_page_session() if supervisor is not None else None
-    token = _fill_session.set(session)
+    token = _fill_pin.set(_Pin(page, session))
     try:
         origin = _current_page_origin(task_id)
     finally:
-        _fill_session.reset(token)
-    return _CheckedPage(origin, session) if origin else None
+        _fill_pin.reset(token)
+    return _CheckedPage(origin, session, page) if origin else None
 
 
 def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> _CheckedPage | dict[str, Any]:
@@ -503,7 +544,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         page = _current_page_check(effective_task_id)
         if page is None:
             return json.dumps({"success": False, "error": "No page with a code field is open."})
-    with _pinned_page_session(effective_task_id, page.session) as unpinned:
+    with _pinned_page_session(effective_task_id, page) as unpinned:
         if unpinned is not None:
             return json.dumps(unpinned)
         return _enter_code_on_page(backend, handle, meta, page.origin, effective_task_id)
@@ -533,7 +574,10 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
         result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
         del code
         if not result.get("success"):
-            return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+            failed = {"success": False, "error": str(result.get("error") or "fill failed")[:200]}
+            if result.get("error_type"):
+                failed["error_type"] = result["error_type"]
+            return json.dumps(failed)
         parsed = _parse_json_result(result.get("result"))
         if isinstance(parsed, str):
             parsed = _parse_json_result(parsed)
@@ -604,7 +648,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    with backend.fill_context(), _pinned_page_session(effective_task_id, page.session) as unpinned:
+    with backend.fill_context(), _pinned_page_session(effective_task_id, page) as unpinned:
         refusal = unpinned or snapshot_refusal(backend, handle, meta, page.origin)
         if refusal is not None:
             return json.dumps(refusal)
@@ -703,7 +747,8 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     # Every keystroke goes to the page session this fill validated, the one its focus checks ran on.
     # If another tool moves the supervisor to a different page session (focus_page, a reconnect), the
     # next keystroke is refused rather than typed into a page the focus check never looked at.
-    pinned = _fill_session.get()
+    pin = _fill_pin.get()
+    pinned = pin.session if pin is not None else None
     if not pinned:
         return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
 
@@ -810,7 +855,9 @@ def _typing_channel(task_id: str) -> tuple[Any, Any, Any]:
     one would attach a managed browser to a preview-only session. When no supervisor is reachable the
     first two are None and the caller stays on the JS path.
     """
-    page_backend = _page_backend(task_id)
+    page_backend, _session, moved = _eval_channel(task_id)
+    if moved is not None:  # the JS path's first script reports the refusal
+        return None, None, None
     if page_backend is not None:
         return None, None, page_backend
     try:

@@ -838,6 +838,28 @@ class TestBrowserVaultTools:
         assert [(expr, sid) for expr, sid in sup.sent if "location.href" not in expr] == []
         assert [sid for _expr, sid in sup.sent] == ["S1"]  # the origin read itself was pinned
 
+    def test_the_fill_pins_the_session_focus_page_attached_not_a_later_read(self, store):
+        """``focus_page`` probed and attached S1, then something moved the supervisor to S2 before
+        the fill read it again (a concurrent focus, a reconnect's first attach). The fill pins S1,
+        the tab that was probed, so it is refused rather than run on S2."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+
+        class _MovedAfterFocus(self._RecordingSup):
+            def focus_page(self, origin, accept=None):
+                out = super().focus_page(origin, accept)
+                self.sid = "S2"
+                return out
+
+        sup = _MovedAfterFocus([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                 "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []
+
     def test_a_supervisor_that_vanished_after_the_origin_check_refuses_the_fill(self, store):
         """The origin was checked on a supervisor that is gone from the registry by the time the fill
         starts. A fresh supervisor that turns up later never inherits the fill unpinned."""
@@ -1585,6 +1607,44 @@ class TestTwoFactor:
             unlock_mod.set_code_prompt_callback(None)
         assert out["success"] is False and out["error_type"] == "supervisor_required"
         assert sup.sent == [] and asked == []
+
+    @pytest.mark.parametrize("with_handle", [True, False])
+    def test_a_reconnect_after_the_origin_check_does_not_move_the_code(self, store, with_handle):
+        """The code's origin was checked on S1 (a saved login's bound-origin check, or the current
+        page read). When the supervisor moves to S2 before the code is entered, enter_code is
+        refused on the checked session: nothing reaches S2 and nobody is asked for a code."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        handle = ""
+        if with_handle:
+            handle = store.add_item("login", "ex", {"identifier_type": "username", "identifier": "u", "password": "pw",
+                                                    "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://example.com").id
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls)
+        check = "_bound_page_origin" if with_handle else "_current_page_check"
+        checked = getattr(browser_vault_tool, check)
+
+        def checked_then_reconnected(*args, **kwargs):
+            out = checked(*args, **kwargs)
+            sup.sid = "S2"
+            return out
+
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "246810")
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+                 patch.object(browser_vault_tool, check, side_effect=checked_then_reconnected):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(handle, task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [sid for _expr, sid in sup.sent if sid != "S1"] == [] and asked == []
+        assert [e for e, _sid in sup.sent if "location.href" not in e] == []
 
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never

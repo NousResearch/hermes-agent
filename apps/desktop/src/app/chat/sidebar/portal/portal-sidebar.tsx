@@ -32,6 +32,7 @@ import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
 import { type GroupChatMatches, PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
 import { PortalSidebarHead, PortalSidebarSearchField, usePortalSidebarSearch } from './portal-sidebar-head'
+import { UsageStatsCard } from './usage-stats-card'
 
 const ROW_STEP: Record<string, (index: number, count: number) => number> = {
   ArrowDown: (index, count) => Math.min(index + 1, count - 1),
@@ -234,6 +235,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           showSkeletons={loading && rows.length === 0}
         />
       </SidebarContent>
+      <UsageStatsCard />
     </Sidebar>
   )
 }

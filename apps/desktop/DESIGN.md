@@ -1107,6 +1107,20 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-sidebar-orange` | `var(--portal-status-pending)` | ″ |  |
 | `--portal-sidebar-count-fill` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-10)` | The Agents count: a brand-tinted pill (147:6260), lighter on light. |
 | `--portal-sidebar-count-radius` | `10px` | ″ |  |
+| `--portal-sidebar-offer-fill` | `var(--portal-sidebar-card)` | ″ | The usage-stats offer (1370:34567): the agent card's light/5, radius and drop on the sidebar's opaque fill, so rows never show through; 16px pads, the text on the list's 32px inset past the lattice art, which lightens in at Figma's .8 (light multiplies it in, inverted, so the streak reads dark on white). |
+| `--portal-sidebar-offer-ground` | `var(--portal-sidebar-background)` | ″ |  |
+| `--portal-sidebar-offer-radius` | `var(--portal-sidebar-agent-radius)` | ″ |  |
+| `--portal-sidebar-offer-shadow` | `var(--portal-sidebar-agent-shadow)` | ″ |  |
+| `--portal-sidebar-offer-pad` | `1rem` | ″ |  |
+| `--portal-sidebar-offer-gap` | `0.75rem` | ″ |  |
+| `--portal-sidebar-offer-text-gap` | `0.375rem` | ″ |  |
+| `--portal-sidebar-offer-title-ink` | `var(--ui-text-primary)` | ″ |  |
+| `--portal-sidebar-offer-body-ink` | `var(--portal-sidebar-meta)` | ″ |  |
+| `--portal-sidebar-offer-share-ink` | `var(--ui-text-primary)` | ″ |  |
+| `--portal-sidebar-offer-decline-ink` | `var(--portal-sidebar-meta)` | ″ |  |
+| `--portal-sidebar-offer-art-blend` | `lighten` | `multiply` |  |
+| `--portal-sidebar-offer-art-filter` | `none` | `invert(1) hue-rotate(180deg)` |  |
+| `--portal-sidebar-offer-art-opacity` | `0.8` | ″ |  |
 
 <!-- design-tokens:end -->
 
@@ -1179,6 +1193,17 @@ state atom (`null` = not listed; `news` = a token for what it announces) and a c
 shared `TrayCard` (caption, title, sentence, one action). The bell carries a brand-ink dot while
 any listed item has news not yet seen; opening the tray sees it, and the cards that were new say
 so until it closes. Community posts from the frames are not built.
+
+The **usage-stats offer** (Figma 1335:32952, 1365:34379) is the redesign's place for classic's
+composer strip: a card at the foot of the chat sidebar (`usage-stats-card.tsx`, its own slot under
+the list on the sidebar's opaque fill, so no row hides under it or shows through), shown wherever the
+sidebar is and nowhere else, waiting while the free-tier notice is up. Share with Nous and No thanks
+save the answer through the same path as the strip; Details opens "Help improve Hermes", a short
+dialog (`usage-stats-dialog.tsx`, painted by the classic consent host, so every rule about when to
+ask holds) whose Share stats answers and whose Not now, × and Escape only close it; the re-ask reason
+shows there. The card's × answers nothing: it moves the question into the tray (`deferred` in the
+guidance ledger, so it survives reloads) until it is answered or the tray item's × clears it
+(`store/usage-stats-offer.ts`). The copy promises a random ID, never anonymity.
 
 A Webapp tab that was open when a newer build was deployed (W1) says so in the notice strip
 (`Butterbar`) and in the tray, and never reloads under the person: the new build loads at the next

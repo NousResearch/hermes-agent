@@ -3,7 +3,7 @@ import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { releaseQueuedLaunchPick } from '@/store/composer-queued-pick'
 import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
+import { dismissNotification, notifyError } from '@/store/notifications'
 import {
   $currentModel,
   $currentProvider,
@@ -70,6 +70,7 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
     const model = typeof update.model === 'string' ? update.model : ''
 
     releaseQueuedLaunchPick(sessionId, update.target_model, scope)
+    dismissNotification(`model-pick-deferred-${sessionId}`)
 
     if (model && ownSource) {
       repaintCommitted(ctx, update.target_model, model, typeof update.provider === 'string' ? update.provider : '')
@@ -103,6 +104,7 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
     }).then(applied => {
       if (!applied) {
         releaseQueuedLaunchPick(sessionId, target, scope)
+        dismissNotification(`model-pick-deferred-${sessionId}`)
       }
 
       // Declined, or the confirmed resend failed: the committed model is still the session's.

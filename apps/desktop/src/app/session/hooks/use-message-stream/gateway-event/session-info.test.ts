@@ -2,13 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { noteQueuedLaunchPick } from '@/store/composer-queued-pick'
+import { $notifications, notify } from '@/store/notifications'
 import {
   $activeSessionId,
   $currentBranch,
   $currentCwd,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
+  getComposerSelectionScope,
   releaseWorkspaceCwdOwner,
+  setComposerSelectionOwner,
   setCurrentBranch,
   setCurrentCwd
 } from '@/store/session'
@@ -72,6 +76,23 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
     setCurrentBranch('')
+  })
+
+  it('clears a durable queued-model notice when session.info confirms the new route', () => {
+    setComposerSelectionOwner('local', 'default')
+    const scope = getComposerSelectionScope()
+    noteQueuedLaunchPick('runtime-1', { model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' }, scope)
+    notify({ id: 'model-pick-deferred-runtime-1', kind: 'info', message: 'Qwen applies next turn', durationMs: 0, persistent: true })
+
+    const old = sessionInfoEvent({ activeSessionId: 'runtime-1', explicitSid: 'runtime-1', cwd: '' })
+    old.payload = { ...old.payload, model: 'gpt-6.2-sol', provider: 'openai-codex' }
+    handleSessionInfoEvent(old)
+    expect($notifications.get().some(item => item.id === 'model-pick-deferred-runtime-1')).toBe(true)
+
+    const applied = sessionInfoEvent({ activeSessionId: 'runtime-1', explicitSid: 'runtime-1', cwd: '' })
+    applied.payload = { ...applied.payload, model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' }
+    handleSessionInfoEvent(applied)
+    expect($notifications.get().some(item => item.id === 'model-pick-deferred-runtime-1')).toBe(false)
   })
 
   // #55831 / the "workspace pane visible with no agent selected" report: with

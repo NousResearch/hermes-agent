@@ -12,6 +12,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffortWire,
+  getComposerModelSelection,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
@@ -294,24 +295,105 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
-  it('keeps a mid-turn pick painted and skips the refetch that would repaint the old model', async () => {
-    // The gateway queues a switch made during a turn and applies it at the next
-    // turn start. Invalidating now would answer with the still-running model
-    // and overwrite the user's choice in the pill.
-    $activeSessionId.set('session-1')
-    const requestGateway = vi.fn(async () => ({ deferred: true, key: 'model', value: 'grok-4.5' }) as never)
+  it('keeps the active pill on Sol while Qwen is queued for the next turn', async () => {
+    const sessionId = 'session-1'
+    const initial = { ...createClientSessionState('stored-chat'), model: 'gpt-6.2-sol', provider: 'openai-codex' }
+    SessionStates.$sessionStates.set({ [sessionId]: initial })
+    $activeSessionId.set(sessionId)
+    setCurrentModel(initial.model)
+    setCurrentProvider(initial.provider)
+    tile.delegate = {
+      updateSession: (id: string, update: (state: typeof initial) => typeof initial) => {
+        const next = update(SessionStates.$sessionStates.get()[id]!)
+        SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), [id]: next })
+
+        return next
+      }
+    }
+    const requestGateway = vi.fn(async () => ({ deferred: true, key: 'model', value: 'nvidia/Qwen3.8-27B-NVFP4' }) as never)
     const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
 
-    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+    try {
+      await expect(controls.selectModel({ model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' })).resolves.toBe(true)
 
-    expect($currentModel.get()).toBe('grok-4.5')
-    expect($currentProvider.get()).toBe('xai')
-    expect(invalidate).not.toHaveBeenCalled()
-    expect(notifyError).not.toHaveBeenCalled()
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-6.2-sol')
+      expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai-codex')
+      expect(getComposerModelSelection()).toMatchObject({ model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' })
+      expect(invalidate).not.toHaveBeenCalled()
+      expect(notifyError).not.toHaveBeenCalled()
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        message: 'nvidia/Qwen3.8-27B-NVFP4 applies from your next message', durationMs: 0, persistent: true
+      }))
+    } finally {
+      tile.delegate = null
+    }
+  })
+
+  it('shows a temporary queued notice for a background tile', async () => {
+    const tileState = { ...createClientSessionState('stored-b'), model: 'gpt-6.2-sol', provider: 'openai-codex' }
+    SessionStates.$sessionStates.set({ 'runtime-b': tileState })
+    $activeSessionId.set('runtime-a')
+    tile.delegate = {
+      updateSession: (id: string, update: (state: typeof tileState) => typeof tileState) => {
+        const next = update(SessionStates.$sessionStates.get()[id]!)
+        SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), [id]: next })
+
+        return next
+      }
+    }
+    notify.mockClear()
+    const requestGateway = vi.fn(async () => ({ deferred: true }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await expect(result.current.selectModel({ model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark',
+        sessionId: 'runtime-b' })).resolves.toBe(true)
+      expect(SessionStates.$sessionStates.get()['runtime-b']).toMatchObject({ model: 'gpt-6.2-sol', provider: 'openai-codex' })
+      expect(notify).toHaveBeenCalledWith(expect.not.objectContaining({ persistent: true }))
+    } finally {
+      tile.delegate = null
+    }
+  })
+
+  it('does not repaint Sol if a newer session.info applied Qwen before the deferred receipt arrives', async () => {
+    const sessionId = 'live-chat'
+
+    const initial = { ...createClientSessionState('stored-chat'), model: 'gpt-6.2-sol', provider: 'openai-codex',
+      busy: true, turnStartedAt: 100 }
+
+    SessionStates.$sessionStates.set({ [sessionId]: initial })
+    $activeSessionId.set(sessionId)
+    setCurrentModel(initial.model)
+    setCurrentProvider(initial.provider)
+    tile.delegate = {
+      updateSession: (id: string, update: (state: typeof initial) => typeof initial) => {
+        const next = update(SessionStates.$sessionStates.get()[id]! as typeof initial)
+        SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), [id]: next })
+
+        return next
+      }
+    }
+    const pending = deferred<never>()
+    const requestGateway = vi.fn(() => pending.promise)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      const pick = result.current.selectModel({ model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' })
+      SessionStates.$sessionStates.set({
+        [sessionId]: { ...SessionStates.$sessionStates.get()[sessionId]!, model: 'nvidia/Qwen3.8-27B-NVFP4',
+          provider: 'custom:spark', turnStartedAt: 200 }
+      })
+      pending.resolve({ deferred: true } as never)
+      await expect(pick).resolves.toBe(true)
+
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('nvidia/Qwen3.8-27B-NVFP4')
+      expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ id: `model-pick-deferred-${sessionId}` }))
+    } finally {
+      tile.delegate = null
+    }
   })
 
   it('keeps one active chat on each committed provider through Qwen, Codex, Claude and session.info', async () => {

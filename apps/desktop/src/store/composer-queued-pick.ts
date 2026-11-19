@@ -70,6 +70,19 @@ export const releaseQueuedLaunchPick = (sessionId: string, model: unknown, scope
   }
 }
 
+/** A session.info reporting the queued target proves it is now the live route. */
+export const settleQueuedLaunchPick = (sessionId: string, model: unknown, scope: null | string): boolean => {
+  const queued = scope === null ? null : storedQueuedLaunchPick(scope)
+
+  if (queued?.sessionId !== sessionId || queued.model !== model) {
+    return false
+  }
+
+  noteQueuedLaunchPick(sessionId, null, scope)
+
+  return true
+}
+
 /** Rename counterpart (local connection only, like the tiles it joins). A rename never lands on a live profile's
  *  name, so whatever the new name holds was left by a deleted one and is replaced. */
 export function migrateQueuedLaunchPicksForProfile(from: string, to: string): void {

@@ -317,6 +317,12 @@ class HostedRoomAttachmentStore:
             recipient_member_id=recipient_member_id, event_id=normalized_event, offset=offset,
             length=length, now=self._now())
 
+    def list_published(self, **params):
+        return self._repository.list_published(placement=self.placement, **params)
+
+    def published_reference(self, **params):
+        return self._repository.published_reference(placement=self.placement, **params)
+
     def read_viewer(
         self,
         *,

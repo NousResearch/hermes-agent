@@ -23,6 +23,9 @@ from persistence.gateway.hosted_rooms import (
     HostedPlacement,
 )
 
+from functools import partial
+from session_rules import hosted_attachment_catalog as catalog
+
 from ..backend import register_repository
 from . import hosted_room_attachment_rules as rules
 from .hosted_room_attachment_files import BlobFiles, blob_files, read_blob_slice, read_verified_blob, write_blob_file
@@ -33,7 +36,7 @@ from .hosted_room_attachment_steps import (
     require_viewer_room,
 )
 from .hosted_room_rules import clock
-from .hosted_room_tables import HostedTables, read_tables, write_tables
+from .hosted_room_tables import HostedTables, find_event, read_tables, write_tables
 
 __all__ = ["InMemoryHostedRoomAttachmentRepository"]
 
@@ -195,6 +198,51 @@ class InMemoryHostedRoomAttachmentRepository:
         return read_committed_row(
             tables, room_id=room_id, attachment_id=attachment_id, recipient_member_id=recipient_member_id,
             event_id=event_id, viewer=True, now=clock(now))
+
+    def _availability(self, tables, files, room_id, *, event_id, entry):
+        attachment_id = entry["attachment_id"]
+        row = next((rows[attachment_id] for rows in tables["hosted_room_attachments"].values() if attachment_id in rows), None)
+        if row is None:
+            return False
+        if not catalog.public_row(row, room_id=room_id, event_id=event_id, entry=entry):
+            return None
+        try:
+            read_committed_row(tables, room_id=room_id, attachment_id=attachment_id, recipient_member_id="",
+                               event_id=event_id, viewer=True, now=clock(None))
+        except (AttachmentError, ValueError, TypeError):
+            return False
+        blob_id = row["blob_id"]
+        blob = tables["hosted_room_attachment_blobs"].get(blob_id)
+        return bool(blob and rules.BLOB_ID_RE.fullmatch(blob_id) and blob["sha256"] == row["sha256"]
+                    and blob["size"] == row["size"] and blob_id in files and len(files[blob_id]) == row["size"])
+
+    def list_published(self, *, placement, room_id, authority_gateway_id, authority_epoch, owner=None, **filters):
+        if owner is not None:
+            self._store.hosted_rooms.claim_owner(epoch=owner.epoch, room_id=room_id, actor=owner.actor, owner=owner.rule)
+        tables = read_tables(self._store, placement)
+        scope = dict(room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        room = tables["hosted_rooms"].get(room_id)
+        if owner is not None and authority_epoch is None and room is not None:
+            scope["authority_epoch"] = room["authority_epoch"]
+        require_viewer_room(tables, **scope)
+
+        def events(snapshot, position):
+            upper = snapshot if position is None else position["seq"] - int(position["index"] is None)
+            log = tables["hosted_room_events"].get(room_id, {})
+            lower = max(0, upper - catalog.EVENT_SCAN_LIMIT - 1)
+            rows = (log[seq] for seq in range(upper, lower, -1))
+            return [dict(r, manifest_json=json.dumps(json.loads(r["payload_json"]).get("attachments"))) for r in rows]
+
+        availability = partial(self._availability, tables, blob_files(self._store, placement), room_id)
+        return catalog.list_published(tables["hosted_rooms"][room_id], events, availability, **scope, **filters)
+
+    def published_reference(self, *, placement, room_id, event_id, attachment_id, authority_gateway_id, authority_epoch, owner=None):
+        if owner is not None:
+            self._store.hosted_rooms.claim_owner(epoch=owner.epoch, room_id=room_id, actor=owner.actor, owner=owner.rule)
+        tables = read_tables(self._store, placement)
+        require_viewer_room(tables, room_id=room_id, authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        availability = partial(self._availability, tables, blob_files(self._store, placement), room_id, event_id=event_id)
+        return catalog.published_reference(find_event(tables, room_id, event_id), attachment_id, availability)
 
     def read_viewer(self, *, placement: HostedPlacement, room_id: str, attachment_id: str, event_id: str | None = None, recipient_member_id: str | None = None, authority_gateway_id: str, authority_epoch: int, now: float | None = None) -> AttachmentData:
         selection = (placement, room_id, attachment_id, event_id, recipient_member_id or "", (authority_gateway_id, authority_epoch), now)

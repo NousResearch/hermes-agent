@@ -906,6 +906,16 @@ class SQLiteHostedRoomAttachmentRepository:
                 blob_root, blob_id=str(row["blob_id"]), size=int(row["size"]), offset=offset, length=length)
             return AttachmentData(_metadata(row), data)
 
+    def list_published(self, *, placement: HostedPlacement, **params):
+        from ._hosted_attachment_catalog import list_published
+        with translated():
+            return list_published(self._files, placement, **params)
+
+    def published_reference(self, *, placement: HostedPlacement, **params):
+        from ._hosted_attachment_catalog import published_reference
+        with translated():
+            return published_reference(self._files, placement, **params)
+
     def read_viewer(self, *, placement: HostedPlacement, room_id: str, attachment_id: str, event_id: str | None = None,
                     recipient_member_id: str | None = None, authority_gateway_id: str, authority_epoch: int,
                     now: float | None = None) -> AttachmentData:
@@ -921,7 +931,7 @@ class SQLiteHostedRoomAttachmentRepository:
             "recipient_member_id": recipient_member_id or "",
             "normalized_event": event_id,
             "viewer": True,
-            "reconciled": not self._store.read_only,
+            "reconciled": False,
         }
 
         # Each viewer read is one deferred read transaction: the room check and the row read see one snapshot.
@@ -944,6 +954,9 @@ class SQLiteHostedRoomAttachmentRepository:
                 raise AttachmentNotFoundError("attachment changed during viewer read")
             return current
         with translated():
+            if not self._files._hosted_read(placement, lambda conn: table_exists(conn, "hosted_room_attachments")):
+                # A viewer must not turn a missing backing store into an initialized, empty one.
+                raise AttachmentNotFoundError("attachment is not committed for this room")
             blob_root = self._read_root(placement, clock(now))
             row = self._read_rows(placement, _first)
             # No execution lock or SQLite snapshot spans filesystem/hash work.

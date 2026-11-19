@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>honcho-integration-spec</title>
+<style>
+  :root {
+    --bg:             #0b0e14;
+    --bg-surface:     #11151c;
+    --bg-elevated:    #181d27;
+    --bg-code:        #0d1018;
+    --fg:             #c9d1d9;
+    --fg-bright:      #e6edf3;
+    --fg-muted:       #6e7681;
+    --fg-subtle:      #484f58;
+    --accent:         #7eb8f6;
+    --accent-dim:     #3d6ea5;
+    --accent-glow:    rgba(126, 184, 246, 0.08);
+    --green:          #7ee6a8;
+    --green-dim:      #2ea04f;
+    --orange:         #e6a855;
+    --red:            #f47067;
+    --purple:         #bc8cff;
+    --cyan:           #56d4dd;
+    --border:         #21262d;
+    --border-subtle:  #161b22;
+    --radius:         6px;
+    --font-sans:      'New York', ui-serif, 'Iowan Old Style', 'Apple Garamond', Baskerville, 'Times New Roman', 'Noto Emoji', serif;
+    --font-mono:      'Departure Mono', 'Noto Emoji', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 2rem; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 860px; margin: 0 auto; padding: 3rem 2rem 6rem; }
+
+  .hero {
+    text-align: center;
+    padding: 4rem 0 3rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 3rem;
+  }
+  .hero h1 { font-family: var(--font-mono); font-size: 2.2rem; font-weight: 700; color: var(--fg-bright); letter-spacing: -0.03em; margin-bottom: 0.5rem; }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle { font-family: var(--font-sans); color: var(--fg-muted); font-size: 0.92rem; max-width: 560px; margin: 0 auto; line-height: 1.6; }
+  .hero .meta { margin-top: 1.5rem; display: flex; justify-content: center; gap: 1.5rem; flex-wrap: wrap; }
+  .hero .meta span { font-size: 0.8rem; color: var(--fg-subtle); font-family: var(--font-mono); }
+
+  .toc { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem 2rem; margin-bottom: 3rem; }
+  .toc h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-muted); margin-bottom: 1rem; }
+  .toc ol { list-style: none; counter-reset: toc; columns: 2; column-gap: 2rem; }
+  .toc li { counter-increment: toc; break-inside: avoid; margin-bottom: 0.35rem; }
+  .toc li::before { content: counter(toc, decimal-leading-zero) " "; color: var(--fg-subtle); font-family: var(--font-mono); font-size: 0.75rem; margin-right: 0.25rem; }
+  .toc a { font-family: var(--font-mono); color: var(--fg); text-decoration: none; font-size: 0.82rem; transition: color 0.15s; }
+  .toc a:hover { color: var(--accent); }
+
+  section { margin-bottom: 4rem; }
+  section + section { padding-top: 1rem; }
+
+  h2 { font-family: var(--font-mono); font-size: 1.3rem; font-weight: 700; color: var(--fg-bright); letter-spacing: -0.01em; margin-bottom: 1.25rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-family: var(--font-mono); font-size: 1rem; font-weight: 600; color: var(--fg-bright); margin-top: 2rem; margin-bottom: 0.75rem; }
+  h4 { font-family: var(--font-mono); font-size: 0.9rem; font-weight: 600; color: var(--accent); margin-top: 1.5rem; margin-bottom: 0.5rem; }
+
+  p { margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
+  strong { color: var(--fg-bright); font-weight: 600; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; font-size: 0.93rem; line-height: 1.7; }
+  li { margin-bottom: 0.35rem; }
+  li::marker { color: var(--fg-subtle); }
+
+  .table-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-subtle); }
+  th { font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-muted); background: var(--bg-surface); border-bottom-color: var(--border); white-space: nowrap; }
+  td { font-family: var(--font-sans); font-size: 0.88rem; color: var(--fg); }
+  tr:hover td { background: var(--accent-glow); }
+  td code { background: var(--bg-elevated); padding: 0.15em 0.4em; border-radius: 3px; font-family: var(--font-mono); font-size: 0.82em; color: var(--cyan); }
+
+  pre { background: var(--bg-code); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; overflow-x: auto; margin-bottom: 1.5rem; font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.65; color: var(--fg); }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  code { font-family: var(--font-mono); font-size: 0.85em; }
+  p code, li code { background: var(--bg-elevated); padding: 0.15em 0.4em; border-radius: 3px; color: var(--cyan); font-size: 0.85em; }
+
+  .kw { color: var(--purple); }
+  .str { color: var(--green); }
+  .cm { color: var(--fg-subtle); font-style: italic; }
+  .num { color: var(--orange); }
+  .key { color: var(--accent); }
+
+  .mermaid { margin: 1.5rem 0 2rem; text-align: center; }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .callout { font-family: var(--font-sans); background: var(--bg-surface); border-left: 3px solid var(--accent-dim); border-radius: 0 var(--radius) var(--radius) 0; padding: 1rem 1.25rem; margin-bottom: 1.5rem; font-size: 0.88rem; color: var(--fg-muted); line-height: 1.6; }
+  .callout strong { font-family: var(--font-mono); color: var(--fg-bright); }
+  .callout.success { border-left-color: var(--green-dim); }
+  .callout.warn { border-left-color: var(--orange); }
+
+  .badge { display: inline-block; font-family: var(--font-mono); font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.2em 0.6em; border-radius: 3px; vertical-align: middle; margin-left: 0.4rem; }
+  .badge-done { background: var(--green-dim); color: #fff; }
+  .badge-wip { background: var(--orange); color: #0b0e14; }
+  .badge-todo { background: var(--fg-subtle); color: var(--fg); }
+
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 1.5rem; position: relative; margin-bottom: 0.5rem; }
+  .checklist li::before { position: absolute; left: 0; font-family: var(--font-mono); font-size: 0.85rem; }
+  .checklist li.done { color: var(--fg-muted); }
+  .checklist li.done::before { content: "\2713"; color: var(--green); }
+  .checklist li.todo::before { content: "\25CB"; color: var(--fg-subtle); }
+  .checklist li.wip::before { content: "\25D4"; color: var(--orange); }
+
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem; }
+  .compare-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
+  .compare-card h4 { margin-top: 0; font-size: 0.82rem; }
+  .compare-card.after { border-color: var(--accent-dim); }
+  .compare-card ul { font-family: var(--font-mono); padding-left: 1.25rem; font-size: 0.8rem; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
+
+  .progress-bar { position: fixed; top: 0; left: 0; height: 2px; background: var(--accent); z-index: 999; transition: width 0.1s linear; }
+
+  @media (max-width: 640px) {
+    .container { padding: 2rem 1rem 4rem; }
+    .hero h1 { font-size: 1.6rem; }
+    .toc ol { columns: 1; }
+    .compare { grid-template-columns: 1fr; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.6rem; }
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Emoji&display=swap" rel="stylesheet">
+<style>
+  @font-face {
+    font-family: 'Departure Mono';
+    src: url('https://cdn.jsdelivr.net/gh/rektdeckard/departure-mono@latest/fonts/DepartureMono-Regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progress"></div>
+
+<div class="container">
+
+<header class="hero">
+  <h1>honcho<span>-integration-spec</span></h1>
+  <p class="subtitle">Comparison of Hermes Agent vs. openclaw-honcho — and a porting spec for bringing Hermes patterns into other Honcho integrations.</p>
+  <div class="meta">
+    <span>hermes-agent / openclaw-honcho</span>
+    <span>Python + TypeScript</span>
+    <span>2026-03-09</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#architecture">Architecture comparison</a></li>
+    <li><a href="#diff-table">Diff table</a></li>
+    <li><a href="#patterns">Hermes patterns to port</a></li>
+    <li><a href="#spec-async">Spec: async prefetch</a></li>
+    <li><a href="#spec-reasoning">Spec: dynamic reasoning level</a></li>
+    <li><a href="#spec-modes">Spec: per-peer memory modes</a></li>
+    <li><a href="#spec-identity">Spec: AI peer identity formation</a></li>
+    <li><a href="#spec-sessions">Spec: session naming strategies</a></li>
+    <li><a href="#spec-cli">Spec: CLI surface injection</a></li>
+    <li><a href="#openclaw-checklist">openclaw-honcho checklist</a></li>
+    <li><a href="#nanobot-checklist">nanobot-honcho checklist</a></li>
+  </ol>
+</nav>
+
+<!-- OVERVIEW -->
+<section id="overview">
+  <h2>Overview</h2>
+
+  <p>Two independent Honcho integrations have been built for two different agent runtimes: <strong>Hermes Agent</strong> (Python, baked into the runner) and <strong>openclaw-honcho</strong> (TypeScript plugin via hook/tool API). Both use the same Honcho peer paradigm — dual peer model, <code>session.context()</code>, <code>peer.chat()</code> — but they made different tradeoffs at every layer.</p>
+
+  <p>This document maps those tradeoffs and defines a porting spec: a set of Hermes-originated patterns, each stated as an integration-agnostic interface, that any Honcho integration can adopt regardless of runtime or language.</p>
+
+  <div class="callout">
+    <strong>Scope</strong> Both integrations work correctly today. This spec is about the delta — patterns in Hermes that are worth propagating and patterns in openclaw-honcho that Hermes should eventually adopt. The spec is additive, not prescriptive.
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <h2>Architecture comparison</h2>
+
+  <h3>Hermes: baked-in runner</h3>
+  <p>Honcho is initialised directly inside <code>AIAgent.__init__</code>. There is no plugin boundary. Session management, context injection, async prefetch, and CLI surface are all first-class concerns of the runner. Context is injected once per session (baked into <code>_cached_system_prompt</code>) and never re-fetched mid-session — this maximises prefix cache hits at the LLM provider.</p>
+
+  <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c' }}}%%
+flowchart TD
+    U["user message"] --> P["_honcho_prefetch()<br/>(reads cache — no HTTP)"]
+    P --> SP["_build_system_prompt()<br/>(first turn only, cached)"]
+    SP --> LLM["LLM call"]
+    LLM --> R["response"]
+    R --> FP["_honcho_fire_prefetch()<br/>(daemon threads, turn end)"]
+    FP --> C1["prefetch_context() thread"]
+    FP --> C2["prefetch_dialectic() thread"]
+    C1 --> CACHE["_context_cache / _dialectic_cache"]
+    C2 --> CACHE
+
+    style U fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style P fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style SP fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style LLM fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style R fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style FP fill:#2a1a40,stroke:#bc8cff,color:#c9d1d9
+    style C1 fill:#2a1a40,stroke:#bc8cff,color:#c9d1d9
+    style C2 fill:#2a1a40,stroke:#bc8cff,color:#c9d1d9
+    style CACHE fill:#11151c,stroke:#484f58,color:#6e7681
+  </div>
+
+  <h3>openclaw-honcho: hook-based plugin</h3>
+  <p>The plugin registers hooks against OpenClaw's event bus. Context is fetched synchronously inside <code>before_prompt_build</code> on every turn. Message capture happens in <code>agent_end</code>. The multi-agent hierarchy is tracked via <code>subagent_spawned</code>. This model is correct but every turn pays a blocking Honcho round-trip before the LLM call can begin.</p>
+
+  <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c' }}}%%
+flowchart TD
+    U2["user message"] --> BPB["before_prompt_build<br/>(BLOCKING HTTP — every turn)"]
+    BPB --> CTX["session.context()"]
+    CTX --> SP2["system prompt assembled"]
+    SP2 --> LLM2["LLM call"]
+    LLM2 --> R2["response"]
+    R2 --> AE["agent_end hook"]
+    AE --> SAVE["session.addMessages()<br/>session.setMetadata()"]
+
+    style U2 fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style BPB fill:#3a1515,stroke:#f47067,color:#c9d1d9
+    style CTX fill:#3a1515,stroke:#f47067,color:#c9d1d9
+    style SP2 fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style LLM2 fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style R2 fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style AE fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style SAVE fill:#11151c,stroke:#484f58,color:#6e7681
+  </div>
+</section>
+
+<!-- DIFF TABLE -->
+<section id="diff-table">
+  <h2>Diff table</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th>Hermes Agent</th>
+          <th>openclaw-honcho</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Context injection timing</strong></td>
+          <td>Once per session (cached). Zero HTTP on response path after turn 1.</td>
+          <td>Every turn, blocking. Fresh context per turn but adds latency.</td>
+        </tr>
+        <tr>
+          <td><strong>Prefetch strategy</strong></td>
+          <td>Daemon threads fire at turn end; consumed next turn from cache.</td>
+          <td>None. Blocking call at prompt-build time.</td>
+        </tr>
+        <tr>
+          <td><strong>Dialectic (peer.chat)</strong></td>
+          <td>Prefetched async; result injected into system prompt next turn.</td>
+          <td>On-demand via <code>honcho_recall</code> / <code>honcho_analyze</code> tools.</td>
+        </tr>
+        <tr>
+          <td><strong>Reasoning level</strong></td>
+          <td>Dynamic: scales with message length. Floor = config default. Cap = "high".</td>
+          <td>Fixed per tool: recall=minimal, analyze=medium.</td>
+        </tr>
+        <tr>
+          <td><strong>Memory modes</strong></td>
+          <td><code>user_memory_mode</code> / <code>agent_memory_mode</code>: hybrid / honcho / local.</td>
+          <td>None. Always writes to Honcho.</td>
+        </tr>
+        <tr>
+          <td><strong>Write frequency</strong></td>
+          <td>async (background queue), turn, session, N turns.</td>
+          <td>After every agent_end (no control).</td>
+        </tr>
+        <tr>
+          <td><strong>AI peer identity</strong></td>
+          <td><code>observe_me=True</code>, <code>seed_ai_identity()</code>, <code>get_ai_representation()</code>, SOUL.md → AI peer.</td>
+          <td>Agent files uploaded to agent peer at setup. No ongoing self-observation seeding.</td>
+        </tr>
+        <tr>
+          <td><strong>Context scope</strong></td>
+          <td>User peer + AI peer representation, both injected.</td>
+          <td>User peer (owner) representation + conversation summary. <code>peerPerspective</code> on context call.</td>
+        </tr>
+        <tr>
+          <td><strong>Session naming</strong></td>
+          <td>per-directory / global / manual map / title-based.</td>
+          <td>Derived from platform session key.</td>
+        </tr>
+        <tr>
+          <td><strong>Multi-agent</strong></td>
+          <td>Single-agent only.</td>
+          <td>Parent observer hierarchy via <code>subagent_spawned</code>.</td>
+        </tr>
+        <tr>
+          <td><strong>Tool surface</strong></td>
+          <td>Single <code>query_user_context</code> tool (on-demand dialectic).</td>
+          <td>6 tools: session, profile, search, context (fast) + recall, analyze (LLM).</td>
+        </tr>
+        <tr>
+          <td><strong>Platform metadata</strong></td>
+          <td>Not stripped.</td>
+          <td>Explicitly stripped before Honcho storage.</td>
+        </tr>
+        <tr>
+          <td><strong>Message dedup</strong></td>
+          <td>None (sends on every save cycle).</td>
+          <td><code>lastSavedIndex</code> in session metadata prevents re-sending.</td>
+        </tr>
+        <tr>
+          <td><strong>CLI surface in prompt</strong></td>
+          <td>Management commands injected into system prompt. Agent knows its own CLI.</td>
+          <td>Not injected.</td>
+        </tr>
+        <tr>
+          <td><strong>AI peer name in identity</strong></td>
+          <td>Replaces "Hermes Agent" in DEFAULT_AGENT_IDENTITY when configured.</td>
+          <td>Not implemented.</td>
+        </tr>
+        <tr>
+          <td><strong>QMD / local file search</strong></td>
+          <td>Not implemented.</td>
+          <td>Passthrough tools when QMD backend configured.</td>
+        </tr>
+        <tr>
+          <td><strong>Workspace metadata</strong></td>
+          <td>Not implemented.</td>
+          <td><code>agentPeerMap</code> in workspace metadata tracks agent&#8594;peer ID.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- PATTERNS -->
+<section id="patterns">
+  <h2>Hermes patterns to port</h2>
+
+  <p>Six patterns from Hermes are worth adopting in any Honcho integration. They are described below as integration-agnostic interfaces — the implementation will differ per runtime, but the contract is the same.</p>
+
+  <div class="compare">
+    <div class="compare-card">
+      <h4>Patterns Hermes contributes</h4>
+      <ul>
+        <li>Async prefetch (zero-latency)</li>
+        <li>Dynamic reasoning level</li>
+        <li>Per-peer memory modes</li>
+        <li>AI peer identity formation</li>
+        <li>Session naming strategies</li>
+        <li>CLI surface injection</li>
+      </ul>
+    </div>
+    <div class="compare-card after">
+      <h4>Patterns openclaw contributes back</h4>
+      <ul>
+        <li>lastSavedIndex dedup</li>
+        <li>Platform metadata stripping</li>
+        <li>Multi-agent observer hierarchy</li>
+        <li>peerPerspective on context()</li>
+        <li>Tiered tool surface (fast/LLM)</li>
+        <li>Workspace agentPeerMap</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- SPEC: ASYNC PREFETCH -->
+<section id="spec-async">
+  <h2>Spec: async prefetch</h2>
+
+  <h3>Problem</h3>
+  <p>Calling <code>session.context()</code> and <code>peer.chat()</code> synchronously before each LLM call adds 200–800ms of Honcho round-trip latency to every turn. Users experience this as the agent "thinking slowly."</p>
+
+  <h3>Pattern</h3>
+  <p>Fire both calls as non-blocking background work at the <strong>end</strong> of each turn. Store results in a per-session cache keyed by session ID. At the <strong>start</strong> of the next turn, pop from cache — the HTTP is already done. First turn is cold (empty cache); all subsequent turns are zero-latency on the response path.</p>
+
+  <h3>Interface contract</h3>
+  <pre><code><span class="cm">// TypeScript (openclaw / nanobot plugin shape)</span>
+
+<span class="kw">interface</span> <span class="key">AsyncPrefetch</span> {
+  <span class="cm">// Fire context + dialectic fetches at turn end. Non-blocking.</span>
+  firePrefetch(sessionId: <span class="str">string</span>, userMessage: <span class="str">string</span>): <span class="kw">void</span>;
+
+  <span class="cm">// Pop cached results at turn start. Returns empty if cache is cold.</span>
+  popContextResult(sessionId: <span class="str">string</span>): ContextResult | <span class="kw">null</span>;
+  popDialecticResult(sessionId: <span class="str">string</span>): <span class="str">string</span> | <span class="kw">null</span>;
+}
+
+<span class="kw">type</span> <span class="key">ContextResult</span> = {
+  representation: <span class="str">string</span>;
+  card: <span class="str">string</span>[];
+  aiRepresentation?: <span class="str">string</span>;  <span class="cm">// AI peer context if enabled</span>
+  summary?: <span class="str">string</span>;            <span class="cm">// conversation summary if fetched</span>
+};</code></pre>
+
+  <h3>Implementation notes</h3>
+  <ul>
+    <li>Python: <code>threading.Thread(daemon=True)</code>. Write to <code>dict[session_id, result]</code> — GIL makes this safe for simple writes.</li>
+    <li>TypeScript: <code>Promise</code> stored in <code>Map&lt;string, Promise&lt;ContextResult&gt;&gt;</code>. Await at pop time. If not resolved yet, skip (return null) — do not block.</li>
+    <li>The pop is destructive: clears the cache entry after reading so stale data never accumulates.</li>
+    <li>Prefetch should also fire on first turn (even though it won't be consumed until turn 2) — this ensures turn 2 is never cold.</li>
+  </ul>
+
+  <h3>openclaw-honcho adoption</h3>
+  <p>Move <code>session.context()</code> from <code>before_prompt_build</code> to a post-<code>agent_end</code> background task. Store result in <code>state.contextCache</code>. In <code>before_prompt_build</code>, read from cache instead of calling Honcho. If cache is empty (turn 1), inject nothing — the prompt is still valid without Honcho context on the first turn.</p>
+</section>
+
+<!-- SPEC: DYNAMIC REASONING LEVEL -->
+<section id="spec-reasoning">
+  <h2>Spec: dynamic reasoning level</h2>
+
+  <h3>Problem</h3>
+  <p>Honcho's dialectic endpoint supports reasoning levels from <code>minimal</code> to <code>max</code>. A fixed level per tool wastes budget on simple queries and under-serves complex ones.</p>
+
+  <h3>Pattern</h3>
+  <p>Select the reasoning level dynamically based on the user's message. Use the configured default as a floor. Bump by message length. Cap auto-selection at <code>high</code> — never select <code>max</code> automatically.</p>
+
+  <h3>Interface contract</h3>
+  <pre><code><span class="cm">// Shared helper — identical logic in any language</span>
+
+<span class="kw">const</span> LEVELS = [<span class="str">"minimal"</span>, <span class="str">"low"</span>, <span class="str">"medium"</span>, <span class="str">"high"</span>, <span class="str">"max"</span>];
+
+<span class="kw">function</span> <span class="key">dynamicReasoningLevel</span>(
+  query: <span class="str">string</span>,
+  configDefault: <span class="str">string</span> = <span class="str">"low"</span>
+): <span class="str">string</span> {
+  <span class="kw">const</span> baseIdx = Math.max(<span class="num">0</span>, LEVELS.indexOf(configDefault));
+  <span class="kw">const</span> n = query.length;
+  <span class="kw">const</span> bump = n &lt; <span class="num">120</span> ? <span class="num">0</span> : n &lt; <span class="num">400</span> ? <span class="num">1</span> : <span class="num">2</span>;
+  <span class="kw">return</span> LEVELS[Math.min(baseIdx + bump, <span class="num">3</span>)]; <span class="cm">// cap at "high" (idx 3)</span>
+}</code></pre>
+
+  <h3>Config key</h3>
+  <p>Add a <code>dialecticReasoningLevel</code> config field (string, default <code>"low"</code>). This sets the floor. Users can raise or lower it. The dynamic bump always applies on top.</p>
+
+  <h3>openclaw-honcho adoption</h3>
+  <p>Apply in <code>honcho_recall</code> and <code>honcho_analyze</code>: replace the fixed <code>reasoningLevel</code> with the dynamic selector. <code>honcho_recall</code> should use floor <code>"minimal"</code> and <code>honcho_analyze</code> floor <code>"medium"</code> — both still bump with message length.</p>
+</section>
+
+<!-- SPEC: PER-PEER MEMORY MODES -->
+<section id="spec-modes">
+  <h2>Spec: per-peer memory modes</h2>
+
+  <h3>Problem</h3>
+  <p>Users want independent control over whether user context and agent context are written locally, to Honcho, or both. A single <code>memoryMode</code> shorthand is not granular enough.</p>
+
+  <h3>Pattern</h3>
+  <p>Three modes per peer: <code>hybrid</code> (write both local + Honcho), <code>honcho</code> (Honcho only, disable local files), <code>local</code> (local files only, skip Honcho sync for this peer). Two orthogonal axes: user peer and agent peer.</p>
+
+  <h3>Config schema</h3>
+  <pre><code><span class="cm">// ~/.openclaw/openclaw.json  (or ~/.nanobot/config.json)</span>
+{
+  <span class="str">"plugins"</span>: {
+    <span class="str">"openclaw-honcho"</span>: {
+      <span class="str">"config"</span>: {
+        <span class="str">"apiKey"</span>: <span class="str">"..."</span>,
+        <span class="str">"memoryMode"</span>: <span class="str">"hybrid"</span>,          <span class="cm">// shorthand: both peers</span>
+        <span class="str">"userMemoryMode"</span>: <span class="str">"honcho"</span>,       <span class="cm">// override for user peer</span>
+        <span class="str">"agentMemoryMode"</span>: <span class="str">"hybrid"</span>       <span class="cm">// override for agent peer</span>
+      }
+    }
+  }
+}</code></pre>
+
+  <h3>Resolution order</h3>
+  <ol>
+    <li>Per-peer field (<code>userMemoryMode</code> / <code>agentMemoryMode</code>) — wins if present.</li>
+    <li>Shorthand <code>memoryMode</code> — applies to both peers as default.</li>
+    <li>Hardcoded default: <code>"hybrid"</code>.</li>
+  </ol>
+
+  <h3>Effect on Honcho sync</h3>
+  <ul>
+    <li><code>userMemoryMode=local</code>: skip adding user peer messages to Honcho.</li>
+    <li><code>agentMemoryMode=local</code>: skip adding assistant peer messages to Honcho.</li>
+    <li>Both local: skip <code>session.addMessages()</code> entirely.</li>
+    <li><code>userMemoryMode=honcho</code>: disable local USER.md writes.</li>
+    <li><code>agentMemoryMode=honcho</code>: disable local MEMORY.md / SOUL.md writes.</li>
+  </ul>
+</section>
+
+<!-- SPEC: AI PEER IDENTITY -->
+<section id="spec-identity">
+  <h2>Spec: AI peer identity formation</h2>
+
+  <h3>Problem</h3>
+  <p>Honcho builds the user's representation organically by observing what the user says. The same mechanism exists for the AI peer — but only if <code>observe_me=True</code> is set for the agent peer. Without it, the agent peer accumulates nothing and Honcho's AI-side model never forms.</p>
+
+  <p>Additionally, existing persona files (SOUL.md, IDENTITY.md) should seed the AI peer's Honcho representation at first activation, rather than waiting for it to emerge from scratch.</p>
+
+  <h3>Part A: observe_me=True for agent peer</h3>
+  <pre><code><span class="cm">// TypeScript — in session.addPeers() call</span>
+<span class="kw">await</span> session.addPeers([
+  [ownerPeer.id, { observeMe: <span class="kw">true</span>,  observeOthers: <span class="kw">false</span> }],
+  [agentPeer.id, { observeMe: <span class="kw">true</span>,  observeOthers: <span class="kw">true</span>  }], <span class="cm">// was false</span>
+]);</code></pre>
+
+  <p>This is a one-line change but foundational. Without it, Honcho's AI peer representation stays empty regardless of what the agent says.</p>
+
+  <h3>Part B: seedAiIdentity()</h3>
+  <pre><code><span class="kw">async function</span> <span class="key">seedAiIdentity</span>(
+  session: HonchoSession,
+  agentPeer: Peer,
+  content: <span class="str">string</span>,
+  source: <span class="str">string</span>
+): Promise&lt;<span class="kw">boolean</span>&gt; {
+  <span class="kw">const</span> wrapped = [
+    <span class="str">`&lt;ai_identity_seed&gt;`</span>,
+    <span class="str">`&lt;source&gt;${source}&lt;/source&gt;`</span>,
+    <span class="str">``</span>,
+    content.trim(),
+    <span class="str">`&lt;/ai_identity_seed&gt;`</span>,
+  ].join(<span class="str">"\n"</span>);
+
+  <span class="kw">await</span> agentPeer.addMessage(<span class="str">"assistant"</span>, wrapped);
+  <span class="kw">return true</span>;
+}</code></pre>
+
+  <h3>Part C: migrate agent files at setup</h3>
+  <p>During <code>openclaw honcho setup</code>, upload agent-self files (SOUL.md, IDENTITY.md, AGENTS.md, BOOTSTRAP.md) to the agent peer using <code>seedAiIdentity()</code> instead of <code>session.uploadFile()</code>. This routes the content through Honcho's observation pipeline rather than the file store.</p>
+
+  <h3>Part D: AI peer name in identity</h3>
+  <p>When the agent has a configured name (non-default), inject it into the agent's self-identity prefix. In OpenClaw this means adding to the injected system prompt section:</p>
+  <pre><code><span class="cm">// In context hook return value</span>
+<span class="kw">return</span> {
+  systemPrompt: [
+    agentName ? <span class="str">`You are ${agentName}.`</span> : <span class="str">""</span>,
+    <span class="str">"## User Memory Context"</span>,
+    ...sections,
+  ].filter(Boolean).join(<span class="str">"\n\n"</span>)
+};</code></pre>
+
+  <h3>CLI surface: honcho identity subcommand</h3>
+  <pre><code>openclaw honcho identity &lt;file&gt;    <span class="cm"># seed from file</span>
+openclaw honcho identity --show    <span class="cm"># show current AI peer representation</span></code></pre>
+</section>
+
+<!-- SPEC: SESSION NAMING -->
+<section id="spec-sessions">
+  <h2>Spec: session naming strategies</h2>
+
+  <h3>Problem</h3>
+  <p>When Honcho is used across multiple projects or directories, a single global session means every project shares the same context. Per-directory sessions provide isolation without requiring users to name sessions manually.</p>
+
+  <h3>Strategies</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Strategy</th><th>Session key</th><th>When to use</th></tr></thead>
+      <tbody>
+        <tr><td><code>per-directory</code></td><td>basename of CWD</td><td>Default. Each project gets its own session.</td></tr>
+        <tr><td><code>global</code></td><td>fixed string <code>"global"</code></td><td>Single cross-project session.</td></tr>
+        <tr><td>manual map</td><td>user-configured per path</td><td><code>sessions</code> config map overrides directory basename.</td></tr>
+        <tr><td>title-based</td><td>sanitized session title</td><td>When agent supports named sessions; title set mid-conversation.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Config schema</h3>
+  <pre><code>{
+  <span class="str">"sessionStrategy"</span>: <span class="str">"per-directory"</span>,   <span class="cm">// "per-directory" | "global"</span>
+  <span class="str">"sessionPeerPrefix"</span>: <span class="kw">false</span>,            <span class="cm">// prepend peer name to session key</span>
+  <span class="str">"sessions"</span>: {                            <span class="cm">// manual overrides</span>
+    <span class="str">"/home/user/projects/foo"</span>: <span class="str">"foo-project"</span>
+  }
+}</code></pre>
+
+  <h3>CLI surface</h3>
+  <pre><code>openclaw honcho sessions              <span class="cm"># list all mappings</span>
+openclaw honcho map &lt;name&gt;           <span class="cm"># map cwd to session name</span>
+openclaw honcho map                   <span class="cm"># no-arg = list mappings</span></code></pre>
+
+  <p>Resolution order: manual map wins &rarr; session title &rarr; directory basename &rarr; platform key.</p>
+</section>
+
+<!-- SPEC: CLI SURFACE INJECTION -->
+<section id="spec-cli">
+  <h2>Spec: CLI surface injection</h2>
+
+  <h3>Problem</h3>
+  <p>When a user asks "how do I change my memory settings?" or "what Honcho commands are available?" the agent either hallucinates or says it doesn't know. The agent should know its own management interface.</p>
+
+  <h3>Pattern</h3>
+  <p>When Honcho is active, append a compact command reference to the system prompt. The agent can cite these commands directly instead of guessing.</p>
+
+  <pre><code><span class="cm">// In context hook, append to systemPrompt</span>
+<span class="kw">const</span> honchoSection = [
+  <span class="str">"# Honcho memory integration"</span>,
+  <span class="str">`Active. Session: ${sessionKey}. Mode: ${mode}.`</span>,
+  <span class="str">"Management commands:"</span>,
+  <span class="str">"  openclaw honcho status                    — show config + connection"</span>,
+  <span class="str">"  openclaw honcho mode [hybrid|honcho|local] — show or set memory mode"</span>,
+  <span class="str">"  openclaw honcho sessions                  — list session mappings"</span>,
+  <span class="str">"  openclaw honcho map &lt;name&gt;                — map directory to session"</span>,
+  <span class="str">"  openclaw honcho identity [file] [--show]  — seed or show AI identity"</span>,
+  <span class="str">"  openclaw honcho setup                     — full interactive wizard"</span>,
+].join(<span class="str">"\n"</span>);</code></pre>
+
+  <div class="callout warn">
+    <strong>Keep it compact.</strong> This section is injected every turn. Keep it under 300 chars of context. List commands, not explanations — the agent can explain them on request.
+  </div>
+</section>
+
+<!-- OPENCLAW CHECKLIST -->
+<section id="openclaw-checklist">
+  <h2>openclaw-honcho checklist</h2>
+
+  <p>Ordered by impact. Each item maps to a spec section above.</p>
+
+  <ul class="checklist">
+    <li class="todo"><strong>Async prefetch</strong> — move <code>session.context()</code> out of <code>before_prompt_build</code> into post-<code>agent_end</code> background Promise. Pop from cache at prompt build. (<a href="#spec-async">spec</a>)</li>
+    <li class="todo"><strong>observe_me=True for agent peer</strong> — one-line change in <code>session.addPeers()</code> config for agent peer. (<a href="#spec-identity">spec</a>)</li>
+    <li class="todo"><strong>Dynamic reasoning level</strong> — add <code>dynamicReasoningLevel()</code> helper; apply in <code>honcho_recall</code> and <code>honcho_analyze</code>. Add <code>dialecticReasoningLevel</code> to config schema. (<a href="#spec-reasoning">spec</a>)</li>
+    <li class="todo"><strong>Per-peer memory modes</strong> — add <code>userMemoryMode</code> / <code>agentMemoryMode</code> to config; gate Honcho sync and local writes accordingly. (<a href="#spec-modes">spec</a>)</li>
+    <li class="todo"><strong>seedAiIdentity()</strong> — add helper; apply during setup migration for SOUL.md / IDENTITY.md instead of <code>session.uploadFile()</code>. (<a href="#spec-identity">spec</a>)</li>
+    <li class="todo"><strong>Session naming strategies</strong> — add <code>sessionStrategy</code>, <code>sessions</code> map, <code>sessionPeerPrefix</code> to config; implement resolution function. (<a href="#spec-sessions">spec</a>)</li>
+    <li class="todo"><strong>CLI surface injection</strong> — append command reference to <code>before_prompt_build</code> return value when Honcho is active. (<a href="#spec-cli">spec</a>)</li>
+    <li class="todo"><strong>honcho identity subcommand</strong> — add <code>openclaw honcho identity</code> CLI command. (<a href="#spec-identity">spec</a>)</li>
+    <li class="todo"><strong>AI peer name injection</strong> — if <code>aiPeer</code> name configured, prepend to injected system prompt. (<a href="#spec-identity">spec</a>)</li>
+    <li class="todo"><strong>honcho mode / honcho sessions / honcho map</strong> — CLI parity with Hermes. (<a href="#spec-sessions">spec</a>)</li>
+  </ul>
+
+  <div class="callout success">
+    <strong>Already done in openclaw-honcho (do not re-implement):</strong> lastSavedIndex dedup, platform metadata stripping, multi-agent parent observer hierarchy, peerPerspective on context(), tiered tool surface (fast/LLM), workspace agentPeerMap, QMD passthrough, self-hosted Honcho support.
+  </div>
+</section>
+
+<!-- NANOBOT CHECKLIST -->
+<section id="nanobot-checklist">
+  <h2>nanobot-honcho checklist</h2>
+
+  <p>nanobot-honcho is a greenfield integration. Start from openclaw-honcho's architecture (hook-based, dual peer) and apply all Hermes patterns from day one rather than retrofitting. Priority order:</p>
+
+  <h3>Phase 1 — core correctness</h3>
+  <ul class="checklist">
+    <li class="todo">Dual peer model (owner + agent peer), both with <code>observe_me=True</code></li>
+    <li class="todo">Message capture at turn end with <code>lastSavedIndex</code> dedup</li>
+    <li class="todo">Platform metadata stripping before Honcho storage</li>
+    <li class="todo">Async prefetch from day one — do not implement blocking context injection</li>
+    <li class="todo">Legacy file migration at first activation (USER.md → owner peer, SOUL.md → <code>seedAiIdentity()</code>)</li>
+  </ul>
+
+  <h3>Phase 2 — configuration</h3>
+  <ul class="checklist">
+    <li class="todo">Config schema: <code>apiKey</code>, <code>workspaceId</code>, <code>baseUrl</code>, <code>memoryMode</code>, <code>userMemoryMode</code>, <code>agentMemoryMode</code>, <code>dialecticReasoningLevel</code>, <code>sessionStrategy</code>, <code>sessions</code></li>
+    <li class="todo">Per-peer memory mode gating</li>
+    <li class="todo">Dynamic reasoning level</li>
+    <li class="todo">Session naming strategies</li>
+  </ul>
+
+  <h3>Phase 3 — tools and CLI</h3>
+  <ul class="checklist">
+    <li class="todo">Tool surface: <code>honcho_profile</code>, <code>honcho_recall</code>, <code>honcho_analyze</code>, <code>honcho_search</code>, <code>honcho_context</code></li>
+    <li class="todo">CLI: <code>setup</code>, <code>status</code>, <code>sessions</code>, <code>map</code>, <code>mode</code>, <code>identity</code></li>
+    <li class="todo">CLI surface injection into system prompt</li>
+    <li class="todo">AI peer name wired into agent identity</li>
+  </ul>
+</section>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'loose', fontFamily: 'Departure Mono, Noto Emoji, monospace' });
+</script>
+<script>
+  window.addEventListener('scroll', () => {
+    const bar = document.getElementById('progress');
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (max > 0 ? (window.scrollY / max) * 100 : 0) + '%';
+  });
+</script>
+</body>
+</html>

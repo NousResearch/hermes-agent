@@ -1,9 +1,26 @@
 """Machine-specific state excluded from portable home transfers."""
 from __future__ import annotations
 
+from collections.abc import Iterable
+from pathlib import Path
 
 # Dependency generations, downloaded tools, and partial transfers belong to this machine.
 PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache"})
+
+# Frozen copies of provider plugins that Hermes processes import from (``providers.plugin_reload``), as path parts
+# relative to the Hermes root: one directory per process, live or left by a crash, rebuilt from ``plugins/``.
+PROVIDER_PLUGIN_SNAPSHOT_PARTS = ("runtime", "provider-plugins")
+
+
+def provider_plugin_snapshot_dir(directory: str, names: Iterable[str], home: Path) -> set[str]:
+    """For a copytree ignore walking *home*: the snapshot dir when *directory* is ``<home>/runtime``."""
+    parent, leaf = PROVIDER_PLUGIN_SNAPSHOT_PARTS
+    if leaf not in names:
+        return set()
+    try:
+        return {leaf} if Path(directory).resolve() == Path(home).resolve() / parent else set()
+    except (OSError, ValueError):
+        return set()
 
 # Bitwarden / 1Password secret-value caches and the Photon sidecar auth token, as POSIX paths relative to
 # a home. They sit at its top, where a sandbox can hide a file by path (a writable folder above a hidden

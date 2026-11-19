@@ -1312,7 +1312,8 @@ class SessionAuthority:
                             if refused:
                                 continue
                     import logging
-                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                    from gateway.session_local_recovery import _refused_check
+                    logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, _refused_check(exc))
                     self._pause(ref, exc.reason)
                     return None
             except (CorruptStoreError, StoreReplaced):

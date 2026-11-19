@@ -156,9 +156,11 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 `windows-latest` (standard, free on a public repository), `windows-latest-32-core`
 and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
 install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
-No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
-`docker buildx imagetools` cannot commit manifest lists to Docker Hub from
-Blacksmith.
+No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
+(manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`
+and `driver: docker`, never `useblacksmith/setup-docker-builder`: its no-`cache-key`
+fallback builder marks docker.io plain-HTTP, so the manifest PUT is redirected into a
+GET and the commit 404s.
 
 ---
 
@@ -338,7 +340,7 @@ branch protection.
 |---|---|---|---|
 | `docker.yml`, **Docker Build, Test, and Publish** | `pull_request`, `push: main`, `workflow_call` (stable) | **PR:** `mode` (phase + classification, one job) → `build` only when the `docker` slow lane is on (Docker meta, dependency manifests, `pm/`, `tests/docker/`, webapp build recipe, or the `run-e2e` label). Builds slim+desktop × amd64+arm64 and runs the docker integration tests. Never pushes. **Push to `main` on the upstream repo:** always builds, then `publish` (env `container-publish`) and `merge` push `:main` / `:main-desktop` only (never `:latest`). **Stable `release-phase: test`:** builds the claim commit, tests it (unless the claim has no `docker-tests` lane), and archives the exact image. **`release-phase: publish`:** pushes the archived bytes under the attempt ref and returns the manifest digest. No `release: published` trigger, on purpose. | none (`gh run rerun`) |
 | `nix.yml`, **Nix flake check** | `pull_request`, `push: main`, `workflow_call` | `flake-check` runs when the `nix` lane is on (`nix/`, `flake.*`, dependency/npm manifests, `.github/`, `run-e2e` label). Every push to `main` turns it on. `release: true` forces it. | none |
-| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, win32-x64, win32-arm64. Linux targets are commented out; there is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
+| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on linux-x64, linux-arm64, darwin-arm64, win32-x64, win32-arm64. There is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
 | `plugin-catalog-ci.yml`, **Plugin Catalog CI** | `pull_request` on `plugin-catalog/**` | `structural` (schema) and `pinned-source-validate` (the pinned SHA is reachable and the plugin passes `hermes plugins validate`; inner steps skip when no entry file changed). | none |
 | `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `workflow_run` of a successful Stable Release; weekly `schedule`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`, plus `:v<version>-desktop` after a stable release) on those three, a dispatch only with `publish=true`; publishing builds skip the layer cache to pick up base and apt fixes. The weekly run rolls `:desktop` from main's Dockerfile, so a Dockerfile change reaches users within a week. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
@@ -505,7 +507,10 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 
 **Desktop Bundled Release.** This is the native build, sign, stage and publish
 pipeline for darwin-arm64, win32-x64/arm64 (+ universal bundle and Store
-bundle), and Termux. There is no Intel macOS (darwin-x64) build. The linux-x64/arm64 groups are **disabled** (dummy jobs).
+bundle), and Termux. There is no Intel macOS (darwin-x64) build. The
+linux-x64/arm64 groups build AppImages on tag builds only, as **diagnostic**
+jobs: they stage to the tag archive, write no feed, and gate nothing
+(`scripts.releases.job_groups.DIAGNOSTIC_JOBS`).
 
 | Mode | How it starts | Key inputs | Publishes |
 |---|---|---|---|
@@ -644,9 +649,6 @@ coverage:
 - **`e2e-desktop.yml`** is wired into `ci.yaml` with a bare `if: false`
   (deferred as flaky). Keep it a bare `false`. An expression form once made
   GitHub's parser reject the whole of `ci.yaml`.
-- **Linux desktop bundles** (`build-linux-x64/arm64` in
-  `desktop-bundled-release.yml`) and the Linux targets of `pm-bundle.yml` are
-  disabled.
 - **`archive-inputs.yml`** declares `workflow_call`, but nothing in this
   directory calls it.
 - Some file header comments are older than the "E2E only on release or

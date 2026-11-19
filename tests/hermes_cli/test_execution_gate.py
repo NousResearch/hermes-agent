@@ -172,3 +172,31 @@ def test_bounded_limit_and_auto_fallback_to_full_agent():
         model=None,
     )
     assert run_pre_agent_oneshot(args, load_config=lambda: CONFIG) is None
+
+
+def test_http_transport_rejects_redirect_and_uses_hermes_user_agent(monkeypatch):
+    import httpx
+    from urllib.request import Request
+    from hermes_cli.execution_gate import _single_request
+
+    seen = {}
+
+    def fake_request(method, url, **kwargs):
+        seen.update({"method": method, "url": url, **kwargs})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "OK"}}]},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    req = Request(
+        "https://example.test/v1/chat/completions",
+        data=b"{}",
+        headers={"Authorization": "Bearer unit-test"},
+    )
+    with _single_request(req, 12) as body:
+        assert json.load(body)["choices"][0]["message"]["content"] == "OK"
+    assert seen["follow_redirects"] is False
+    assert seen["timeout"] == 12
+    assert seen["headers"]["User-Agent"] == "Hermes-ExecutionGate/1.0"

@@ -7,6 +7,7 @@ existing Hermes gateway with a small step budget. Default is unchanged agent.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import sys
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 
 
 _EXACT_REPLY = re.compile(
@@ -25,15 +26,33 @@ _EXACT_REPLY = re.compile(
 _ALLOWED_MODEL = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,180}$")
 
 
-class _RejectRedirect(HTTPRedirectHandler):
-    """Never forward a profile credential to a second host via HTTP redirects."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 def _single_request(req, timeout):
-    return build_opener(_RejectRedirect()).open(req, timeout=timeout)
+    """Use Hermes' HTTP transport; reject redirects to avoid leaking credentials.
+
+    Some providers reject Python-urllib clients at the edge before authentication;
+    a regular HTTPX request preserves standard Hermes-compatible headers.
+    """
+    import httpx
+
+    try:
+        response = httpx.request(
+            req.get_method(),
+            req.full_url,
+            content=req.data,
+            headers={
+                **dict(req.header_items()),
+                "User-Agent": "Hermes-ExecutionGate/1.0",
+            },
+            timeout=timeout,
+            follow_redirects=False,
+        )
+    except httpx.RequestError as exc:
+        raise URLError("provider request failed") from exc
+    if not 200 <= response.status_code < 300:
+        raise HTTPError(
+            req.full_url, response.status_code, "provider rejected request", None, None
+        )
+    return io.BytesIO(response.content)
 
 
 @dataclass(frozen=True)

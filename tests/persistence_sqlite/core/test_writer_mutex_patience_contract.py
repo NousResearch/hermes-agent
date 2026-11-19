@@ -21,7 +21,6 @@ from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._state.errors import classify_persistence_error, is_sqlite_lock_error
 from persistence.sqlite._state.write import WriterMutexTimeout
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
-from tests.waiting import wait_until
 
 
 @pytest.fixture()
@@ -97,17 +96,25 @@ def test_holder_record_is_cleared_after_release(db):
     assert getattr(db, "_writer_owner", None) is None
 
 
-def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch, caplog):
-    """The token writer applies queued deltas with routine patience; a refusal must requeue, not drop."""
-    caplog.set_level(logging.DEBUG, logger="hermes_state")
+def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch):
+    """Observe the actual mutex refusal, not a log phrase the accounting path can change."""
+    refused = threading.Event()
+    execute_write = db._execute_write
+
+    def observe_refusal(*args, **kwargs):
+        try:
+            return execute_write(*args, **kwargs)
+        except WriterMutexTimeout:
+            refused.set()
+            raise
+
+    monkeypatch.setattr(db, "_execute_write", observe_refusal)
     for name in ("_WRITE_PATIENCE_S", "_TRANSCRIPT_WRITE_PATIENCE_S"):
         monkeypatch.setattr(StoreHolder, name, 0.05)
     holder, release = _hold_writer_mutex(db, hold_s=5)
     try:
         db.queue_token_counts("owned", input_tokens=7, output_tokens=3, model="m")
-        # Several 0.05 s attempts are refused while the mutex is held: wait for the first refusal to land.
-        wait_until(lambda: any("requeued" in r.getMessage() for r in caplog.records), timeout=5.0,
-                   what="a token-writer requeue")
+        assert refused.wait(5), "the queued write never reached a mutex refusal"
         assert db._token_queue or db._token_writer_busy, "the refused delta left the queue"
     finally:
         release.set()
@@ -115,7 +122,9 @@ def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch, caplog):
     assert db.flush_token_counts(timeout=10.0)
     row = get_session(db, "owned")
     assert (row["input_tokens"], row["output_tokens"]) == (7, 3), "queued token delta was lost"
-
+    assert db.flush_token_counts(timeout=10.0)
+    row = get_session(db, "owned")
+    assert (row["input_tokens"], row["output_tokens"]) == (7, 3), "queued token delta was replayed"
 
 def _queue_without_worker(db, monkeypatch, **values):
     with monkeypatch.context() as paused:

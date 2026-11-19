@@ -187,7 +187,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             workers = query('SELECT execution_id,status FROM worker_executions WHERE session_id=?', (sid,))
             assert len(workers) == 1, workers
             children = children_matching(owner.pid, lambda p: p.cmdline()[-2:] == ['-m', 'agent.managed_worker'])
-            assert len(children) == 1, [(p.pid, p.cmdline()) for p in children_matching(owner.pid, lambda p: True)]
+            assert len(children) == 1, [p.pid for p in psutil.Process(owner.pid).children()]
             pid = children[0].pid
             opened = [json.loads(line) for line in audit.read_text().splitlines()]
             # Positive control: the witness hook is live in the owner, so worker silence is real.

@@ -293,7 +293,7 @@ def test_suppressed_warning_does_not_enter_activity_pane(monkeypatch):
     import types
 
     fake_run = types.ModuleType("gateway.run")
-    fake_run._prepare_gateway_status_message = lambda platform, event_type, message: message
+    fake_run._prepare_gateway_status_message = lambda platform, event_type, message, chat_type=None: message
     fake_run._redact_gateway_user_facing_secrets = lambda text: text
     fake_run._send_or_update_status_coro = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "gateway.run", fake_run)

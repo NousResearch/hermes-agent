@@ -404,3 +404,29 @@ def test_model_info_probes_a_named_profile_with_that_profiles_key(tmp_path, monk
                         lambda **kwargs: seen.update(kwargs) or 4096)
     info = route.get_model_info(profile="studio")
     assert seen["api_key"] == "studio-key" and info["auto_context_length"] == 4096
+
+
+def test_model_info_probes_a_task_local_home_override_with_that_homes_key(monkeypatch):
+    """An unnamed request inside a task-local home override (another profile's) probes that home's
+    endpoint with that home's key, never the launch profile's."""
+    import json
+
+    from hermes_cli.web_routers import models as route
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    root = get_hermes_home()
+    studio = root / "profiles" / "studio"
+    studio.mkdir(parents=True)
+    for home, key in ((root, "launch-key"), (studio, "studio-key")):
+        (home / "config.yaml").write_text(json.dumps({"model": dict(MODEL_BLOCK)}), encoding="utf-8")  # JSON is YAML
+        (home / ".env").write_text(f"LAB_LLAMA_KEY={key}\n", encoding="utf-8")
+    monkeypatch.setenv("LAB_LLAMA_KEY", "launch-key")
+    seen = []
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length",
+                        lambda **kwargs: seen.append(kwargs["api_key"]) or 4096)
+    token = set_hermes_home_override(str(studio))
+    try:
+        info = route.get_model_info()
+    finally:
+        reset_hermes_home_override(token)
+    assert seen == ["studio-key"] and info["auto_context_length"] == 4096

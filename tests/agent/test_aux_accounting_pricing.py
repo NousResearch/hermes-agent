@@ -224,3 +224,19 @@ def test_aux_pricing_mints_nothing_for_a_wrapper_client_holding_a_token_source(m
     client = AnthropicAuxiliaryClient(MagicMock(), "m", lambda: minted.append(1) or "minted", base)
     assert _priced_keys(monkeypatch, aux_accounting.ServingCredential.of(client), base) == [None]
     assert minted == []
+
+
+def test_a_serving_credential_lends_its_key_only_to_its_own_url(monkeypatch):
+    other = aux_accounting.ServingCredential("http://127.0.0.2:8080/v1", "other-key-3333")
+    assert _priced_keys(monkeypatch, other) == ["saved-key-1111"]
+
+
+def test_aux_pricing_reuses_no_token_the_sdk_minted_into_api_key(monkeypatch):
+    """After its first request the SDK writes the minted token into ``.api_key``; that is still a
+    token source's credential, not a static key pricing may send."""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=lambda: "minted-token-4444", base_url="http://127.0.0.1:47970/v1")
+    client._refresh_api_key()  # what the SDK does before every request
+    assert client.api_key == "minted-token-4444"
+    assert _priced_keys(monkeypatch, aux_accounting.ServingCredential.of(client), str(client.base_url)) == [None]

@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 _CHILD = ("import sys; sys.path[:] = sys.argv[3:]; "
           "import hermes_constants_scratch_detach as d; d.run(*sys.argv[1:3])")
 
+# Fork in a fresh interpreter; the launcher reaps only the intermediate, not the long prune.
+_TRAMPOLINE = "import os, sys\nif os.fork():\n    os._exit(0)\nos.execv(sys.argv[1], sys.argv[1:])"
+
 
 def spawn_prune(scratch: Path) -> None:
     """Start one detached prune of *scratch*, the path the caller resolved (a child never
@@ -42,7 +45,11 @@ def spawn_prune(scratch: Path) -> None:
     stdio = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     try:
         try:
-            subprocess.Popen(argv, close_fds=True, **stdio, **windows_detach_popen_kwargs())
+            if sys.platform == "win32":
+                subprocess.Popen(argv, close_fds=True, **stdio, **windows_detach_popen_kwargs())
+            else:
+                subprocess.Popen([sys.executable, "-I", "-c", _TRAMPOLINE, *argv],
+                                 close_fds=True, **stdio, **windows_detach_popen_kwargs()).wait()
         except PermissionError:
             if sys.platform != "win32":
                 raise

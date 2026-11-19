@@ -208,7 +208,7 @@ def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, cha
 
     assert (result["completed"], result["failure_reason"]) == (False, "truncated")
     assert "Repetition Detected" in result["final_response"]
-    assert server.requests == 1  # cut once; never continued or retried into the same loop
+    assert server.requests == 2  # cut, one recovery with feedback, cut again; never a third call
     unit = loop.strip()[:40]
     assert not any(unit in json.dumps(m, ensure_ascii=False) for m in result["messages"])
 

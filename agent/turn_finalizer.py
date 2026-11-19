@@ -12,6 +12,7 @@ import time
 from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
+from agent.circling_guard import repetition_result
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
@@ -855,6 +856,7 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    result.update(repetition_result(agent))  # stream cuts and recoveries this turn, if any
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.

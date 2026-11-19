@@ -7,7 +7,8 @@ whose callers fall back to the in-repo lists on ``None``.
 
 ``cached_manifest()`` is the read every other provider goes through: it never opens a socket, and
 what it returns only ADDS to what the install already ships (``merge_remote_models`` for picker
-rows, ``manifest_model_metadata`` and ``extend_context_lengths`` for a model no table knows).
+rows, ``manifest_model_metadata`` and ``extend_context_lengths`` for a model no table knows,
+``in_model_set`` for the id sets in ``MODEL_SETS`` that gate request handling).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Collection, Iterator, Sequence, TypeVar
 
 from hermes_cli.codex_models import model_requires_account_discovery
 from hermes_cli.version_info import hermes_user_agent
@@ -52,6 +53,18 @@ SUPPORTED_SCHEMA_VERSION = 1
 #   moa               a preset name, not a model list
 WHOLE_LIST_ROWS = frozenset({"openrouter", "nous"})
 OWN_LIST_ROWS = WHOLE_LIST_ROWS | {"openai-codex", "xai", "xai-oauth", "moa"}
+
+# Named sets of model ids that gate request handling. Each mirrors one built-in constant, and the
+# manifest's ``model_sets`` may add ids to it. The manifest cannot add a set: a set is only as real as
+# the code that reads it, so a name missing here is ignored. ``True`` marks a set a model cannot be
+# driven correctly without; a picker entry in one lists it under ``requires``.
+MODEL_SETS: dict[str, bool] = {
+    "openai_gpt62_contract": True,     # agent.reasoning_effort.GPT62_MODEL_IDS
+    "bedrock_openai_responses": True,  # agent.bedrock_adapter.BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+    "anthropic_fast_mode": False,      # agent.model_metadata._ANTHROPIC_FAST_MODE_MODELS
+    "openai_ultrafast": False,         # hermes_cli.models_catalog_static._OPENAI_ULTRAFAST_MODELS
+    "openai_fast_eu": False,           # hermes_cli.models_fast_regions._FAST_REGION_MODELS (EU host)
+}
 
 # In-process cache, invalidated against the disk file's path + mtime and TTL. The path matters:
 # under a multiplexed gateway each profile has its own ``<home>/cache/model_catalog.json``, and
@@ -127,6 +140,13 @@ def _load_catalog_config() -> dict[str, Any]:
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
         "ttl_hours": ttl_minutes / 60.0,
         "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {}}
+
+
+def _catalog_enabled() -> bool:
+    """``model_catalog.enabled`` alone, off the uncopied config: ``cached_manifest`` runs on request paths."""
+    from hermes_cli.config import load_config_readonly
+    raw = load_config_readonly().get("model_catalog")
+    return bool(raw.get("enabled", True)) if isinstance(raw, dict) else True
 
 
 def _cache_path() -> Path:
@@ -382,7 +402,7 @@ def cached_manifest() -> dict[str, Any] | None:
         mtime = _cache_path().stat().st_mtime
     except OSError:
         return None  # nothing cached: the config is not consulted for a manifest that cannot exist
-    if not _load_catalog_config()["enabled"]:
+    if not _catalog_enabled():
         return None
     cached = _in_process_catalog(mtime)
     if cached is not None:
@@ -453,15 +473,21 @@ def note_supplied(ids: Sequence[str], *, gated: bool = False) -> None:
             listings.gated.update(str(mid).lower() for mid in ids)
 
 
+def _drivable(entry: dict[str, Any]) -> bool:
+    """Whether this build reads every model set the entry lists under ``requires``."""
+    requires = entry.get("requires", [])
+    return isinstance(requires, list) and all(isinstance(name, str) and name in MODEL_SETS for name in requires)
+
+
 def manifest_provider_models(provider: str) -> list[str]:
-    """Model ids the cached manifest lists for ``provider``, in manifest order. An entry carrying
-    ``requires`` names request handling this build does not have, so it is not offered: a release
-    that cannot drive a model must not list it. Neither is an id that only the account's own
-    listing may advertise."""
+    """Model ids the cached manifest lists for ``provider``, in manifest order. An entry whose
+    ``requires`` names a model set this build does not read is not offered: a release that cannot
+    drive a model must not list it. Neither is an id that only the account's own listing may
+    advertise."""
     if _shipped_rows_only.get():
         return []
     return [mid for mid, m in _block_ids(_block_of(cached_manifest(), provider))
-            if not m.get("requires") and not model_requires_account_discovery(provider, mid)]
+            if _drivable(m) and not model_requires_account_discovery(provider, mid)]
 
 
 def manifest_additions(provider: str, builtin: Sequence[str]) -> list[str]:
@@ -529,6 +555,15 @@ def extend_context_lengths(name: str, builtin: dict[str, int]) -> dict[str, int]
         if key.strip() and key.lower() not in shipped and type(value) is int and value > 0:
             added.setdefault(key.lower(), value)
     return {**builtin, **added} if added else builtin
+
+
+def in_model_set(name: str, builtin: Collection[str], model: str) -> bool:
+    """Whether ``model`` is in the built-in set ``name`` or among the ids the cached manifest adds to
+    it. ``model`` is already in the spelling the built-in set is compared in (lowercased, bare)."""
+    if model in builtin:
+        return True
+    added = manifest_table("model_sets").get(name)
+    return isinstance(added, list) and model in added
 
 
 def _default_model_from_block(block: dict[str, Any] | None) -> str | None:

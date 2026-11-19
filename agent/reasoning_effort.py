@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Optional, Sequence
 
+from hermes_cli.model_catalog import in_model_set
+
 #: Matches ``k3`` as a delimited token (``k3``, ``k3-256k``, ``kimi-k3-cot``), never K2-era names (``kimi-k2.6``).
 # From #76427 by @ruizanthony.
 _KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
@@ -102,10 +104,18 @@ def is_astra_model(model: Optional[str]) -> bool:
     return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
 
 
+def on_gpt62_contract(bare: str) -> bool:
+    """A bare lowercased slug on the GPT-6.2 request contract: ``GPT62_MODEL_IDS``, or an id the model
+    catalog has added to that set since this release (``openai_gpt62_contract``). The single home for
+    the question: the effort ladder, the request sanitizer, Codex account gating and the EU Ultrafast
+    exclusion all ask it."""
+    return in_model_set("openai_gpt62_contract", GPT62_MODEL_IDS, bare)
+
+
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    if is_astra_model(model) or bare in GPT62_MODEL_IDS or bare.startswith(NO_DISABLE_TIER_PREFIXES):
+    if is_astra_model(model) or on_gpt62_contract(bare) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
     return (
         CODEX_GPT56_EFFORTS

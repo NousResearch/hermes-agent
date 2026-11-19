@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T11:30:45Z",
+  "updated_at": "2026-11-19T11:30:52Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -560,10 +560,16 @@
     "openai-api": {
       "models": [
         {
-          "id": "gpt-6.2-sol"
+          "id": "gpt-6.2-sol",
+          "requires": [
+            "openai_gpt62_contract"
+          ]
         },
         {
-          "id": "gpt-6.2-astra"
+          "id": "gpt-6.2-astra",
+          "requires": [
+            "openai_gpt62_contract"
+          ]
         },
         {
           "id": "gpt-6.1-sol"
@@ -1647,34 +1653,64 @@
           "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
         },
         {
-          "id": "openai.gpt-6-astra"
+          "id": "openai.gpt-6-astra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-6.1-sol"
+          "id": "openai.gpt-6.1-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-6.1-terra"
+          "id": "openai.gpt-6.1-terra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-6-sol"
+          "id": "openai.gpt-6-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-6-luna"
+          "id": "openai.gpt-6-luna",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-5.5"
+          "id": "openai.gpt-5.5",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-5.6-sol"
+          "id": "openai.gpt-5.6-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-5.6-terra"
+          "id": "openai.gpt-5.6-terra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-5.6-luna"
+          "id": "openai.gpt-5.6-luna",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
-          "id": "openai.gpt-5.4"
+          "id": "openai.gpt-5.4",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
         },
         {
           "id": "us.amazon.nova-pro-v1:0"
@@ -1804,6 +1840,44 @@
         }
       ]
     }
+  },
+  "model_sets": {
+    "openai_gpt62_contract": [
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ],
+    "bedrock_openai_responses": [
+      "openai.gpt-5.4",
+      "openai.gpt-5.5",
+      "openai.gpt-5.6-luna",
+      "openai.gpt-5.6-sol",
+      "openai.gpt-5.6-terra",
+      "openai.gpt-6-astra",
+      "openai.gpt-6-luna",
+      "openai.gpt-6-sol",
+      "openai.gpt-6.1-sol",
+      "openai.gpt-6.1-terra"
+    ],
+    "anthropic_fast_mode": [
+      "claude-fable-5-2",
+      "claude-mythos-5-2",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-5-5"
+    ],
+    "openai_ultrafast": [
+      "gpt-6-astra",
+      "gpt-6.1-sol",
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ],
+    "openai_fast_eu": [
+      "gpt-6-luna",
+      "gpt-6.1-sol",
+      "gpt-6.1-terra",
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ]
   },
   "model_metadata": {
     "openai": {

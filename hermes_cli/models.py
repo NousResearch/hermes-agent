@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 from agent.proxy_bypass import is_loopback_host
 from agent.bedrock_service_tiers import BEDROCK_ULTRAFAST_ROUTES, bedrock_fast_mode_overrides
-from hermes_cli.model_catalog import manifest_additions, merge_remote_models, provider_listing, recorded_listings, shipped_rows_only
+from hermes_cli.model_catalog import in_model_set, manifest_additions, merge_remote_models, provider_listing, recorded_listings, shipped_rows_only
 from hermes_cli.models_detect import relay_lists_live_only, served_rows, with_manifest_provenance
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
@@ -1251,9 +1251,9 @@ def _fast_mode_route_supported(
 
     from agent.model_metadata import is_grok_46_family
 
-    if _is_anthropic_fast_model(model_id):
+    if tier != "ultrafast" and _is_anthropic_fast_model(model_id):
         allowed = {"anthropic": "api.anthropic.com"}
-    elif is_grok_46_family(str(model_id or "")):
+    elif tier != "ultrafast" and is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
         from hermes_cli.models_fast_regions import openai_fast_region_allows
@@ -1271,7 +1271,7 @@ def model_supports_ultrafast(model_id: Optional[str]) -> bool:
     from agent.model_metadata import strip_codex_context_variant_suffix
 
     base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
-    return base in _OPENAI_ULTRAFAST_MODELS
+    return _is_openai_fast_model(base) and in_model_set("openai_ultrafast", _OPENAI_ULTRAFAST_MODELS, base)
 
 
 def resolve_fast_mode_overrides(

@@ -63,7 +63,7 @@ Field notes:
 - **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
 - **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this.
 - **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship. Only the OpenRouter and Nous Portal blocks carry the label; on any other block it is ignored.
-- **`requires`** — optional list on a model entry, for the added-row providers. It names request handling the model depends on. A build that does not have that handling skips the entry, so an older release never lists a model it cannot drive. No build satisfies any requirement yet, so an entry carrying the field is skipped everywhere.
+- **`requires`** — optional list on a model entry, for the added-row providers. It names the model sets (below) the model cannot be driven correctly without. A build that does not read one of them skips the entry, so an older release never lists a model it cannot drive.
 - **Pricing** is not supplied by the model catalog manifest.
 - **Context length and capabilities** still come from live provider APIs and models.dev first. The manifest's `context_lengths` and `model_metadata` tables extend the last fallback; see below for how context keys match and which entry wins.
 
@@ -126,6 +126,46 @@ One consequence is worth spelling out. Context keys match as substrings and the 
 A malformed row is dropped rather than half-used: a context value that is not a positive integer, a blank key, or a metadata entry without a valid `limit.context`. A `cost` field in a metadata entry is ignored; prices never come from this table.
 
 The order of sources is unchanged: an explicit `model.context_length`, live provider endpoints and models.dev all still come first. These tables sit where the hardcoded tables already sat, at the end.
+
+## Model sets: request handling for new models
+
+Some request handling is keyed on an exact list of model ids in the code: which models take the `low`..`max` effort ladder, which accept a fast tier, which must go through a different API. A new model that behaves like an existing one used to need a release just to join those lists. `model_sets` publishes the lists:
+
+```json
+{
+  "model_sets": {
+    "openai_gpt62_contract":    ["gpt-6.2-astra", "gpt-6.2-sol"],
+    "bedrock_openai_responses": ["openai.gpt-6.1-sol"],
+    "anthropic_fast_mode":      ["claude-opus-5-5"],
+    "openai_ultrafast":         ["gpt-6.1-sol", "gpt-6.2-sol"],
+    "openai_fast_eu":           ["gpt-6.1-sol", "gpt-6.2-sol"]
+  }
+}
+```
+
+| Set | What an id in it gets |
+|---|---|
+| `openai_gpt62_contract` | The GPT-6.2 request contract: the `low`..`max` effort ladder (no `none`), the strict request sanitizer on official OpenAI, Codex and US/EU residency routes, account discovery before the Codex picker lists it, and no Ultrafast on the EU host |
+| `bedrock_openai_responses` | Treated as a Bedrock-hosted OpenAI model (Mantle Responses for the bare id) |
+| `anthropic_fast_mode` | Accepts Anthropic fast mode (`speed: "fast"`) |
+| `openai_ultrafast` | Permits `service_tier: "ultrafast"` for an otherwise fast-eligible OpenAI model and route |
+| `openai_fast_eu` | Permits an otherwise eligible fast tier on `eu.api.openai.com`; the GPT-6.2 EU Ultrafast exclusion still applies |
+
+Rules:
+
+- **Ids can be added, sets cannot.** A set exists only because code reads it. A name your build does not know is ignored, and a model that needs a new set still needs a release.
+- **A name means one behaviour, for good.** `requires` checks the name, not a revision of the code behind it. If the request handling for a set changes, the release that changes it gives the new behaviour a new set name and uses that name in `requires`. Older builds then skip the row instead of driving the model the old way.
+- **A tier set is one condition, not the whole decision.** Being in `openai_ultrafast` or `openai_fast_eu` does not make a model fast-capable on its own: the built-in family and route checks still have to pass.
+- **Nothing is removed.** An id your install ships in a set stays in it.
+- **Hosts stay in the code.** A set decides which *model* may use a tier. Which *endpoint* may receive it is still decided by the built-in route checks, so the manifest cannot send a billable tier to a host the code does not already allow.
+- **A fast tier is still opt-in.** A set only makes `/fast` available for a model. Nothing is billed at a higher tier unless you ask for it.
+- **Ids are matched the way the built-in list is:** lowercased and bare, after the same prefix and suffix stripping the code already does.
+
+A picker entry for a model in a set marked as required for driving it (`openai_gpt62_contract`, `bedrock_openai_responses`) carries that name under `requires`. That is what keeps a build from listing a model whose contract it has not learned yet. When publishing a new id by hand, add it to the matching `model_sets` list in the same update: a `requires` entry checks that the build understands the set name, it does not add the id to that set.
+
+The publisher derives `requires` from these exact-id sets only. When a model's handling lives somewhere else (a provider plugin, a prefix check), nothing derives it. The release that adds that handling should register a required set for the model's ids, even if the code keeps matching by prefix, so that the picker row is gated the same way.
+
+Fast-tier *prices* for a model added this way are not in the manifest, so its fast-tier cost shows as unknown until a release carries it.
 
 ## Fetch behavior
 

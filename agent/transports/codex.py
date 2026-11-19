@@ -20,6 +20,7 @@ from agent.reasoning_effort import (
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 from agent.codex_headers import is_official_codex_base_url
+from agent.codex_responses_adapter import apply_developer_instructions_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -432,52 +433,6 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
 
 
-_DEVELOPER_INSTRUCTIONS_MODEL_RE = re.compile(
-    r"(?:^|[/:.])gpt-(?:6\.(?:[2-9]|[1-9]\d+)|[7-9]|[1-9]\d+)(?:[-.]|$)"
-)
-
-
-def _uses_developer_instructions(model: Any, *, is_xai_responses: bool = False) -> bool:
-    if is_xai_responses:
-        return False
-    return bool(_DEVELOPER_INSTRUCTIONS_MODEL_RE.search(str(model or "").strip().lower()))
-
-
-def _prepend_developer_instructions(input_items: list[dict[str, Any]], instructions: str) -> list[dict[str, Any]]:
-    # Native compaction drops items placed before a replayed compaction checkpoint.
-    insert_at = 0
-    while (
-        insert_at < len(input_items)
-        and isinstance(input_items[insert_at], dict)
-        and input_items[insert_at].get("type") == "compaction"
-    ):
-        insert_at += 1
-    dev_item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": instructions}]}
-    return [*input_items[:insert_at], dev_item, *input_items[insert_at:]]
-
-
-def _apply_developer_instructions_if_needed(
-    kwargs: dict[str, Any], model: Any, *, is_xai_responses: bool = False,
-    system_prompt: Optional[str] = None, keep_instructions: bool = False,
-) -> None:
-    # GPT-6.2+ appends top-level instructions after input and bills them uncached on every step.
-    if not _uses_developer_instructions(model, is_xai_responses=is_xai_responses):
-        return
-    instructions = kwargs.get("instructions") if keep_instructions else kwargs.pop("instructions", None)
-    prompt_text = system_prompt if system_prompt is not None else instructions
-    if not isinstance(prompt_text, str) or not prompt_text.strip():
-        return
-    input_items = kwargs.get("input")
-    if not isinstance(input_items, list):
-        return
-    has_developer = any(
-        isinstance(item, dict) and item.get("type") in (None, "message") and item.get("role") == "developer"
-        for item in input_items
-    )
-    if not has_developer:
-        kwargs["input"] = _prepend_developer_instructions(input_items, prompt_text)
-
-
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
     """``pck_<sha256[:24]>`` of (scope_id, instructions, name-sorted tools), or None if nothing static.
 
@@ -881,7 +836,7 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
 
-        _apply_developer_instructions_if_needed(
+        apply_developer_instructions_if_needed(
             kwargs, wire_model, is_xai_responses=is_xai_responses,
             system_prompt=instructions, keep_instructions="instructions" in request_overrides,
         )

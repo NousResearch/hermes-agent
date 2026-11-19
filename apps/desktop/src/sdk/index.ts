@@ -119,6 +119,7 @@ import {
   pluginRouteStillRegistered,
   requestPluginProfile
 } from './profile-request'
+import { requestForSession } from './session-request'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 import { spellcheckHost } from './spellcheck'
@@ -126,6 +127,7 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
+export { useThisComposer } from './composer'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
@@ -1514,6 +1516,8 @@ export const host = {
     return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
+  requestForSession,
+
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
    *  components that take a `HermesGateway` prop directly (e.g. `ConnectorsTab`),
@@ -1571,13 +1575,16 @@ export {
   type ComposerContextMenuContext,
   type ComposerContextMenuItem,
   type ComposerContextMenuProvider,
+  type ComposerDraft,
   type ComposerMiddleware,
   type ComposerModelPillContext,
-  type ComposerModelPillProvider
+  type ComposerModelPillProvider,
+  type ComposerSendOrigin
 } from '@/app/chat/composer/contrib'
 /** The main composer's surface pieces, so a plugin composer (Bot Mode rooms) reads as the
  *  same input: the ring, the fill layer behind the editor, and the ghost / primary icon buttons. */
 export { GHOST_ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
+export { StatusDrawerContent as ComposerDrawer } from '@/app/chat/composer/status-stack/drawer'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1683,7 +1690,7 @@ export type { TitlebarTool } from '@/app/shell/titlebar-controls'
  * `MEDIA:` delivery directives) and the same rich Markdown/media components as
  * core chat. Prefer this over raw Streamdown for transcript-style messages. */
 export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
-export { composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
+export { composerInputBacking, composerSurfaceGlass, composerSurfaceRing } from '@/components/chat/composer-dock'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
@@ -1764,6 +1771,7 @@ export { SegmentedControl } from '@/components/ui/segmented-control'
 export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 export { Separator } from '@/components/ui/separator'
 export { Skeleton } from '@/components/ui/skeleton'
+export { Slider } from '@/components/ui/slider'
 export { Switch } from '@/components/ui/switch'
 export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'

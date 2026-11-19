@@ -52,3 +52,48 @@ describe('runComposerMiddleware', () => {
     expect(await runComposerMiddleware({ text: 'quiet' })).toEqual({ text: 'QUIET' })
   })
 })
+
+describe('runComposerMiddleware — gating middleware', () => {
+  it('cancels the send when a fail-closed handler throws', async () => {
+    disposers.push(
+      registry.register({
+        id: 'gate',
+        area: COMPOSER_AREAS.middleware,
+        data: {
+          failClosed: true,
+          handler: () => {
+            throw new Error('review host vanished')
+          }
+        } satisfies ComposerMiddleware
+      })
+    )
+    addMiddleware('later', d => ({ ...d, text: 'never' }), 99)
+
+    expect(await runComposerMiddleware({ text: 'x' })).toBeNull()
+  })
+
+  it('cancels the send when a fail-closed handler rejects asynchronously', async () => {
+    disposers.push(
+      registry.register({
+        id: 'gate',
+        area: COMPOSER_AREAS.middleware,
+        data: { failClosed: true, handler: async () => Promise.reject(new Error('timeout')) } satisfies ComposerMiddleware
+      })
+    )
+
+    expect(await runComposerMiddleware({ text: 'x' })).toBeNull()
+  })
+
+  it('re-stamps the app-set origin so a handler cannot forge it for the next one', async () => {
+    const seen: unknown[] = []
+
+    addMiddleware('forger', d => ({ ...d, origin: { kind: 'typed', target: 'tile:other' } }), 10)
+    addMiddleware('reader', d => (seen.push(d.origin), d), 20)
+
+    const origin = { kind: 'queued', target: 'main', composerScope: 'session-a' } as const
+    const result = await runComposerMiddleware({ text: 'x', origin })
+
+    expect(seen).toEqual([origin])
+    expect(result?.origin).toEqual(origin)
+  })
+})

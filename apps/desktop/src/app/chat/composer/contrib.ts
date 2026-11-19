@@ -29,6 +29,8 @@ import type { TodoItem } from '@/lib/todos'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ComposerAction } from '@/store/composer-actions'
 
+import type { ComposerTarget } from './focus'
+
 export const COMPOSER_AREAS = {
   top: 'composer.top',
   bottom: 'composer.bottom',
@@ -79,15 +81,38 @@ export interface ComposerContextMenuProvider {
   items: (context: ComposerContextMenuContext) => ComposerContextMenuItem[]
 }
 
+/** Where a send came from, as the app saw it. Set by the app on every
+ *  middleware call and re-stamped after each handler, so a middleware can
+ *  read it but never forge it for the next one. Every field is a standing
+ *  compatibility promise to the plugins reading it. */
+export interface ComposerSendOrigin {
+  /** `typed` = the user's own draft sent from this composer (Enter / Send);
+   *  `queued` = a queue drain or busy-time queue admission; `voice` = a
+   *  spoken turn; `hidden` = machine text that renders no bubble; `other` =
+   *  everything else (external submit requests, steer fallbacks, …). */
+  readonly kind: 'hidden' | 'other' | 'queued' | 'typed' | 'voice'
+  /** The composer that sent it: `main` or a tile's target. */
+  readonly target: ComposerTarget
+  /** The composer scope (stored session id) the draft was loaded under;
+   *  null = a fresh chat with no session yet; undefined = not a composer send. */
+  readonly composerScope?: null | string
+}
+
 export interface ComposerDraft {
   text: string
   attachments?: ComposerAttachment[]
+  /** Absent on direct `runComposerMiddleware` calls without send context. */
+  readonly origin?: ComposerSendOrigin
 }
 
 /** Payload of a `composer.middleware` data contribution. */
 export interface ComposerMiddleware {
   /** Rewrite (return a draft), pass through (same draft), or cancel (null). */
   handler: (draft: ComposerDraft) => ComposerDraft | null | Promise<ComposerDraft | null>
+  /** A throw from this handler cancels the send instead of passing it
+   *  through. For middleware whose job is to gate what is sent (review,
+   *  approval): an unexpected failure there must never let the draft out. */
+  failClosed?: boolean
 }
 
 /** One row a `composer.atCompletions` source offers for the current query. */
@@ -134,9 +159,11 @@ export interface ComposerAttachmentProvider {
  * Run the ordered middleware chain over a draft. Contributions execute in
  * registry order (`order`, then registration order); the first `null` wins
  * and cancels the send. A throwing handler is treated as pass-through so a
- * broken plugin can't eat messages.
+ * broken plugin can't eat messages — unless it declared `failClosed`, in
+ * which case the throw cancels the send (the caller restores the draft).
  */
 export async function runComposerMiddleware(draft: ComposerDraft): Promise<ComposerDraft | null> {
+  const origin = draft.origin
   let current = draft
 
   for (const contribution of registry.getArea(COMPOSER_AREAS.middleware)) {
@@ -153,8 +180,11 @@ export async function runComposerMiddleware(draft: ComposerDraft): Promise<Compo
         return null
       }
 
-      current = next
+      current = origin ? { ...next, origin } : next
     } catch {
+      if (middleware.failClosed) {
+        return null
+      }
       // Pass-through: a faulty middleware must never swallow the message.
     }
   }

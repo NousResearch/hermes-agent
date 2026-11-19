@@ -495,6 +495,48 @@ composer with no chrome of its own — the seat for a suggestion pill or a statu
 hint that should sit outside the input frame (the next-prompt plugin renders its
 "next prompt" pill there).
 
+**Send middleware.** A `ComposerMiddleware` handler sees each send before it
+goes out: return the draft to send it, a changed draft to send that instead, or
+`null` to cancel (the composer then puts the words and attachments back in the
+chat they came from). Two fields make it safe to gate sends:
+
+- `draft.origin` (`ComposerSendOrigin`) says where the send came from: `kind` is
+  `typed` (the user's own Enter / Send), `queued`, `voice`, `hidden` or `other`,
+  `target` is the composer (`main` or `tile:<id>`), and `composerScope` the
+  stored session id the draft belongs to. Act on `typed` only unless you mean
+  to touch queue drains and machine sends too. Direct
+  `runComposerMiddleware` calls without send context have no `origin`.
+- `failClosed: true` makes an error thrown by your handler cancel the send
+  instead of passing the draft through. Use it for middleware whose job is to
+  review or approve what is sent; an unexpected failure there must never let
+  the draft out.
+
+```ts
+const review: ComposerMiddleware = {
+  failClosed: true,
+  handler: async draft => {
+    if (draft.origin?.kind !== 'typed') return draft
+    const release = host.composer.hold(draft.origin.target) // read-only while it waits
+    try {
+      return (await askTheUser(draft)) ? draft : null
+    } finally {
+      release()
+    }
+  }
+}
+```
+
+**Inside a composer slot.** A component rendered in `top`, `bottom`,
+`leading`, `actions` or `underside` can call `useThisComposer()` for the
+composer it sits in: `target` (its routing key, the value `host.composer.hold()`
+takes), `activate()` (make it the active composer and give it the caret, as a
+click into its input does; call it first in a click handler so a button in a
+tile acts on that tile), and `recentMessages(limit)` (that chat's last `limit`
+visible user and assistant messages as plain text: `{ role, text }[]`, no tool
+rows, hidden or pending messages). `ComposerDrawer` is the composer's own
+drawer that slides up out of the input; render it from `top` for a panel that
+belongs to the input rather than floating over it.
+
 ### Composer context menu — rows on a right-click in the input {#composer-context-menu}
 
 `COMPOSER_AREAS.contextMenu` adds rows to the menu the app opens when the user
@@ -625,8 +667,15 @@ host.composer: {
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
   focus(sessionId: string | null): void
+  hold(target: string): () => void
 }
 ```
+
+`hold(target)` makes one composer's input read-only (addressed by composer
+target, `main` or `tile:<id>`, not by session) until the returned release is
+called. Use it while a send from that composer is held for review, so nothing
+typed meanwhile is overwritten when the draft comes back. Release is
+idempotent; always call it in a `finally`.
 
 **Arbitration.** Every verb is fail-closed on its address: a request is
 answered only by the mounted composer that owns that session (its tile, or the
@@ -1447,6 +1496,9 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?, timeoutMs?, { spawnPriority? })   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+host.requestForSession<T>(sessionId, method, params?, { signal?, timeoutMs? })
+                                           // JSON-RPC answered by the backend that OWNS that chat
+                                           //   (its profile and connection); null = the active gateway
 host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinned=true); index = slot in Pinned;
                                            //   same store the row's ⇧-click / drop writes
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
@@ -1468,6 +1520,11 @@ cron, kanban, …). `host.requestProfile` accepts a descriptor from
 profile without changing the active chat or gateway. The profile-only overload is
 retained only for the sole-local/legacy topology; registry-aware plugins should pass
 the descriptor so two sources exposing the same profile name cannot collide.
+`host.requestForSession` routes by a chat's runtime id instead (the routing the
+app's own session RPCs use), so a call made for a tile on another profile or
+connection is answered by that tile's backend. Its `signal` stops waiting; it
+does not cancel work the backend already started. Feature-detect it on older
+hosts with `host.requestForSession?.(…)`.
 
 A call that has to open a connection to another profile dials at background priority
 by default. After a failed dial to that profile, background calls fail fast while the
@@ -2103,7 +2160,8 @@ Import the app's real components directly so your UI is native by default:
 > `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`,
 > `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`,
 > `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`,
-> `DecodeText`.
+> `DecodeText`, `Slider`. For composer slots: `ComposerDrawer` and the
+> `composerSurfaceGlass` / `composerSurfaceRing` / `composerInputBacking` surface classes.
 
 `DecodeText`'s `loop` is opt-in as of this change — it decodes once and holds by default, so pass `loop` explicitly on progress surfaces that should keep scrambling.
 
@@ -2484,13 +2542,13 @@ pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
+| Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.requestForSession`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
-| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware` (+ `ComposerDraft`, `ComposerSendOrigin`), `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl`, `useThisComposer` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
-| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
+| UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame`, `Slider`, `ComposerDrawer`, `composerSurfaceGlass` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.

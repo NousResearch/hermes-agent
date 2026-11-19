@@ -41,6 +41,7 @@ from cron.jobs_normalize import (
     _normalize_base_url, _normalize_context_from, _normalize_failure_deliver, _normalize_job_optional_text,
 )
 from cron import jobs_time
+from cron.jobs_schedule_phrases import natural_phrase_to_cron
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import extra_fire, jobs_error_text, store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -690,87 +691,6 @@ def parse_duration(s: str) -> int:
     return value * _DURATION_MULTIPLIERS[match.group(2)[0]]
 
 
-# Day-spec phrases for "every monday 9am" / "every day at 9am". Cron weekday numbering is
-# 0=Sunday … 6=Saturday (croniter's default).
-_WEEKDAY_TO_CRON_DOW = {
-    "sunday": "0", "sun": "0",
-    "monday": "1", "mon": "1",
-    "tuesday": "2", "tue": "2", "tues": "2",
-    "wednesday": "3", "wed": "3", "weds": "3",
-    "thursday": "4", "thu": "4", "thur": "4", "thurs": "4",
-    "friday": "5", "fri": "5",
-    "saturday": "6", "sat": "6",
-}
-
-# Keyword day-specs that expand to a cron weekday field.
-_DAYSPEC_TO_CRON_DOW = {
-    "day": "*", "daily": "*", "everyday": "*",
-    "weekday": "1-5", "weekdays": "1-5",
-    "weekend": "0,6", "weekends": "0,6",
-}
-
-
-def _parse_clock_time(text: str) -> Optional[tuple]:
-    """Parse ``9am``/``9:30am``/``14:00``/``7`` (bare 24h hour)/``noon``/``midnight`` into a
-    24-hour ``(hour, minute)`` tuple, or None when unrecognized."""
-    t = text.strip().lower().replace(" ", "")
-    if not t:
-        return None
-    if t in ("noon", "midday"):
-        return (12, 0)
-    if t == "midnight":
-        return (0, 0)
-    match = re.match(r'^(\d{1,2})(?::(\d{2}))?(am|pm)?$', t)
-    if not match:
-        return None
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    meridiem = match.group(3)
-    if meridiem:
-        if not 1 <= hour <= 12:
-            return None
-        hour = hour % 12 + (12 if meridiem == "pm" else 0)
-    if hour > 23 or minute > 59:
-        return None
-    return (hour, minute)
-
-
-def _natural_every_to_cron(rest: str) -> Optional[str]:
-    """Convert ``<when> [at] <time>`` ("monday 9am", "weekday at 9am", "monday, wednesday at 9am")
-    to a 5-field cron expr, or None so ``parse_schedule`` can fall back to the interval path."""
-    tokens = rest.lower().replace(",", " ").split()
-    if not tokens:
-        return None
-    # Leading day tokens: a keyword spec ("weekdays") or a comma/"and"-separated weekday list.
-    dow = _DAYSPEC_TO_CRON_DOW.get(tokens[0])
-    idx = 1
-    if dow is None:
-        days = []
-        idx = len(tokens)
-        for i, tok in enumerate(tokens):
-            if tok == "and":
-                continue
-            mapped = _WEEKDAY_TO_CRON_DOW.get(tok)
-            if mapped is None:
-                idx = i
-                break
-            if mapped not in days:
-                days.append(mapped)
-        if not days:
-            return None
-        dow = ",".join(days)
-    time_tokens = tokens[idx:]
-    if time_tokens and time_tokens[0] == "at":  # optional separator: "every day at 9am"
-        time_tokens = time_tokens[1:]
-    if not time_tokens:
-        return None
-    parsed = _parse_clock_time(" ".join(time_tokens))
-    if parsed is None:
-        return None
-    hour, minute = parsed
-    return f"{minute} {hour} * * {dow}"
-
-
 def _cron_schedule(
     expr: str, display: str, missing_croniter: str, invalid_label: str
 ) -> dict[str, Any]:
@@ -800,7 +720,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
     # any other "every X" → recurring interval.
     is_every = schedule_lower.startswith("every ")
     rest = schedule[6:].strip() if is_every else schedule_lower
-    cron_expr = _natural_every_to_cron(rest)
+    cron_expr = natural_phrase_to_cron(rest)
     # Reuse the same helper — the phrase shape is identical without the "every " prefix. See #51975.
     if cron_expr is not None:
         example = "every monday 9am" if is_every else "weekdays at 9am"
@@ -859,6 +779,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
         f"  - Interval: '30m', 'every 30m', 'every 2h' (recurring)\n"
         f"  - One-shot delay: 'in 30m', 'in 2h' (fires once)\n"
         f"  - Weekly/daily: 'every monday 9am', 'weekdays at 9am' (recurring)\n"
+        f"  - Monthly weekday: 'every second monday at 9am', 'last friday at 5pm' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )

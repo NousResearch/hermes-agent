@@ -942,9 +942,9 @@ def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> di
 
 
 def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
-    """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
+    """``user``/``assistant``/``developer`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
-    if role not in {"user", "assistant"}:
+    if role not in {"user", "assistant", "developer"}:
         raise ValueError(
             f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
         )
@@ -1050,26 +1050,55 @@ def _optional_dict(api_kwargs: dict[str, Any], key: str) -> Optional[dict[str, A
     return value
 
 
+def extract_developer_prompt(items: Any) -> Optional[str]:
+    """Text of the leading ``developer`` input item (past any leading compaction checkpoints), or None."""
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") == "compaction":
+            continue
+        if item.get("role") != "developer":
+            return None
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+        return None
+    return None
+
+
 def _preflight_codex_api_kwargs(
     api_kwargs: Any, *, allow_stream: bool = False, drop_replay_item_ids: bool = False,
     sanitize_harmony_tokens: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
-    if missing := sorted(key for key in ("model", "instructions", "input") if key not in api_kwargs):
+    raw_input = api_kwargs.get("input")
+    has_developer_message = isinstance(raw_input, list) and any(
+        isinstance(item, dict) and item.get("type") in (None, "message") and item.get("role") == "developer"
+        for item in raw_input
+    )
+    required_keys = ("model", "input") if has_developer_message else ("model", "instructions", "input")
+    if missing := sorted(key for key in required_keys if key not in api_kwargs):
         raise ValueError(f"Codex Responses request missing required field(s): {', '.join(missing)}.")
     model = api_kwargs.get("model")
     if not _nonblank(model):
         raise ValueError("Codex Responses request 'model' must be a non-empty string.")
-    instructions = _str_or_empty(api_kwargs.get("instructions")).strip() or DEFAULT_AGENT_IDENTITY
-    if sanitize_harmony_tokens:
-        instructions = _neutralize_harmony_tokens(instructions)
     input_items = _preflight_codex_input_items(
-        api_kwargs.get("input"), drop_replay_item_ids=drop_replay_item_ids, sanitize_harmony_tokens=sanitize_harmony_tokens,
+        raw_input, drop_replay_item_ids=drop_replay_item_ids, sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
-    normalized: dict[str, Any] = {
-        "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
-    }
+    normalized: dict[str, Any] = {"model": model.strip()}
+    raw_instructions = _str_or_empty(api_kwargs.get("instructions")).strip()
+    if raw_instructions or not has_developer_message:
+        instructions = raw_instructions or DEFAULT_AGENT_IDENTITY
+        if sanitize_harmony_tokens:
+            instructions = _neutralize_harmony_tokens(instructions)
+        normalized["instructions"] = instructions
+    normalized["input"] = input_items
+    normalized["store"] = False
     tools = api_kwargs.get("tools")
     if tools is not None:
         if not isinstance(tools, list):

@@ -432,6 +432,44 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
 
 
+_DEVELOPER_INSTRUCTIONS_MODEL_RE = re.compile(
+    r"(?:^|[/:.])gpt-(?:6\.(?:[2-9]|[1-9]\d+)|[7-9]|[1-9]\d+)(?:[-.]|$)"
+)
+
+
+def _uses_developer_instructions(model: Any, *, is_xai_responses: bool = False) -> bool:
+    if is_xai_responses:
+        return False
+    return bool(_DEVELOPER_INSTRUCTIONS_MODEL_RE.search(str(model or "").strip().lower()))
+
+
+def _prepend_developer_instructions(input_items: list[dict[str, Any]], instructions: str) -> list[dict[str, Any]]:
+    # Native compaction drops items placed before a replayed compaction checkpoint.
+    insert_at = 0
+    while (
+        insert_at < len(input_items)
+        and isinstance(input_items[insert_at], dict)
+        and input_items[insert_at].get("type") == "compaction"
+    ):
+        insert_at += 1
+    dev_item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": instructions}]}
+    return [*input_items[:insert_at], dev_item, *input_items[insert_at:]]
+
+
+def _apply_developer_instructions_if_needed(
+    kwargs: dict[str, Any], model: Any, *, is_xai_responses: bool = False,
+) -> None:
+    # GPT-6.2+ appends top-level instructions after input and bills them uncached on every step.
+    if not _uses_developer_instructions(model, is_xai_responses=is_xai_responses):
+        return
+    instructions = kwargs.pop("instructions", None)
+    if not isinstance(instructions, str) or not instructions.strip():
+        return
+    input_items = kwargs.get("input")
+    if isinstance(input_items, list):
+        kwargs["input"] = _prepend_developer_instructions(input_items, instructions)
+
+
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
     """``pck_<sha256[:24]>`` of (scope_id, instructions, name-sorted tools), or None if nothing static.
 
@@ -812,6 +850,8 @@ class ResponsesApiTransport(ProviderTransport):
         # ``responses_prompt_cache_key=False`` opt out entirely.
         if endpoint.prompt_cache_key and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
+
+        _apply_developer_instructions_if_needed(kwargs, wire_model, is_xai_responses=is_xai_responses)
 
         cache_retention = _default_prompt_cache_retention_for_request(model, params.get("base_url"))
         if cache_retention:

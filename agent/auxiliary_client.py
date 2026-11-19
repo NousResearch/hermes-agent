@@ -1501,8 +1501,8 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
-        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
-        from agent.transports.codex import _sanitize_astra_request_kwargs
+        from agent.transports.codex import _apply_developer_instructions_if_needed, _sanitize_astra_request_kwargs
+        _apply_developer_instructions_if_needed(resp_kwargs, wire_model, is_xai_responses=is_xai)
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 

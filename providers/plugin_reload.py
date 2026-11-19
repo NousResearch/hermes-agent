@@ -9,11 +9,18 @@ fingerprint of its files), into a staging layer, and only a complete import is p
 registrations stay live until then, and stay live if the new tree fails to import. The previous package stays
 in ``sys.modules`` with its ``__path__`` on its own copy, so anything built from it (a cached agent's client)
 imports even its not-yet-loaded files from that version: every object runs one version end to end, never a mix.
+
+The copies are read for the whole life of the process, so they live under ``<home>/runtime/provider-plugins``
+and not in a temp dir that is cleaned by age (#156493). Each process holds an OS lock on ``owner.lock`` in its
+own root while it runs; the next process to create a root removes the roots whose lock nobody holds (their
+process is gone, killed or crashed included). Creating a root and that sweep run under one setup lock, so a
+sweep never sees a root its owner has made but not locked yet.
 """
 
 from __future__ import annotations
 
 import atexit
+import contextlib
 import hashlib
 import logging
 import os
@@ -30,9 +37,96 @@ logger = logging.getLogger(__name__)
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
 _SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
+_ROOT_PREFIX = "hermes-provider-plugins-"
+_OWNER_LOCK = "owner.lock"
+_SETUP_LOCK = ".setup.lock"
+_REAPING_PREFIX = ".reaping-"
 # One directory per process for the frozen copies; removed when the process exits.
 _snapshot_root: Path | None = None
 _snapshot_lock = threading.Lock()
+
+
+def _owner_alive(root: Path) -> bool:
+    """Whether a process holds *root*'s owner lock. Asked under the setup lock, so a root without a lock file
+    is never mid-setup: its owner died before taking it (or predates owner locks)."""
+    from pm.filesystem import lock_fd, unlock_fd
+
+    try:
+        fd = os.open(root / _OWNER_LOCK, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        if lock_fd(fd, wait=False):
+            unlock_fd(fd)
+            return False
+        return True
+    finally:
+        os.close(fd)
+
+
+def _claim_dead_roots(parent: Path) -> list[Path]:
+    """Rename every root this loader created whose owner is gone out of the way; the caller deletes them after
+    releasing the setup lock, so a large dead root never holds up other processes starting. Anything else in
+    *parent* is left alone."""
+    claimed = []
+    with contextlib.suppress(OSError):
+        for entry in parent.iterdir():
+            if not entry.name.startswith(_ROOT_PREFIX) or entry.is_symlink() or not entry.is_dir():
+                continue
+            with contextlib.suppress(OSError):  # unreadable, or another user's: not ours to judge
+                if not _owner_alive(entry):
+                    claim = parent / f"{_REAPING_PREFIX}{entry.name}"
+                    os.rename(entry, claim)
+                    claimed.append(claim)
+    # A sweeper that died mid-delete left its claims behind; nothing else uses the name.
+    with contextlib.suppress(OSError):
+        claimed.extend(e for e in parent.iterdir() if e.name.startswith(_REAPING_PREFIX) and e not in claimed)
+    return claimed
+
+
+def _release_root(root: Path, owner_fd: int, creator_pid: int) -> None:
+    # A forked child inherits this hook and shares the flock (it belongs to the open file): its exit must
+    # neither delete the parent's live copy nor drop the parent's lock.
+    if os.getpid() != creator_pid:
+        return
+    with contextlib.suppress(OSError):
+        os.close(owner_fd)
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def _new_root() -> Path:
+    """This process's root, with its owner lock held until the process exits."""
+    from pm.filesystem import lock_path
+
+    parent = mkdir_under_hermes_home(get_process_hermes_home() / "runtime" / "provider-plugins")
+    try:
+        setup_fd = lock_path(parent / _SETUP_LOCK, timeout=30)
+    except PermissionError:
+        # Another user's lock file (a home shared across UIDs): this process can still own a root of its
+        # own; it only skips reclaiming the others'.
+        setup_fd = None
+        logger.warning("Cannot open %s; not reclaiming provider plugin snapshots of exited processes",
+                       parent / _SETUP_LOCK)
+    claimed: list[Path] = []
+    try:
+        if setup_fd is not None:
+            claimed = _claim_dead_roots(parent)
+        root = Path(tempfile.mkdtemp(prefix=_ROOT_PREFIX, dir=parent))
+        try:
+            owner_fd = lock_path(root / _OWNER_LOCK, timeout=0)
+        except BaseException:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
+        if owner_fd is None:
+            shutil.rmtree(root, ignore_errors=True)
+            raise OSError(f"{root / _OWNER_LOCK} is held by another process")
+    finally:
+        if setup_fd is not None:
+            os.close(setup_fd)
+        for claim in claimed:
+            shutil.rmtree(claim, ignore_errors=True)
+    atexit.register(_release_root, root, owner_fd, os.getpid())
+    return root
 
 
 def _snapshot(plugin_dir: Path, module_name: str) -> Path:
@@ -42,9 +136,7 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     global _snapshot_root
     with _snapshot_lock:
         if _snapshot_root is None:
-            runtime = mkdir_under_hermes_home(get_process_hermes_home() / "runtime" / "provider-plugins")
-            _snapshot_root = Path(tempfile.mkdtemp(prefix="hermes-provider-plugins-", dir=runtime))
-            atexit.register(shutil.rmtree, _snapshot_root, True)
+            _snapshot_root = _new_root()
     target = _snapshot_root / module_name / plugin_dir.name
     if target.is_dir():
         return target

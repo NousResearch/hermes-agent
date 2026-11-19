@@ -1447,3 +1447,121 @@ class TestDiscoveryMetadataFromMatchedSession:
         hit = next(r for r in result["results"] if r["session_id"] == "s_night")
         assert hit["title"] == "Night ibuprofen plan"
         assert "2025" not in hit["when"]
+
+# =========================================================================
+# Search inside one session: query + session_id (the compaction recovery shape)
+# =========================================================================
+
+def _compact(db, sid, *replacement):
+    db.messages.compact(sid, [NewMessage.from_live(m) for m in replacement or (
+        {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] summary"},
+        {"role": "assistant", "content": "Continuing."})])
+
+
+class TestSearchWithinSession:
+    """``query`` + ``session_id`` searches that session's compression lineage
+    instead of silently reading the whole session (the recovery footer the
+    context compressor writes uses exactly this shape)."""
+
+    def test_query_with_session_id_returns_matches_not_a_read(self, db, persistence):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="NeoForge", session_id="s_oldest", persistence=persistence))
+        assert result["success"] is True
+        assert result["mode"] == "discover"
+        assert result["session_id"] == "s_oldest"
+        assert result["count"] >= 1
+        assert {r["session_id"] for r in result["results"]} == {"s_oldest"}
+        assert all("NeoForge" in r["snippet"] for r in result["results"])
+
+    def test_scope_excludes_other_sessions_with_the_same_terms(self, db, persistence):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", session_id="s_middle", limit=10, persistence=persistence))
+        assert result["count"] >= 2  # one result per matching message, not per session
+        assert {r["session_id"] for r in result["results"]} == {"s_middle"}
+        ids = [r["match_message_id"] for r in result["results"]]
+        assert len(ids) == len(set(ids))
+
+    def test_match_ids_feed_the_scroll_shape(self, db, persistence):
+        _seed_modpack_sessions(db)
+        hit = json.loads(session_search(query="NeoForge", session_id="s_oldest", persistence=persistence))["results"][0]
+        scrolled = json.loads(session_search(
+            session_id=hit["session_id"], around_message_id=hit["match_message_id"], persistence=persistence))
+        assert scrolled["mode"] == "scroll"
+        assert hit["match_message_id"] in [m["id"] for m in scrolled["messages"]]
+
+    def test_no_match_inside_session_is_empty_not_a_read(self, db, persistence):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="alternator", session_id="s_oldest", persistence=persistence))
+        assert result["mode"] == "discover"
+        assert result["count"] == 0
+        assert "messages" not in result
+
+    def test_unknown_session_id_is_an_error(self, db, persistence):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", session_id="s_missing", persistence=persistence))
+        assert result["success"] is False
+        assert "s_missing" in result["error"]
+
+    def test_in_place_compacted_rows_of_current_session(self, db, persistence):
+        """Footer shape: the session's own archived rows are found; its live rows
+        (already in context) are not, and each returned id scrolls."""
+        seed_session(db, "s_cur", "cli")
+        seed_messages(db, "s_cur", {"role": "user", "content": "the basalt relay token is zq-4471"},
+                      {"role": "assistant", "content": "Stored the basalt relay token."})
+        _compact(db, "s_cur")
+        seed_messages(db, "s_cur", {"role": "user", "content": "basalt relay is live again"})
+        seed_session(db, "s_other", "cli")
+        seed_messages(db, "s_other", {"role": "user", "content": "unrelated basalt relay chatter"})
+
+        result = json.loads(session_search(
+            query="basalt relay", session_id="s_cur", current_session_id="s_cur", limit=10, persistence=persistence))
+        assert result["success"] is True
+        contents = [m["content"] for r in result["results"] for m in r["messages"]
+                    if m["id"] == r["match_message_id"]]
+        assert any("zq-4471" in c for c in contents)
+        assert not any("live again" in c for c in contents)
+        assert {r["session_id"] for r in result["results"]} == {"s_cur"}
+        for r in result["results"]:
+            scrolled = json.loads(session_search(
+                session_id=r["session_id"], around_message_id=r["match_message_id"],
+                current_session_id="s_cur", persistence=persistence))
+            assert scrolled["mode"] == "scroll", scrolled
+
+    def test_compression_lineage_is_searched_from_the_tip(self, db, persistence):
+        seed_session(db, "s_root", "cli")
+        seed_messages(db, "s_root", {"role": "user", "content": "pin the cobalt manifest at v9"},
+                      {"role": "assistant", "content": "cobalt manifest pinned at v9"})
+        db.sessions.end("s_root", "compression")
+        seed_session(db, "s_tip", "cli", parent_session_id="s_root")
+        seed_messages(db, "s_tip", {"role": "user", "content": "carry on"})
+
+        result = json.loads(session_search(
+            query="cobalt manifest", session_id="s_tip", current_session_id="s_tip", persistence=persistence))
+        assert result["count"] >= 1
+        assert {r["session_id"] for r in result["results"]} == {"s_root"}
+
+    def test_scope_is_applied_in_sql_so_outside_hits_cannot_fill_the_limit(self, db, persistence):
+        seed_session(db, "s_target", "cli")
+        seed_messages(db, "s_target", {"role": "user", "content": "saffron kernel flag"})
+        for i in range(400):
+            seed_session(db, f"s_noise{i}", "cli")
+            seed_messages(db, f"s_noise{i}", {"role": "user", "content": "saffron kernel flag saffron kernel flag"})
+        hits = persistence.search.search_messages("saffron kernel", limit=5, session_ids=["s_target"])
+        assert [h.session_id for h in hits] == ["s_target"]
+        result = json.loads(session_search(query="saffron kernel", session_id="s_target", persistence=persistence))
+        assert result["count"] == 1
+
+    def test_compressor_recovery_footer_shape_searches_the_session(self, db, persistence):
+        import re
+
+        from agent.context_compressor import _build_recovery_footer
+        seed_session(db, "s_foot", "cli")
+        seed_messages(db, "s_foot", {"role": "user", "content": "the umber gateway port is 7781"},
+                      {"role": "assistant", "content": "umber gateway port noted"})
+        _compact(db, "s_foot", {"role": "user", "content": "summary"})
+        footer = _build_recovery_footer("s_foot", 2)
+        sid = re.search(r"session_search\(query='<keywords>', session_id='([^']+)'\)", footer).group(1)
+        result = json.loads(session_search(
+            query="umber gateway", session_id=sid, current_session_id="s_foot", persistence=persistence))
+        assert result["mode"] == "discover"
+        assert result["count"] >= 1

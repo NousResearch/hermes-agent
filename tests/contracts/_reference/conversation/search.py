@@ -534,7 +534,7 @@ class InMemorySessionSearch:
                         exclude_sources: Optional[Sequence[str]] = None, role_filter: Optional[Sequence[str]] = None,
                         limit: int = 20, offset: int = 0, sort: SearchSort = SearchSort.RELEVANCE, include_inactive: bool = False,
                         fields: Optional[Collection[str]] = None, after_ts: Optional[int] = None,
-                        before_ts: Optional[int] = None) -> tuple[SearchHit, ...]:
+                        before_ts: Optional[int] = None, session_ids: Optional[Sequence[str]] = None) -> tuple[SearchHit, ...]:
         scope = self._backend.scope
         projection = _search_fields(fields)
         if not query or not query.strip():
@@ -545,7 +545,7 @@ class InMemorySessionSearch:
         transcripts = self._transcript_rows(scope)
         pool = [row for rows in transcripts.values() for row in rows if _eligible(
             row, include_inactive=include_inactive, source_filter=source_filter, exclude_sources=exclude_sources,
-            role_filter=role_filter, after_ts=after_ts, before_ts=before_ts)]
+            role_filter=role_filter, after_ts=after_ts, before_ts=before_ts, session_ids=session_ids)]
         tool_route = bool(role_filter) and "tool" in (role_filter or ())
         if tool_route:
             found = _tool_route(pool, text, sort, limit, offset)
@@ -569,7 +569,8 @@ class InMemorySessionSearch:
 
 
 def _eligible(row: _Row, *, include_inactive: bool, source_filter: Optional[Sequence[str]], exclude_sources: Optional[Sequence[str]],
-              role_filter: Optional[Sequence[str]], after_ts: Optional[int], before_ts: Optional[int]) -> bool:
+              role_filter: Optional[Sequence[str]], after_ts: Optional[int], before_ts: Optional[int],
+              session_ids: Optional[Sequence[str]] = None) -> bool:
     """The filters every route shares (``_search_filter_clauses``); SQL NULL comparisons exclude a session without a source or start."""
     session = row.session
     checks = (
@@ -580,6 +581,7 @@ def _eligible(row: _Row, *, include_inactive: bool, source_filter: Optional[Sequ
         not role_filter or row.role in role_filter,
         after_ts is None or (session.started_at is not None and session.started_at >= int(after_ts)),
         before_ts is None or (session.started_at is not None and session.started_at < int(before_ts)),
+        session_ids is None or session.session_id in session_ids,
     )
     return all(checks)
 

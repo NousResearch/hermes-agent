@@ -4,7 +4,9 @@
 Single-shape tool; the mode is inferred from the args: DISCOVERY (``query``;
 FTS5 deduped by lineage, adaptive detail hydrates only the top result),
 SCROLL (``session_id`` + ``around_message_id``; ±window around the anchor),
-READ (``session_id`` alone; whole session or head/tail), BROWSE (no args).
+SEARCH-IN-SESSION (``query`` + ``session_id``; FTS5 scoped to that session's
+compression lineage, one result per matching message), READ (``session_id``
+alone; whole session or head/tail), BROWSE (no args).
 No LLM calls — every shape returns actual DB messages.
 """
 
@@ -550,6 +552,50 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         "session_search(session_id=..., around_message_id=match_message_id)."))
 
 
+def _search_session(persistence, session_id: str, query: str, role_filter: Optional[list[str]], limit: int,
+                    sort: Optional[str], detail: str, current_session_id: str | None = None,
+                    profile: str | None = None, after_ts: Optional[int] = None,
+                    before_ts: Optional[int] = None) -> str:
+    """Search-in-session shape: FTS5 scoped in SQL to ``session_id``'s compression lineage.
+
+    One result per matching message (no per-session dedup), each with a
+    ``match_message_id`` the scroll shape accepts. Rows still in the caller's live
+    context are skipped by the same rule the scroll guard uses, so every returned id
+    scrolls; compaction-archived rows and compression-ended ancestors stay searchable.
+    """
+    if not _get_session_meta(persistence, session_id):
+        return _read_scoped(persistence, session_id, profile)  # same not-found error + cross-profile hint
+    scope = list(_quiet(lambda: persistence.lineage.lineage(session_id), (),
+                        "compression lineage lookup failed for %s", session_id)) or [session_id]
+    raw_results, err = _loud(lambda: persistence.search.search_messages(
+        query=query, role_filter=role_filter or ["user", "assistant"], limit=_DISCOVER_SCAN_LIMIT, offset=0,
+        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
+        after_ts=after_ts, before_ts=before_ts, session_ids=scope), "FTS5 search failed: %s", "Search failed")
+    if err:
+        return err
+    hits, live_skipped = [], 0
+    for r in raw_results:
+        if len(hits) >= limit:
+            break
+        if current_session_id and _anchor_in_live_context(
+                persistence, _get_message_storage_state(persistence, r.message_id), r.session_id, current_session_id):
+            live_skipped += 1
+            continue
+        hits.append(r)
+    results = [entry for i, r in enumerate(hits) if (entry := _hydrate_hit(
+        persistence, scope[0], r, "full" if detail == "full" or i == 0 else "compact")) is not None]
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], profile)
+    extra: dict[str, Any] = {"session_id": session_id}
+    if not results:
+        extra["message"] = ("Matches exist only in your active context; nothing earlier in this session matched."
+                            if live_skipped else "No matching messages in this session. FTS5 ANDs all terms by "
+                            "default — broaden with OR (`alpha OR beta`) or prefix-match with `deploy*`.")
+    return _discover_payload(persistence, query, detail, results, **extra, link_hint=(
+        "Results are matching messages inside this session. To read around one, scroll: "
+        "session_search(session_id=<result session_id>, around_message_id=match_message_id)."))
+
+
 def _cross_profile_reads_confined() -> bool:
     """True when the calling task may read only its own profile's store.
 
@@ -734,25 +780,31 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
 def _dispatch(query, role_filter, limit, persistence, current_session_id, session_id,
               around_message_id, window, sort, profile, detail,
               after=None, before=None, exclude_session_ids=None) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
-    if isinstance(session_id, str) and session_id.strip():
-        if around_message_id is not None:
-            return _scroll(persistence, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_scoped(persistence, session_id.strip(), profile)
-    browse = not query or not isinstance(query, str) or not query.strip()
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set, and a
+    query with a session_id searches inside that session instead of reading it whole."""
+    sid = session_id.strip() if isinstance(session_id, str) else ""
+    has_query = isinstance(query, str) and bool(query.strip())
+    if sid and around_message_id is not None:
+        return _scroll(persistence, sid, around_message_id, window, current_session_id)
+    if sid and not has_query:
+        return _read_scoped(persistence, sid, profile)
     # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
-    limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
-    if browse:
+    limit = _clamp_int(limit, 3 if has_query else 10, 1, 10)
+    if not has_query:
         return _list_recent_sessions(persistence, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
     except ValueError as e:
         return tool_error(str(e), success=False)
+    sort_norm = sort_norm if sort_norm in ("newest", "oldest") else None
+    roles = ([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None
+    detail = "full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive"
+    if sid:
+        return _search_session(persistence, sid, query.strip(), roles, limit, sort_norm, detail, current_session_id,
+                               profile, after_ts=after_ts, before_ts=before_ts)
     return _discover(
-        persistence=persistence, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
-        role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
-        detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
+        persistence=persistence, query=query.strip(), limit=limit, sort=sort_norm, role_filter=roles, detail=detail,
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
         exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
 
@@ -819,9 +871,11 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search or read past Hermes conversations (FTS5), or scroll inside one. Four shapes, picked by args: `query` = discovery "
+        "Search or read past Hermes conversations (FTS5), or scroll inside one. Five shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
+        "`query` + `session_id` = search inside that session (matching messages, "
+        "with ids to scroll around); "
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
@@ -839,7 +893,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
+                    "expressions to find in past sessions. With session_id, searches "
+                    "inside that session only. Omit to browse recent "
                     "sessions. Ignored when session_id + around_message_id are set "
                     "(scroll shape)."
                 ),
@@ -903,9 +958,9 @@ SESSION_SEARCH_SCHEMA = {
             "session_id": {
                 "type": "string",
                 "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
+                    "Session to scroll, search, or read. Use the session_id returned "
+                    "from a prior discovery call. With around_message_id: scroll. "
+                    "With query: search inside this session. Alone: read it whole."
                 ),
             },
             "around_message_id": {

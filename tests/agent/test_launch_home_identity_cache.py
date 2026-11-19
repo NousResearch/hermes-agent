@@ -68,3 +68,28 @@ def test_foreign_and_missing_homes_are_not_the_process_home(tmp_path, monkeypatc
     satellite.mkdir()
     assert _is_process_home(satellite) is False
     assert _is_process_home(tmp_path / "ghost") is False
+
+
+def test_retargeted_symlink_keeps_pinned_identity_until_reset(tmp_path, monkeypatch):
+    """Pinned-identity contract (#157895 review): once a symlinked home's key is warm, retargeting
+    the symlink does NOT flip the identity decision mid-run. Pinning is the chosen property -- it
+    denies an attacker who can only time checks the ability to flap this security decision per
+    turn -- and reset_hermes_home_key_cache() is the door for legitimate moves: after it, the new
+    target governs."""
+    home_a = tmp_path / "home-a"
+    home_a.mkdir()
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    link = tmp_path / "profile-link"
+    link.symlink_to(home_a, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    reset_hermes_home_key_cache()
+    assert _is_process_home(home_a) is True  # warm: link pinned to home-a
+    # Retarget the existing symlink while the warm cache is in force.
+    link.unlink()
+    link.symlink_to(home_b, target_is_directory=True)
+    assert _is_process_home(home_a) is True  # pinned identity: no mid-run flip
+    assert _is_process_home(home_b) is False
+    reset_hermes_home_key_cache()
+    assert _is_process_home(home_b) is True  # reset door: fresh observation governs
+    assert _is_process_home(home_a) is False

@@ -531,7 +531,9 @@ def _is_routed_home(target_home: str | Path) -> bool:
     launch residue would never be stripped from that profile's child env. Both sides compare through
     ``hermes_home_key`` (resolved-key cache), matching ``secret_scope._is_process_home``: the
     sibling checks must keep one identity seam and one cache, not a raw ``Path.resolve()``
-    filesystem round-trip per call (#145022)."""
+    filesystem round-trip per call (#145022). Identity is pinned under the same resolved-key
+    contract as ``hermes_constants.hermes_home_key``; ``reset_hermes_home_key_cache()`` is the
+    door for legitimate moves."""
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     try:
         return hermes_home_key(target_home) != hermes_home_key(get_routing_process_hermes_home())

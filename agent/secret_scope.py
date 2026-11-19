@@ -489,7 +489,14 @@ def _is_process_home(hermes_home: Path) -> bool:
     Both sides compare through ``hermes_home_key`` (resolved-key cache), not a raw
     ``Path.resolve()`` per call: this runs on the gateway event loop for every admitted turn
     (``gateway/session_ingress.py``), and an uncached resolve is a filesystem round-trip on the
-    loop — a watchdog freeze site reported alongside the claim/verify stall (#145022)."""
+    loop — a watchdog freeze site reported alongside the claim/verify stall (#145022).
+    Identity follows the repo's resolved-key contract (``hermes_constants``): an existing path's
+    key is pinned for the process lifetime once observed, the same contract that already keys the
+    ToolRegistry per-profile overlays and per-profile MCP trust. A live symlink retarget sits
+    outside this check's threat model (an actor who can retarget profile symlinks can edit their
+    ``.env`` directly); pinning also denies an attacker who can only time checks the ability to
+    flip this decision per-turn. ``reset_hermes_home_key_cache()`` is the door for legitimate
+    moves, pinned in both directions by ``tests/agent/test_launch_home_identity_cache.py``."""
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     try:
         return hermes_home_key(hermes_home) == hermes_home_key(get_routing_process_hermes_home())

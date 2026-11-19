@@ -74,6 +74,21 @@ def adopt_session_lineage(store, donor, session_id: str, *, retire_donor: bool =
     return {**result, "adopted": adopted, "donor_retired": donor_retired}
 
 
+def resume_pending_adoption(store, session_id, open_donor):
+    """Resume an existing transfer through the configured donor, if still pending."""
+    pending_source = getattr(store.maintenance, "pending_adoption_source", None)
+    pending = pending_source(session_id) if pending_source is not None else None
+    if pending is None:
+        return None
+    with open_donor() as donor:
+        if donor is None or donor.maintenance.adoption_store_location() != pending:
+            return "Pending adoption donor is unavailable"
+        result = store.maintenance.adopt_lineage_from(donor.maintenance, session_id, pending_only=True)
+    if result.get("retry_skipped") or (result.get("adopted") and result.get("donor_retired")):
+        return None
+    return "Donor retirement is incomplete"
+
+
 def _retire_donor_segment(store, donor, seg_id: str) -> bool:
     """Archive one adopted donor segment; False when skipped or failed. The divergence guard used export-time counts, so both stores are re-read right before stamping and donor growth never lands behind a non-recoverable archive (equal-count content divergence is accepted: the bytes stay in the donor either way). A retirement failure does not fail the adoption (a later resume retries idempotently), but never claims success it did not have."""
     try:

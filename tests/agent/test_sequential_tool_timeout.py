@@ -299,8 +299,8 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
 ):
     """Clarify waits on a human; the generic sequential deadline must not fire.
 
-    Default ``agent.clarify_timeout`` is 3600s; ``<= 0`` is unlimited. Both
-    outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
+    Only ``agent.clarify_timeout`` (default 90s; ``<= 0`` unlimited) bounds the
+    wait, never ``HERMES_CONCURRENT_TOOL_TIMEOUT_S``.
     """
     agent = _make_agent(tmp_path)
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")

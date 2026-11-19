@@ -187,6 +187,9 @@ class _Parser:
             if isinstance(hay, list):
                 return any(_equal(h, needle) for h in hay)
             return to_string(needle).lower() in to_string(hay).lower()
+        if name in ("startsWith", "endsWith"):
+            text, affix = (to_string(a).lower() for a in args)
+            return text.startswith(affix) if name == "startsWith" else text.endswith(affix)
         raise Unsupported(f"function {name}() in {self.text!r}")
 
     def lookup(self, path: str) -> Any:
@@ -219,6 +222,7 @@ def render(text: Any, context: Mapping[str, Any]) -> Any:
     if not isinstance(text, str):
         return text
     whole = _TEMPLATE.fullmatch(text.strip())
-    if whole:
+    # '${{ a }}-${{ b }}' fullmatches too, with the lazy group stretched over '}}-${{'.
+    if whole and "${{" not in whole.group(1):
         return evaluate(whole.group(1), context)
     return _TEMPLATE.sub(lambda m: to_string(evaluate(m.group(1), context)), text)

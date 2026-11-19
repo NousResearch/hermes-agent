@@ -129,13 +129,18 @@ def reset_for_tests() -> None:
 
 
 def _config_stamp() -> tuple:
+    from agent.safe_worker_policy import worker_config_snapshot
     from hermes_cli.config import get_hermes_home
-    from utils import file_cache_version
+    from utils import file_cache_version, file_signature
     home = get_hermes_home()
+    # A worker whose config is a frozen snapshot never opens its profile's config.yaml: that entry
+    # keeps file_cache_version's layout with an empty digest.
+    frozen = worker_config_snapshot() is not None
     stamp = []
     for name in _INVENTORY_FILES:
         try:
-            stamp.append(file_cache_version(home / name, always_digest=True))
+            stamp.append((*file_signature((home / name).stat()), "") if frozen and name == "config.yaml"
+                         else file_cache_version(home / name, always_digest=True))
         except OSError:
             stamp.append(None)
     return tuple(stamp)

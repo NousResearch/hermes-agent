@@ -8,12 +8,22 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
+import { sharedControlParams } from '@hermes/shared/gateway-canonical'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
+import type {
+  AnyGatewayEvent,
+  ClarifyLockResponse,
+  ConfigSetResponse,
+  SessionActiveListResponse,
+  SessionCloseResponse,
+  SharedControlRespondResponse,
+  SubagentListResponse,
+  TerminalResizeResponse
+} from '@hermes/shared/gateway-types'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE, NATIVE_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
@@ -22,16 +32,6 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { hasPasteChip } from '../domain/pasteExpand.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import type { SubagentListResponse } from '../gatewayTypes.js'
-import type {
-  AnyGatewayEvent,
-  ClarifyLockResponse,
-  ConfigSetResponse,
-  SessionActiveListResponse,
-  SessionCloseResponse,
-  SharedControlRespondResponse,
-  TerminalResizeResponse
-} from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
@@ -69,6 +69,7 @@ import { captureDestination, isCurrentDestination, type SubmissionDestination } 
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useApprovalAnswers } from './useApprovalAnswers.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -1006,10 +1007,12 @@ export function useMainApp(gw: GatewayClient) {
     actions: {
       appendMessage,
       cancelClarify,
+      countPrompts: () => historyItemsRef.current.filter(msg => msg.role === 'user' && !msg.kind).length,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      openBacktrack: () => slashRef.current('/rewind', undefined, false),
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
@@ -1189,10 +1192,14 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           attachClipboardImage: composerActions.attachClipboardImage,
           attachImagePath: composerActions.attachImagePath,
+          appendPaste: composerActions.appendPaste,
+          appendText: composerActions.appendText,
+          attachImagePaths: composerActions.attachImagePaths,
           enqueue: composerActions.enqueue,
           hasSelection,
           openEditor: composerActions.openEditor,
           queueRef: composerRefs.queueRef,
+          restoreDraft: composerActions.restoreDraft,
           selection,
           setInput: composerActions.setInput
         },
@@ -1247,39 +1254,7 @@ export function useMainApp(gw: GatewayClient) {
     done()
   }, [])
 
-  const answerApproval = useCallback(
-    (choice: string) => {
-      const fresh = capturePromptResponseGuard('approval', overlay.approval)
-
-      if (!fresh() || !overlay.approval) {
-        return
-      }
-
-      const settle = () => {
-        if (!fresh()) {
-          return
-        }
-
-        patchOverlayState({ approval: null })
-        patchTurnState({
-          outcome: choice === 'deny' ? t('session.approval.denied') : t('session.approval.approved', choice)
-        })
-        patchUiState({ status: 'running…' })
-      }
-
-      // Canonical shared controls answer through the generation-bound RPC; a
-      // legacy server→client request resolves its response frame locally.
-      if (overlay.approval.sharedControl) {
-        return rpc<SharedControlRespondResponse>('approval.respond', {
-          choice,
-          ...sharedControlParams(overlay.approval)
-        }).then(r => r && settle())
-      }
-
-      respondWith(overlay.approval.requestId, { choice }, settle)
-    },
-    [overlay.approval, respondWith, rpc]
-  )
+  const approvalAnswers = useApprovalAnswers(overlay.approval, gw.isCanonical, composerActions.enqueue, respondWith, rpc, sys)
 
   const answerSudo = useCallback(
     (pw: string) => {
@@ -1514,7 +1489,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
-      answerApproval,
+      ...approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1540,7 +1515,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
-      answerApproval,
+      approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,

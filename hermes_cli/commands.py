@@ -102,6 +102,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
+    CommandDef("rewind", "Rewind to an earlier prompt to edit & resend it, or fork from there (Esc Esc)",
+               "Session", cli_only=True, args_hint="[N | fork N]", desktop="terminal"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
@@ -342,8 +344,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
-    CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
-               args_hint="[nous|local]"),
+    CommandDef("debug", "Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links",
+               "Info",
+               args_hint="[upload|nous upload|local]"),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",

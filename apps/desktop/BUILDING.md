@@ -68,6 +68,15 @@ It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
 
+electron-builder copies the payload with builder-util, whose `walk()` drops
+`.gitkeep` and `.DS_Store` files and whose `copyDir()` never creates empty
+directories. The resource copy, the AppImage stage and the MSIX file map all
+use them, and tool digests cover those files. `run-electron-builder.mjs`
+therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
+which removes both omissions in memory. Before relocation, framework repair
+and signing change anything, `afterPack` fails the pack unless the packaged
+payload has the prepared payload's entries, types, file sizes and link targets.
+
 ## Local test build
 
 To build the commit you have checked out, without a tag and without pushing:
@@ -118,8 +127,8 @@ python scripts/bundles/desktop.py --tag=vX.Y.Z
 Replace `vX.Y.Z` with an actual immutable tag. Stable tags must match the
 version in `pyproject.toml`. Canary tags use the release script's tag grammar.
 Start with host Python 3.11+ and Git. Use `python3` if that is your host's command.
-Preparation asks PM for the pinned Python, Node, npm and private installer;
-preinstalling a separate Node/npm/uv toolchain is not required. Native dependency
+Preparation asks PM for the pinned Python, Node, pnpm and private installer;
+preinstalling a separate Node/pnpm/uv toolchain is not required. Native dependency
 builds still need the platform's compiler, SDK and libraries. Windows ARM64 uses
 the shared Visual Studio/Clang/Rust/static OpenSSL preparation provider, which
 can require Administrator permissions for missing system components. macOS
@@ -141,8 +150,8 @@ is the sole packaging configuration. The wrapper disables automatic publishing;
 the release workflow owns uploads and channel promotion.
 
 `pm bundle --out DIR --ref REF` stages the native runtime only.
-`scripts/bundles/stage.py` also builds the TUI/dashboard unless both products
-are supplied explicitly. Both generate launchers; neither creates an Electron installer.
+`scripts/bundles/stage.py` also builds the TUI, dashboard and Webapp unless the
+TUI and dashboard products are supplied explicitly. Both generate launchers; neither creates an Electron installer.
 The launcher stage checks the payload and records its relative launch paths.
 The Electron build bakes these paths into its stamp. Desktop startup does not
 inspect, create, or repair a PM payload. Non-bundled builds carry no placeholder payload.
@@ -378,8 +387,8 @@ separate development home. Activation supplies the toolchain, not `node_modules`
 From the repository root:
 
 ```sh
-npm ci
-npm run dev --workspace apps/desktop
+pnpm install --frozen-lockfile
+pnpm --dir apps/desktop run dev
 ```
 
 For an ordinary package of that desktop build, use the workspace's

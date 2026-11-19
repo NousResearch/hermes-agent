@@ -15,6 +15,7 @@ def test_unique_otp_target_selection(monkeypatch, matches):
     supervisor._loop.is_running.return_value = True
     supervisor._state_lock = threading.Lock()
     supervisor._page_session_id = "previous"
+    supervisor._driven_target_id = None
     detached = []
 
     async def cdp(method, params=None, **kwargs):

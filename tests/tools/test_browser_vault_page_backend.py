@@ -87,7 +87,7 @@ def test_plugin_otp_refuses_before_vault_lookup(page, monkeypatch, probe_result)
 
 def test_plugin_otp_probe_accepts_before_inspection(page, monkeypatch):
     from tools import browser_vault_tool as tool
-    fake, meta = page
+    fake, _meta = page
     calls = []
     def evaluate(task_id, expression, *, secret):
         calls.append((expression, secret))

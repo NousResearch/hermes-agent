@@ -87,12 +87,13 @@ def test_fill_focuses_the_tab_browser_exec_drives_not_the_first_on_the_origin(su
     assert cdp.attached == ["T-own"]  # the stale and the other session's tab are never attached
 
 
+@pytest.mark.parametrize("unique", [False, True])
 @pytest.mark.parametrize("origin", [_ORIGIN, ""])  # "" = a fill that names no site (save_login)
-def test_driven_tab_whose_form_has_not_rendered_is_still_the_only_candidate(supervisor, origin):
+def test_driven_tab_whose_form_has_not_rendered_is_still_the_only_candidate(supervisor, origin, unique):
     sup, cdp = supervisor
     cdp.formless.add("S-T-own")
     sup.set_driven_target("T-own")
-    assert sup.focus_page(origin, accept="!!document.querySelector('input[type=password]')")["ok"] is True
+    assert sup.focus_page(origin, accept="!!document.querySelector('input[type=password]')", unique=unique)["ok"] is True
     assert cdp.attached == ["T-own"]  # no fall-through to a same-origin tab whose form did render
 
 

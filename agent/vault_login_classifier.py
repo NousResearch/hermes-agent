@@ -4,8 +4,7 @@ Python port (~170 LOC) of Merit-Systems/OpenInstinct's
 ``lib/manager/server/kernel-login-autofill.ts`` (MIT). Classifies visible
 input controls on a page into login-autofill tokens. The vault fill path
 uses the classification to select the single best current-password control
-(the identifier is agent-visible metadata and is typed by the agent
-itself via normal input tools).
+and, when asked, the login's identifier control.
 
 Scoring:
 - exact autocomplete-token match ................ 100
@@ -74,6 +73,7 @@ class LoginControl:
     name: str
     type: str
     max_length: Optional[int] = None
+    focused: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
@@ -87,6 +87,7 @@ class LoginControl:
             name=str(raw.get("name") or ""),
             type=str(raw.get("type") or ""),
             max_length=int(max_length) if max_length is not None else None,
+            focused=bool(raw.get("focused")),
         )
 
 
@@ -159,11 +160,10 @@ def select_password_fill(
 ) -> list[dict[str, Any]]:
     """Select the single best current-password control to fill.
 
-    The vault fill path is password-only: the identifier is agent-visible
-    metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
-    "value": password}]`` or ``[]`` when no password field exists.
+    This picks the highest-scoring ``current-password`` control (ties broken
+    by DOM order) and returns ``[{"index": int, "token": "current-password",
+    "value": password}]`` or ``[]`` when no password field exists. The
+    identifier is a separate fill: see the tool's identifier selection.
     """
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
@@ -274,6 +274,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
       autocomplete: element.autocomplete || "",
+      focused: document.activeElement === element,
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,
@@ -343,11 +344,209 @@ _FILL_JS_TEMPLATE = """(() => {
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       // composed: a component listening on its shadow host must see the value change too.
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+      // data: is what a framework-controlled input reads. React/Vue ignore an InputEvent without it
+      // and leave their own state empty, which reads as a filled DOM field the page still rejects.
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: f.value, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  // Stamps stay on the controls: this script cannot tell whether a controlled input kept the value,
+  // because the framework re-renders after it returns. build_fill_verify_js reads back and unstamps.
   return JSON.stringify({ filled });
+})()"""
+
+
+def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstamp: bool = True) -> str:
+    """Build a JS expression that reads the filled controls back and removes the inspection stamps.
+
+    The fill script's count is a claim about the write; this is the claim about the page. Called one
+    turn of the event loop later, it catches a framework that reverted the value, a field that was
+    re-rendered (stamp gone) and a partial write. Returns counts only — no value leaves the page.
+
+    ``unstamp=False`` keeps the inspection stamps: the trusted-typing path verifies ONE field
+    between two ``Input.insertText`` calls and must still find the next field by its stamp.
+    """
+    payload = json.dumps(
+        [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
+    )
+    return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+            .replace("__UNSTAMP__", "true" if unstamp else "false"))
+
+
+_CHECK_CHAR_JS_TEMPLATE = """
+(() => {
+  const STAMP = "__STAMP__";
+  const index = __INDEX__;
+  const controls = Array.from(document.querySelectorAll("input,textarea,select"));
+  const el = controls[index];
+  if (!el || el.getAttribute("data-hermes-vault-slot") !== STAMP) {
+    return JSON.stringify({found: false});
+  }
+  const focused = document.activeElement === el;
+  let value = "";
+  try { value = String(el.value == null ? "" : el.value); } catch (e) { value = ""; }
+  try { el.setSelectionRange(value.length, value.length); } catch (e) { /* not a text control */ }
+  const type = String(el.getAttribute("type") || "").toLowerCase();
+  const digits = type === "password" ? null : value.replace(/\\D+/g, "");
+  return JSON.stringify({found: true, focused: focused, digits: digits});
+})()
+"""
+
+
+def build_check_char_js(fill: dict[str, Any], nonce: str = "") -> str:
+    """One evaluate per typed character: is the stamped field still there, focused, and holding
+    which digits?
+
+    Typing a masked field character by character needs a check per character. Three round-trips
+    per character would triple the evaluate budget, so this answers all three questions at once.
+    ``digits`` is ``null`` for password controls: a password never crosses into a comparison.
+    """
+    return (_CHECK_CHAR_JS_TEMPLATE
+            .replace("__STAMP__", f"{nonce}:{fill['index']}")
+            .replace("__INDEX__", str(fill["index"])))
+
+
+def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+    """Build a JS expression that focuses ONE stamped field and asserts it really holds focus.
+
+    ``Input.insertText`` types into whatever element currently has focus, so the caller MUST
+    know which element that is before typing a secret into it. This script focuses the element
+    stamped ``<nonce>:<index>`` by the inspection and only reports success when
+    ``document.activeElement`` IS that element — a page that moves focus (a re-render, a modal,
+    an autofocus elsewhere) is refused instead of receiving the secret.
+
+    Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
+    Returns JSON: ``{"focused": <index>}`` or
+    ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
+    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}``.
+    """
+    payload = json.dumps(
+        [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
+    )
+    return _FOCUS_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+
+
+_FOCUS_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const f = fills[0];
+  if (!f) return JSON.stringify({ refused: "not_found" });
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+  if (!el) return JSON.stringify({ refused: "not_found" });
+  // Same guard as the fill script: a password fill never lands in a text box.
+  if (f.token === "current-password" && el.type !== "password") {
+    return JSON.stringify({ refused: "not_password" });
+  }
+  try { el.focus(); } catch (e) { /* focus can throw on a detached node */ }
+  if (document.activeElement === el) return JSON.stringify({ focused: f.index });
+  const active = document.activeElement;
+  return JSON.stringify({ refused: "focus_lost", tag: el.tagName,
+                          found: active ? active.tagName : null });
+})()"""
+
+
+def build_origin_check_js(expected_origin: str) -> str:
+    """Build a JS expression that asserts the page's origin inside the page itself.
+
+    The trusted-typing path writes through CDP, outside any page script, so it needs the same
+    in-page origin assertion the JS fill path has: if the page navigated between the origin
+    pre-check and the keystrokes, nothing is typed.
+    """
+    return ("(() => { if (window.location.origin !== " + json.dumps(expected_origin) + ") "
+            "return JSON.stringify({ refused: 'origin_changed', found: window.location.origin }); "
+            "return JSON.stringify({ ok: true }); })()")
+
+
+def build_unstamp_js(nonce: str = "") -> str:
+    """Build a JS expression that removes every inspection stamp from the page.
+
+    Used when a fill aborts half-way: the stamps address controls deterministically, and a stamp
+    left behind would let a later read address the control the fill just targeted.
+    """
+    return ("(() => { const roots = []; (function walk(root) { roots.push(root); "
+            "for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot); "
+            "})(document); const find = (s) => roots.flatMap((r) => Array.from(r.querySelectorAll(s))); "
+            "find('[data-hermes-vault-slot]').forEach((n) => n.removeAttribute('data-hermes-vault-slot')); "
+            "return JSON.stringify({ unstamped: true }); })()")
+
+
+_CLEAR_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  let cleared = 0;
+  for (const f of fills) {
+    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    if (!el) continue;
+    if (el.tagName === "SELECT") continue;
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value");
+    if (setter && setter.set) setter.set.call(el, ""); else el.value = "";
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: "", inputType: "deleteContentBackward" }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    cleared += 1;
+  }
+  return JSON.stringify({ cleared });
+})()"""
+
+
+def build_clear_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+    """Build a JS expression that empties stamped text controls so they can be typed again.
+
+    A trusted bulk insert can land the wrong value in a field with an input mask (a phone number,
+    a date, a card): the mask drops or reformats characters as they stream in. The fill then reads
+    a mismatch, clears the field and retypes it key by key. Clearing goes through the native value
+    setter plus an ``input`` event carrying ``data: ""`` so a controlled input ends up consistent
+    with an empty field instead of holding a value its state does not know about.
+    """
+    payload = json.dumps([{"index": f["index"]} for f in fills])
+    return (_CLEAR_JS_TEMPLATE.replace("__FILLS__", payload)
+            .replace("__NONCE__", json.dumps(nonce)))
+
+
+_VERIFY_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  let landed = 0;
+  let reverted = 0;
+  const missing = [];
+  const failed = [];
+  for (const f of fills) {
+    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    if (!el) { missing.push(f.index); continue; }
+    if (el.tagName === "SELECT") { landed += 1; continue; }
+    if (String(el.value) === String(f.value)) { landed += 1; continue; }
+    // A masked field (phone, date, card) reformats what was typed: compare the digits for
+    // anything that is not the password, so a mask adding "+7 (", dashes or spaces still counts
+    // as the value landing. The password check stays exact.
+    const digits = (v) => String(v).replace(/[^0-9]/g, "");
+    const want = digits(f.value);
+    const got = digits(el.value);
+    if (f.token !== "current-password" && want.length >= 4 && (got === want || got.endsWith(want))) {
+      landed += 1;
+    } else {
+      reverted += 1;
+      failed.push(f.index);
+    }
+  }
+  if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  return JSON.stringify({ landed, reverted, missing, failed });
 })()"""

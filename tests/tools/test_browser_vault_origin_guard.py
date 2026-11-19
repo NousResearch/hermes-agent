@@ -59,6 +59,8 @@ class _FakePage:
         if "expectedOrigin" in expression:  # the fill script (build_fill_js)
             self.writes.append(expression)
             return {"ok": True, "result": json.dumps({"filled": 1})}
+        if '"landed"' in expression:  # the read-back (build_fill_verify_js): the page kept the value
+            return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
         return {"ok": True, "result": json.dumps(self.controls)}  # input inspection
 
 

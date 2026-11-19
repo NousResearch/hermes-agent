@@ -29,9 +29,12 @@ autofill (kernel-login-autofill.ts / fill_from_vault.ts).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import json
 import secrets
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
@@ -60,6 +63,19 @@ def _check_vault_available() -> bool:
 # A secret-bearing script runs inside this wrapper on a page backend, so a page exception is answered
 # in-page and its message (which may quote the script) never reaches the backend's error path or logs.
 _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
+
+# Read-back pacing. A framework commits on its own schedule, so one read is a guess: 50 ms is a
+# frame or three, and 500 ms (~30 frames) is where a real commit has happened or is not coming.
+# Polling beats a single sleep because a mask or a late revert can write the value twice.
+_FILL_VERIFY_INTERVAL_S = 0.05
+_FILL_VERIFY_CEILING_S = 0.5
+
+# Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
+# one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
+# characters. Only used after a bulk insert read back as a mismatch.
+_TYPE_PER_KEY_DELAY_S = 0.06
+# One evaluate per typed character; the cap keeps a slow mask from turning a fill into a poll storm.
+_FILL_EVAL_BUDGET = 40
 
 
 def _page_backend(task_id: str):
@@ -467,15 +483,23 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 @plugin_errors_as_refusal
-def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = False) -> str:
-    """Fill the current page's password field from a vault handle.
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = True,
+                       identifier_only: bool = False) -> str:
+    """Fill the current page's login from a vault handle: the identifier and the password.
 
-    Password-only: the identifier is agent-visible metadata (see
-    browser_vault_list) and is typed by the agent via normal input tools.
-    The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
+    Both fields go through the same path, so both are typed as trusted browser input and read
+    back. That matters on a framework-controlled form: a normal input tool writes the value into
+    the DOM without React/Vue/MUI accepting it, and the page then re-renders the field empty.
+    Pass ``with_identifier=False`` to write the password only, ``identifier_only=True`` to write
+    just the identifier (a phone-then-password form has no password field yet).
+    The password is resolved server-side and never enters a result; the result reports only
+    counts and metadata.
     """
     from agent.vault_backends import UnlockRequired, backend_for_handle
+
+    if identifier_only and not with_identifier:
+        return json.dumps({"success": False, "error_type": "invalid_arguments",
+                           "error": "identifier_only and with_identifier=false contradict each other."})
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -513,24 +537,501 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)
+        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id,
+                                with_identifier, identifier_only)
 
 
-def _identifier_fill(classified: list, password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
-    """The username/email/phone control for a user-chosen login (the Desktop key button fills both fields;
-    the agent types the identifier itself). Prefers a control in the password field's form; on an
-    identifier-only step (no password field yet) it is the whole fill."""
-    fields = [c for c in classified if c.token in ("username", "email", "tel")]
-    if not identifier or not fields:
+@dataclass(frozen=True)
+class IdentifierTarget:
+    """The control an identifier-only fill types into (``kind`` explains the choice)."""
+
+    index: int
+    token: str
+    kind: str          # "single" | "focused" | "ambiguous" | "none"
+    hint: str = ""     # non-secret: name / placeholder / label, for the agent's report
+
+
+def _identifier_target(classified: list, raw_controls: list[dict[str, Any]], identifier: str) -> IdentifierTarget:
+    """Pick the identifier control on a page that may have no password field at all.
+
+    Prefers a classified username/email/tel control; a single focused candidate wins over one that
+    merely happens to be alone, because the agent has already pointed at the field it means. More
+    than one plausible control and nothing focused is AMBIGUOUS: the fill refuses instead of
+    typing a phone number into a search box.
+    """
+    from agent.vault_login_classifier import LoginControl
+
+    if not identifier:
+        return IdentifierTarget(-1, "", "none")
+
+    typed = [c for c in classified if c.token in ("username", "email", "tel")]
+    if typed:
+        focused = [c for c in typed if c.control.focused]
+        if len(focused) == 1:
+            return IdentifierTarget(focused[0].control.index, focused[0].token, "focused",
+                                    focused[0].control.name or focused[0].control.label)
+        if len(typed) == 1:
+            return IdentifierTarget(typed[0].control.index, typed[0].token, "single",
+                                    typed[0].control.name or typed[0].control.label)
+        return IdentifierTarget(-1, "", "ambiguous")
+
+    candidates = []
+    for raw in raw_controls:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            control = LoginControl.from_dict(raw)
+        except (TypeError, ValueError):
+            continue
+        if control.type in ("text", "tel", "email"):
+            candidates.append(control)
+    if not candidates:
+        return IdentifierTarget(-1, "", "none")
+    focused = [c for c in candidates if c.focused]
+    if len(focused) == 1:
+        chosen = focused[0]
+        return IdentifierTarget(chosen.index, "username", "focused", chosen.name or chosen.label)
+    if len(candidates) == 1:
+        chosen = candidates[0]
+        return IdentifierTarget(chosen.index, "username", "single", chosen.name or chosen.label)
+    return IdentifierTarget(-1, "", "ambiguous")
+
+
+def _fill_success_payload(landed: int, backend_name: str, meta: Any, page_origin: str,
+                          fills: list[dict[str, Any]], identifier_only: bool,
+                          identifier_target: Optional[IdentifierTarget]) -> str:
+    """The success JSON: counts, what was targeted, and what to do next. Never a value."""
+    out: dict[str, Any] = {"success": True, "filled_fields": landed, "backend": backend_name,
+                           "kind": meta.kind, "origin": page_origin}
+    if identifier_only and identifier_target is not None:
+        out["field"] = {"kind": "identifier", "token": identifier_target.token,
+                        "hint": identifier_target.hint}
+        out["next"] = "Submit, or continue to the password step and call fill again for the password."
+    elif meta.kind == "login":
+        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault "
+                       "action=enter_code with this handle"
+                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
+    if meta.kind != "login":
+        out["fields"] = sorted(f["token"] for f in fills)  # targeted controls, never the values
+    return json.dumps(out)
+
+
+def _credential_fills(backend: Any, handle: str, meta: Any, classified: list,
+                      raw_controls: list[dict[str, Any]],
+                      with_identifier: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Resolve the item's secret and pick the page controls it fills (password or checkout)."""
+    from agent.vault_login_classifier import select_checkout_fills, select_password_fill
+    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS
+
+    if meta.kind == "login":
+        secret = {"password": backend.resolve_password(handle)}
+        fills = select_password_fill(classified, secret["password"])
+        if with_identifier:
+            fills += _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""))
+        return secret, fills
+    secret = backend.resolve_secret(handle)
+    return secret, select_checkout_fills(
+        classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
+
+
+def _identifier_only_refusal(classified: list, raw_controls: list[dict[str, Any]],
+                             identifier: str) -> tuple[Optional[str], Optional[IdentifierTarget]]:
+    """Resolve the identifier-only target: ``(refusal_json, None)`` or ``(None, target)``."""
+    if not str(identifier or "").strip():
+        return json.dumps({"success": False, "error_type": "no_identifier_stored",
+                           "error": "This vault item has no identifier saved, so there is nothing to fill.",
+                           "next": "Save the login again with its identifier (hermes vault add)."}), None
+    target = _identifier_target(classified, raw_controls, str(identifier or ""))
+    if target.kind == "none":
+        return json.dumps({"success": False, "error_type": "no_identifier_field",
+                           "error": "No identifier field was found on this page.",
+                           "next": "Check the page is on its identifier step, then retry."}), None
+    if target.kind == "ambiguous":
+        return json.dumps({"success": False, "error_type": "identifier_ambiguous",
+                           "error": "Several text fields could take the identifier and none has focus.",
+                           "next": "Click the field that takes the identifier, then retry."}), None
+    return None, target
+
+
+def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
+                     password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+    """The username/email/phone control for a user-chosen login.
+
+    Prefers a classified control in the password field's form; on an identifier-only step (no
+    password field yet) it is the whole fill. When nothing was classified, falls back to the single
+    other text box in the password's form — a phone entry on a framework form often carries no
+    autocomplete, name, id or placeholder at all, so there is nothing to score.
+    """
+    if not identifier:
         return []
     anchor = password_fill[0]["index"] if password_fill else None
     form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
-    best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
-    return [{"index": best.control.index, "token": best.token, "value": identifier}]
+    if form is None:
+        raw_anchor = next((r for r in raw_controls if int(r.get("index", -1) or -1) == anchor), None)
+        form = raw_anchor.get("formIndex", raw_anchor.get("form_index")) if raw_anchor else None
+
+    fields = [c for c in classified if c.token in ("username", "email", "tel")]
+    if fields:
+        best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
+        return [{"index": best.control.index, "token": best.token, "value": identifier}]
+
+    from agent.vault_login_classifier import LoginControl
+
+    taken = {f["index"] for f in password_fill}
+    candidates = []
+    for raw in raw_controls:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            control = LoginControl.from_dict(raw)
+        except (TypeError, ValueError):
+            continue
+        if control.index in taken or control.type not in ("text", "tel", "email"):
+            continue
+        if control.form_index != form:
+            continue
+        candidates.append(control)
+    if len(candidates) != 1:  # ambiguous: fill nothing rather than guess
+        return []
+    return [{"index": candidates[0].index, "token": "username", "value": identifier}]
+
+
+def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[str, Any]],
+                         js_fills: list[dict[str, Any]], page_origin: str, nonce: str,
+                         secret: dict[str, Any]) -> dict[str, Any]:
+    """Fill the text/password fields with CDP TRUSTED typing (``Input.insertText``).
+
+    A framework-controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
+    JS value write: the page sees the same ``input`` event a human keystroke produces.
+    ``Input.insertText`` types into whatever element holds focus, so the focus is asserted
+    immediately before every single field (``build_focus_js``); the value is read back after it
+    (``build_fill_verify_js``). A focus that drifted, or a value the page reverted, aborts the
+    whole fill: nothing further is typed and every inspection stamp is removed.
+
+    ``select`` / checkbox / radio controls keep the JS path (``build_fill_js``): they are not
+    text inputs and trusted typing cannot address them.
+
+    Returns ``{"ok": True, "filled": n, "landed": n, "reverted": n}`` or
+    ``{"ok": False, "success": False, "error_type": ..., "error": ...}``.
+    """
+    from agent.vault_login_classifier import (
+        build_check_char_js,
+        build_clear_js,
+        build_fill_js,
+        build_fill_verify_js,
+        build_focus_js,
+        build_origin_check_js,
+        build_unstamp_js,
+    )
+    from agent.vault_store import scrub_secret_from_text
+
+    typed_fields: list[dict[str, Any]] = []
+
+    def _abort(error_type: str, message: str, *, field: Optional[str] = None,
+               counts: Optional[dict[str, Any]] = None, next_hint: Optional[str] = None,
+               clear: bool = True) -> dict[str, Any]:
+        """Refuse the fill: clear whatever this fill already wrote, drop the stamps, say why.
+
+        A refused fill must not leave a partial value behind — the password field holding the
+        secret while the tool reports "nothing is filled" is both wrong and a leak.
+        """
+        if clear and typed_fields:
+            try:
+                _eval_js_secret(task_id, build_clear_js(typed_fields, nonce))
+            except Exception:  # health: allow BLE001 -- cleanup must not mask the refusal
+                logger.debug("vault fill: could not clear the typed fields")
+            typed_fields.clear()
+        try:
+            _eval_js_secret(task_id, build_unstamp_js(nonce))
+        except Exception:  # health: allow BLE001 -- cleanup must not mask the refusal
+            logger.debug("vault fill: stamp cleanup failed")
+        out: dict[str, Any] = {"ok": False, "success": False, "error_type": error_type,
+                               "filled_fields": 0, "error": scrub_secret_from_text(message, secret)}
+        if field:
+            out["field"] = field
+        if counts:
+            out["counts"] = counts
+        if next_hint:
+            out["next"] = next_hint
+        return out
+
+    def _script(expression: str) -> Any:
+        res = _eval_js_secret(task_id, expression)
+        if not res.get("success"):
+            return None
+        parsed = _parse_json_result(res.get("result"))
+        if isinstance(parsed, str):
+            parsed = _parse_json_result(parsed)
+        return parsed
+
+    # The page that holds the stamps must still be the bound origin: the supervisor's tab can
+    # have navigated between the inspection and the first keystroke.
+    origin = _script(build_origin_check_js(page_origin))
+    if not isinstance(origin, dict) or origin.get("refused") == "origin_changed":
+        found = origin.get("found") if isinstance(origin, dict) else None
+        return _abort("origin_changed",
+                      f"Refused: the page navigated away from the bound origin ({page_origin}) "
+                      f"before the value could be typed (now on {found or 'unknown'}). Nothing was written.",
+                      next_hint="Re-open the saved site's login page and retry; the fill only writes on the "
+                                "origin the vault item is bound to.")
+
+    filled = 0
+    # Non-text controls (select, checkbox, radio) keep the JS path.
+    if js_fills:
+        js_result = _script(build_fill_js(js_fills, expected_origin=page_origin, nonce=nonce))
+        if not isinstance(js_result, dict):
+            return _abort("fill_unverified", "The page could not be written to; nothing was filled.",
+                          next_hint="Retry once; if it repeats, inspect the page before filling again.")
+        if js_result.get("refused") == "origin_changed":
+            return _abort("origin_changed",
+                          f"Refused: the page navigated away from the bound origin ({page_origin}) "
+                          f"before the fill could run (now on {js_result.get('found') or 'unknown'}). "
+                          "Nothing was written.")
+        filled += int(js_result.get("filled", 0) or 0)
+
+    def _type_field(f: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Type one field, read it back, and retype key by key when a mask mangled it.
+
+        Returns ``None`` when the field holds exactly the value we typed, or a finished refusal.
+        """
+        def _verify() -> Any:
+            return _script(build_fill_verify_js([f], nonce=nonce, unstamp=False))
+
+        def _holds(checked: Any) -> bool:
+            return (isinstance(checked, dict)
+                    and int(checked.get("landed", 0) or 0) == 1
+                    and not int(checked.get("reverted", 0) or 0))
+
+        def _assert_focus() -> Optional[dict[str, Any]]:
+            focus = _script(build_focus_js([f], nonce))
+            if isinstance(focus, dict) and focus.get("focused") == f["index"]:
+                return None
+            tag = focus.get("tag") if isinstance(focus, dict) else None
+            found = focus.get("found") if isinstance(focus, dict) else None
+            return _abort("focus_lost",
+                          f"Refused: focus moved off the target field (tag {tag or 'unknown'}, "
+                          f"focus now on {found or 'nothing'}) before the value could be typed. "
+                          "Nothing further was typed.",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Click the field, then retry. Nothing was typed into the page.")
+
+        aborted = _assert_focus()
+        if aborted:
+            return aborted
+        typed = supervisor.insert_text(f["value"])
+        if not typed.get("ok"):
+            return _abort("fill_unverified",
+                          "The browser refused the trusted input for one field: "
+                          f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Check the browser is still attached, then retry the fill.")
+        verified = _verify()
+        if not isinstance(verified, dict):
+            return _abort("fill_unverified",
+                          "The page could not be read back after the value was typed; "
+                          "treating the fill as failed.",
+                          field=str(f.get("token", "unknown")),
+                          next_hint="Retry once; if it repeats, read the page state before filling again.")
+        if _holds(verified):
+            typed_fields.append(f)  # this field is written; a later refusal must clear it
+            return None
+
+        # A bulk insert lands wrong in a masked field (phone, date, card): the mask drops or
+        # reformats characters as they stream in. Clear it and type the value one key at a time,
+        # the way a person does, then read it back again.
+        _script(build_clear_js([f], nonce))
+        aborted = _assert_focus()
+        if aborted:
+            return aborted
+        # A mask reformats on every edit, so the value has to arrive as key events, one at a time,
+        # with a check after each character: the mask can still drop a character mid-value, and a
+        # whole-value check at the end reports that as a failure with no way to say which one.
+        type_keys = getattr(supervisor, "type_keys", None)
+        typed_fields.append(f)   # registered BEFORE typing: a mid-loop abort must clear this field
+        typed_digits = ""
+        budget = _FILL_EVAL_BUDGET
+        for char in str(f["value"]):
+            if callable(type_keys):
+                keyed = type_keys(char, delay=0.0)
+                ok = bool(keyed.get("ok")) if isinstance(keyed, dict) else False
+                detail = keyed.get("error") if isinstance(keyed, dict) else None
+            else:
+                typed_char = supervisor.insert_text(char)
+                ok = bool(typed_char.get("ok"))
+                detail = typed_char.get("error")
+                time.sleep(_TYPE_PER_KEY_DELAY_S)
+            if not ok:
+                return _abort("fill_unverified",
+                              "The browser refused the trusted input for one field: "
+                              f"{scrub_secret_from_text(str(detail or 'input failed'), secret)}",
+                              field=str(f.get("token", "unknown")),
+                              next_hint="Check the browser is still attached, then retry the fill.")
+            if char.isdigit():
+                typed_digits += char
+            budget -= 1
+            if budget <= 0:
+                return _abort("mask_unverified",
+                              "This field's input mask is too slow to verify character by character, "
+                              "so the rest of the value was not typed.",
+                              field=str(f.get("token", "unknown")),
+                              counts={"expected": len(str(f["value"])),
+                                      "landed": len(typed_digits)},
+                              next_hint=("Type this value manually, or fill a field that takes it "
+                                         "without an input mask."))
+            check = _script(build_check_char_js(f, nonce))
+            if not isinstance(check, dict) or not check.get("found"):
+                return _abort("fill_unverified",
+                              "The page re-rendered the field mid-fill (the fill's marker is gone), "
+                              "so the remaining value cannot be placed safely. Nothing further was typed.",
+                              field=str(f.get("token", "unknown")),
+                              next_hint="Re-open the page and retry the fill.")
+            if check.get("focused") is not True:
+                return _abort("focus_lost",
+                              "Refused: focus moved off the target field while it was being typed.",
+                              field=str(f.get("token", "unknown")),
+                              next_hint="Click the field, then retry the fill.")
+            digits = check.get("digits")
+            if digits is not None and not str(digits).endswith(typed_digits):
+                time.sleep(_FILL_VERIFY_INTERVAL_S)   # the mask may still be applying
+                check = _script(build_check_char_js(f, nonce))
+                digits = check.get("digits") if isinstance(check, dict) else None
+                if digits is None or not str(digits).endswith(typed_digits):
+                    return _abort("fill_reverted",
+                                  "The field's mask dropped a character and did not take it on a retry.",
+                                  field=str(f.get("token", "unknown")),
+                                  counts={"expected": len(typed_digits),
+                                          "received": len(str(digits or ""))})
+        verified = _verify()
+        if _holds(verified):
+            return None
+        counts = verified if isinstance(verified, dict) else {}
+        return _abort("fill_reverted",
+                      "The page rejected the value: the field did not hold it after a bulk insert "
+                      "and after being retyped key by key. The field was cleared, so nothing is filled.",
+                      field=str(f.get("token", "unknown")),
+                      counts={"expected": 1,
+                              "landed": int(counts.get("landed", 0) or 0),
+                              "reverted": int(counts.get("reverted", 0) or 0)},
+                      next_hint="Check the value format the page expects (mask, country code, length). "
+                                "If this is the identifier, retry with with_identifier=false and type it "
+                                "yourself.")
+
+    for f in type_fills:
+        aborted = _type_field(f)
+        if aborted:
+            return aborted
+
+    return {"ok": True, "filled": filled + len(type_fills)}
+
+
+def _typing_channel(task_id: str) -> tuple[Any, Any, Any]:
+    """The trusted-typing channel for a task: ``(supervisor, insert_text, page_backend)``.
+
+    A plugin or preview page backend owns the page and has no CDP channel: asking the supervisor for
+    one would attach a managed browser to a preview-only session. When no supervisor is reachable the
+    first two are None and the caller stays on the JS path.
+    """
+    page_backend = _page_backend(task_id)
+    if page_backend is not None:
+        return None, None, page_backend
+    try:
+        supervisor = _ensure_supervisor(task_id)
+    except Exception as exc:  # health: allow BLE001 -- a missing supervisor is not a fill failure
+        logger.debug("vault fill: supervisor unavailable for trusted typing (%s)", exc)
+        return None, None, None
+    return supervisor, getattr(supervisor, "insert_text", None), None
+
+
+def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce: str,
+              secret: dict[str, str]) -> dict[str, Any]:
+    """Write the fields with the JS fill script (no CDP channel: page/plugin backends).
+
+    Returns ``{"success": True}`` or a refusal dict ready to be serialised: the caller does not have
+    to interpret anything. Every error string is scrubbed of the secret before it leaves.
+    """
+    from agent.vault_login_classifier import build_fill_js
+    from agent.vault_store import scrub_secret_from_text
+
+    try:
+        fill_result = _eval_js_secret(
+            task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+        )
+    except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
+        return {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
+    if not fill_result.get("success"):
+        out = {"success": False, "error": scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)}
+        if fill_result.get("error_type"):
+            out["error_type"] = fill_result["error_type"]
+        return out
+    parsed = _parse_json_result(fill_result.get("result"))
+    if isinstance(parsed, str):
+        parsed = _parse_json_result(parsed)
+    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+        return {"success": False, "error_type": "origin_changed",
+                "error": ("Refused: the page navigated away from the bound origin "
+                          f"({page_origin}) before the fill could run "
+                          f"(now on {parsed.get('found') or 'unknown'}). Nothing was written.")}
+    wrote = int(parsed.get("filled", 0) or 0) if isinstance(parsed, dict) else 0
+    if not wrote:
+        return {"success": False, "error_type": "fill_not_written", "filled_fields": 0,
+                "error": "No field accepted the write: nothing was filled on this page."}
+    return {"success": True}
+
+
+def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[str, Any]:
+    """Poll the filled controls until the page keeps every value, or the ceiling expires.
+
+    The fill's own count is a claim about the write; this is the claim about the page. A controlled
+    input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field loses its stamp.
+    Polling rather than sleeping once: a mask reformat or a late revert writes twice, and the second
+    write is the one that matters. Counts only — no value leaves the page.
+    """
+    from agent.vault_login_classifier import build_fill_verify_js, build_unstamp_js
+
+    expected = len(fills)
+    deadline = time.monotonic() + _FILL_VERIFY_CEILING_S
+    landed = 0
+    reverted = 0
+    while True:
+        time.sleep(_FILL_VERIFY_INTERVAL_S)
+        verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce, unstamp=False))
+        verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
+        if isinstance(verified, str):
+            verified = _parse_json_result(verified)
+        if not isinstance(verified, dict):
+            _eval_js(task_id, build_unstamp_js())
+            return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
+                    "error": "The page could not be read back after the fill, so it is treated as failed.",
+                    "next": "Retry once. If it repeats, read the page (browser_exec page_info) before filling again."}
+        landed = int(verified.get("landed", 0) or 0)
+        reverted = int(verified.get("reverted", 0) or 0)
+        failed = [int(i) for i in (verified.get("failed") or []) if isinstance(i, (int, float))]
+        if landed >= expected or time.monotonic() >= deadline:
+            break
+    if landed < expected:
+        # The fill is refused, so the fields must not be left holding a partial value: clear them
+        # (the stamps are still on the page) and then drop the stamps.
+        from agent.vault_login_classifier import build_clear_js
+
+        _eval_js(task_id, build_clear_js(fills, nonce))
+        _eval_js(task_id, build_unstamp_js())
+        kinds = sorted({str(f.get("token", "unknown")) for f in fills if f["index"] in failed}) or ["unknown"]
+        return {
+            "success": False, "error_type": "fill_reverted", "filled_fields": 0,
+            "counts": {"expected": expected, "landed": landed, "reverted": reverted},
+            "fields": kinds,
+            "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
+                      f"({', '.join(kinds)}). The fields were cleared, so nothing is filled."),
+            "next": ("Retry once. If the same field reverts again, fill the password alone "
+                     "(with_identifier=false) and type the identifier yourself, or check whether the "
+                     "page expects a different value format."),
+        }
+    _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
+    return {"success": True, "landed": landed}
 
 
 def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str,
-                     with_identifier: bool = False) -> str:
+                     with_identifier: bool = False, identifier_only: bool = False) -> str:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
     after the origin guard passed. ``with_identifier`` also writes the login's (non-secret) identifier."""
     from agent.redact import register_vault_redaction_value
@@ -538,6 +1039,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         ClassifiedLoginControl,
         LoginControl,
         build_fill_js,
+        build_fill_verify_js,
         build_inspection_js,
         classify_checkout_control,
         classify_login_control,
@@ -546,6 +1048,11 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     )
     from agent.vault_backends import UnlockRequired
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+
+    if identifier_only and not str(meta.identifier or "").strip():
+        return json.dumps({"success": False, "error_type": "no_identifier_stored",
+                           "error": "This vault item has no identifier saved, so there is nothing to fill.",
+                           "next": "Save the login again with its identifier (hermes vault add)."})
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
@@ -568,19 +1075,23 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         result = classify(LoginControl.from_dict(raw))
         if result is not None:
             classified.append(result)
-    if not classified:
+    if not classified and not identifier_only:
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
+    identifier_target: Optional[IdentifierTarget] = None
     try:
-        if meta.kind == "login":
-            secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
-            if with_identifier:
-                fills += _identifier_fill(classified, fills, str(meta.identifier or ""))
+        if identifier_only:
+            refusal, identifier_target = _identifier_only_refusal(
+                classified, raw_controls, str(meta.identifier or ""))
+            if refusal is not None:
+                return refusal
+            assert identifier_target is not None   # refusal covers every other kind
+            secret = {}          # identifier-only: the password is never resolved
+            fills = [{"index": identifier_target.index, "token": identifier_target.token,
+                      "value": str(meta.identifier or "")}]
         else:
-            secret = backend.resolve_secret(handle)
-            fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
+            secret, fills = _credential_fills(backend, handle, meta, classified, raw_controls, with_identifier)
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
@@ -596,47 +1107,39 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
-    try:
-        fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
-        )
-    except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
-        return json.dumps(
-            {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
-        )
-    if not fill_result.get("success"):
-        err = scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)
-        out = {"success": False, "error": err}
-        if fill_result.get("error_type"):
-            out["error_type"] = fill_result["error_type"]
-        return json.dumps(out)
+    # Trusted typing (CDP ``Input.insertText``) is preferred when the task's CDP supervisor is
+    # available: a controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
+    # JS value write. ``Input.insertText`` types into whatever holds focus, so the focus is
+    # asserted immediately before every single keystroke (build_focus_js) and the value is read
+    # back after it. A page backend (plugin browser) has no CDP channel: that path stays on JS.
+    supervisor, insert_text, page_backend = _typing_channel(effective_task_id)
+    # The trusted path types into the SUPERVISOR's page: only use it when that page is the page the
+    # inspection stamped (no plugin page backend in front of it).
+    trusted = bool(callable(insert_text)) and page_backend is None
+    type_by_index = {c.control.index: c.control.type for c in classified}
+    type_fills = [f for f in fills
+                  if f["index"] in type_by_index
+                  and type_by_index[f["index"]] not in ("select", "checkbox", "radio")]
+    js_fills = [f for f in fills if f not in type_fills]
 
-    parsed = _parse_json_result(fill_result.get("result"))
-    if isinstance(parsed, str):
-        parsed = _parse_json_result(parsed)
-    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
-        return json.dumps(
-            {
-                "success": False,
-                "error_type": "origin_changed",
-                "error": (
-                    "Refused: the page navigated away from the bound origin "
-                    f"({page_origin}) before the fill could run "
-                    f"(now on {parsed.get('found') or 'unknown'}). "
-                    "Nothing was written."
-                ),
-            }
-        )
-    filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    if trusted and type_fills:
+        typed = _trusted_typing_fill(supervisor, effective_task_id, type_fills, js_fills,
+                                     page_origin, nonce, secret)
+        if not typed.get("ok"):
+            return json.dumps({k: v for k, v in typed.items() if k != "ok"})
+    else:
+        written = _js_write(effective_task_id, fills, page_origin, nonce, secret)
+        if not written.get("success"):
+            return json.dumps(written)
 
-    out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
-           "kind": meta.kind, "origin": page_origin}
-    if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
-                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
-    if meta.kind != "login":
-        out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
-    return json.dumps(out)
+    checked = _read_back(effective_task_id, fills, nonce)
+    if not checked.get("success"):
+        return json.dumps(checked)
+    landed = int(checked["landed"])
+
+
+    return _fill_success_payload(landed, backend.name, meta, page_origin, fills,
+                                 identifier_only, identifier_target)
 
 
 def _confirm_payment_fill(label: str, origin: str) -> bool:
@@ -661,9 +1164,10 @@ BROWSER_VAULT_SCHEMA = {
     "description": (
         "Fill saved logins, 2FA codes, cards and addresses on the CURRENT browser page. Secrets never "
         "enter the conversation. "
-        "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
-        "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
-        "the password for a login, card fields after the user confirms, address fields; refused unless the page "
+        "Actions: list (call first: saved logins/cards/addresses as handles; locked password managers appear "
+        "under `locked`); fill (handle: a login writes the identifier and the password, `identifier_only=true` "
+        "writes just the identifier, card fields after the "
+        "user confirms, address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
@@ -678,6 +1182,9 @@ BROWSER_VAULT_SCHEMA = {
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "identifier_only": {"type": "boolean", "default": False,
+                                "description": "fill only: write just the login identifier and resolve no password "
+                                               "(a phone-then-password form has no password field yet)."},
             "target": {"type": "string", "enum": ["browser", "preview"],
                        "description": "fill / save_login / enter_code: 'preview' = the Desktop in-app browser "
                                       "page beside the chat, 'browser' = the managed automation browser."},
@@ -711,7 +1218,8 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if action == "unlock":
         return browser_vault_unlock(str(args.get("backend") or ""))
     page_ops = {
-        "fill": lambda: browser_vault_fill(handle=handle, task_id=tid),
+        "fill": lambda: browser_vault_fill(handle=handle, task_id=tid,
+                                           identifier_only=bool(args.get("identifier_only"))),
         "save_login": lambda: browser_vault_save_login(label=label, task_id=tid),
         "enter_code": lambda: browser_vault_enter_code(handle=handle, task_id=tid),
     }

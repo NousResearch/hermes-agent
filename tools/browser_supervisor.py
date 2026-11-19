@@ -58,6 +58,22 @@ class _LoopUnavailable(RuntimeError):
     """The supervisor loop refused new work (closed / shutting down)."""
 
 
+_PUNCT_KEY_CODES = {
+    " ": "Space", "-": "Minus", "_": "Minus", "=": "Equal", "+": "Equal", ".": "Period",
+    ",": "Comma", ":": "Semicolon", ";": "Semicolon", "/": "Slash", "\\": "Backslash",
+    "@": "Digit2", "(": "Digit9", ")": "Digit0", "#": "Digit3", "*": "Digit8",
+}
+
+
+def _key_code(char: str) -> str:
+    """The CDP ``code`` for a printable ASCII character (``Digit1``, ``KeyA``, ``Minus``)."""
+    if char.isalpha():
+        return "Key" + char.upper()
+    if char.isdigit():
+        return "Digit" + char
+    return _PUNCT_KEY_CODES.get(char, "")
+
+
 def _schedule(coro, loop, *, timeout: float):
     """Run ``coro`` on the supervisor loop from a sync caller and wait for its result."""
     from agent.async_utils import safe_schedule_threadsafe
@@ -266,6 +282,94 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # Non-serializable (functions, DOM nodes…) — give the model the browser's description.
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
+
+    def insert_text(self, text: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` into the element that currently holds focus, as TRUSTED browser input.
+
+        ``Input.insertText`` is the CDP-level equivalent of a user keystroke: the page sees the
+        same ``input`` events a human would trigger, so framework-controlled inputs (React/Vue/MUI)
+        accept the value instead of reverting it — and a page cannot tell the value apart from
+        a human typing it.
+
+        TRUSTED INPUT IS ADDRESSED TO WHATEVER HOLDS FOCUS. This method does not know which
+        element that is and does not check: the caller MUST assert focus first (see
+        ``agent.vault_login_classifier.build_focus_js``) and abort if the focus is not the
+        intended field. Typing a secret into the wrong focused element leaks it.
+
+        Returns ``{"ok": True}`` or ``{"ok": False, "error": <str>}``. Never raises.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            active, session_id = self._active, self._page_session_id
+        if not active:
+            return _fail("supervisor is not active")
+        if not session_id:
+            return _fail("supervisor has no attached page session")
+
+        try:
+            coro = self._cdp("Input.insertText", {"text": text},
+                             session_id=session_id, timeout=timeout)
+            response = _schedule(coro, loop, timeout=timeout + 1)
+        except Exception as exc:  # health: allow BLE001 -- trusted typing must report failure, never raise into a fill
+            return _err(exc)
+        if isinstance(response, dict) and response.get("error"):
+            return _fail(f"Input.insertText failed: {response['error']}")
+        return {"ok": True}
+
+    def type_keys(self, text: str, *, delay: float = 0.06, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` one character at a time as real key events (down / char / up).
+
+        ``Input.insertText`` inserts the whole string in one edit. A field with an input mask
+        (a phone number, a date, a card) reformats as characters arrive and re-renders the
+        value; a bulk insert then loses characters, and even one-character ``insertText`` calls
+        get reformatted away. A mask is driven by keystrokes, so the value has to arrive the way
+        a keyboard delivers it: keyDown, a ``char`` event, keyUp, then a pause.
+
+        Characters outside ASCII cannot be mapped to a virtual key, so those fall back to
+        ``Input.insertText`` for that one character.
+
+        Same rule as ``insert_text``: this types into WHATEVER HOLDS FOCUS. The caller must have
+        asserted focus on the intended field first. Returns ``{"ok": True}`` or
+        ``{"ok": False, "error": <str>}``. Never raises.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            active, session_id = self._active, self._page_session_id
+        if not active:
+            return _fail("supervisor is not active")
+        if not session_id:
+            return _fail("supervisor has no attached page session")
+
+        for char in text:
+            try:
+                if ord(char) < 128:
+                    code = _key_code(char)
+                    for event in (
+                        {"type": "rawKeyDown", "windowsVirtualKeyCode": ord(char.upper()),
+                         "nativeVirtualKeyCode": ord(char.upper()), "key": char, "code": code},
+                        {"type": "char", "text": char, "unmodifiedText": char, "key": char},
+                        {"type": "keyUp", "windowsVirtualKeyCode": ord(char.upper()),
+                         "nativeVirtualKeyCode": ord(char.upper()), "key": char, "code": code},
+                    ):
+                        coro = self._cdp("Input.dispatchKeyEvent", event,
+                                         session_id=session_id, timeout=timeout)
+                        response = _schedule(coro, loop, timeout=timeout + 1)
+                        if isinstance(response, dict) and response.get("error"):
+                            return _fail(f"Input.dispatchKeyEvent failed: {response['error']}")
+                else:
+                    coro = self._cdp("Input.insertText", {"text": char},
+                                     session_id=session_id, timeout=timeout)
+                    response = _schedule(coro, loop, timeout=timeout + 1)
+                    if isinstance(response, dict) and response.get("error"):
+                        return _fail(f"Input.insertText failed: {response['error']}")
+            except Exception as exc:  # health: allow BLE001 -- trusted typing must report failure, never raise into a fill
+                return _err(exc)
+            time.sleep(delay)
+        return {"ok": True}
 
     def set_driven_target(self, target_id: Optional[str]) -> None:
         """Record the CDP target the task's browser_exec session drives (None: unknown)."""

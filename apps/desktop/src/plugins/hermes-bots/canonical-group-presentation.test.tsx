@@ -112,7 +112,8 @@ it('shows who was added at the point the roster changed, even after they leave',
 
   expect([...container.querySelectorAll('[data-room-activity]')].map(row => row.textContent)).toEqual([
     'Reviewer was added to the group chat',
-    'writer was added to the group chat'
+    'writer was added to the group chat',
+    'Reviewer was removed from the group chat'
   ])
   expect(container.textContent).toMatch(/Earlier message.*Reviewer was added to the group chat.*Later message/s)
 })

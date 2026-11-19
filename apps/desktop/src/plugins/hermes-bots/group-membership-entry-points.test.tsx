@@ -179,9 +179,14 @@ it('New Group Chat stays offered for a selection that can span connections', asy
   expect(setGroupCreateOpen).toHaveBeenCalledOnce()
 })
 
-it('edits a gateway roster against its original revision and keeps the room ID', async () => {
+it('edits local seats against the original room revision and preserves the locked peer seat', async () => {
   const binding = { roomId: 'room-1', profile: 'default', connectionId: 'local' }
-  const current = [{ member_id: 'alpha', profile: 'alpha', handle: 'alpha' }, { member_id: 'old', profile: 'old', handle: 'old' }]
+
+  const peer = { member_id: 'peer-bot', profile: 'scout', handle: 'scout', display_name: 'Remote Scout', target: {
+    kind: 'peer', profile: 'scout', peer_id: 'other-box', installation_id: 'other-box', capability_digest: 'a'.repeat(64)
+  } }
+
+  const current = [{ member_id: 'alpha', profile: 'alpha', handle: 'alpha' }, { member_id: 'old', profile: 'old', handle: 'old' }, peer]
   const room = { room_id: 'room-1', name: 'Launch team', revision: 4, members: current }
   const refreshed = vi.fn(async () => {})
   request.mockImplementation(async (_route, method) => {
@@ -194,6 +199,11 @@ it('edits a gateway roster against its original revision and keeps the room ID',
   const closed = vi.fn()
   render(<CanonicalGroupMemberEditor binding={binding} onClose={closed} onSaved={refreshed} room={room} />)
   await screen.findByRole('checkbox', { name: /^beta/i })
+  const locked = screen.getByRole('checkbox', { name: /^remote scout/i })
+
+  expect(locked.hasAttribute('disabled')).toBe(true)
+  expect(locked.getAttribute('aria-checked')).toBe('true')
+  expect(screen.getByText(botsText().group.remoteMemberLocked)).toBeTruthy()
   const search = screen.getByRole('textbox', { name: botsText().group.searchToAdd })
   fireEvent.change(search, { target: { value: '@beta' } })
   expect(screen.queryByRole('checkbox', { name: /^old/i })).toBeNull()
@@ -207,6 +217,6 @@ it('edits a gateway roster against its original revision and keeps the room ID',
   expect(closed).toHaveBeenCalledOnce()
   expect(request).toHaveBeenCalledWith(expect.anything(), 'groups.members.update', {
     room_id: 'room-1', profile: 'default', expected_revision: 4, event_id: expect.any(String),
-    members: [current[0], { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }]
+    members: [current[0], peer, { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }]
   })
 })

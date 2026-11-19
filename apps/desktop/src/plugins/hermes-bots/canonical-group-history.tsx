@@ -237,13 +237,19 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
     const { previous_members: previous, members: next } = event.payload
 
     if (!Array.isArray(previous) || !Array.isArray(next)) {return null}
-    const previousIds = new Set((previous as CanonicalRoomMember[]).map(member => member.member_id))
-    const added = (next as CanonicalRoomMember[]).filter(member => !previousIds.has(member.member_id))
+    const before = new Map((previous as CanonicalRoomMember[]).map(member => [member.member_id, member]))
+    const after = new Map((next as CanonicalRoomMember[]).map(member => [member.member_id, member]))
+    const removed = [...before.values()].filter(member => !after.has(member.member_id))
+    const added = [...after.values()].filter(member => !before.has(member.member_id))
 
-    return <>{added.map(member =>
-      <RoomActivityRow icon="person-add" key={member.member_id}>
+    return <>
+      {removed.map(member => <RoomActivityRow icon="sign-out" key={member.member_id}>
+        {fill(labels.memberRemoved, { name: member.display_name || member.handle || member.member_id })}
+      </RoomActivityRow>)}
+      {added.map(member => <RoomActivityRow icon="person-add" key={member.member_id}>
         {fill(labels.memberAdded, { name: member.display_name || member.handle || member.member_id })}
-      </RoomActivityRow>)}</>
+      </RoomActivityRow>)}
+    </>
   }
 
   const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : notices.get(event.kind)

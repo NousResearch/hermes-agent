@@ -5,6 +5,7 @@ export interface CanonicalGroupMessages extends GroupReasonMessages {
   roomStopped: string
   roomDisbanded: string
   memberAdded: string
+  memberRemoved: string
   authorityLost: string
   workLimitReached: string
   turnFailed: string
@@ -166,6 +167,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'Stop requested',
     roomDisbanded: 'Group disbanded',
     memberAdded: '{name} was added to the group chat',
+    memberRemoved: '{name} was removed from the group chat',
     authorityLost: 'Group ownership changed',
     workLimitReached: 'Group work limit reached',
     turnFailed: 'Turn failed',
@@ -325,6 +327,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: '停止を要求しました',
     roomDisbanded: 'グループが解散しました',
     memberAdded: '{name} がグループチャットに追加されました',
+    memberRemoved: '{name} がグループチャットから外されました',
     authorityLost: 'グループの管理元が変更されました',
     workLimitReached: 'グループの作業上限に達しました',
     turnFailed: 'ターンに失敗しました',
@@ -484,6 +487,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: '已请求停止',
     roomDisbanded: '群组已解散',
     memberAdded: '{name} 已被添加到群聊',
+    memberRemoved: '{name} 已从群聊中移除',
     authorityLost: '群组管理端已更改',
     workLimitReached: '已达到群组工作上限',
     turnFailed: '回合失败',
@@ -643,6 +647,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: '已要求停止',
     roomDisbanded: '群組已解散',
     memberAdded: '{name} 已加入群組聊天',
+    memberRemoved: '{name} 已從群組聊天移除',
     authorityLost: '群組管理端已變更',
     workLimitReached: '已達到群組工作上限',
     turnFailed: '回合失敗',
@@ -802,6 +807,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'طُلب الإيقاف',
     roomDisbanded: 'حُلّت المجموعة',
     memberAdded: 'تمت إضافة {name} إلى محادثة المجموعة',
+    memberRemoved: 'تمت إزالة {name} من محادثة المجموعة',
     authorityLost: 'تغيّر مالك المجموعة',
     workLimitReached: 'بلغت المجموعة حد العمل',
     turnFailed: 'فشلت الجولة',
@@ -961,6 +967,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'Остановка запрошена',
     roomDisbanded: 'Группа распущена',
     memberAdded: 'В групповой чат добавлен участник {name}',
+    memberRemoved: 'Участник {name} удалён из группового чата',
     authorityLost: 'Владелец группы изменился',
     workLimitReached: 'Достигнут лимит работы группы',
     turnFailed: 'Ход завершился ошибкой',
@@ -1123,6 +1130,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'Arrêt demandé',
     roomDisbanded: 'Groupe dissous',
     memberAdded: '{name} a été ajouté à la discussion de groupe',
+    memberRemoved: '{name} a été retiré de la discussion de groupe',
     authorityLost: 'Gestionnaire du groupe modifié',
     workLimitReached: 'Limite de travail du groupe atteinte',
     turnFailed: 'Tour échoué',
@@ -1284,6 +1292,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'Stopp angefordert',
     roomDisbanded: 'Gruppe aufgelöst',
     memberAdded: '{name} wurde zum Gruppenchat hinzugefügt',
+    memberRemoved: '{name} wurde aus dem Gruppenchat entfernt',
     authorityLost: 'Gruppenverwaltung gewechselt',
     workLimitReached: 'Arbeitslimit der Gruppe erreicht',
     turnFailed: 'Zug fehlgeschlagen',
@@ -1446,6 +1455,7 @@ export const CANONICAL_GROUP_LOCALES = {
     roomStopped: 'Parada solicitada',
     roomDisbanded: 'Grupo disuelto',
     memberAdded: 'Se añadió a {name} al chat de grupo',
+    memberRemoved: 'Se quitó a {name} del chat de grupo',
     authorityLost: 'Propietario del grupo cambiado',
     workLimitReached: 'Límite de trabajo del grupo alcanzado',
     turnFailed: 'Turno fallido',

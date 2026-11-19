@@ -9,10 +9,17 @@ The Bots roster lists the selected connection/profile's gateway rooms as ordinar
 Select **Manage members** in the room header or the Members section of **Group details**. On gateways that advertise
 `groups.members.update`, you can change local seats while the group has no active or retryable work.
 The room ID, transcript, attachments and existing member sessions are kept. A new Bot sees the usual
-bounded shared thread context when it takes its first turn. A paused discussion from before a roster
-change can be followed up with a new message in the same thread. The room must keep two to six Bots.
+bounded shared thread context when it takes its first turn. The transcript records additions and removals.
+A paused discussion from before a roster change can be followed up with a new message in the same thread.
+The room must keep two to six Bots.
 Change the lead in room settings before removing it. Bots on other gateways are selected at room
 creation and their existing seats are kept when editing local members.
+
+After a membership edit, the room needs a gateway that supports membership updates to run more turns.
+An older gateway can read the stored chat history, but does not understand how to run turns using the
+roster in effect when each message was written. Keep the room's gateway and any takeover gateway on a
+version that supports membership editing. If you downgraded, upgrading again lets the room use its
+saved roster and history.
 
 ## Which group chats are gateway group chats
 

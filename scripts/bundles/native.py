@@ -38,10 +38,11 @@ def _bundle_package_names(target: str | None = None) -> list[str]:
 
 
 def _tools_for_builder(names: list[str], store: Path, target: str) -> list[str]:
-    """Admit the two GPU entries already realized in the compatible build userland."""
+    """Admit entries whose glibc floor exceeds this builder after proving they came from the compatible userland."""
     from pm.build_operations import verified_tools
 
-    staged = [name for name in names if target == "linux-x64" and name in ("llamacpp-cuda", "llamacpp-hip")
+    staged = [name for name in names
+              if get_package(name).minimum_glibc.get(target) is not None
               and get_package(name).native_abi_reason(target)]
     if staged:
         # The compatible PM installed and probed these exact entries in this job's

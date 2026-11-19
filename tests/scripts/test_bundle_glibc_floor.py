@@ -148,3 +148,25 @@ def test_the_command_fails_the_build_and_names_each_requirement(tmp_path, capsys
     out = capsys.readouterr().out
     assert "::error::chrome-sandbox needs GLIBC_2.36 (above GLIBC_2.35)" in out
     assert "1 ELF files" in out
+
+
+def test_glibc_floor_exceptions_match_package_minimum_glibc(tmp_path):
+    from pm.install import _lockfile
+    from pm.registry import get_package
+    from scripts.bundles.glibc_floor import FLOORS
+
+    for arch, floor in FLOORS.items():
+        target = f"linux-{arch}"
+        for name in _lockfile().names():
+            package = get_package(name)
+            entry = package.store_entry("123", target)
+            expected = package.minimum_glibc.get(target, floor["GLIBC"])
+            app = tmp_path / f"{arch}-{name}"
+            at_ceiling = f"GLIBC_{'.'.join(map(str, expected))}"
+            above_ceiling = f"GLIBC_{expected[0]}.{expected[1] + 1}"
+            write_elf(app / f"resources/agent-payload/tools/{entry}/probe", {"libc.so.6": [at_ceiling]})
+            assert violations(app, arch) == set(), (arch, name, expected)
+            write_elf(app / f"resources/agent-payload/tools/{entry}/probe", {"libc.so.6": [above_ceiling]})
+            assert violations(app, arch) == {
+                (f"resources/agent-payload/tools/{entry}/probe", above_ceiling),
+            }, (arch, name, expected)

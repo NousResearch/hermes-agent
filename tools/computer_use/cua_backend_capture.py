@@ -286,7 +286,9 @@ class _CaptureMixin:
                 "cua-driver vision capture returned no image over MCP (window_id=%s); re-fetching via CLI transport",
                 self._active_window_id) or {}
             if cli_out.get("images"):
-                png_b64, image_mime_type = cli_out["images"][0], "image/png"
+                # Older CLI surfaces hardcoded image/png regardless of the bytes (#157848);
+                # _image_from_tool_result resolves bytes-first so the capture is labeled by content.
+                png_b64, image_mime_type = _image_from_tool_result(cli_out)
         return png_b64, image_mime_type, [], window_title
 
     def _capture_window_state(self) -> tuple[Optional[str], Optional[str], list[UIElement], str]:

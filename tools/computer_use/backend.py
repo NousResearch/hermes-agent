@@ -13,6 +13,37 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.provider_base import ProviderBase
 
 
+# Base64 prefixes of the image magics we can resolve from bytes alone. GIF,
+# WebP and BMP join PNG/JPEG because a capture source that mislabels bytes
+# (e.g. a CLI fallback that hardcodes `image/png`) would otherwise produce a
+# data URL whose declared media type contradicts the payload — Anthropic
+# rejects that mismatch with a non-retryable HTTP 400, and because the image
+# is already in history it is re-sent every turn (NousResearch/hermes-agent#157848).
+_IMAGE_MAGIC_MIMES: tuple[tuple[str, str], ...] = (
+    ("iVBOR", "image/png"),
+    ("/9j/", "image/jpeg"),
+    ("R0lGOD", "image/gif"),
+    ("UklGR", "image/webp"),
+    ("Qk", "image/bmp"),
+)
+
+
+def resolve_image_mime(b64: str, declared: Optional[str]) -> str:
+    """Resolve the MIME type for a base64 capture, trusting bytes over labels.
+
+    Sniffs the base64 payload for a known image magic first; a declared MIME
+    that disagrees with recognizable bytes is a mislabel (the payload is what
+    the provider validates), so the sniffed type wins. When the bytes carry
+    no recognizable magic, the declared type is preserved — back-compat for
+    drivers that emit formats outside the table (or pre-mimeType builds).
+    """
+    prefix = (b64 or "")[:8]
+    for magic, mime in _IMAGE_MAGIC_MIMES:
+        if prefix.startswith(magic):
+            return mime
+    return (declared or "").strip().lower() or "image/png"
+
+
 @dataclass
 class UIElement:
     """One interactable element on the current screen."""
@@ -45,9 +76,11 @@ class CaptureResult:
     app: str = ""                   # target app/window the elements were captured for
     window_title: str = ""
     png_bytes_len: int = 0          # raw bytes sent to Anthropic, for token estimation
-    # MIME type of `png_b64` when the backend supplied it (cua-driver-rs emits `mimeType` on every image
-    # part). None → consumers fall back to base64-prefix sniffing (older drivers).
-    # See #1961, #47072.
+    # Explicit MIME type for `png_b64` when the backend supplied it (cua-driver-rs emits `mimeType` on every image
+    # part as of trycua/cua#1961 — Surface 7 of NousResearch/hermes-agent#47072). Downstream consumers resolve the
+    # final type through `resolve_image_mime`, which trusts sniffable bytes over this label so a mislabeled capture
+    # (e.g. JPEG bytes tagged `image/png`) never ships as a contradicting data URL (#157848); a declared type the
+    # bytes cannot confirm is still honored for formats outside the sniff table.
     image_mime_type: Optional[str] = None
     # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
     # full-screen composited grabs) to point the model at an interactive lane.

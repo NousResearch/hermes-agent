@@ -255,6 +255,14 @@ def _abandon_client_flights(loop: Optional[asyncio.AbstractEventLoop]) -> None:
             "Modal client build abandoned: the sandbox startup running it failed or timed out"))
 
 
+class _ClientBuildError(Exception):
+    """Internal wrapper: routed client acquisition failed before snapshot restore began."""
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
@@ -290,7 +298,13 @@ class ModalEnvironment(BaseEnvironment):
 
         def _create(image_spec: Any) -> None:
             async def _create_sandbox():
-                client = await _profile_client(_modal, home, pair) if pair else None
+                if pair:
+                    try:
+                        client = await _profile_client(_modal, home, pair)
+                    except Exception as exc:
+                        raise _ClientBuildError(exc) from exc
+                else:
+                    client = None
                 app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True, client=client)
                 create_kwargs = dict(modal_sandbox_kwargs or {})
                 sandbox = await _modal.Sandbox.create.aio(
@@ -301,8 +315,10 @@ class ModalEnvironment(BaseEnvironment):
         try:
             try:
                 _create(_resolve_modal_image(restored_snapshot_id or image))
+            except _ClientBuildError as exc:
+                raise exc.cause from None
             except Exception as exc:
-                if not restored_snapshot_id:
+                if not restored_snapshot_id or (pair and isinstance(exc, TimeoutError)):
                     raise
                 logger.warning("Modal: failed to restore snapshot %s, retrying with base image: %s",
                                restored_snapshot_id[:20], exc)

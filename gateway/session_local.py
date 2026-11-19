@@ -439,26 +439,48 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
-def _reasoning_fields(agent, policy, model, authority=None, override=None):
-    """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
-    resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
-    pending until ``reasoning_effort`` arrives."""
-    from agent.fast_mode import parse_service_tier
-    from agent.voice_turn_route import session_runtime_view
-    if agent is None and policy is None:
-        return {}
-    view = session_runtime_view(agent) if agent is not None else None
-    if view is None:
+def _resolve_session_effort_fields(
+    authority, live, agent, policy, *, model=None, reasoning_override=None, tier_override=None,
+):
+    """Route-resolved effort/tier fields shared by ``local_session_info`` and ``service_tier_fast``.
+
+    Handles cold messaging chats via ``messaging_route_info``, warm agents via
+    ``session_runtime_view`` (yielding to ``policy.effective`` when ``follows_profile`` is set and an
+    explicit ``tier_override`` is evaluated), and lazy LOCAL policies via ``policy.effective``.
+    """
+    if (agent is None and policy is None and live.source is not None
+            and live.source.platform != Platform.LOCAL):
+        if getattr(authority.runner, '_channel_override_for', None) is None:
+            return {}
+        from gateway.session_messaging_picks import messaging_route_info
+        return messaging_route_info(authority.runner, live)
+    use_agent = agent is not None and not (tier_override is not None and policy is not None and policy.follows_profile)
+    if use_agent:
+        from agent.voice_turn_route import session_runtime_view
+        view = session_runtime_view(agent)
+        config = None if tier_override is not None else getattr(view, 'reasoning_config', None)
+        tier = (tier_override if tier_override is not None else getattr(view, 'service_tier', None)) or ''
+        resolved_model = model or getattr(agent, 'model', None)
+        provider = getattr(view, 'provider', None)
+        base_url = getattr(view, 'base_url', None)
+        api_mode = getattr(view, 'api_mode', None)
+    elif policy is not None:
+        from agent.fast_mode import parse_service_tier
         from hermes_constants import resolve_reasoning_config
         effective, next_model = policy.effective(authority, secrets=False)
         route = effective.get('model') or {}
-    config = (getattr(view, 'reasoning_config', None) if view is not None
-              else override if override is not None else resolve_reasoning_config(effective, next_model or ''))
-    tier = (getattr(view, 'service_tier', None) if view is not None
-            else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
-    provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
-    base_url = getattr(view, 'base_url', None) if view is not None else route.get('base_url')
-    return effort_fields(config, tier, model, provider, base_url, getattr(view, 'api_mode', None))
+        config = (None if tier_override is not None
+                  else reasoning_override if reasoning_override is not None
+                  else resolve_reasoning_config(effective, next_model or ''))
+        tier = (tier_override if tier_override is not None
+                else parse_service_tier((effective.get('agent') or {}).get('service_tier')) or '')
+        resolved_model = model or next_model
+        provider, base_url, api_mode = route.get('provider'), route.get('base_url'), route.get('api_mode')
+    else:
+        return {}
+    if tier_override is not None and not resolved_model:
+        return {}
+    return effort_fields(config, tier, resolved_model, provider, base_url, api_mode)
 
 
 def effort_fields(config, tier, model, provider, base_url, api_mode=None):
@@ -481,14 +503,8 @@ def effort_fields(config, tier, model, provider, base_url, api_mode=None):
     return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast}
 
 
-def _is_cold_messaging(agent, policy, live) -> bool:
-    return (agent is None and policy is None and live.source is not None
-            and live.source.platform != Platform.LOCAL)
-
-
 def service_tier_fast(authority, ref, tier: str) -> bool:
-    """Whether ``tier`` activates fast mode on ``ref``'s effective route, reusing
-    ``local_session_info``'s agent / policy / ``messaging_route_info`` lookup."""
+    """Whether ``tier`` activates fast mode on ``ref``'s effective route."""
     from agent.fast_mode import STATIC_TIERS
     if tier not in STATIC_TIERS:
         return False
@@ -498,23 +514,7 @@ def service_tier_fast(authority, ref, tier: str) -> bool:
                         or getattr(authority.runner, '_cached_agent_for', None) is not None)
     agent = authority.agent(ref) if has_agent_lookup else None
     policy = policy_for_source(authority.runner, live.source)
-    if _is_cold_messaging(agent, policy, live) and getattr(authority.runner, '_channel_override_for', None) is not None:
-        from gateway.session_messaging_picks import messaging_route_info
-        return bool(messaging_route_info(authority.runner, live).get('fast'))
-    if agent is not None and not (policy is not None and policy.follows_profile):
-        from agent.voice_turn_route import session_runtime_view
-        view = session_runtime_view(agent)
-        model = getattr(agent, 'model', None)
-        provider = getattr(view, 'provider', None)
-        base_url = getattr(view, 'base_url', None)
-        api_mode = getattr(view, 'api_mode', None)
-    elif policy is not None:
-        effective, model = policy.effective(authority, secrets=False)
-        route = effective.get('model') or {}
-        provider, base_url, api_mode = route.get('provider'), route.get('base_url'), route.get('api_mode')
-    else:
-        return False
-    return bool(model) and effort_fields(None, tier, model, provider, base_url, api_mode)['fast']
+    return bool(_resolve_session_effort_fields(authority, live, agent, policy, tier_override=tier).get('fast'))
 
 
 def local_session_info(authority, ref):
@@ -540,13 +540,9 @@ def local_session_info(authority, ref):
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    if _is_cold_messaging(agent, policy, live):
-        # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
-        # included), so a viewer's model and reasoning pill never wait on a field that never comes.
-        from gateway.session_messaging_picks import messaging_route_info
-        info.update(messaging_route_info(authority.runner, live))
-    else:
-        info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
+    info.update(_resolve_session_effort_fields(
+        authority, live, agent, policy, model=info['model'], reasoning_override=override,
+    ))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.

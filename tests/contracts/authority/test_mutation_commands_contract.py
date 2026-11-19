@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pytest
 
 from persistence import AuthorityRefusal, CapabilityUnsupported, FenceStale, ProofRejected, StaleFenceKind
@@ -83,6 +84,35 @@ def test_model_commits_the_prepared_policy_and_supersedes_a_deferred_pick(backen
     outcome = _commit(store, epoch, sid, rt.ModelPick("m2"), {"policy": policy}, expected_generation=0)
     assert {k: outcome.result[k] for k in ("model", "provider", "execution_generation")} == {"model": "m2", "provider": "p2", "execution_generation": 1}
     assert store.sessions.get(sid).model == "m2" and store.runtime.deferred_pick(sid) is None
+
+
+def test_sequential_model_picks_replace_the_whole_persisted_route(backend, scope_a):
+    """Cold resume pairs each committed model with its own provider and endpoint."""
+    from persistence.gateway.routing import GatewayRuntime, resume_route
+
+    store = backend.open(scope_a)
+    epoch = store.runtime.begin_epoch(instance_id="instance-route")
+    sid = _local(store)
+    store.sessions.patch_model_config(sid, {
+        "provider": "spark", "base_url": "http://spark/v1", "api_mode": "chat_completions",
+        "gateway_runtime": {"provider": "spark", "base_url": "http://spark/v1",
+                            "api_mode": "chat_completions", "model": "qwen"},
+    })
+
+    picks = (
+        ("codex", "gpt", "openai-codex", "https://codex.example", "codex_responses"),
+        ("claude", "claude", "anthropic", None, "anthropic_messages"),
+    )
+    for request_id, model, provider, base_url, api_mode in picks:
+        policy = {"model": model, "config_json": json.dumps({"model": {
+            "provider": provider, "base_url": base_url, "api_mode": api_mode}}), "cwd": "/w"}
+        _commit(store, epoch, sid, rt.ModelPick(model), {"policy": policy},
+                request_id=request_id, expected_generation=store.sessions.get(sid).runtime_generation)
+        row = store.sessions.get(sid)
+        route = {"provider": provider, "base_url": base_url, "api_mode": api_mode, "model": model}
+        assert row.model_config["gateway_runtime"] == route
+        assert resume_route(row.model_config, model=row.model) == (
+            model, GatewayRuntime(provider=provider, base_url=base_url, api_mode=api_mode))
 
 
 def test_prepared_commits_refuse_without_a_snapshot_or_after_it_moved(backend, scope_a):

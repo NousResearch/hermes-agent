@@ -203,7 +203,9 @@ def _model(repo: Any, session_id: str, payload: Mapping[str, Any], prepared: Pre
     model, config = chosen["model"], json.loads(chosen["config_json"])["model"]
     row = repo._tables()["sessions"][snapshot.target]
     row["model"] = model
-    row["model_config"] = {**(row.get("model_config") or {}), "provider": config["provider"]}
+    route = {"provider": config["provider"], "base_url": config.get("base_url") or None,
+             "api_mode": config.get("api_mode") or None, "model": model}
+    row["model_config"] = {**(row.get("model_config") or {}), **route, "gateway_runtime": route}
     meta = repo._state().snapshot["meta"]
     key = DEFERRED_PICK_PREFIX + session_id
     level = json.loads(meta[key]).get("reasoning") if key in meta and "reasoning" not in payload else None

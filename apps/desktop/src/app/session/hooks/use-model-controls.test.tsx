@@ -2,7 +2,9 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { getGlobalModelInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -20,6 +22,7 @@ import * as SessionStates from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
+import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
@@ -311,12 +314,78 @@ describe('useModelControls', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
   })
 
+  it('keeps one active chat on each committed provider through Qwen, Codex, Claude and session.info', async () => {
+    const sessionId = 'live-chat'
+    const initial = createClientSessionState('stored-chat')
+    SessionStates.$sessionStates.set({
+      [sessionId]: { ...initial, model: 'nvidia/Qwen3.8-27B-NVFP4', provider: 'custom:spark' }
+    })
+    $activeSessionId.set(sessionId)
+    setCurrentModel('nvidia/Qwen3.8-27B-NVFP4')
+    setCurrentProvider('custom:spark')
+
+    const updateSession = (id: string, update: (state: typeof initial) => typeof initial) => {
+      const state = SessionStates.$sessionStates.get()[id]!
+      const next = update(state)
+      SessionStates.$sessionStates.set({ ...SessionStates.$sessionStates.get(), [id]: next })
+
+      return next
+    }
+
+    tile.delegate = { updateSession }
+
+    const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      const value = String(params?.value ?? '')
+      const [model, , provider] = value.split(' ')
+
+      if (model === 'missing-model') {
+        throw new Error('model_resolution_failed')
+      }
+
+      return { ok: true, model, provider, status: 'applied' } as never
+    })
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('nvidia/Qwen3.8-27B-NVFP4')
+
+      await result.current.selectModel({ model: 'gpt-5.6-luna', provider: 'openai-codex' })
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-5.6-luna')
+      expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai-codex')
+
+      // The owner announces the committed route after the mutation receipt.
+      const codexInfo = sessionInfoStatePatch({ model: 'gpt-5.6-luna', provider: 'openai-codex' })
+      updateSession(sessionId, (state: typeof initial) => applySessionInfoStatePatch(state, codexInfo))
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-5.6-luna')
+
+      await result.current.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('claude-sonnet-4.6')
+      expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('anthropic')
+
+      const claudeInfo = sessionInfoStatePatch({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+      updateSession(sessionId, (state: typeof initial) => applySessionInfoStatePatch(state, claudeInfo))
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('claude-sonnet-4.6')
+
+      await expect(result.current.selectModel({ model: 'missing-model', provider: 'custom:spark' })).resolves.toBe(false)
+      expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('claude-sonnet-4.6')
+      expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('anthropic')
+      expect(requestGateway).toHaveBeenCalledTimes(3)
+    } finally {
+      tile.delegate = null
+    }
+  })
+
   it('names the owner refusal of a pick in the failure toast', async () => {
     $activeSessionId.set('session-1')
     setCurrentModel('old')
     setCurrentProvider('xai')
     const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
-    const requestGateway = vi.fn(async () => { throw refusal })
+
+    const requestGateway = vi.fn(async () => {
+      throw refusal
+    })
+
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)

@@ -287,6 +287,18 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+
+          // Once a chat has a runtime id, its picker reads the session slice,
+          // not the draft atoms above. Keep the active view and the composer
+          // selection on the same optimistic route until the owner confirms it.
+          if (liveSessionId) {
+            sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+              ...state,
+              model: selection.model,
+              provider: selection.provider,
+              reasoningEffortWire: ''
+            }))
+          }
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
           // belongs to the old route, so it is withdrawn until session.info re-stamps it.
@@ -303,6 +315,17 @@ export function useModelControls({
         updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
+      const restoreSessionSlice = (snapshot: ModelPickSnapshot) => {
+        if (liveSessionId) {
+          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+            ...state,
+            model: snapshot.model,
+            provider: snapshot.provider,
+            reasoningEffortWire: snapshot.reasoningEffortWire
+          }))
+        }
+      }
+
       const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
         if (touchesPrimary) {
           setCurrentModel(snapshot.composerSelection.model)
@@ -312,13 +335,10 @@ export function useModelControls({
           setCurrentModelTransient(snapshot.model)
           setCurrentProviderTransient(snapshot.provider)
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
+
+          restoreSessionSlice(snapshot)
         } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: snapshot.model,
-            provider: snapshot.provider,
-            reasoningEffortWire: snapshot.reasoningEffortWire
-          }))
+          restoreSessionSlice(snapshot)
         }
 
         cacheSelection(snapshot.provider, snapshot.model)
@@ -351,6 +371,7 @@ export function useModelControls({
         if (repaint && touchesPrimary && $activeSessionId.get() !== liveSessionId) {
           // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
           releaseComposerModelSelection(selection, composerScope)
+          restoreSessionSlice(repaint)
 
           return null
         }

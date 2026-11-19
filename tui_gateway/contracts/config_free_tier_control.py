@@ -44,7 +44,7 @@ class ConfigGetResult(Result):
     ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``,
     ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``."""
 
-    value: str | None = None
+    value: str | bool | None = None
     display: str | None = None
     tool_progress: str | None = None
     model: str | None = None

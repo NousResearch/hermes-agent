@@ -494,7 +494,7 @@ export interface ConfigGetParams {
 }
 /** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``, ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``. */
 export interface ConfigGetResult {
-  value?: string | null
+  value?: string | boolean | null
   display?: string | null
   tool_progress?: string | null
   model?: string | null
@@ -5478,7 +5478,7 @@ export interface CanonicalReplaceQueuedParams {
   title_preview?: string | null
 }
 export interface CanonicalConfigGetResult {
-  value?: string | null
+  value?: string | boolean | null
   display?: string | null
   tool_progress?: string | null
   model?: string | null

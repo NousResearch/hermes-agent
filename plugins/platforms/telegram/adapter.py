@@ -297,7 +297,7 @@ def check_telegram_requirements() -> bool:
 
 
 from plugins.platforms.telegram.telegram_markdown import (
-    degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
+    degrade_unrenderable_links, escape_rich_currency_dollars, has_rich_math, normalize_rich_latex, rich_math_to_dollar_delimiters, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
 from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
@@ -1196,7 +1196,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True
-        return "$$" in content
+        return has_rich_math(content)
 
     def _rich_delivery_enabled(self) -> bool:
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
@@ -1255,8 +1255,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
-        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(
-            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content)))))}
+        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(rich_math_to_dollar_delimiters(
+            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(normalize_rich_latex(content))))))}
         if skip_entity_detection or RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
         return payload

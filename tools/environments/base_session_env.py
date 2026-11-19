@@ -233,6 +233,10 @@ def _export_dump_excluding_session_vars(
         # on the backend and outlive the private dir it protects.
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        # Shell-option mirrors are read-only, so bash 3.2's ``declare -rx SHELLOPTS=…`` line fails
+        # on ``source`` and an inherited errexit then ends every later command; options are not
+        # environment the next command needs, so they stay out of the snapshot.
+        "builtin export -n SHELLOPTS BASHOPTS 2>/dev/null; "
         f"{handoff}export -p; ) || true; }} "
         # ``>|``: the target is mktemp's existing file, which ``set -C`` would refuse with ``>``.
         f">| {tmp_path}")

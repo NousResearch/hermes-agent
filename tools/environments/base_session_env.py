@@ -71,6 +71,11 @@ def _secret_src_token(session_id: str) -> str:
     return f"__HERMES_SSRC_{session_id}__"
 
 
+def _secret_restore_token(session_id: str) -> str:
+    """Placeholder the backend swaps for the fd of the pipe carrying that snapshot's secrets."""
+    return f"__HERMES_SRST_{session_id}__"
+
+
 def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
@@ -178,14 +183,14 @@ def _secret_handoff_snippet(secret_fd: str, secret_names: Iterable[str], generat
         "IFS=$__hermes_ifs; builtin unset __hermes_v __hermes_c __hermes_ifs __hermes_bad; ")
 
 
-def _secret_restore_lines() -> str:
-    """Run right after the snapshot is sourced: apply each secret declaration the backend passed
-    as a ``__HERMES_SD_<NAME>`` env entry, then drop the entry and the generation marker, so the
-    user's command never sees either. The quoted ``@`` expansion keeps one word per entry whatever
-    ``IFS`` the sourced snapshot restored."""
+def _secret_restore_lines(restore_fd: str) -> str:
+    """Run right after the snapshot is sourced: read the secret declarations the backend wrote to
+    fd *restore_fd* (a pipe, never process env: an escaped value doubles in ``declare -p`` and one
+    oversize env entry would make every later spawn fail) and ``eval`` them, then drop the marker.
+    ``read -d ''`` + ``eval``, not ``source /dev/fd/N``: bash 3.2 sources nothing from a pipe."""
     return (
-        'for __hermes_d in "${!__HERMES_SD_@}"; do builtin eval "${!__hermes_d}"; '
-        'builtin unset "$__hermes_d"; done; builtin unset __hermes_d __hermes_sgen')
+        f"IFS= builtin read -r -d '' __hermes_d <&{restore_fd}; builtin eval \"${{__hermes_d-}}\"; "
+        "builtin unset __hermes_d __hermes_sgen")
 
 
 def _export_dump_excluding_session_vars(
@@ -234,6 +239,7 @@ def _export_dump_excluding_session_vars(
 def _snapshot_bootstrap_script(
     *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str, excluded_names: Iterable[str], cwd_marker: str,
     secret_fd: str = "", secret_names: Iterable[str] = (), secret_gen: str = "", secret_src: str = "",
+    secret_restore: str = "",
 ) -> str:
     """Login-shell bootstrap that captures env/functions/aliases into the snapshot. Atomic publish:
     assemble in a ``mktemp`` file, then ``mv`` over the final path so a concurrent ``source`` never
@@ -280,7 +286,7 @@ def _wrap_command_script(
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
     pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = (),
     cwd_fallback_marker: str = "", secret_fd: str = "", secret_names: Iterable[str] = (),
-    secret_gen: str = "", secret_src: str = "") -> str:
+    secret_gen: str = "", secret_src: str = "", secret_restore: str = "") -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
@@ -304,7 +310,7 @@ def _wrap_command_script(
     parts = list(save)
     seeds = list(seed_snaps)
     if snapshot_ready and secret_src:
-        parts += [f"source /dev/fd/{secret_src} >/dev/null 2>&1 || true", _secret_restore_lines()]
+        parts += [f"source /dev/fd/{secret_src} >/dev/null 2>&1 || true", _secret_restore_lines(secret_restore)]
     elif snapshot_ready and seeds:
         parts.append(
             f"for __hermes_s in {quoted_snap} {' '.join(seeds)}; do "
@@ -318,7 +324,8 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         _cd_with_fallback(quoted_cwd, cwd_fallback_marker),
-        f"{run} {secret_fd}>&-{f' {secret_src}>&-' if snapshot_ready and secret_src else ''}" if secret_fd else run,
+        f"{run} {secret_fd}>&-{f' {secret_src}>&- {secret_restore}<&-' if snapshot_ready and secret_src else ''}"
+        if secret_fd else run,
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:

@@ -5,9 +5,10 @@ from one command to the next on disk. Secret values never go there (#62336): the
 secret export's ``declare -p`` text to an inherited pipe and writes only its generation id as the
 file's first line (``base_session_env._secret_handoff_snippet``). This store keeps declarations by
 generation. Before the next command starts, the backend opens the snapshot it will source, reads
-that line, and hands the shell the open file plus that one generation's declarations
-(``__HERMES_SD_<NAME>``), so the file and its secrets always come from the same dump. The shell
-sees the same variables, arrays and attributes included, as before.
+that line, and hands the shell the open file plus a pipe carrying that one generation's
+declarations, so the file and its secrets always come from the same dump, and no secret ever
+rides process env (where one oversize entry would fail every later spawn). The shell sees the same
+variables, arrays and attributes included, as before.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ _MAX_HANDOFF_BYTES = 16 * 1024 * 1024
 # last to report need not be the last to publish, and a failed publish leaves one that never will.
 _PENDING_KEPT = 8
 _GEN_PREFIX = b"__hermes_sgen="
-_DECL_ENV_PREFIX = "__HERMES_SD_"
 
 
 def profile_secret_names() -> tuple[str, ...]:
@@ -72,6 +72,29 @@ def _named_generation(fd: int) -> str:
     return head[len(_GEN_PREFIX):].split(b"\n", 1)[0].decode("ascii", "replace")
 
 
+def _pipe_with(data: bytes) -> int:
+    """A pipe's read end that yields *data* then EOF. A writer thread feeds it, so a set larger
+    than the pipe buffer never blocks the spawn; it ends when the reader closes its end."""
+    read_fd, write_fd = os.pipe()
+
+    def feed() -> None:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(write_fd, view):]
+        except OSError:
+            pass
+        finally:
+            os.close(write_fd)
+
+    if len(data) <= 4096:  # fits the pipe buffer on every POSIX host: no thread needed
+        feed()
+    else:
+        # health: allow HX012 -- writes bytes already in hand to a pipe; reads no scope, config or home
+        threading.Thread(target=feed, name="hermes-secret-restore", daemon=True).start()
+    return read_fd
+
+
 def _file_generation(path: str) -> str:
     try:
         fd = os.open(path, os.O_RDONLY)
@@ -95,11 +118,13 @@ class SecretHandoff:
     def new_generation() -> str:
         return uuid.uuid4().hex
 
-    def open_source(self, snapshot_paths: Iterable[str], skip: Iterable[str] = ()) -> tuple[int, dict[str, str]]:
-        """Open the snapshot the next command sources (the first that exists, the wrapper's order) and
-        return its fd with the ``__HERMES_SD_<NAME>`` entries of the dump that file names. Choosing
-        both here, from one open file, means a newer publish cannot slip between them. No file: an
-        fd on ``/dev/null`` and no secrets."""
+    def open_source(self, snapshot_paths: Iterable[str], skip: Iterable[str] = ()) -> tuple[int, int]:
+        """Open the snapshot the next command sources (the first that exists, the wrapper's order)
+        and a pipe that carries the declarations of the dump that file names: ``(snapshot fd, pipe
+        read fd)``, both for the child. Choosing both here, from one open file, means a newer publish
+        cannot slip between them. No file: ``/dev/null`` and an empty pipe."""
+        script = ""
+        fd = -1
         for path in snapshot_paths:
             try:
                 fd = os.open(path, os.O_RDONLY)
@@ -109,8 +134,11 @@ class SecretHandoff:
             skipped = set(skip)
             with self._lock:
                 decls = self._by_snapshot.get(path, {}).get(generation, {}) if generation else {}
-                return fd, {f"{_DECL_ENV_PREFIX}{n}": d for n, d in decls.items() if n not in skipped}
-        return os.open(os.devnull, os.O_RDONLY), {}
+                script = "".join(f"{d}\n" for n, d in decls.items() if n not in skipped)
+            break
+        if fd < 0:
+            fd = os.open(os.devnull, os.O_RDONLY)
+        return fd, _pipe_with(script.encode("utf-8", "surrogateescape"))
 
     def start_reader(self, snapshot_path: str, generation: str) -> tuple[int, threading.Thread]:
         """Open the channel for one spawn: returns the inheritable write fd to hand the child and the

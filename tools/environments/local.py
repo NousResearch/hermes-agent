@@ -33,7 +33,8 @@ from tools.environments.local_env_policy import (
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
-from tools.environments.base_session_env import _secret_fd_token, _secret_gen_token, _secret_src_token
+from tools.environments.base_session_env import (
+    _secret_fd_token, _secret_gen_token, _secret_restore_token, _secret_src_token)
 from tools.environments.local_secret_handoff import SecretHandoff, profile_secret_names
 from hermes_cli._startup_fast import project_root_str
 
@@ -1149,7 +1150,8 @@ class LocalEnvironment(BaseEnvironment):
             return {}
         names = (*profile_secret_names(), *self._secret_handoff.names())
         return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": names,
-                "secret_gen": _secret_gen_token(self._session_id), "secret_src": _secret_src_token(self._session_id)}
+                "secret_gen": _secret_gen_token(self._session_id), "secret_src": _secret_src_token(self._session_id),
+                "secret_restore": _secret_restore_token(self._session_id)}
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
@@ -1231,17 +1233,17 @@ class LocalEnvironment(BaseEnvironment):
         handoff = getattr(self, "_secret_handoff", None)  # absent on bare test doubles (__new__)
         session_id = getattr(self, "_session_id", "")
         token = _secret_fd_token(session_id)
-        secret_fd, source_fd, secret_reader = -1, -1, None
+        secret_fd, source_fd, restore_fd, secret_reader = -1, -1, -1, None
         if handoff is not None and token in cmd_string:
             # This session's secret exports ride the command's own env, never the snapshot file;
             # the dump writes the new set to the pipe (``local_secret_handoff``, #62336). Names the
             # wrapper save/restores (declared key holders, profile passthrough) take the run env's
             # value, exactly as when the snapshot carried them, so a scrubbed key stays scrubbed.
             if not login:
-                source_fd, decls = handoff.open_source(
+                source_fd, restore_fd = handoff.open_source(
                     self._shell_state_paths(), skip=self._snapshot_excluded_passthrough_names())
-                run_env.update(decls)
-                cmd_string = cmd_string.replace(_secret_src_token(session_id), str(source_fd))
+                cmd_string = (cmd_string.replace(_secret_src_token(session_id), str(source_fd))
+                              .replace(_secret_restore_token(session_id), str(restore_fd)))
             generation = handoff.new_generation()
             secret_fd, secret_reader = handoff.start_reader(self._snapshot_write_path(login), generation)
             cmd_string = cmd_string.replace(token, str(secret_fd)).replace(_secret_gen_token(session_id), generation)
@@ -1261,10 +1263,10 @@ class LocalEnvironment(BaseEnvironment):
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 # detached-spawn: ok — owned via own_process_groups right below
                 start_new_session=True, cwd=self._spawn_cwd(),
-                pass_fds=tuple(fd for fd in (secret_fd, source_fd) if fd >= 0),
+                pass_fds=tuple(fd for fd in (secret_fd, source_fd, restore_fd) if fd >= 0),
                 creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
         finally:
-            for fd in (secret_fd, source_fd):
+            for fd in (secret_fd, source_fd, restore_fd):
                 if fd >= 0:
                     os.close(fd)  # the child holds its copy; the reader sees EOF once it is gone
         proc._hermes_secret_reader = secret_reader

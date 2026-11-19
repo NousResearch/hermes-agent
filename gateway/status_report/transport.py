@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from gateway.status_report.target import ReportTarget
+from hermes_cli.urllib_security import NoRedirectHandler
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,6 @@ class Outcome:
     report_interval_s: Optional[float] = None
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse a redirect: urllib would repeat the ``Authorization`` header to wherever it points."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 def post_report(target: ReportTarget, body: bytes, *, timeout: float, opener: Any = None) -> Outcome:
     """POST *body* to *target* and classify the reply. Blocking; never raises for a network or HTTP
     failure, and never logs the URL, the credential or an exception's text (urllib quotes both).
@@ -48,7 +42,7 @@ def post_report(target: ReportTarget, body: bytes, *, timeout: float, opener: An
     request = urllib.request.Request(target.url, data=body, method="POST", headers={
         "Authorization": f"Bearer {target.credential}", "Content-Type": "application/json",
         "User-Agent": _USER_AGENT})
-    open_url = opener or urllib.request.build_opener(_NoRedirect).open
+    open_url = opener or urllib.request.build_opener(NoRedirectHandler).open
     try:
         with open_url(request, timeout=timeout) as response:
             status, headers = int(response.status), response.headers

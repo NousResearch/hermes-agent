@@ -419,7 +419,7 @@ class MCPServerRunMixin:
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
                 self._log_park(
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
-                    "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
+                    "exhausted), parking; will self-probe after %ds, backing off to 1h, until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
                 if not await self._park_and_rearm("from parked state", budget):
                     return False
@@ -484,7 +484,7 @@ class MCPServerRunMixin:
         self._reconnect_retries += 1
         if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
             self._log_park(
-                "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
+                "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe after %ds, backing off to 1h, "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
             return await self._park_and_rearm("from parked state", budget)
@@ -550,7 +550,7 @@ class MCPServerRunMixin:
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
         self._log_park(
-            "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
+            "MCP server '%s' hit a permanent error, parking without retries; will self-probe after %ds, backing off to 1h "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
         self._arm_auth_park(root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)

@@ -1,19 +1,19 @@
 """Machine-specific state excluded from portable home transfers."""
 from __future__ import annotations
 
+from collections.abc import Iterable
+from pathlib import Path
 
 # Dependency generations, downloaded tools, and partial transfers belong to this machine.
 PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache"})
 
-# Frozen copies of provider plugins that running processes import from (``providers.plugin_reload``), as path
-# parts relative to a home. Each belongs to one live process and is rebuilt from ``plugins/`` by the next one.
+# Frozen copies of provider plugins that Hermes processes import from (``providers.plugin_reload``), as path parts
+# relative to the Hermes root: one directory per process, live or left by a crash, rebuilt from ``plugins/``.
 PROVIDER_PLUGIN_SNAPSHOT_PARTS = ("runtime", "provider-plugins")
 
 
-def provider_plugin_snapshot_dir(directory: str, names, home) -> set[str]:
-    """For a copytree ignore walking the home *home*: the snapshot dir when *directory* is ``<home>/runtime``."""
-    from pathlib import Path
-
+def provider_plugin_snapshot_dir(directory: str, names: Iterable[str], home: Path) -> set[str]:
+    """For a copytree ignore walking *home*: the snapshot dir when *directory* is ``<home>/runtime``."""
     parent, leaf = PROVIDER_PLUGIN_SNAPSHOT_PARTS
     if leaf not in names:
         return set()

@@ -270,6 +270,21 @@ dashboard's own callback URL — so the browser you approve in must run on the
 same machine as the Hermes process. For a remote host, use `hermes mcp login`
 over SSH port-forwarding.
 
+### Catalog entries using device authorization
+
+A catalog manifest may set `auth.oauth.flow: device` (or explicitly `browser`)
+to select Hermes' existing OAuth login mode. Omission keeps browser login.
+Device mode is useful on remote machines: run `hermes mcp login <name> --flow device`,
+then review the displayed code, account and requested scope at the verification URL.
+It needs no loopback callback. Installation and background reconnects do not initiate
+device authorization; login is an explicit terminal step. Tokens and refresh use
+Hermes' normal profile-scoped MCP storage.
+
+Telbox's catalog entry uses this mode with an approved public client ID and
+`messages:write`. Obtain approval through the Telbox developer portal before
+installation; a client ID is public configuration, not an API key or client secret.
+`send_message` requests owner approval rather than proving phone delivery.
+
 ### Updating tool selection later
 
 ```bash

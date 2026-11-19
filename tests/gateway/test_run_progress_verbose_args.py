@@ -23,7 +23,7 @@ class _ArgsAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        self.tool_progress_callback("tool.started", "execute_code", None, {"code": CODE})
+        self.tool_progress_callback("tool.started", "custom_tool", None, {"code": CODE})
         wait_until(lambda: _ArgsAgent.adapter.sent, what="the progress bubble was sent")
         return {"final_response": "done", "messages": [], "api_calls": 1}
 

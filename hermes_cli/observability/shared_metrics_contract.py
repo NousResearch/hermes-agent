@@ -606,10 +606,10 @@ def _fuzzy_match_strategies() -> frozenset[str]:
 
 
 FILE_EDIT_STRATEGIES = _fuzzy_match_strategies() | {"none"}
-LOOP_GUARD_SIGNALS = frozenset({"iteration_cap", "loop_detected", "repeated_tool_call"})
+LOOP_GUARD_SIGNALS = frozenset({"iteration_cap", "loop_detected", "recovery_retry", "repeated_tool_call"})
 LOOP_GUARD_DETECTORS = frozenset({
-    "exact_failure", "idempotent_no_progress", "identical_call_streak", "identical_cycle", "iteration_budget",
-    "same_tool_failure", "subagent_cap", "web_search_cap",
+    "circling_reasoning", "exact_failure", "idempotent_no_progress", "identical_call_streak", "identical_cycle",
+    "iteration_budget", "repetition_recovery", "same_tool_failure", "subagent_cap", "web_search_cap",
 })
 TOOL_RECOVERY_OUTCOMES = frozenset({"error", "gave_up", "no_tool_call", "success"})
 TOOL_RECOVERY_NEXT_TOOLS = frozenset({"different", "none", "same"})

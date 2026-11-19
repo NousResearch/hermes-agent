@@ -1,18 +1,18 @@
 name: note-stash
 repo: https://github.com/freemanconsulting/hermes-note-stash
-sha: 99f1af74de592e6c3c7a74ac6bea718f35025fc7
-description: "Sticky notes and a code stash for Hermes Desktop: capture a thought or snippet without interrupting the current turn, then send it to the focused session as the next prompt. A note sent to a session that is mid-turn is queued until the turn ends instead of being injected into it. Desktop-only, SDK-only: notes stay in the plugin's own data folder, no network calls."
+sha: 96f00a97b88c1f17aa63b04b53101c7f4cf294a5
+description: "Sticky notes and a code stash for Hermes Desktop: capture a thought, snippet or screenshot without interrupting the current turn, then send it to a session as the next prompt (queued until a running turn ends) or put it in the composer to edit first. Desktop-only, SDK-only: notes stay in the plugin's own data folder, no network calls."
 maintainer: freemanconsulting
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/freemanconsulting/hermes-note-stash#readme
-version: "1.1.1"
+version: "1.2.5"
 screenshots:
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/capture-dialog.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-active.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-queued.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/99f1af74de592e6c3c7a74ac6bea718f35025fc7/docs/screenshots/pane-sent.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/96f00a97b88c1f17aa63b04b53101c7f4cf294a5/docs/screenshots/capture-dialog.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/96f00a97b88c1f17aa63b04b53101c7f4cf294a5/docs/screenshots/pane-active.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/96f00a97b88c1f17aa63b04b53101c7f4cf294a5/docs/screenshots/pane-queued.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-note-stash/96f00a97b88c1f17aa63b04b53101c7f4cf294a5/docs/screenshots/pane-sent.png
 capabilities:
   provides_tools: []
   provides_hooks: []

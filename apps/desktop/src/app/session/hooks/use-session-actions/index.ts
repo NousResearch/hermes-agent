@@ -2060,7 +2060,12 @@ export function useSessionActions({
             : viewMessagesForReconcile()
 
           // Tail page + previously backfilled prefix (same-session re-resume).
-          prefetchedPage = await graftTranscriptPage(prefetchedResult, previousMessages, storedSessionId, sessionRestScope)
+          prefetchedPage = await graftTranscriptPage(
+            prefetchedResult,
+            previousMessages,
+            storedSessionId,
+            sessionRestScope
+          )
           prefetchedTranscriptMessages = prefetchedPage.transcript
           localSnapshot = prefetchedPage.snapshot
           prefetchApplied = true

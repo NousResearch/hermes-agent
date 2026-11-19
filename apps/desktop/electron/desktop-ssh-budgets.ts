@@ -26,7 +26,10 @@ function rawDesktopSshTimeouts(yamlText: string): Partial<Record<keyof typeof KE
 
   for (let i = start + 1; start >= 0 && i < lines.length && !/^[^\s#]/.test(lines[i]); i += 1) {
     const keyed = /^ {2}(ssh_connect_timeout|ssh_forward_timeout):\s*(.*?)\s*$/.exec(lines[i])
-    const value = keyed?.[2].replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2')
+    const value = keyed?.[2]
+      .replace(/\s+#.*$/, '')
+      .trim()
+      .replace(/^(['"])(.*)\1$/, '$2')
 
     if (keyed && value) {
       raw[keyed[1] as keyof typeof KEYS] = value

@@ -344,6 +344,15 @@ def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
     return None
 
 
+def _starts_a_gateway(subcommand: list[str]) -> bool:
+    """True for a gateway verb that runs a gateway process: ``start``, ``restart`` or ``run``."""
+    args = list(subcommand)
+    if "gateway" not in args:
+        return False
+    rest = args[args.index("gateway") + 1:]
+    return bool(rest) and rest[0] in {"start", "restart", "run"}
+
+
 def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
     """True when *subcommand* starts the host multiplexer, not a named profile's own gateway.
 
@@ -422,6 +431,9 @@ def _profile_action_environment(
         # and resolves to the same validated directory.
         action_env["HERMES_HOME"] = str(target_home)
         apply_subprocess_home_env(action_env)
+        if _starts_a_gateway(subcommand):  # the scrub removed the deployment's stamps; a gateway keeps them
+            from tools.environments.local import keep_deployment_stamps
+            keep_deployment_stamps(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
     # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that

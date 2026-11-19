@@ -30,7 +30,7 @@ from tools.environments.local_env_policy import (
     _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
     _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
-    strip_profile_gate_env, strip_supervised_process_identity)
+    DEPLOYMENT_STAMP_ENV, strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 from tools.environments.base_session_env import (
@@ -438,7 +438,7 @@ def build_subprocess_env(
 
 def served_profile_child_env(
     base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
-    inherit_credentials: bool = False,
+    inherit_credentials: bool = False, for_gateway: bool = False,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -454,7 +454,9 @@ def served_profile_child_env(
     (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
-    ``hermes_subprocess_env`` snapshot."""
+    ``hermes_subprocess_env`` snapshot. ``for_gateway=True`` is for a gateway this process starts or
+    restarts: it keeps the URLs the deployment stamped into the launch environment
+    (``DEPLOYMENT_STAMP_ENV``), which the scrub removes from every other child."""
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
@@ -481,6 +483,19 @@ def served_profile_child_env(
         if not (_is_routed_home(target) if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
+    if for_gateway:
+        keep_deployment_stamps(env, os.environ if base is None else base)
+    return env
+
+
+def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
+    """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
+    back into the env of a gateway this process starts: the scrub removes them from every child,
+    and a respawned gateway without them stops reporting and cannot suspend its machine."""
+    source = os.environ if source is None else source
+    for name in DEPLOYMENT_STAMP_ENV:
+        if source.get(name):
+            env[name] = source[name]
     return env
 
 
@@ -508,6 +523,12 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
             env[name] = source[name]
 
 
+def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Child env for a gateway this process starts on *target_home*: that profile's own secrets
+    (``served_profile_child_env``) plus the deployment's launch stamps."""
+    return served_profile_child_env(base=base, target_home=target_home, inherit_credentials=True, for_gateway=True)
+
+
 def host_gateway_child_env(
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -518,9 +539,7 @@ def host_gateway_child_env(
     multiplexer that owns the primary adapter map.
     """
     from hermes_constants import get_default_hermes_root
-    return served_profile_child_env(
-        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
-    )
+    return gateway_child_env(get_default_hermes_root(), base)
 
 
 def _is_routed_home(target_home: str | Path) -> bool:

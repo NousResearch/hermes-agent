@@ -1415,3 +1415,16 @@ def test_a_gateway_unit_of_another_home_is_refused_before_any_change(home, capsy
 
     assert "belongs to another Hermes home (it runs HERMES_HOME=/srv/team/profiles/work)" in capsys.readouterr().out
     _nothing_applied(host, home, before)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_legacy_hermes_service_is_refused_before_the_gateway_install_could_delete_it(home, capsys, dry_run):
+    host = FakeHost(home)
+    host.legacy_units = True
+    before = _config_files(home)
+
+    assert engine.cmd_apply(host, _args(dry_run=dry_run)) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert "legacy Hermes gateway unit (hermes.service)" in out and "gateway migrate-legacy` first" in out
+    _nothing_applied(host, home, before)

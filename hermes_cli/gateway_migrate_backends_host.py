@@ -605,6 +605,12 @@ class SystemHost:
                 return pinned
         return None
 
+    def legacy_gateway_units(self) -> bool:
+        """Whether a legacy ``hermes.service`` exists: ``hermes gateway install`` would stop, disable and
+        delete it, which no rollback or --restore could bring back."""
+        from hermes_cli import gateway as gw
+        return self.gateway_kind() == "systemd" and gw.has_legacy_hermes_units()
+
     def _refuse_foreign_gateway(self, action: str) -> None:
         """Raise instead of driving another home's same-named gateway unit or LaunchAgent."""
         from hermes_cli import gateway_service_owner as owner

@@ -428,3 +428,19 @@ def test_a_launchagent_of_another_home_is_found_and_never_driven(tmp_path, monke
     with pytest.raises(RuntimeError, match="belongs to another Hermes home"):
         host.uninstall_gateway()
     assert called == []
+
+
+def test_a_legacy_unit_is_reported_for_a_systemd_gateway_only(tmp_path, monkeypatch):
+    from hermes_cli import gateway as gw
+    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: True)
+
+    class _Host(SystemHost):
+        kind = "systemd"
+
+        def gateway_kind(self):
+            return self.kind
+
+    host = _Host(tmp_path)
+    assert host.legacy_gateway_units() is True
+    host.kind = "launchd"
+    assert host.legacy_gateway_units() is False

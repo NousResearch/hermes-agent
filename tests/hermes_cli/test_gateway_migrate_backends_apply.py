@@ -158,6 +158,11 @@ class FakeHost(SystemHost):
     def foreign_gateway_home(self):
         return self.foreign_home
 
+    legacy_units = False  # a legacy hermes.service is installed
+
+    def legacy_gateway_units(self):
+        return self.legacy_units
+
     def install_gateway(self):
         self._change("install_gateway")
         self.gw.update(installed=True, enabled=True)

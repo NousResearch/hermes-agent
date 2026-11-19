@@ -22,6 +22,7 @@ export function useCanonicalGroupLabels() {
     rename: t.fileMenu.renameTitle,
     renameLabel: t.fileMenu.renameLabel,
     save: t.common.save,
+    manageMembers: group.manageMembers,
     disband: group.disbandAction,
     disbanding: group.disbanding,
     disbandDone: group.disbandDone,

@@ -6,7 +6,7 @@ The Bots roster lists the selected connection/profile's gateway rooms as ordinar
 
 ## Editing members
 
-Open the group details from the room title and select **Manage members**. On gateways that advertise
+Select **Manage members** in the room header or the Members section of **Group details**. On gateways that advertise
 `groups.members.update`, you can change local seats while the group has no active or retryable work.
 The room ID, transcript, attachments and existing member sessions are kept. A new Bot sees the usual
 bounded shared thread context when it takes its first turn. A paused discussion from before a roster

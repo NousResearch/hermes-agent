@@ -191,14 +191,20 @@ it('edits a gateway roster against its original revision and keeps the room ID',
     throw new Error(`Unexpected RPC: ${method}`)
   })
   $lastRoster.set([alpha, beta, remote('off-machine')])
-  render(<CanonicalGroupMemberEditor binding={binding} onSaved={refreshed} room={room} />)
-  fireEvent.click(screen.getByRole('button', { name: 'Manage members' }))
-  fireEvent.click(await screen.findByRole('checkbox', { name: /^beta/ }))
-  fireEvent.click(screen.getByRole('checkbox', { name: /^old/ }))
+  const closed = vi.fn()
+  render(<CanonicalGroupMemberEditor binding={binding} onClose={closed} onSaved={refreshed} room={room} />)
+  await screen.findByRole('checkbox', { name: /^beta/i })
+  const search = screen.getByRole('textbox', { name: botsText().group.searchToAdd })
+  fireEvent.change(search, { target: { value: '@beta' } })
+  expect(screen.queryByRole('checkbox', { name: /^old/i })).toBeNull()
+  fireEvent.click(screen.getByRole('checkbox', { name: /^beta/i }))
+  fireEvent.change(search, { target: { value: 'old' } })
+  fireEvent.click(screen.getByRole('checkbox', { name: /^old/i }))
   expect(screen.queryByRole('checkbox', { name: /^off-machine/ })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Save members' }))
 
   await waitFor(() => expect(refreshed).toHaveBeenCalledOnce())
+  expect(closed).toHaveBeenCalledOnce()
   expect(request).toHaveBeenCalledWith(expect.anything(), 'groups.members.update', {
     room_id: 'room-1', profile: 'default', expected_revision: 4, event_id: expect.any(String),
     members: [current[0], { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }]

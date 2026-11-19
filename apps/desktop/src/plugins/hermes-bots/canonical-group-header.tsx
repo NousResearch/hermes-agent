@@ -24,6 +24,7 @@ interface CanonicalGroupHeaderProps {
   onBack?: () => void
   onDetails: () => void
   onDisband: () => Promise<void>
+  onManageMembers?: (trigger: HTMLElement) => void
   onRename: (name: string) => void
   onStop: () => void
   room?: CanonicalRoom
@@ -33,7 +34,7 @@ interface CanonicalGroupHeaderProps {
 }
 
 /** Title (opens the details panel), each member's live chip, and quiet icon actions. */
-export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, busy, canDisband, canRename, canStop, detailsOpen, driver, onBack, onDetails, onDisband, onManageMembers, onRename, onStop, room, statuses, stopping, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const badges: Record<string, string> = { missing: labels.peerNotJoinedBadge, unavailable: labels.peerOfflineBadge, needs_reauthorization: labels.peerRejoinBadge }
   const peerBadges = new Map(peerMemberStates(room?.members, driver?.peer_routes).map(({ member, status }) => [member.member_id, badges[status]]))
@@ -56,6 +57,9 @@ export function CanonicalGroupHeader({ binding, methods, onChanged, onReplaced, 
   return <>
     <RoomHeader backLabel={labels.back} onBack={onBack} onStop={canStop ? onStop : undefined} onTitle={onDetails}
       stopDisabled={stopping} stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
+        {onManageMembers && <Button onClick={event => onManageMembers(event.currentTarget)} size="xs" variant="ghost">
+          <Codicon name="organization" />{labels.manageMembers}
+        </Button>}
         {canRename && action(labels.rename, 'edit', () => setRenaming(room?.name ?? ''), busy || !room)}
         {canDisband && action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}

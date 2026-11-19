@@ -12,6 +12,7 @@ export interface GroupChatMessages extends GroupChatChromeMessages, GroupChatErr
   deleteDesc: (group: string) => string
   memberSizeError: (max: number) => string
   manageMembers: string
+  remoteMemberLocked: string
   saveMembers: string
   deleted: (group: string) => string
   globalCount: (count: number) => string
@@ -61,6 +62,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `This removes “${group}” from its bots and clears the shared group chat history. The bots and their individual chats are kept.`,
     memberSizeError: max => `A group chat needs between 2 and ${max} bots`,
     manageMembers: 'Manage members',
+    remoteMemberLocked: 'On another gateway · kept in this group chat',
     saveMembers: 'Save members',
     deleted: group => `Deleted group “${group}”`,
     globalCount: count => `${count} global group chat${count === 1 ? '' : 's'}`,
@@ -97,6 +99,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `「${group}」からボットを外し、グループチャットの共有履歴を消去します。ボットと個別のチャットは保持されます。`,
     memberSizeError: max => `グループチャットには2〜${max}体のボットが必要です`,
     manageMembers: 'メンバーを管理',
+    remoteMemberLocked: '別のゲートウェイ · このグループチャットに残ります',
     saveMembers: 'メンバーを保存',
     deleted: group => `グループ「${group}」を削除しました`,
     globalCount: count => `全体のグループチャット${count}件`,
@@ -133,6 +136,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `这将把机器人移出“${group}”并清除群聊的共享历史记录。机器人及其单独聊天会保留。`,
     memberSizeError: max => `群聊需要 2 到 ${max} 个机器人`,
     manageMembers: '管理成员',
+    remoteMemberLocked: '位于其他网关 · 保留在此群聊',
     saveMembers: '保存成员',
     deleted: group => `已删除群组“${group}”`,
     globalCount: count => `${count} 个全局群聊`,
@@ -170,6 +174,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `這會將機器人移出「${group}」並清除群組聊天的共用歷史記錄。機器人及其個別聊天會保留。`,
     memberSizeError: max => `群組聊天需要 2 到 ${max} 個機器人`,
     manageMembers: '管理成員',
+    remoteMemberLocked: '位於其他閘道 · 保留在此聊天室',
     saveMembers: '儲存成員',
     deleted: group => `已刪除群組「${group}」`,
     globalCount: count => `${count} 個全域群組聊天`,
@@ -207,6 +212,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `يؤدي هذا إلى إزالة «${group}» من روبوتاتها ومسح السجل المشترك لمحادثة المجموعة. تبقى الروبوتات ومحادثاتها الفردية محفوظة.`,
     memberSizeError: max => `تحتاج محادثة المجموعة إلى ما بين روبوتين و${arabicBots(max, 'روبوتين')}`,
     manageMembers: 'إدارة الأعضاء',
+    remoteMemberLocked: 'على بوابة أخرى · يبقى في محادثة المجموعة',
     saveMembers: 'حفظ الأعضاء',
     deleted: group => `حُذفت المجموعة «${group}»`,
     globalCount: count => `محادثات المجموعات العامة: ${count}`,
@@ -243,6 +249,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `Группа «${group}» будет удалена из списка групп её ботов, а общая история группового чата будет очищена. Боты и их личные чаты сохранятся.`,
     memberSizeError: max => `Для группового чата нужно от 2 до ${max} ботов`,
     manageMembers: 'Управление участниками',
+    remoteMemberLocked: 'На другом шлюзе · остаётся в чате',
     saveMembers: 'Сохранить участников',
     deleted: group => `Группа «${group}» удалена`,
     globalCount: count => `${count} ${russianNoun(count, 'общий групповой чат', 'общих групповых чата', 'общих групповых чатов')}`,
@@ -279,6 +286,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `Ceci retire « ${group} » des groupes de ses bots et efface l’historique partagé de la discussion de groupe. Les bots et leurs discussions individuelles sont conservés.`,
     memberSizeError: max => `Une discussion de groupe nécessite de 2 à ${max} bots`,
     manageMembers: 'Gérer les membres',
+    remoteMemberLocked: 'Sur une autre passerelle · reste dans le groupe',
     saveMembers: 'Enregistrer les membres',
     deleted: group => `Groupe « ${group} » supprimé`,
     globalCount: count => `${count} discussion${count > 1 ? 's' : ''} de groupe globale${count > 1 ? 's' : ''}`,
@@ -315,6 +323,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `Dies entfernt „${group}“ aus den Gruppen seiner Bots und löscht den gemeinsamen Verlauf des Gruppenchats. Die Bots und ihre einzelnen Chats bleiben erhalten.`,
     memberSizeError: max => `Ein Gruppenchat braucht 2 bis ${max} Bots`,
     manageMembers: 'Mitglieder verwalten',
+    remoteMemberLocked: 'Auf einem anderen Gateway · bleibt im Chat',
     saveMembers: 'Mitglieder speichern',
     deleted: group => `Gruppe „${group}“ gelöscht`,
     globalCount: count => `${count} globale${count === 1 ? 'r Gruppenchat' : ' Gruppenchats'}`,
@@ -351,6 +360,7 @@ export const GROUP_CHAT_LOCALES = {
     deleteDesc: group => `Esto quita «${group}» de los grupos de sus bots y borra el historial compartido del chat de grupo. Los bots y sus chats individuales se conservan.`,
     memberSizeError: max => `Un chat de grupo necesita entre 2 y ${max} bots`,
     manageMembers: 'Gestionar miembros',
+    remoteMemberLocked: 'En otra puerta de enlace · permanece en el chat',
     saveMembers: 'Guardar miembros',
     deleted: group => `Grupo «${group}» eliminado`,
     globalCount: count => `${count} chat${count === 1 ? '' : 's'} de grupo global${count === 1 ? '' : 'es'}`,

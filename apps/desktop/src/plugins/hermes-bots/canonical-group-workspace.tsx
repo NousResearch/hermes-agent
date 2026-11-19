@@ -144,6 +144,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const draftThread = useRef<string | undefined>(undefined)
   const composerInput = useRef<HTMLTextAreaElement>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [memberDraft, setMemberDraft] = useState<CanonicalRoom | null>(null)
+  const memberEditorTrigger = useRef<HTMLElement | null>(null)
   const scroller = useStickToBottom()
   // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
   const editing = useRef<string | null>(null)
@@ -677,12 +679,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
 
+  const openMembers = methods?.has('groups.members.update') && state?.room.revision !== undefined
+    ? (trigger: HTMLElement) => {
+      memberEditorTrigger.current = trigger
+      setMemberDraft(state.room)
+    } : undefined
+
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
         canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
         onChanged={() => void refreshAfterChange().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
+        onDisband={end} onManageMembers={openMembers} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
         notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
@@ -732,10 +740,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       </div>
     </div>
     {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels}
-      memberEditor={methods?.has('groups.members.update') && state.room.revision !== undefined
-        ? <CanonicalGroupMemberEditor binding={binding} onSaved={refreshAfterChange} room={state.room} /> : undefined}
-      onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
+      onClose={() => setDetailsOpen(false)} onManageMembers={openMembers} room={state.room} statuses={statuses}>
       <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refreshAfterChange} />
     </CanonicalGroupDetails>}
+    {memberDraft && visible && <CanonicalGroupMemberEditor binding={binding} onClose={() => setMemberDraft(null)}
+      onSaved={refreshAfterChange} returnFocus={memberEditorTrigger.current} room={memberDraft} />}
   </section>
 }

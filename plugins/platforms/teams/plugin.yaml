@@ -34,6 +34,14 @@ optional_env:
     description: "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
     prompt: "Webhook host"
     password: false
+  - name: TEAMS_SOCKET_MODE
+    description: "Receive activities over outbound WebSockets instead of the webhook (Teams socket mode, preview; needs microsoft-teams-apps>=2.2.1 and the bot switched to socket mode)"
+    prompt: "Use socket mode (no public endpoint)? (true/false)"
+    password: false
+  - name: TEAMS_SOCKET_GEOS
+    description: "Socket-mode regions, comma-separated (default amer,emea,apac)"
+    prompt: "Socket-mode regions"
+    password: false
   - name: TEAMS_ALLOWED_USERS
     description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"

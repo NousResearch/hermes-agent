@@ -109,6 +109,23 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     return False
 
 
+def install_after_setup() -> None:
+    """``hermes gateway install --if-missing``, the installers' step after setup: setup's one
+    consent question, never a second install path. A recorded decline installs nothing, an
+    unanswered question is asked once, and a container or a host without a service manager gets
+    setup's guidance rather than a failed install."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.config import load_config
+
+    if gw._is_service_installed():
+        print("✓ Gateway service already installed")
+        return
+    if load_config().get("gateway", {}).get("service_install_choice") == "decline":
+        gw.print_info("Gateway service skipped (declined in setup). Install it any time: hermes gateway install")
+        return
+    ensure_gateway_service(context="setup", interactive=True)
+
+
 def _wizard_install_service(backend: str) -> None:
     """Choose persistence once; start-now without persistence stays unmanaged."""
     import subprocess

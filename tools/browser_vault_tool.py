@@ -31,6 +31,7 @@ autofill (kernel-login-autofill.ts / fill_from_vault.ts).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import logging
 import time
@@ -104,6 +105,10 @@ _fill_pin: ContextVar[Optional[_Pin]] = ContextVar("vault_fill_pin", default=Non
 _MOVED = {"success": False, "error_type": "supervisor_required",
           "error": "The browser moved to another tab or is reconnecting since the page origin was checked. "
                    "Nothing was written; retry in a moment."}
+# The same move refused at a keystroke: by then the JS write (the password) and any earlier keys are on
+# the page the origin check passed, so only what is left is withheld.
+_MOVED_WHILE_TYPING = ("The browser moved to another tab or is reconnecting since the page origin was checked. "
+                       "Nothing further was typed; retry in a moment.")
 
 # Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
 # one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
@@ -163,7 +168,10 @@ def _stamps_removed(task_id: str, nonce: str) -> Iterator[None]:
 
     Each operation stamps under its own attribute name, so nothing else ever removes them, and a
     stamp left behind lets a later read address the control the vault targeted. Runs inside the
-    pinned block, on the channel the operation checked; a failed removal leaves the result as is.
+    pinned block, on the channel the operation checked; a failed or refused removal leaves the
+    result as is. After a channel move the removal is refused by design (sending it to the new
+    channel would act on a page the operation never inspected), so the old page keeps its stamps.
+    It still runs while a human holds the Bot Desktop screen (see ``_fenced_page_op``).
     """
     from agent.vault_login_classifier import build_unstamp_js
     try:
@@ -530,7 +538,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
     identifier = str(answer["identifier"]).strip()
-    id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
+    id_type = "email" if "@" in identifier else ("phone" if _looks_like_phone(identifier) else "username")
     try:
         meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
                                                         "password": str(answer["password"])}, origin=origin)
@@ -544,6 +552,18 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                        "next": filled.get("next") or "The login is saved but the fill did not land (see fill); call "
                                                      "browser_vault action=fill with this handle once the form is ready."},
                       ensure_ascii=False)
+
+
+# Digits with the separators people type a number with ("+48 600 100 200", "(600) 100-200").
+# The + may lead, or follow one "(" ("(+48) 600 ..."), as the tel read-back allows; nowhere else.
+_RE_PHONE = re.compile(r"(?:\(\s*)?\+?[\d\s().-]+")
+
+
+def _looks_like_phone(identifier: str) -> bool:
+    """A typed phone number, however it is grouped: the fill reads a phone back as ``tel``, which
+    lets a site's mask regroup the digits. Seven digits at least, so a short numeric handle stays a
+    username. The identifier itself is stored as typed."""
+    return bool(_RE_PHONE.fullmatch(identifier)) and sum(ch.isdigit() for ch in identifier) >= 7
 
 
 _TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
@@ -829,7 +849,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # origin check ran on (a plugin page that took the task during the focus check leaves the CDP
         # session and document as they were), and the screen a human can have taken since.
         if _eval_channel(task_id)[2] is not None:
-            return _abort("supervisor_required", _MOVED["error"])
+            return _abort("supervisor_required", _MOVED_WHILE_TYPING)
         taken = _human_lease_refusal(task_id)
         if taken is not None:
             return _abort("human_has_control", taken["error"])
@@ -938,7 +958,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
 
 # ``insert_text`` refusals that name a page move, mapped to the cause the fill reports.
 _INSERT_REFUSALS = {
-    "session_changed": ("supervisor_required", _MOVED["error"]),
+    "session_changed": ("supervisor_required", _MOVED_WHILE_TYPING),
     "document_changed": ("page_navigated", "The page navigated after the focus check, before the value could be "
                                            "typed. Nothing further was typed; retry once the page settles."),
 }
@@ -1250,7 +1270,11 @@ def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
 def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
     browser_exec; they must honour the Bot Desktop lease like every other page access, or a human
-    typing a credential on the taken-over screen could be read or written to."""
+    typing a credential on the taken-over screen could be read or written to.
+
+    One exception: removing an operation's own stamps (``_stamps_removed``) still runs after a
+    takeover. It reads and writes no value, moves no focus and fires no event, and the stamps carry
+    a per-operation name that nothing else would ever remove."""
     from tools.browser_session import run_fenced, session_for_task
 
     res = run_fenced(session_for_task(task_id), lambda: {"raw": fn()})

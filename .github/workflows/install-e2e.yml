@@ -170,6 +170,8 @@ jobs:
           if [ -n "$INSTALL_REF" ]; then
             [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
             [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
+            git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null 2>&1 \
+              || git fetch --quiet --no-tags origin "+refs/tags/$INSTALL_REF:refs/tags/$INSTALL_REF"
             git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
             tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
           elif [ "$RELEASE_MODE" = true ]; then

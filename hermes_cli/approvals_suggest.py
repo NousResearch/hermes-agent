@@ -10,6 +10,7 @@ the user (once, session, always, smart-approve, or yolo) before it ran.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import time
@@ -208,6 +209,14 @@ def derive_glob(normalized: str) -> Optional[str]:
     return f"{tokens[0]} {second} *"
 
 
+def _glob_matches_source(glob: str, command: str) -> bool:
+    """True when the runtime allowlist check would let *glob* approve *command* as written.
+    The glob comes from the home-folded command (``~/bin/docker restart *``), which the source
+    ``/home/me/bin/docker restart web`` never matches."""
+    command = command.strip()
+    return command == glob or fnmatch.fnmatchcase(command, glob)
+
+
 def build_proposals(
     records: Iterable[tuple[str, str]], existing: Optional[set] = None, min_count: int = 2,
     limit: int = 20,
@@ -236,6 +245,8 @@ def build_proposals(
         raw = normalize_command(command)
         normalized = redact_sensitive_text(raw, force=True)
         glob = derive_glob(raw)
+        if glob is not None and not _glob_matches_source(glob, command):
+            continue  # the runtime matches the command as written; the class key would widen it
         if glob is not None and derive_glob(normalized) != glob:
             glob = None
         pattern, kind = (glob, "glob") if glob is not None else (description, "class")

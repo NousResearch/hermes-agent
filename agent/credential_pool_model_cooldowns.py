@@ -23,12 +23,10 @@ FAILURE_REASON_USAGE_WINDOW = "usage_window"
 
 
 def pool_failure_reason(reason: Any, error_context: Optional[dict[str, Any]], billing_unverified: bool) -> str:
-    """The pool's failure reason for a rotation (*reason* is a ``FailoverReason``). A usage-window
-    limit — the 402 ``usage_window_and_credits_exhausted`` or the 503 ``usage_window_unavailable``
-    check outage, which classifies into the rate-limit family with the same tag — benches only the
-    refused model; an ambiguous billing body is sized as transient, not a 1-hour bench."""
+    """The pool's failure reason for a rotation (*reason* is a ``FailoverReason``). A usage-window 402
+    benches only the refused model; an ambiguous billing body is sized as transient, not a 1-hour bench."""
     from agent.error_classifier import FailoverReason
-    if reason in (FailoverReason.billing, FailoverReason.rate_limit) and (error_context or {}).get("usage_window"):
+    if reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
         return FAILURE_REASON_USAGE_WINDOW
     if reason == FailoverReason.billing and billing_unverified:
         from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED

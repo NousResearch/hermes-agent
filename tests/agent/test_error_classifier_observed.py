@@ -117,13 +117,6 @@ def test_spent_usage_window_402_still_never_falls_back_on_its_own():
     assert result.should_fallback is False
 
 
-def test_usage_window_rate_limit_benches_the_model_not_the_whole_credential():
-    from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
-
-    assert pool_failure_reason(FailoverReason.rate_limit, {"usage_window": True}, False) == FAILURE_REASON_USAGE_WINDOW
-    assert pool_failure_reason(FailoverReason.rate_limit, {}, False) == FailoverReason.rate_limit.value
-
-
 def test_usage_window_503_code_from_another_provider_keeps_the_overload_rules():
     """The code is Nous's. A non-Nous route sending the same 503 keeps main's classification, the
     same boundary ``_classify_402`` already enforces for the usage-window 402 code."""

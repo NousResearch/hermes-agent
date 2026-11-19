@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import http.server
 import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,9 +114,62 @@ def test_probe_openai_models_tries_multiple_api_versions():
 
 
 
+@pytest.fixture
+def probe_server():
+    bodies = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            self.respond(200, bodies["models"])
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.respond(400, bodies["error"])
+
+        def respond(self, status, body):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The bounded reader may close before the oversized body is sent.
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}", bodies
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+
+
+def test_http_get_json_bounds_success_body(probe_server):
+    """The real credential-safe HTTP path parses small models, not oversized JSON."""
+    url, bodies = probe_server
+    bodies["models"] = _openai_models_body("test-deployment")
+    assert azure_detect._http_get_json(url + "/models", "synthetic-key") == (
+        200, json.loads(bodies["models"]),
+    )
+    bodies["models"] += b" " * azure_detect._AZURE_DETECT_JSON_BODY_MAX_BYTES
+    assert azure_detect._http_get_json(url + "/models", "synthetic-key") == (200, None)
+
+
+def test_probe_anthropic_messages_bounds_error_body(probe_server):
+    """Oversized real HTTPError bodies cannot supply the detection signal."""
+    url, bodies = probe_server
+    bodies["error"] = _anthropic_error_body()
+    assert azure_detect._probe_anthropic_messages(url, "synthetic-key") is True
+    bodies["error"] += b" " * azure_detect._AZURE_DETECT_ERROR_BODY_MAX_BYTES
+    assert azure_detect._probe_anthropic_messages(url, "synthetic-key") is False
+
+
 # ----------------------------------------------------------------------
 # lookup_context_length
 # ----------------------------------------------------------------------
-
-
 

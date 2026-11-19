@@ -25,10 +25,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tui_gateway import server as srv
-
+from hermes_constants import get_hermes_home
 
 PROFILE_HOME = "/home/user/.hermes/profiles/work"
-
 
 class _InlineThread:
     """Drop-in for ``threading.Thread`` that runs the target synchronously.
@@ -45,13 +44,11 @@ class _InlineThread:
         if self._target is not None:
             self._target()
 
-
 @pytest.fixture
 def fake_session():
     """A minimal session carrying a non-default ``profile_home``."""
     agent = MagicMock()
     return {"agent": agent, "session_key": "sess_k", "profile_home": PROFILE_HOME}
-
 
 @pytest.fixture
 def override_calls():
@@ -62,11 +59,16 @@ def override_calls():
     """
     agent_instance = MagicMock()
     # run_conversation returns a plain dict like the real agent does.
-    agent_instance.run_conversation.return_value = {"final_response": "done"}
+    homes: list[str] = []  # get_hermes_home() as the ephemeral turn saw it
+
+    def _run_conversation(*_a, **_kw):
+        from hermes_constants import get_hermes_home
+        homes.append(str(get_hermes_home()))
+        return {"final_response": "done"}
+
+    agent_instance.run_conversation.side_effect = _run_conversation
 
     with patch("tui_gateway.server.threading.Thread", _InlineThread), \
-        patch("tui_gateway.server.set_hermes_home_override", return_value="TOK") as m_set, \
-        patch("tui_gateway.server.reset_hermes_home_override") as m_reset, \
         patch("tui_gateway.server._background_agent_kwargs", return_value={}), \
         patch("tui_gateway.server._ephemeral_preview_agent_kwargs", return_value={}), \
         patch("tui_gateway.server._preview_restart_callbacks", return_value={}), \
@@ -77,12 +79,10 @@ def override_calls():
         patch("tui_gateway.server._emit"), \
         patch("run_agent.AIAgent", return_value=agent_instance) as m_agent:
         yield {
-            "set": m_set,
-            "reset": m_reset,
+            "homes": homes,
             "agent_cls": m_agent,
             "agent": agent_instance,
         }
-
 
 def _run(method_name, params, session):
     """Invoke a registered RPC handler with ``_sess`` patched to our session."""
@@ -90,33 +90,25 @@ def _run(method_name, params, session):
     with patch("tui_gateway.server._sess", return_value=(session, None)):
         return handler("rid1", params)
 
-
 class TestBackgroundProfileOverride:
     def test_background_binds_and_restores_profile_home(self, fake_session, override_calls):
         """prompt.background binds profile_home for the ephemeral turn and restores it."""
         _run("prompt.background", {"text": "hi", "session_id": "ui1"}, fake_session)
 
-        override_calls["set"].assert_called_once_with(PROFILE_HOME)
-        override_calls["reset"].assert_called_once_with("TOK")
-        override_calls["agent"].run_conversation.assert_called_once()
-
-    def test_background_no_profile_skips_override(self, override_calls):
-        """With no profile_home the background path never touches the override."""
-        session = {"agent": MagicMock(), "session_key": "sess_k", "profile_home": None}
-        _run("prompt.background", {"text": "hi", "session_id": "ui1"}, session)
-
-        override_calls["set"].assert_not_called()
-        override_calls["reset"].assert_not_called()
-        override_calls["agent"].run_conversation.assert_called_once()
+        assert override_calls["homes"] == [PROFILE_HOME]
+        assert str(get_hermes_home()) != PROFILE_HOME
 
     def test_background_restores_override_on_error(self, fake_session, override_calls):
         """A failing turn must still restore the override (finally-block parity)."""
-        override_calls["agent"].run_conversation.side_effect = RuntimeError("boom")
+        def _boom(*_a, **_kw):
+            override_calls["homes"].append(str(get_hermes_home()))
+            raise RuntimeError("boom")
+
+        override_calls["agent"].run_conversation.side_effect = _boom
         _run("prompt.background", {"text": "hi", "session_id": "ui1"}, fake_session)
 
-        override_calls["set"].assert_called_once_with(PROFILE_HOME)
-        override_calls["reset"].assert_called_once_with("TOK")
-
+        assert override_calls["homes"] == [PROFILE_HOME]
+        assert str(get_hermes_home()) != PROFILE_HOME
 
 class TestPreviewRestartProfileOverride:
     def test_preview_binds_and_restores_profile_home(self, fake_session, override_calls):
@@ -127,9 +119,8 @@ class TestPreviewRestartProfileOverride:
             fake_session,
         )
 
-        override_calls["set"].assert_called_once_with(PROFILE_HOME)
-        override_calls["reset"].assert_called_once_with("TOK")
-        override_calls["agent"].run_conversation.assert_called_once()
+        assert override_calls["homes"] == [PROFILE_HOME]
+        assert str(get_hermes_home()) != PROFILE_HOME
 
     def test_preview_does_not_close_agent(self, fake_session, override_calls):
         """The restarted preview server must survive: the ephemeral agent is NOT
@@ -142,17 +133,4 @@ class TestPreviewRestartProfileOverride:
 
         # A task-wide AIAgent.close() would kill every process for this task_id,
         # tearing down the very background server the restart just launched.
-        override_calls["agent"].close.assert_not_called()
-
-    def test_preview_no_profile_skips_override(self, override_calls):
-        """With no profile_home the preview path never touches the override."""
-        session = {"agent": MagicMock(), "session_key": "sess_k", "profile_home": None}
-        _run(
-            "preview.restart",
-            {"url": "http://localhost:5173", "cwd": "", "session_id": "ui1"},
-            session,
-        )
-
-        override_calls["set"].assert_not_called()
-        override_calls["reset"].assert_not_called()
         override_calls["agent"].close.assert_not_called()

@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { SubagentRow } from '@/app/agents'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -34,29 +35,32 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
   }
 
   const row = (item: SubagentProgress) => (
-    <button
-      aria-expanded={selected === item.id}
-      className="flex w-full min-w-0 items-start gap-2 px-2 py-1 text-left"
+    <StatusRow
+      expanded={selected === item.id}
       key={item.id}
-      onClick={() => setSelected(selected === item.id ? null : item.id)}
-      type="button"
+      leading={
+        <GlyphSpinner
+          ariaLabel={item.status === 'queued' ? t.agents.queued : t.agents.running}
+          className="text-(--ui-purple)"
+          spinner="braille"
+        />
+      }
+      onActivate={() => setSelected(selected === item.id ? null : item.id)}
+      trailing={
+        <ActivityTimerText
+          className="shrink-0 text-[0.65rem]"
+          seconds={Math.max(0, Math.floor((nowMs - item.startedAt) / 1000))}
+        />
+      }
+      trailingVisible
     >
-      <GlyphSpinner
-        ariaLabel={item.status === 'queued' ? t.agents.queued : t.agents.running}
-        className="mt-0.5 shrink-0 text-(--ui-purple)"
-        spinner="braille"
-      />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs text-(--ui-text-primary)">{item.goal}</span>
         <span className="block truncate text-[0.68rem] text-(--ui-text-tertiary)">
           {item.stream.at(-1)?.text || (item.status === 'queued' ? t.agents.queued : t.agents.waitingActivity)}
         </span>
       </span>
-      <ActivityTimerText
-        className="shrink-0 text-[0.65rem]"
-        seconds={Math.max(0, Math.floor((nowMs - item.startedAt) / 1000))}
-      />
-    </button>
+    </StatusRow>
   )
 
   const detail = live.find(item => item.id === selected)
@@ -71,14 +75,13 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
             spinner="braille"
           />
         }
-        defaultCollapsed={false}
         icon={<Codicon className="text-(--ui-purple)" name="agent" size="0.8rem" />}
         label={t.statusStack.subagents(live.length)}
       >
-        <div className="max-h-[25vh] overflow-y-auto overscroll-contain">{live.map(row)}</div>
+        <div className="max-h-[25vh] overflow-y-auto overscroll-y-auto">{live.map(row)}</div>
         {detail && (
           <div
-            className="max-h-[25vh] overflow-y-auto overscroll-contain px-3 py-2"
+            className="status-subagent-detail max-h-[25vh] overflow-y-auto overscroll-y-auto pr-3 py-2"
             data-slot="composer-subagent-detail"
           >
             <SubagentControls

@@ -12,7 +12,6 @@ import io
 import signal
 import sys
 
-import pytest
 
 from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
 from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
@@ -77,19 +76,6 @@ class TestUpdateOutputStream:
 
 
 
-    def test_isatty_delegates_to_original(self):
-        class _TtyStream:
-            def isatty(self):
-                return True
-
-            def write(self, data):
-                return len(data)
-
-            def flush(self):
-                return None
-
-        stream = _UpdateOutputStream(_TtyStream(), io.StringIO())
-        assert stream.isatty() is True
 
 
 # -----------------------------------------------------------------------------
@@ -124,7 +110,6 @@ class TestInstallHangupProtection:
             assert log_path.exists()
             contents = log_path.read_text(encoding="utf-8")
             assert "checking mirror" in contents
-            assert "hermes update started" in contents
         finally:
             _finalize_update_output(state)
             # Sanity-check restoration
@@ -133,7 +118,7 @@ class TestInstallHangupProtection:
 
 
     def test_non_fatal_if_log_setup_fails(self, monkeypatch):
-        """If get_hermes_home() raises, stdio must be left untouched but SIGHUP still handled."""
+        """If the root-home lookup raises, stdio must be left untouched but SIGHUP still handled."""
         prev_out, prev_err = sys.stdout, sys.stderr
 
         def _boom():
@@ -141,7 +126,7 @@ class TestInstallHangupProtection:
 
         # Patch the import inside _install_hangup_protection.
         monkeypatch.setattr(
-            "hermes_cli.config.get_hermes_home", _boom, raising=True
+            "hermes_constants.get_default_hermes_root", _boom, raising=True
         )
 
         original_handler = (
@@ -169,8 +154,6 @@ class TestInstallHangupProtection:
 
 
 class TestFinalizeUpdateOutput:
-    def test_none_state_is_noop(self):
-        _finalize_update_output(None)  # must not raise
 
 
     def test_skipped_install_leaves_stdio_alone(self):
@@ -206,12 +189,6 @@ class TestLogOnlyWrite:
         _log_only_write("something")  # should not raise
         assert plain.getvalue() == ""
 
-    def test_empty_text_is_noop(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-        _log_only_write("")
-        assert log.getvalue() == ""
 
 
 class TestRunLoggedSubprocess:

@@ -19,7 +19,11 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     _is_compressed_summary_message,
 )
-from hermes_state import SessionDB
+from hermes_constants import get_hermes_home
+from persistence.conversation.messages import NewMessage, ReplaceMode
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 STANDALONE_SUMMARY = (
@@ -43,8 +47,9 @@ def _row(role: str, content, **extra) -> dict:
 
 
 @pytest.fixture
-def session_db(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+def session_db(tmp_path, api_store):
+    db = open_persistence(profile_scope(home=tmp_path))
+    api_store(db)
     try:
         yield db
     finally:
@@ -56,8 +61,9 @@ def session_db(tmp_path):
 @pytest.fixture
 def adapter(session_db):
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = session_db
-    return adapter
+    adapter._home_stores[str(get_hermes_home())] = session_db
+    yield adapter
+    adapter._close_cached_session_dbs()
 
 
 def _messages_app(adapter: APIServerAdapter):
@@ -193,19 +199,40 @@ class TestTurnTranscriptProjection:
 
 class TestMessagesEndpointProjection:
     @pytest.mark.asyncio
+    async def test_suppressed_delegation_row_keeps_evidence_but_not_presentation(self, adapter, session_db, tmp_path, monkeypatch):
+        from gateway.wake import persist_delegation_delivery
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+        sid = seed_session(session_db, "diagnostic-projection", "api_server")
+        event = {"delegation_id": "early-failure", "task_failure_notice": True,
+                 "results": [{"task_index": 0, "status": "failed"}]}
+        await persist_delegation_delivery(adapter, text="recorded worker failure", session_id=sid, evt=event)
+        await persist_delegation_delivery(adapter, text="recorded worker failure", session_id=sid, evt=event)
+        stored = transcript_rows(session_db, sid)
+        assert len(stored) == 1 and stored[0]["content"] == "recorded worker failure"
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            response = await client.get(f"/api/sessions/{sid}/messages")
+            assert response.status == 200
+            payload = await response.json()
+        assert len(payload["data"]) == 1
+        assert payload["data"][0]["content"] == ""
+        assert payload["data"][0]["display_kind"] == "hidden"
+
+    @pytest.mark.asyncio
     async def test_messages_endpoint_never_serves_compaction_scaffolding(
         self,
         adapter,
         session_db,
     ):
-        session_id = session_db.create_session("projection-session", "api_server")
-        session_db.replace_messages(
+        session_id = seed_session(session_db, "projection-session", "api_server")
+        session_db.messages.replace_transcript(
             session_id,
             [
-                _row("user", STANDALONE_SUMMARY),
-                _row("assistant", MERGED_CARRIER),
-                _row("user", REAL_USER),
+                NewMessage.from_live(_row("user", STANDALONE_SUMMARY)),
+                NewMessage.from_live(_row("assistant", MERGED_CARRIER)),
+                NewMessage.from_live(_row("user", REAL_USER)),
             ],
+            ReplaceMode.DESTRUCTIVE,
         )
 
         async with TestClient(TestServer(_messages_app(adapter))) as client:
@@ -222,3 +249,61 @@ class TestMessagesEndpointProjection:
         rendered = " ".join(str(message.get("content") or "") for message in messages)
         assert "PRIOR CONTEXT" not in rendered
         assert "CONTEXT COMPACTION" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_messages_endpoint_honours_include_compacted(self, adapter, session_db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        sid = seed_session(session_db, "compacted-history", "api_server")
+        for i in range(1, 4):
+            seed_messages(session_db, sid, {"role": "user", "content": f"question {i}"},
+                          {"role": "assistant", "content": f"answer {i}"})
+        tail = [{"role": "user", "content": "question 3"}, {"role": "assistant", "content": "answer 3"}]
+        session_db.messages.compact(
+            sid, [NewMessage.from_live(m) for m in (_row("user", STANDALONE_SUMMARY), *tail)],
+            watermark=session_db.messages.active_watermark(sid), carried_tail_count=len(tail))
+
+        async def contents(query: str) -> list:
+            async with TestClient(TestServer(_messages_app(adapter))) as client:
+                response = await client.get(f"/api/sessions/{sid}/messages{query}")
+                assert response.status == 200
+                return [m.get("content") for m in (await response.json())["data"]]
+
+        live = await contents("")
+        assert "question 1" not in live and "answer 3" in live
+        for query in ("?include_compacted=false", "?include_compacted=0"):
+            assert await contents(query) == live
+        full = await contents("?include_compacted=true")
+        for text in ("question 1", "answer 1", "question 2", "answer 2", "question 3", "answer 3"):
+            assert full.count(text) == 1, (text, full)
+        assert full.index("question 1") < full.index("answer 3")
+
+    @pytest.mark.asyncio
+    async def test_include_compacted_keeps_compression_ancestors(self, adapter, session_db, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        seed_session(session_db, "rotated-parent", "api_server")
+        seed_messages(session_db, "rotated-parent", {"role": "user", "content": "parent ask"},
+                      {"role": "assistant", "content": "parent answer"})
+        session_db.sessions.end("rotated-parent", "compression")
+        child = seed_session(session_db, "rotated-child", "api_server", parent_session_id="rotated-parent")
+        for i in range(1, 3):
+            seed_messages(session_db, child, {"role": "user", "content": f"child question {i}"},
+                          {"role": "assistant", "content": f"child answer {i}"})
+        tail = [{"role": "user", "content": "child question 2"}, {"role": "assistant", "content": "child answer 2"}]
+        session_db.messages.compact(
+            child, [NewMessage.from_live(m) for m in (_row("user", STANDALONE_SUMMARY), *tail)],
+            watermark=session_db.messages.active_watermark(child), carried_tail_count=len(tail))
+
+        async def contents(query: str) -> list:
+            async with TestClient(TestServer(_messages_app(adapter))) as client:
+                response = await client.get(f"/api/sessions/{child}/messages{query}")
+                assert response.status == 200
+                return [m.get("content") for m in (await response.json())["data"]]
+
+        live = await contents("")
+        assert "parent ask" in live and "child answer 2" in live
+        assert "child question 1" not in live
+        full = await contents("?include_compacted=true")
+        for text in ("parent ask", "parent answer", "child question 1", "child answer 1",
+                     "child question 2", "child answer 2"):
+            assert full.count(text) == 1, (text, full)
+        assert full.index("parent ask") < full.index("child question 1") < full.index("child answer 2")

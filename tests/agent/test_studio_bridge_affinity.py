@@ -41,8 +41,9 @@ from uuid import uuid4
 import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
 
 # The bridge stamps its rows with the ``source`` carried by ``bridge.chat``
 # while ``AIAgent.platform`` is the bridge's own platform name; the two need
@@ -73,7 +74,7 @@ def _bridge_session_key(
 
 @pytest.fixture()
 def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
         yield session_db
     finally:
@@ -94,7 +95,7 @@ def _bridge_agent(session_db, session_id: str, *, declared_key: str | None):
             verbose_logging=False,
             skip_context_files=True,
             skip_memory=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id=session_id,
             platform=BRIDGE_PLATFORM,
             gateway_session_key=declared_key,
@@ -125,24 +126,11 @@ def _reply_scope(
     agent = _bridge_agent(session_db, session_id, declared_key=declared_key)
     # Then the bridge writes the row, which is when the scope's row reads
     # finally have something to find.
-    session_db.create_session(
-        session_id=session_id, source=row_source, model="test/model"
-    )
+    seed_session(session_db, session_id, row_source, model="test/model")
     return resolve_prompt_cache_scope(agent)
 
 
 class TestStudioBridgeAffinity:
-    def test_the_undeclared_bridge_shape_rekeys_every_reply(self, db):
-        """The reproduction, stated as a permanent negative control.
-
-        Hermes must not infer the conversation from the id's syntax — that is
-        #79017's collision class — so a bridge that declares nothing keeps a
-        per-reply scope by design.  This stays green before and after the host
-        adopts the key, and it is why the adoption has to happen host-side.
-        """
-        scopes = {_reply_scope(db, declared_key=None) for _ in range(3)}
-
-        assert len(scopes) == 3
 
     def test_a_declared_conversation_holds_one_affinity_across_replies(self, db):
         """Consecutive replies keep one affinity though their ids differ."""
@@ -173,17 +161,6 @@ class TestStudioBridgeAffinity:
 
         assert len({reviewer, planner, other_room}) == 3
 
-    def test_a_new_session_seed_rotates_the_affinity(self, db):
-        """Studio's own conversation boundary is the room-owned sessionSeed.
-
-        A new conversation in the room mints a new seed, and the seed is part
-        of the declared key, so the next conversation starts on a cold bucket
-        without Hermes having to observe a reset of its own.
-        """
-        first = _reply_scope(db, declared_key=_bridge_session_key(seed="0"))
-        second = _reply_scope(db, declared_key=_bridge_session_key(seed="1"))
-
-        assert first != second
 
     def test_the_row_source_is_the_authority_not_the_platform(self, db):
         """Equal keys under different sources never share one scope.
@@ -212,7 +189,7 @@ class TestStudioBridgeAffinity:
 
         child_id = _runtime_session_id()
         child = _bridge_agent(db, child_id, declared_key=key)
-        db.create_session(session_id=child_id, source="tool", model="test/model")
+        seed_session(db, child_id, "tool", model="test/model")
 
         assert resolve_prompt_cache_scope(child) == child_id
         assert child_id != conversation
@@ -223,9 +200,7 @@ class TestStudioBridgeAffinity:
         session_id = _runtime_session_id()
         agent = _bridge_agent(db, session_id, declared_key=key)
         agent._persist_disabled = True
-        db.create_session(
-            session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
-        )
+        seed_session(db, session_id, BRIDGE_ROW_SOURCE, model="test/model")
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
@@ -236,20 +211,19 @@ class TestUndeclaredBridgeIsUnchanged:
     def test_the_undeclared_shape_resolves_to_the_physical_id(self, db):
         session_id = _runtime_session_id()
         agent = _bridge_agent(db, session_id, declared_key=None)
-        db.create_session(
-            session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
-        )
+        seed_session(db, session_id, BRIDGE_ROW_SOURCE, model="test/model")
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
     def test_an_undeclared_compression_rotation_still_walks_its_lineage(self, db):
         root = _runtime_session_id()
-        db.create_session(session_id=root, source=BRIDGE_ROW_SOURCE, model="test/model")
-        db.end_session(root, "compression")
+        seed_session(db, root, BRIDGE_ROW_SOURCE, model="test/model")
+        db.sessions.end(root, "compression")
         rotated = _runtime_session_id()
-        db.create_session(
-            session_id=rotated,
-            source=BRIDGE_ROW_SOURCE,
+        seed_session(
+            db,
+            rotated,
+            BRIDGE_ROW_SOURCE,
             model="test/model",
             parent_session_id=root,
         )

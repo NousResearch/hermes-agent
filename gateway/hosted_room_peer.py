@@ -48,7 +48,7 @@ _ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
 @lru_cache(maxsize=32)
 def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
     """Load one restart-scoped grant secret for an exact installation root."""
-    from hermes_cli.install_identity import _fsync_directory
+    from utils import fsync_directory
     (home := Path(home_value)).mkdir(parents=True, exist_ok=True)
     path = home / _ROOM_GRANT_SECRET_FILE
     def _read() -> bytes:
@@ -75,7 +75,7 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
             except FileExistsError:
                 material = _read()
             else:
-                _fsync_directory(home)
+                fsync_directory(home)
         finally:
             temporary.unlink(missing_ok=True)
     return hmac.new(material, b"hermes-hosted-room-installation-grant-v1", hashlib.sha256).digest()
@@ -94,6 +94,24 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
         # retains the installation root and is the authority here.
         root = os.environ.get("HERMES_HOME") or get_hermes_home()
     return _gateway_room_grant_secret_for_home(str(Path(root).expanduser().resolve()))
+
+
+def gateway_room_grant_secret_available(root: Path | str | None = None) -> bool:
+    """Whether this installation has, or can mint, its RoomLink secret, without minting it: a
+    read-only capability probe must never create the file (``gateway_room_grant_secret`` does,
+    when a grant is first issued)."""
+    if root is None:
+        from hermes_constants import get_hermes_home
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser().resolve()
+    path = home / _ROOM_GRANT_SECRET_FILE
+    try:
+        return len(path.read_bytes()) == 32
+    except FileNotFoundError:
+        parent = home if home.exists() else next((p for p in home.parents if p.exists()), home)
+        return os.access(parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
 
 
 def derive_room_grant_secret(api_key: str) -> bytes:
@@ -206,7 +224,7 @@ class GatewayRoomCatalog:
     transport_security: TransportSecurity | None = None
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "GatewayRoomCatalog":
+    def from_mapping(cls, value: Mapping[str, Any]) -> GatewayRoomCatalog:
         _exact_fields(value, required=_CATALOG_FIELDS, optional={"endpoint"}, label="capability catalog")
         installation_id = _identifier(value["installation_id"], field="installation_id")
         versions = tuple(_protocol_versions(_non_empty_list(value["protocol_versions"], field="protocol_versions")))
@@ -244,14 +262,19 @@ class GatewayRoomCatalog:
 def catalog_mapping(
     *, installation_id: str, protocol_versions: Iterable[int] = (PROTOCOL_VERSION,),
     link_modes: Iterable[LinkMode] = ("direct", "pull"), persistent_process: bool, text: bool = True,
-    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str | None = None,
+    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str,
     execution_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Build a canonical catalog mapping with its digest."""
+    """Build a canonical catalog mapping with its digest for the SERVED ``target_profile``.
+
+    The profile is the session's, never the process's: a multiplexed gateway advertises one
+    catalog per served profile, so there is no env (``HERMES_PROFILE``) fallback (#116900)."""
     # A Desktop-managed gateway exits with the app: the caller's flag is only an upper bound.
     persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
-    profile = str(target_profile or "").strip() or (os.getenv("HERMES_PROFILE") or "default").strip() or "default"
+    profile = _identifier(target_profile, field="target_profile")
     checked_policy = RoomExecutionPolicy.from_mapping(
         execution_policy or execution_policy_mapping(target_profile=profile))
+    if checked_policy.target_profile != profile:
+        raise HostedRoomPeerError("execution_policy target_profile does not match the catalog target_profile")
     # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
     # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
     if checked_policy.approval_mode == "off":
@@ -263,7 +286,7 @@ def catalog_mapping(
         "link_modes": [mode for mode in dict.fromkeys(link_modes) if mode == "direct"],
         "persistent_process": persistent_process, "text": bool(text), "attachments": bool(attachments),
         "execution_policy": checked_policy.as_mapping(),
-        "endpoint": dict(local_room_link_endpoint() if endpoint is None else endpoint)}
+        "endpoint": dict(served_room_link_endpoint(profile) if endpoint is None else endpoint)}
     value["catalog_digest"] = _catalog_digest(value)
     GatewayRoomCatalog.from_mapping(value)
     return value
@@ -282,6 +305,31 @@ def local_room_link_endpoint(value: Any | None = None) -> dict[str, Any]:
     except HostedRoomPeerError:
         return {"available": False, "reason": "invalid_configuration"}
     return {"available": True, "url": url, "transport_security": transport_security}
+
+
+def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
+    """The endpoint a catalog for the served *target_profile* advertises.
+
+    A named profile that sets its own ``gateway.room_link_url`` advertises it as is. One that
+    inherits the gateway's endpoint (root config or ``HERMES_ROOM_LINK_URL``) advertises that
+    listener's ``/p/<profile>`` mirror, so every lender call runs in that profile's request scope
+    and its grant (``target_profile``) never answers on another profile's route. The root config's
+    listener is inherited only by a multiplexed gateway, whose shared listener serves the mirror: a
+    single-profile ``hermes -p <profile> gateway run`` is its own process, and the root gateway
+    neither serves that profile nor holds its grant secret."""
+    if target_profile == "default":
+        return local_room_link_endpoint()
+    from agent.secret_scope import is_multiplex_active
+    from hermes_cli.profiles import get_profile_dir
+    override = os.getenv("HERMES_ROOM_LINK_URL")
+    if override is None and (own := _room_link_url_from_config(str(get_profile_dir(target_profile)))):
+        return local_room_link_endpoint(own)
+    from hermes_constants import get_default_hermes_root
+    root_listener = _room_link_url_from_config(str(get_default_hermes_root())) if is_multiplex_active() else None
+    inherited = str((override if override is not None else root_listener) or "").strip()
+    if not inherited:
+        return {"available": False, "reason": "not_configured"}
+    return local_room_link_endpoint(f"{inherited.rstrip('/')}/p/{target_profile}")
 
 
 @lru_cache(maxsize=16)
@@ -374,7 +422,7 @@ class HostedMemberDispatch:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
+    def from_mapping(cls, value: Mapping[str, Any]) -> HostedMemberDispatch:
         _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
@@ -481,6 +529,30 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
     return payload
 
 
+def room_grant_hard_expiry(token: str, *, now: float | None = None) -> float:
+    """When a grant and every renewal of it are dead (its status horizon), read without the secret:
+    the home only schedules by it. An unreadable token counts as living the longest horizon."""
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return float(claims.get("status_expires_at", claims["expires_at"]))
+    except (ValueError, KeyError, TypeError, AttributeError):  # grant/base64/JSON errors are ValueErrors
+        return clock(now) + MAX_STATUS_GRANT_TTL_SECONDS
+
+
+def room_grant_matches_scope(
+    token: str, *, room_id: str, member_id: str, home_install_id: str,
+    authority_gateway_id: str, authority_epoch: int) -> bool:
+    """Read the scope the member's revoke endpoint acts on, without authenticating the token.
+    A refused registration must never schedule revocation of a different group's grant."""
+    expected = {"room_id": room_id, "member_id": member_id, "home_install_id": home_install_id,
+                "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch}
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return all(claims.get(key) == value for key, value in expected.items())
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:
     """Read only grant timing to schedule refresh; trust is established by the target, not here."""
     try:
@@ -488,57 +560,3 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
-
-@dataclass(frozen=True)
-class RoomLinkProbe:
-    """One gateway-verified route candidate."""
-
-    mode: LinkMode
-    verified: bool
-    encrypted: bool
-    latency_ms: float
-
-_LINK_PRIORITY = {
-    "direct": 0,
-    "overlay": 1,
-    "relay": 2,
-    "pull": 3,
-    "desktop": 4,
-}
-
-def select_room_link(
-    probes: Iterable[RoomLinkProbe],
-    *,
-    desktop_available: bool,
-) -> RoomLinkProbe | None:
-    """Choose the fastest safe route without weakening encryption."""
-    candidates = [
-        probe
-        for probe in probes
-        if probe.verified
-        and probe.encrypted
-        and probe.mode != "desktop"
-        and math.isfinite(probe.latency_ms)
-        and probe.latency_ms >= 0
-    ]
-    if candidates:
-        return min(
-            candidates,
-            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
-        )
-    if desktop_available:
-        return RoomLinkProbe(
-            mode="desktop",
-            verified=True,
-            encrypted=True,
-            latency_ms=0,
-        )
-    return None
-# ---- END PLUGIN-COMPAT ----

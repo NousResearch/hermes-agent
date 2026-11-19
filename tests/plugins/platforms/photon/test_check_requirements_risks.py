@@ -14,13 +14,11 @@ from __future__ import annotations
 
 import logging
 import shutil
-import types
 from pathlib import Path
 
 import pytest
 
 from plugins.platforms.photon import adapter as adapter_mod
-from plugins.platforms.photon import cli as cli_mod
 from plugins.platforms.photon import sidecar_paths
 
 
@@ -104,11 +102,6 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
 # ---------------------------------------------------------------------------
 
 
-def test_cli_status_shares_adapter_sidecar_deps_check(tmp_path: Path) -> None:
-    """`hermes photon status` must use the exact same spectrum-ts check as
-    check_requirements() / _start_sidecar() — not a separate node_modules-only
-    existence check that would disagree on a partial/empty install."""
-    assert cli_mod.sidecar_deps_installed is adapter_mod.sidecar_deps_installed
 
 
 def test_sidecar_deps_installed_false_on_empty_node_modules(

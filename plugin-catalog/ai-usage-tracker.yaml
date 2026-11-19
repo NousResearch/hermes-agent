@@ -1,0 +1,22 @@
+# Community catalog entry — ai-usage-tracker
+#
+# Owner-submitted: the PR author (`lvabarajithan`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as static
+# files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+name: ai-usage-tracker
+repo: https://github.com/lvabarajithan/hermes-ai-usage-tracker
+sha: "14e844f6ced5e0d618c767d726330a78c5cadadd"   # tag v1.0.2
+description: Live subscription-quota windows for every AI provider Hermes can route to, as a
+  desktop page plus a status-bar chip, with a per-profile picker — Codex, Claude, Copilot,
+  OpenCode Go/Zen, Z.AI, Kimi, MiniMax, Nous, OpenRouter, DeepSeek.
+maintainer: lvabarajithan
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [linux, macos]
+docs_url: https://github.com/lvabarajithan/hermes-ai-usage-tracker
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -50,7 +50,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
     }
 
     def _entry_catalog(entry: dict) -> tuple[str, str, list[tuple[str, str]]] | None:
-        field = lambda key: str(entry.get(key) or "").strip()  # noqa: E731
+        field = lambda key: str(entry.get(key) or "").strip()
         provider_key, name, base_url = field("provider_key"), field("name"), field("base_url")
         if provider_key.lower() in disabled_keys or not name or not base_url:
             return None
@@ -152,6 +152,19 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
+def fallback_model_state(model: str, provider: str) -> SessionModelState | None:
+    """Keep the current identity when inventory is unavailable, without offering gated models."""
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
+    from hermes_cli.models import normalize_provider
+
+    if not model:
+        return None
+    codex = _semantic_provider(provider, normalize_provider) == "openai-codex"
+    choice = encode_model_choice("openai-codex" if codex else provider, model)
+    available = [] if codex and codex_model_requires_account_discovery(model) else [ModelInfo(model_id=choice, name=model)]
+    return SessionModelState(available_models=available, current_model_id=choice)
+
+
 @dataclass
 class _ModelCatalog:
     """Deduplicated ACP model rows from the inventory + named endpoints.
@@ -221,7 +234,7 @@ class _ModelCatalog:
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
 
-    def add_named_catalogs(self, catalogs: list, normalized_provider: str) -> None:
+    def add_named_catalogs(self, catalogs: list, current_choice_provider: str) -> None:
         """Named user-defined endpoints (providers: / custom_providers:) are invisible
         to canonical enumeration — append them like the TUI /model picker. An empty
         catalog marks that slug authoritative-empty."""
@@ -230,7 +243,7 @@ class _ModelCatalog:
                 self.empty_authoritative.add(str(named_slug).strip().lower())
                 continue
             for named_model, named_desc in named_catalog:
-                is_current = named_slug == normalized_provider and named_model == self.current_model
+                is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
@@ -238,6 +251,7 @@ class _ModelCatalog:
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
+    from hermes_cli.codex_models import codex_model_requires_account_discovery
     from hermes_cli.inventory import build_models_payload, load_picker_context
     from hermes_cli.models import normalize_provider, provider_label
 
@@ -251,14 +265,42 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         probe_custom_providers=False, probe_current_custom_provider=False, max_models=ACP_MAX_MODELS_PER_PROVIDER,
     )
 
+    named_catalogs = _named_custom_provider_catalogs()
+    named_slugs = {str(slug).strip().lower() for slug, _label, _models in named_catalogs}
+    current_choice_provider = str(provider or "").strip().lower()
+    current_base = base_url.strip().rstrip("/").lower()
+    # ``build_models_payload`` represents configured ``providers:`` entries by their raw
+    # config key. ACP ids must instead use the durable ``custom:<key>`` identity so the
+    # picker value round-trips through ``parse_model_input``. Only user-defined rows are
+    # replaced by the named catalogs: a ``providers:`` key that shadows a canonical name
+    # (``providers.openrouter:`` → proxy) must leave the canonical row — and a session that
+    # runs on the canonical endpoint — alone, or picking "current" re-routes to the proxy.
+    all_rows = payload.get("providers") or []
+    canonical_current = any(
+        not r.get("is_user_defined") and _semantic_provider(str(r.get("slug") or ""), normalize_provider)
+        == _semantic_provider(current_choice_provider, normalize_provider)
+        for r in all_rows
+    )
+    inventory_rows: list = []
+    for row in all_rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        if not row.get("is_user_defined") or not {slug, f"custom:{slug}"} & named_slugs:
+            inventory_rows.append(row)
+            continue
+        row_base = str(row.get("api_url") or "").strip().rstrip("/").lower()
+        if slug.removeprefix("custom:") == current_choice_provider and (current_base == row_base or not canonical_current):
+            current_choice_provider = f"custom:{current_choice_provider}"
+
     cat = _ModelCatalog(
         normalize_provider=normalize_provider, current_model=model,
-        current_choice_provider=str(provider or "").strip().lower(),
-        current_base_url=base_url.strip().rstrip("/").lower(),
+        current_choice_provider=current_choice_provider,
+        current_base_url=current_base,
     )
-    cat.add_inventory_rows(payload.get("providers") or [], provider_label)
-    cat.add_named_catalogs(_named_custom_provider_catalogs(), normalized_provider)
+    cat.add_inventory_rows(inventory_rows, provider_label)
+    cat.add_named_catalogs(named_catalogs, current_choice_provider)
     available_models = cat.models
+    if cat.semantic(cat.current_choice_provider) == "openai-codex":
+        cat.current_choice_provider = "openai-codex"
 
     def empty_applies(provider_id: str) -> bool:
         return _empty_catalog_applies(provider_id, cat.empty_authoritative, normalize_provider)
@@ -270,7 +312,8 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_is_empty:
         available_models = [m for m in available_models if " • current" not in str(m.description or "")]
     current_model_id = "" if current_is_empty else encode_model_choice(cat.current_choice_provider, model)
-    if current_model_id and current_model_id not in {item.model_id for item in available_models}:
+    requires_discovery = cat.current_choice_provider == "openai-codex" and codex_model_requires_account_discovery(model)
+    if current_model_id and not requires_discovery and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(
             model_id=current_model_id, name=f"{provider_name} · {model}",
@@ -279,7 +322,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
 
     if not available_models and current_is_empty:
         return SessionModelState(available_models=[], current_model_id="")
-    if available_models:
+    if available_models or (current_model_id and requires_discovery):
         return SessionModelState(
             available_models=available_models,
             current_model_id=current_model_id if current_model_id or current_is_empty else available_models[0].model_id,

@@ -19,7 +19,7 @@ from tools.spill_safety import (
     write_text_exclusive,
 )
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX perms/symlinks")
+posix_only = pytest.mark.platforms("posix")  # POSIX perms/symlinks
 
 
 def test_write_creates_file_with_content(tmp_path):
@@ -43,6 +43,23 @@ def test_private_dir_is_0700_and_tightened(tmp_path):
     assert stat.S_IMODE(os.lstat(d).st_mode) == 0o700
 
 
+@posix_only
+def test_keep_group_tightens_only_world_bits(tmp_path):
+    """A shared-group home (HERMES_HOME_MODE=2770) keeps group access on an existing dir."""
+    d = tmp_path / "spills"
+    d.mkdir()
+    # macOS gives a new dir its parent's group and drops setgid on chmod when the
+    # caller isn't in that group; own the group first, as a shared-group home does.
+    os.chown(d, -1, os.getegid())
+    os.chmod(d, 0o2777)
+    ensure_spill_dir(d, private=True, keep_group=True)
+    assert stat.S_IMODE(os.lstat(d).st_mode) & 0o7777 == 0o2770
+    fresh = tmp_path / "fresh"
+    ensure_spill_dir(fresh, private=True, keep_group=True)
+    assert stat.S_IMODE(os.lstat(fresh).st_mode) == 0o700
+
+
+@pytest.mark.require_symlinks
 def test_ensure_spill_dir_refuses_symlinked_leaf(tmp_path):
     victim = tmp_path / "victim-dir"
     victim.mkdir()
@@ -52,6 +69,7 @@ def test_ensure_spill_dir_refuses_symlinked_leaf(tmp_path):
         ensure_spill_dir(link)
 
 
+@pytest.mark.require_symlinks
 def test_refuses_planted_symlink(tmp_path):
     """The core attack: symlink at the spill path must fail, not redirect."""
     victim = tmp_path / "victim.txt"
@@ -63,6 +81,7 @@ def test_refuses_planted_symlink(tmp_path):
     assert victim.read_text() == "original"
 
 
+@pytest.mark.require_symlinks
 def test_refuses_dangling_symlink(tmp_path):
     target = tmp_path / "spill.txt"
     target.symlink_to(tmp_path / "does-not-exist.txt")
@@ -71,6 +90,7 @@ def test_refuses_dangling_symlink(tmp_path):
     assert not (tmp_path / "does-not-exist.txt").exists()
 
 
+@pytest.mark.require_symlinks
 def test_overwrite_removes_symlink_not_its_target(tmp_path):
     victim = tmp_path / "victim.txt"
     victim.write_text("original")

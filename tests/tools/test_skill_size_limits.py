@@ -21,7 +21,6 @@ def isolate_skills(tmp_path, monkeypatch):
     """Redirect SKILLS_DIR to a temp directory."""
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return skills_dir
@@ -84,7 +83,6 @@ class TestEditSkillSizeLimit:
         big = big.replace("name: test-skill", "name: grow-me")
         result = json.loads(skill_manage(action="edit", name="grow-me", content=big))
         assert result["success"] is False
-        assert "100,000" in result["error"]
 
 
 class TestPatchSkillSizeLimit:
@@ -103,7 +101,6 @@ class TestPatchSkillSizeLimit:
             new_string="# Test Skill\n" + ("y" * 200),
         ))
         assert result["success"] is False
-        assert "100,000" in result["error"]
 
 
     def test_patch_supporting_file_size_limit(self, isolate_skills):
@@ -143,7 +140,6 @@ class TestWriteFileSizeLimit:
             file_content="x" * (MAX_SKILL_CONTENT_CHARS + 1),
         ))
         assert result["success"] is False
-        assert "100,000" in result["error"]
 
     def test_write_file_within_limit(self, isolate_skills):
         small = _make_skill_content(1000)

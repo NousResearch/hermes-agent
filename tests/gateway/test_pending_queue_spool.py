@@ -9,20 +9,34 @@ successful transcript flush — not silently discarded (#78182, #82616).
 import json
 import logging
 import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from gateway import shutdown_flush
 from gateway.session import SessionStore
+from gateway.session_transcript import transcript_append_kwargs
+
+
+def _beside(db):
+    """The storage handle over a fake store: ``messages.append`` lands on its ``append_message`` as the live
+    writer's row."""
+    fields = transcript_append_kwargs("", {}).keys() - {"session_id"}
+    return SimpleNamespace(messages=SimpleNamespace(append=lambda sid, message: db.append_message(
+        session_id=sid, **{k: getattr(message, k) for k in fields})))
 
 
 def _make_store(db):
     store = object.__new__(SessionStore)
-    store._db = db
+    store._db, store._persistence_beside = db, _beside
     store._transcript_retry_lock = threading.Lock()
     store._dirty_transcripts = {}
     store._transcript_append_failures = {}
-    store._fts_rebuild_attempted = True
+    store._fts_rebuild_last_attempt_at = time.monotonic()
+    # These tests exercise the cap-eviction spool path; keep the stalled-session spool (which
+    # normally fires first, at the escalation threshold) out of the way.
+    store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 10 ** 6
     return store
 
 
@@ -202,7 +216,7 @@ class TestSpoolPrimitives:
         # A shutdown-format flush file must not be consumed by the drain.
         shutdown_flush.flush_pending_to_file({"key1": "hello"}, reason="shutdown")
         assert len(_spool_files(spool_home)) == 1
-        replayed, remaining = shutdown_flush.drain_transcript_spool(
+        replayed, _remaining = shutdown_flush.drain_transcript_spool(
             "key1", lambda m: None
         )
         assert replayed == 0

@@ -6,11 +6,11 @@ description: "开箱即用的自动化蓝图——定时任务、GitHub 事件�
 
 # 自动化蓝图
 
-常见自动化模式的复制粘贴蓝图。每个蓝图使用 Hermes 内置的 [cron 调度器](/user-guide/features/cron) 实现基于时间的触发，使用 [webhook 平台](/user-guide/messaging/webhooks) 实现事件驱动触发。
+常见自动化模式的复制粘贴蓝图。每个蓝图使用 Hermes 内置的 [cron 调度器](../user-guide/features/cron.md) 实现基于时间的触发，使用 [webhook 平台](../user-guide/messaging/webhooks.md) 实现事件驱动触发。
 
 所有蓝图适用于**任意模型**——不绑定单一提供商。
 
-如需带表单的参数化蓝图（无需手写 cron 语法），请参阅[自动化蓝图目录](/reference/automation-blueprints-catalog)。
+如需带表单的参数化蓝图（无需手写 cron 语法），请参阅[自动化蓝图目录](../reference/automation-blueprints-catalog.mdx)。
 
 :::tip 三种触发类型
 | 触发方式 | 方式 | 工具 |
@@ -60,6 +60,7 @@ PR 开启时自动进行审查，并直接在 PR 上发布审查评论。
 ```bash
 hermes webhook subscribe github-pr-review \
   --events "pull_request" \
+  --signature github \
   --prompt "Review this pull request:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}
@@ -142,9 +143,9 @@ Report any gaps where code changed but docs didn't. If everything is in sync, re
 hermes cron create "0 6 * * *" \
   "Run a dependency security audit on the hermes-agent project.
 
-1. cd ~/.hermes/hermes-agent && source .venv/bin/activate
-2. Run: pip audit --format json 2>/dev/null || pip audit 2>&1
-3. Run: npm audit --json 2>/dev/null (in website/ directory if it exists)
+1. Locate the hermes-agent checkout and its pyproject.toml and uv.lock. Do not activate or mutate Hermes's dependency environment.
+2. Scan uv.lock with an independently installed scanner that supports that lock format (check its --help). Preserve the complete findings and errors. If no scanner is available, report the blocker; do not install one into Hermes.
+3. Run: npm audit --json in website/ if it exists. Preserve stderr and distinguish findings from a failed scan.
 4. Check for any CVEs with CVSS score >= 7.0
 
 If vulnerabilities found:
@@ -189,10 +190,14 @@ If healthy, keep it brief. If degraded or failed, provide detailed diagnostics."
 你的 CI/CD 流水线触发方式：
 
 ```bash
+BODY='{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)
 curl -X POST http://your-server:8644/webhooks/deploy-verify \
   -H "Content-Type: application/json" \
-  -H "X-Hub-Signature-256: sha256=$(echo -n '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}' | openssl dgst -sha256 -hmac 'your-secret' | cut -d' ' -f2)" \
-  -d '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
+  -H "X-Webhook-Timestamp: $TS" \
+  -H "X-Webhook-Signature-V2: $SIG" \
+  -d "$BODY"
 ```
 
 ### 告警分类
@@ -355,6 +360,7 @@ hermes cron create "0 8 * * *" \
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New GitHub issue received:
 Repository: {repository.full_name}
 Issue #{issue.number}: {issue.title}
@@ -417,6 +423,7 @@ platforms:
 ```bash
 hermes webhook subscribe auto-port \
   --events "pull_request" \
+  --signature github \
   --prompt "PR merged in the source repository:
 Repository: {repository.full_name}
 PR #{pull_request.number}: {pull_request.title}

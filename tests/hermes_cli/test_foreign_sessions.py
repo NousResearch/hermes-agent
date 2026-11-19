@@ -1,12 +1,17 @@
 """Tests for hermes_cli.foreign_sessions — Claude Code / Codex CLI import.
 
-Fixture JSONL is synthesized inline (tmp_path); the SessionDB is opened
-against a temp path so nothing touches the real HERMES_HOME store.
+Fixture JSONL is synthesized inline (tmp_path); imports reach a gateway owner over a temp
+state.db, so nothing touches the real HERMES_HOME store.
 """
 
+import asyncio
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.fixtures.storage_read import session_row, transcript_rows
 
 from hermes_cli.foreign_sessions import (
     _list_sessions,
@@ -15,6 +20,7 @@ from hermes_cli.foreign_sessions import (
     parse_claude_session,
     parse_codex_session,
 )
+import itertools
 
 
 # ── fixture builders ─────────────────────────────────────────────────────
@@ -94,20 +100,43 @@ def _write_codex_fixture(tmp_path, extra_lines=None):
     return f
 
 
-@pytest.fixture
-def session_db(tmp_path):
-    from hermes_state import SessionDB
+def _route_store(monkeypatch, mutate):
+    """Answer the importer's gateway calls with *mutate* (``session.mutate`` params -> receipt)."""
+    from hermes_cli.gateway_client import GatewayClientError
+    from persistence.core.errors import AuthorityRefusal
+    calls = []
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    yield db
-    db.close()
+    def call(method, **params):
+        calls.append((method, params["operation"]))
+        try:
+            return mutate(params)
+        except (AuthorityRefusal, ValueError) as exc:  # a refusal crosses the wire as a bounded code
+            raise GatewayClientError(getattr(exc, "reason", "invalid_params")) from exc
+
+    monkeypatch.setattr("hermes_cli.gateway_session_store.session_store", lambda: SimpleNamespace(call=call))
+    return calls
+
+
+@pytest.fixture
+def gateway(tmp_path, monkeypatch):
+    """A gateway owner over a temp state.db that the importer's ``session.mutate`` calls reach."""
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionActor, SessionRef
+    from gateway.session_mutations import mutate_session
+    persistence = storage_handle(tmp_path)
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
+                                 epoch=persistence.runtime.begin_epoch(instance_id="owner"), persistence=persistence)
+    actor = SessionActor("owner", "p", frozenset({"session:read", "session:control", "session:create"}), "cli")
+    calls = _route_store(monkeypatch, lambda params: asyncio.run(
+        mutate_session(authority, actor, SessionRef("p", params["session_id"]), params)))
+    yield SimpleNamespace(store=persistence, calls=calls)
 
 
 def _assert_alternating(messages):
     roles = [m["role"] for m in messages]
     assert roles, "no messages"
     assert roles[0] == "user"
-    for a, b in zip(roles, roles[1:]):
+    for a, b in itertools.pairwise(roles):
         assert a != b, f"two consecutive {a} messages"
 
 
@@ -189,52 +218,128 @@ def test_list_sessions_missing_roots(tmp_path):
     assert _list_sessions("codex", tmp_path / "nope") == []
 
 
-# ── import into SessionDB ────────────────────────────────────────────────
+def test_env_overrides_relocate_default_roots(tmp_path, monkeypatch):
+    """CLAUDE_CONFIG_DIR / CODEX_HOME relocate discovery (ported from cline/cline#13827)."""
+    claude_cfg = tmp_path / "relocated-claude"
+    codex_home = tmp_path / "relocated-codex"
+    _write_claude_fixture(tmp_path)  # writes under tmp_path/.claude — becomes the store root below
+    (tmp_path / ".claude").rename(claude_cfg)
+    _write_codex_fixture(tmp_path)
+    (tmp_path / ".codex").rename(codex_home)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # default roots are empty
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_cfg))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
 
 
-def test_import_claude_session(tmp_path, session_db):
+def test_blank_env_overrides_fall_back_to_home(tmp_path, monkeypatch):
+    """A blank/whitespace override is unset, not a CWD-relative path (cline/cline#13827)."""
+    _write_claude_fixture(tmp_path)
+    _write_codex_fixture(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    monkeypatch.setenv("CODEX_HOME", "   ")
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
+
+
+# ── import through the gateway ───────────────────────────────────────────
+
+
+def test_import_claude_session(tmp_path, gateway):
     f = _write_claude_fixture(tmp_path)
-    session_id = import_foreign_session("claude", f, db=session_db)
-    row = session_db.get_session(session_id)
+    session_id = import_foreign_session("claude", f)
+    row = session_row(gateway.store, session_id)
     assert row is not None
-    assert row["source"] == "claude-code"
-    assert row["cwd"] == "/home/user/proj"
+    assert row["source"] == "cli"
+    assert row["origin_json"] is None
+    assert row["cwd"] is None  # /home/user/proj is not a folder here, and resume would refuse it
     assert row["message_count"] == 4
-    title = session_db.get_session_title(session_id)
+    title = gateway.store.sessions.get_title(session_id)
     assert title.startswith("Imported from Claude Code: ")
     assert "Please fix the flaky test" in title
-    messages = session_db.get_messages(session_id)
+    messages = transcript_rows(gateway.store, session_id)
     assert len(messages) == 4
     _assert_alternating(messages)
-    origin = json.loads(row["origin_json"])
-    assert origin["imported_from"]["tool"] == "claude-code"
-    assert origin["imported_from"]["path"] == str(f)
+    # A re-import keeps its conversation; only the taken (UNIQUE) title is dropped.
+    again = import_foreign_session("claude", f)
+    assert session_row(gateway.store, again)["message_count"] == 4
+    assert gateway.store.sessions.get_title(again) is None
 
 
-def test_import_codex_session(tmp_path, session_db):
+def test_import_codex_session(tmp_path, gateway):
     f = _write_codex_fixture(tmp_path)
-    session_id = import_foreign_session("@codex", f, db=session_db)
-    row = session_db.get_session(session_id)
+    f.write_text(f.read_text(encoding="utf-8").replace("/home/user/repo", str(tmp_path)), encoding="utf-8")
+    session_id = import_foreign_session("@codex", f)
+    row = session_row(gateway.store, session_id)
     assert row is not None
-    assert row["source"] == "codex-cli"
+    assert row["source"] == "cli"
+    assert row["cwd"] == str(tmp_path)
     assert row["message_count"] == 4
-    title = session_db.get_session_title(session_id)
+    title = gateway.store.sessions.get_title(session_id)
     assert title.startswith("Imported from Codex CLI: ")
-    messages = session_db.get_messages(session_id)
+    messages = transcript_rows(gateway.store, session_id)
     _assert_alternating(messages)
-    # resumable: resolve_session_id round-trips
-    assert session_db.resolve_session_id(session_id) == session_id
 
 
-def test_import_rejects_bad_input(tmp_path, session_db):
+def test_import_rejects_bad_input(tmp_path, gateway):
     with pytest.raises(ValueError, match="Unknown foreign session source"):
-        import_foreign_session("gemini", tmp_path / "x.jsonl", db=session_db)
+        import_foreign_session("gemini", tmp_path / "x.jsonl")
     with pytest.raises(ValueError, match="not found"):
-        import_foreign_session("claude", tmp_path / "missing.jsonl", db=session_db)
+        import_foreign_session("claude", tmp_path / "missing.jsonl")
     empty = tmp_path / "empty.jsonl"
     empty.write_text("not json\n", encoding="utf-8")
     with pytest.raises(ValueError, match="No user/assistant conversation"):
-        import_foreign_session("claude", empty, db=session_db)
+        import_foreign_session("claude", empty)
+    assert gateway.calls == []
+
+
+def test_import_is_written_by_the_gateway_not_this_process(tmp_path, gateway, monkeypatch):
+    """The gateway is the only state.db writer (#106742): the importer only sends ``session.mutate``."""
+    from tests.fixtures.storage_holder import history_binding_key
+
+    def refused(*_a, **_k):
+        raise AssertionError("the importer wrote state.db itself")
+    monkeypatch.setattr(type(gateway.store.sessions), "create", refused)
+    monkeypatch.setattr(type(gateway.store.messages), "append", refused)
+
+    session_id = import_foreign_session("claude", _write_claude_fixture(tmp_path))
+
+    assert gateway.calls == [("session.mutate", "import"), ("session.mutate", "rename")]
+    # the import receipt bound the row to its importer
+    assert gateway.store.state_meta.get(history_binding_key(session_id)) == json.dumps(["p", "owner"], separators=(",", ":"))
+
+
+@pytest.mark.asyncio
+async def test_imported_chat_resumes_writable_as_cli(tmp_path, monkeypatch):
+    """``hermes --resume @claude`` continues the import as an ordinary CLI session, not a read-only mount."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import SessionRef
+    from gateway.session_controls import AuthorityConnection
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: {"model": {"default": "m1", "provider": "openrouter"}})
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
+                             _adapter_for_source=lambda source: None, _cached_agent_for=lambda route: None)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id="i")
+    conn = AuthorityConnection(authority, object(), {
+        "user_id": "owner", "provider": "local", "profile_id": str(tmp_path), "instance_id": "i",
+        "capabilities": ["session:create", "session:read", "session:submit", "session:control"],
+        "native_bootstrap": True})
+    loop = asyncio.get_running_loop()
+    _route_store(monkeypatch, lambda params: asyncio.run_coroutine_threadsafe(
+        conn.mutate(SessionRef(str(tmp_path), params["session_id"]), params), loop).result())
+
+    session_id = await asyncio.to_thread(import_foreign_session, "claude", _write_claude_fixture(tmp_path))
+    ref = SessionRef(str(tmp_path), session_id)
+    opened = await conn.resume(ref, {})
+
+    assert len(opened["messages"]) == 4
+    assert not authority.sessions[session_id].detached
+    authority.authorize(conn.actor, ref, "session:submit")
 
 
 def test_leading_assistant_gets_single_stub(tmp_path):

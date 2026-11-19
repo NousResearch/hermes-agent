@@ -49,7 +49,7 @@ _LEGACY_TEMPLATE_SOULS = (
         "investigations."
     ),
     # ASCII-dashed variant seeded by scripts/install.ps1 (must stay pure ASCII, see
-    # tests/test_install_ps1_ascii_only.py); upgrading converges Windows installs on the em-dash text.
+    # tests/scripts/install/test_install_ps1_ascii_only.py); upgrading converges Windows installs on the em-dash text.
     DEFAULT_SOUL_MD.replace("\u2014", "--"),
 )
 

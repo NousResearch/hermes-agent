@@ -49,7 +49,9 @@ const DRAG_THRESHOLD_PX = 4
 const CENTER_RADIUS = 0.62
 
 export function snapshotZones(): EngineZone[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-tree-group]')].map(el => {
+  // Stable guest bodies carry group identity for focus/tooltip lookup, but
+  // only the tree's placement owns the full zone (including its tab strip).
+  return [...document.querySelectorAll<HTMLElement>('[data-tree-group]:not([data-pane-host])')].map(el => {
     const r = el.getBoundingClientRect()
 
     return { id: el.dataset.treeGroup!, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } }
@@ -512,6 +514,20 @@ export function startPaneDrag(
 
         // Tear-off: the tab leaves the strip and becomes a zone move.
         enterZoneMode()
+      }
+
+      // A strip is an exact target. Resolve it before the fuzzy zone engine:
+      // near a panel seam, proximity can otherwise pick the neighboring sidebar.
+      const hitStrip = !shift && strips.find(strip => rectContains(strip.rect, x, y))
+
+      if (hitStrip) {
+        return {
+          kind: 'group',
+          groupId: hitStrip.groupId,
+          groupIds: [hitStrip.groupId],
+          pos: 'center',
+          stack: slotBefore(hitStrip.slots, x, moving)
+        }
       }
 
       // The hint updates on highlight-set changes AND on sub-zone position

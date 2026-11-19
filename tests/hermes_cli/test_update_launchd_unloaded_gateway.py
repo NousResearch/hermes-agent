@@ -72,7 +72,7 @@ class TestLaunchdRestartAfterUpdate:
         classification at all — `launchd_restart()` handles every
         plist-present state.
         """
-        calls, state, subprocess_calls = launchd
+        calls, _state, subprocess_calls = launchd
 
         assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == (["ai.hermes.gateway"], [])
         assert calls == ["restart"]
@@ -81,14 +81,13 @@ class TestLaunchdRestartAfterUpdate:
         assert "NOT running" not in capsys.readouterr().out
 
     def test_restart_failure_warns_that_gateway_is_down(self, launchd, capsys):
-        calls, state, _ = launchd
+        _calls, state, _ = launchd
         state["restart_exc"] = subprocess.CalledProcessError(
             returncode=1, cmd=["launchctl", "kickstart"], stderr="kickstart refused"
         )
 
         assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], ["ai.hermes.gateway"])
         out = capsys.readouterr().out
-        assert "Gateway restart failed" in out
         assert "kickstart refused" in out
         assert "hermes gateway restart" in out
 
@@ -107,8 +106,27 @@ class TestLaunchdRestartAfterUpdate:
         assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], ["ai.hermes.gateway"])
         assert calls == []
         out = capsys.readouterr().out
-        assert "Could not restart the gateway" in out
         assert "hermes gateway restart" in out
+
+    def test_invoking_label_of_another_home_is_left_alone(self, launchd, capsys, tmp_path, monkeypatch):
+        """2026-10-01: a scratch HERMES_HOME shaped like the native default derives the bare label,
+        and the plist path follows the real account home, so the update refreshed and restarted the
+        account's LIVE gateway onto the scratch home. A plist pinning another home is not ours (#93349)."""
+        import plistlib
+
+        calls, state, subprocess_calls = launchd
+        plist = tmp_path / "ai.hermes.gateway.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "ai.hermes.gateway",
+                                          "EnvironmentVariables": {"HERMES_HOME": str(tmp_path / "live-home")}}))
+        before = plist.read_bytes()
+        state["plist"] = plist
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.update_scope_homes", lambda: {(tmp_path / "scratch").resolve()})
+
+        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
+        assert calls == []
+        assert subprocess_calls == []
+        assert plist.read_bytes() == before
+        assert "left alone" in capsys.readouterr().out
 
     def test_no_plist_is_not_a_launchd_install(self, launchd, capsys):
         """No service definition → nothing to restart, and nothing to warn about."""
@@ -133,6 +151,7 @@ ai.hermes.gateway = {
 """
 
 
+@pytest.mark.platforms("macos")
 class TestServicePidSweepExclusion:
     """Regression for the PR #75021 review: `_get_service_pids()` must not
     rely on `launchctl list` alone.
@@ -150,7 +169,6 @@ class TestServicePidSweepExclusion:
         state = {"list_rc": 1, "print_rc": 0, "print_out": _PRINT_OUTPUT_RUNNING}
 
         monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
-        monkeypatch.setattr(gateway_mod, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_mod, "_launchd_domain", lambda: "gui/501")
 

@@ -4,8 +4,37 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn_hygiene.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
+
+## Bedrock context window cache
+
+Bedrock context resolution in `agent/model_metadata.py` uses this precedence:
+
+- **Explicit overrides win.** Configured context lengths take priority over cache,
+  probes, and the static table.
+- **Provider-confirmed limits persist.** A successful probe or a limit learned
+  from a provider error remains authoritative, even below the static table.
+  The compressor uses the same value after restart.
+- **Legacy entries are revalidated.** Old scalar entries have no provenance and
+  may be either probe results or fallbacks. Their size does not establish which.
+- **Failed probes use the current table without persisting it.** Failures have a
+  five-minute in-memory cooldown scoped to Hermes home, endpoint, model, and
+  region. Expiry or explicit cache invalidation permits another attempt.
+
+The cache remains at `context_length_cache.yaml` under the active Hermes home.
+`context_lengths` retains scalar values for older readers. An additive
+`bedrock_confirmed_v1` map binds each confirmed key to its exact value in the
+same atomic write. Generic writes clear that key's provenance. Older writers
+may drop the additive map, which causes revalidation after upgrading again.
+Downgrading remains readable but restores the older runtime's resolution rules.
+
+The static fallback for `xai.grok-4.6` (including `global.` and `us.` inference
+profiles) is 500,000 tokens, per the
+[AWS model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html).
+This is Bedrock-specific, not the direct xAI API window. Existing compression
+rules still apply: without output reservation or an explicit token cap, the
+small-window 75% threshold floor yields a 375,000-token trigger at this window.
 
 ## Pluggable Context Engine
 
@@ -32,7 +61,7 @@ Plugin engines are **never auto-activated** — the user must explicitly set `co
 
 Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit `config.yaml` directly.
 
-For building a context engine plugin, see [Context Engine Plugins](/developer-guide/context-engine-plugin).
+For building a context engine plugin, see [Context Engine Plugins](./context-engine-plugin.md).
 
 ## Dual Compression System
 
@@ -53,7 +82,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
+Located in `gateway/run_turn_hygiene.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -128,8 +157,18 @@ inflation, real-over-threshold controls, reload/restore anchors, and local HTTP
 overflow/usage-less recovery with real compression but fixed local summary text.
 These are scripted control-flow checks, not vendor tokenizer or billing evidence.
 
-Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
-items) contribute 0 to every local estimate; only real usage ever prices them.
+Opaque provider blobs are never priced by their bytes (a native compaction
+checkpoint alone can be 5 million characters). Replayed **reasoning** is priced
+at the reasoning-token count the provider reported for the turn that produced it:
+each assistant row carries that count (`display_metadata.reasoning_tokens`), and
+every local estimate (preflight trigger, tail-budget walk, gateway hygiene)
+charges it. Providers bill the replay as input at that count: in a live A/B with
+the same request sent with and without the reasoning, gpt-5.6-sol reported 2,765
+and billed +2,767, grok-4.7 reported 73 and billed +76, and claude-opus-5.5
+reported 3,959 and billed +3,959 while its readable summary was about 1,016.
+Compaction checkpoints still contribute 0; only real usage prices them. Rows
+saved before the count existed fall back to a per-provider estimate from the
+ciphertext length.
 
 Images are priced at the per-image cost **learned from the provider's usage**
 (`agent/image_token_cost.py`), not a vendor formula: on a response whose delta
@@ -143,17 +182,108 @@ default applies.
 #### Failure cooldown and provider-proven overflow
 
 A failed or stalled summary attempt arms a per-session **failure cooldown**
-(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
-ordinary threshold-triggered compaction is deferred so a broken summary backend
-does not re-fire every turn. Two paths run a real attempt anyway:
+(escalating 60s → 300s → 900s, never shorter than
+`compression.context_timeout_seconds`, persisted in `state.db`). While it is
+armed, ordinary threshold-triggered compaction is deferred so a broken summary
+backend does not re-fire every turn. Timeouts and stalls escalate on one
+counter; a summary that ends in `finish_reason=length` (output cap hit, the
+transcript is preserved) escalates on its own counter along the same
+60s → 300s → 900s rungs, so a later turn — such as an async delegation
+completion arriving after the cooldown lapsed — cannot re-issue the same
+capped request every 30 seconds (#69637). JSON-decode, closed-stream and
+empty-content failures stay on a flat 30 s cooldown. Three paths run a real
+attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- The same-turn `fallback_chain` retry after a stalled primary route — the
+  cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
+  If that pinned route's summary call fails, compress() still commits its
+  deterministic fallback summary (default `abort_on_summary_failure: false`);
+  the log then says "committed a deterministic fallback summary", not
+  "recovered".
+- **Repeated stall → deterministic fallback.** A first stall keeps the
+  transcript, arms the cooldown and lets the LLM route retry after it lapses.
+  When the route stalls *again* while a stall-class failure is still on the
+  ladder (`_consecutive_timeout_failures >= 1`), the retry ladder ends with a
+  deterministic rung: the worker is re-run with the summary LLM skipped
+  (`DETERMINISTIC_SUMMARY_ROUTE` pin) and commits the static fallback summary
+  through the ordinary lease/fence/watermark pipeline — the same degrade a
+  failed summary call gets — instead of "continuing without compression" and
+  re-entering the same silent stream every turn (#112420).
+  `abort_on_summary_failure: true` still aborts (nothing dropped). A committed
+  compaction rebinds the compressor and resets the ladder count, so each
+  compaction cycle grants the LLM route one stall before escalating; the
+  persisted cooldown row still paces attempts across turns and restarts.
+- **Summary provider overloaded → abort, transcript kept.** When the summary
+  call fails with a provider-overload error (`overloaded`, `at capacity`,
+  HTTP 529) and the one-shot main-model retry also fails, compress() aborts
+  and preserves the transcript unchanged instead of committing the
+  deterministic fallback; the warning names the overload
+  (`failure_class=summary_overload_failure`) and `/compress` retries once
+  capacity recovers. Auth/quota, network and empty-content failures already
+  abort the same way. *Sustained* overload escalates (#123167): after 3
+  consecutive overload aborts in one session the overload stops counting as
+  terminal and compress() commits the deterministic fallback
+  (`failure_class=summary_overload_degraded`) — a bounded middle-window loss
+  instead of letting the transcript grow into `compression_exhausted` and a
+  gateway auto-reset that discards the whole session. A successful summary
+  resets the budget; `abort_on_summary_failure: true` still hard-aborts every
+  attempt.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring
   here would wedge the session: every turn would bounce off the provider and
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
+
+#### Attempt telemetry
+
+Every `compress_context` call that returns logs one content-free INFO line,
+`context compression attempt telemetry: {...}` (logger
+`agent.conversation_compression`). It never carries message text, summary
+text, the focus topic or error messages.
+
+- `trigger_source` names why the attempt ran: `manual`, `idle`,
+  `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
+  `gateway_hygiene` or `overflow`. An automatic caller that passes no label
+  reads `auto`; a refusal before any attempt began (pool saturation) reads
+  `unknown`.
+- `route` is `hermes` for the local compressor and `codex_app_server` when the
+  Codex thread owns compaction.
+- `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
+  A `blocked` attempt was refused by an automatic guard; its `failure_class`
+  names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
+  `blocked:ineffective`). Under the session lease, `session_ownership_lost`
+  (`skipped`) means another path already rotated the session, and
+  `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
+  mean that state could not be read. `empty_transcript` (`aborted`) means the
+  engine returned no messages, so nothing was committed.
+- `attempt_id` names this attempt and `session_id` the session it started
+  in, even when the attempt then adopts a rotated child session or unwinds
+  after a newer attempt (a stall fallback) has begun. An attempt
+  that stops before the compressor runs, or rolls its state back, logs
+  `method: none` and no token counts, never an earlier attempt's numbers.
+- `method` says how the summary was produced: `llm_summary`,
+  `aux_fallback_main` (the summary model failed and the main model wrote it),
+  `deterministic_fallback` (static anchors summary; `items_dropped` counts the
+  replaced messages), `provider` (Codex) or `none`.
+- `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
+  `tokens_reclaimed` describe the transcript that crossed the commit boundary,
+  including retained `/compress here N` tail rows and boundary anchors.
+  A refused or rolled-back candidate never reached the transcript, so its
+  record has no `messages_after`, `tokens_after`, `tokens_reclaimed` or
+  `items_dropped`.
+  `token_count_method: estimate_rough` marks them as rough message-only
+  estimates (system prompt and tool schemas excluded), so they compare like
+  for like. `tool_results_pruned` and `reasoning_items_pruned` count the
+  deterministic passes that ran before and after the summary.
+
+The opt-in `hermes.compression.count` shared metric keeps coarse triggers
+(`auto`, `manual`, `overflow`) and counts only attempts the local compressor
+ran; blocked and Codex-routed attempts appear in the log line only. When the
+NeMo Relay runtime is live, the same record, plus micro-compaction passes and
+committed proactive prunes, is also emitted as a `hermes.compaction` mark (see
+[NeMo Relay Shared Metrics](./relay-shared-metrics.md#compaction-marks)).
 
 
 ## Configuration
@@ -174,9 +304,10 @@ compression:
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
-  codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
-  codex_responses_compact_threshold: null  # Automatic server compaction trigger
+  codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
+  codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
+  prepare_ahead: false       # Opt-in: prepare the next summary in the background (default: false)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -190,8 +321,9 @@ auxiliary:
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins). The small-context floor still applies on top (see below) |
+| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
+| `threshold_tokens` | `null` | int or `null` | Optional absolute cap on the trigger: when set, compaction fires at the lower of the ratio trigger and this count. `null` = ratio-only |
+| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
@@ -201,9 +333,12 @@ auxiliary:
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
-| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
-| `codex_responses_compact_threshold` | `null` | `null` or positive integer | `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
+| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
+| `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
+| `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
+
+Cache-edge compaction is step 2 of the prompt-cache lifecycle (`agent/prompt_cache_lifecycle/`, no key; see Prompt caching below). Every compaction path summarizes first and archives after. `CompactionWindowMixin._plan_compaction_window` (`agent/context_compressor_window.py`) is write-free and only sets the boundaries; `summary_view` puts the window's ORIGINAL tool results back for the summarizer (a `clarify` result keeps its filtered one-liner, which drops legacy headless notices), and `_commit_window` runs only once a summary exists: `tool_result_storage.archive_compaction_drops` writes each removed or shortened original byte-exact to `cache/pruned/` (short and duplicate string results too) and points its stub at the file, `_offload_window_results` archives the window's whole results, and lean mode demotes stale tail results. The prepared pass (`agent/prepared_compaction.py`) summarizes `summary_view` rows and writes nothing; the splicing `compress()` archives. An aborted summary writes no archive; a failed write keeps that result whole and the compaction proceeds; on a sandboxed backend the stub names the path the sandbox reads (`tool_result_storage._archive_stub_path`: `cache/pruned` is in `credential_files._CACHE_DIRS`, so docker bind-mounts it and modal/ssh/daytona/vercel_sandbox sync it), and only a backend that does not publish the folder (plugin, hosted scope; `_archive_backend()` is None) keeps plain stubs.
 
 ### In-place compaction (single stable session id)
 
@@ -216,16 +351,34 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+Canonical `/compress` uses the session's frozen `compression.in_place` and
+`min_tail_user_messages` settings too. In-place mode soft-archives the current physical
+transcript; rotating mode publishes a successor. Both keep the logical admission owner
+and previously issued input IDs unchanged, and commit the transcript, generation,
+revision and retry receipt together. Safe-mode sessions use code defaults rather than
+profile compression settings.
+
 ### Auxiliary feasibility and tail retention
 
 A smaller auxiliary compression model can lower the live compression trigger without
 changing the selected tail policy. In `lean` mode the selection budget remains based
-on the **main model's context window**: 2.5%, clamped to 10K–25K tokens. For example,
-a 1M main model with a 512K auxiliary model retains a 25K selection budget even when
-feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
+on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
+than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
+small model's "protected" tail was the whole request and compaction reclaimed nothing), nor more than
+half of a compression trigger above the 2K minimum summary budget (a `threshold_tokens` of 12K on a 1M window would otherwise keep a 25K tail, so
+every pass stayed over the trigger and refused as "would grow"). For example,
+a 1M main model with a 512K auxiliary model retains a 25K
+selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
 protected messages, boundary alignment, summaries, and anchors can add tokens.
+
+The lowered trigger is a durable ceiling on the compressor, so window corrections for the
+same model (a provider-reported limit, a grown local window) keep it. Whenever the main
+runtime changes — `/model`, fallback activation, or the restore back to the primary — the
+auxiliary model is re-probed immediately: the trigger is clamped again before the first
+compaction on the new window, or restored to the main model's own value when the
+auxiliary model now fits.
 
 ### Per-model threshold overrides
 
@@ -241,12 +394,20 @@ compression:
     "glm-5.2": 0.40
     "glm-5.2-1M": 0.25
     "claude-sonnet": 0.35
+    "openai-codex:astra": 0.85   # only on the Codex OAuth route (272K cap)
 ```
 
 Resolution rules:
 
 - Keys are **substring-matched** against the model name; the **longest
   matching key wins** (`glm-5.2-1M` beats `glm-5.2` for model `glm-5.2-1M`).
+- Keys may be **provider-scoped** as `"<provider>:<substring>"` (e.g.
+  `"openai-codex:astra": 0.85`). A scoped key only matches when the session's
+  provider is that route, so the same slug served with a different window
+  elsewhere (OpenRouter, Nous, direct OpenAI) keeps the global `threshold`.
+  Ranking uses the model substring only, so `"astra-900k"` still beats
+  `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
+  with the identical substring.
 - When no key matches (or the map is empty), the global `threshold` applies.
 - The override is re-resolved on every `/model` switch; switching to a model
   with no matching key falls back to the global `threshold`.
@@ -263,8 +424,8 @@ map.
 ### Codex gpt-5.x / Astra threshold autoraise
 
 The ChatGPT Codex OAuth backend hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and smaller
+windows through some resellers). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
 OAuth (`provider: openai-codex`) and the model is one of those families (Astra
 matches any slug containing `astra`; the opt-in `-900k` picker variants are
@@ -289,19 +450,22 @@ hermes config set compression.codex_gpt55_autoraise_notice false
 
 ### Codex large-context `-900k` picker variants (opt-in)
 
-The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4 and
-gpt-5.6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
+The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4, gpt-5.6
+(Sol/Terra/Luna) and GPT-6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
 for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
 **advertised 272K as the default** for the base slugs — a bigger window means
 more tokens per request and much faster subscription-usage burn, so the large
 window is strictly opt-in.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
-`gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
-`gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
+`gpt-6.1-sol-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,
+`gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`, `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
-have no `-900k` variant.
+have no `-900k` variant. When the authenticated Codex catalog publishes a
+`max_context_window` below 900K for the base slug (e.g. 872K), the `-900k`
+variant resolves to that live maximum instead; 900K remains the offline
+fallback and a published maximum above 900K does not raise it.
 
 Compaction thresholds follow the window: base slugs (272K) get the **85%
 autoraise** described above, while `-900k` variants keep your global
@@ -330,7 +494,7 @@ Hermes' local transcript is never rewritten on this runtime — state.db records
 the compaction boundary while the visible transcript stays intact. All other
 routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
 
-### Native Responses compaction (gpt-5.6 on direct OpenAI / Codex subscription)
+### Native Responses compaction (gpt-5.6 and Astra on supported routes)
 
 OpenAI's Responses API supports server-side compaction: when a request includes
 `context_management: [{type: "compaction", compact_threshold: N}]` and the
@@ -344,12 +508,18 @@ client-side summary pass, and ZDR-friendly (`store: false`, no
 Opt in with `compression.codex_responses_native: true`. The gate is deliberately
 narrow, re-checked on every request:
 
-- **Models:** the gpt-5.6 family only. Other models fail server-side when the
-  field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
-  no structured rejection to downgrade on, verified live Aug 2026).
+- **Models:** the gpt-5.6 family, plus `gpt-6-astra` (and its `-900k` picker
+  alias) on official Codex subscription OAuth. Astra on the direct API, other
+  Astra variants and other GPT-6 models are excluded. gpt-5.1/5.2 return HTTP 500 or stall the stream when the
+  field is present (no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
-  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  (Codex subscription OAuth) only. xAI, plugin providers, OpenRouter, relays, and
   local servers never see the field.
+
+For Astra, both the resolved `openai-codex` provider and an official HTTPS
+`chatgpt.com/backend-api/codex` endpoint are required. A trusted proxy override
+does not enable Astra compaction. This uses the existing automatic
+`context_management` path and does not add `configuration_update` history.
 
 Everything else about compression is unchanged: the local compressor stays
 armed as the fallback owner (the native threshold is clamped ~8K tokens below
@@ -359,8 +529,11 @@ the request without it. Switching the session to a non-eligible model or route
 simply stops the field from being sent — captured checkpoints are dropped from
 replay by the existing cross-issuer guard when the endpoint changes.
 
-By default, `compression.codex_responses_compact_threshold: null` derives the
-native threshold from the resolved local trigger. For example, a local trigger
+`compression.codex_responses_compact_threshold` is consulted only while
+`codex_responses_native: true` is in effect; with native compaction off (the
+default) it is ignored and local compression triggers on `threshold` /
+`threshold_tokens` alone. By default, `codex_responses_compact_threshold: null`
+derives the native threshold from the resolved local trigger. For example, a local trigger
 of 765,000 selects 756,808. Set a positive integer to preserve an absolute
 threshold such as 200,000. Invalid values select automatic behavior. If no
 usable local trigger exists, automatic mode uses 200,000. The provider minimum
@@ -377,7 +550,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
 :::note Threshold is derived from the MAIN model's context window
-`threshold_tokens` is always `threshold × context_length`, where `context_length`
+`threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens` when set), where `context_length`
 is the **main agent model's** context window — never the auxiliary/summary
 model's. On a 262,144-token model at the default `0.50`, the threshold is
 `262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
@@ -402,6 +575,26 @@ Old tool results (>200 chars) outside the protected tail are replaced with:
 This is a cheap pre-pass that saves significant tokens from verbose tool
 outputs (file contents, terminal output, search results).
 
+A tool round the model has not answered yet (compaction fired right after it ran, with or
+without `/steer` messages delivered after it) keeps its text results verbatim and its image
+results intact in the tail, so the model can use the output it requested. A round that alone
+exceeds 20% of the input budget (the context window minus the output reservation) can be
+summarized, and its older images are retired so compaction can still make room.
+
+#### Loaded skills across a compaction
+
+A skill's instructions are not kept verbatim forever, but the model is always told when they are
+gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
+`[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
+lists each such skill under `## Pruned Skills`. Whenever a marker survives anywhere in the compacted
+transcript, the handoff summary ends with a `## Skill Safety Rule` telling the model to reload the
+skill before relying on it; fresh sessions never carry that rule in their system prompt, since no
+marker can exist before the first compaction. Skills loaded inline by `/skill-name`, bundles,
+stacked invocations and gateway channel auto-load get the same marker when their turn is
+summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
+body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or
+`skills.auto_load` live in the system prompt and are never compacted.
+
 ### Phase 2: Determine Boundaries
 
 ```
@@ -416,8 +609,11 @@ outputs (file contents, terminal output, search results).
 ```
 
 Tail protection is **token-budget based**: walks backward from the end,
-accumulating tokens until the budget is exhausted. Falls back to the fixed
-`protect_last_n` count if the budget would protect fewer messages.
+accumulating tokens until the budget is exhausted. The budget — and the 1.5× soft
+ceiling whole rows may overrun it by — is capped at 20% of the context window on every
+model, so `protect_last_n` is a *minimum* only up to a small count floor (8 rows) and never
+forces a tail that cannot leave room to compact; only the required last-user / last-assistant
+anchors and atomic tool groups may exceed the cap.
 
 Boundaries are aligned to avoid splitting tool_call/tool_result groups.
 The `_align_boundary_backward()` method walks past consecutive tool results
@@ -484,7 +680,59 @@ information across multiple compactions — items move from "In Progress" to "Do
 new progress is added, and obsolete information is removed.
 
 The `_previous_summary` field on the compressor instance stores the last summary
-text for this purpose.
+text for this purpose. A deterministic fallback summary is stored there too, since
+it is the handoff the transcript now carries.
+
+### Prepared compaction (opt-in)
+
+With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
+session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
+the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
+(`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
+at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
+(`hermes chat -q`, `-z`), whose agents end with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls
+the same `_generate_summary` on a copy of the compressor and of the window's messages, so the live
+transcript, the system prompt and the prompt cache are untouched until compaction. There is one pass
+per compaction: while a summary is held, no further pass starts, however much the prompt grows.
+
+At the next automatic threshold compaction `compress()` splices the completed summary when it still
+covers the same messages: same session, unchanged head boundary, and the same message structure up to that boundary (role, tool call ids and
+names, tool result ids), each message vouched for by its durable `message_uid`. The text of a
+persisted message, tool arguments and tool bodies are not compared: the no-LLM prune and plugins
+rewrite them in place, and the summary still describes the same messages. A message without a uid on
+one side (caller-supplied `conversation_history` that is never persisted) is compared by text, since
+nothing else can tell it from a different message. A dropped or inserted message, or a rewind or
+branch into the window (new `message_uid`s), is a miss. The summary then covers
+`[head, candidate boundary)` and every later message, however many arrived after the pass started, is
+kept as tail; tail rules such as lean-mode tool stubbing still apply to them. Where the fresh plan
+would cut does not matter: a cut that moved earlier (the prune made tail rows cheaper, tool-group
+alignment) or later never discards the summary, because one prepared summary per compaction is never
+redone. The pass planned its own window with a full tail, so the tail is never empty. Summary placement and
+alternation handling are the normal Phase 4 assembly. The splice leaves the live compressor as the
+inline call would have: a pass that recovered on the main model after the summary model failed hands
+over that fallback (later compactions use the main model, and the user sees the broken-model
+warning), and the attempt telemetry carries the pass's aux call with `prepared_summary: true`.
+
+When no completed candidate fits but the pass still running would, compaction waits for that pass
+instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
+compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
+stream, and time a llama.cpp server spends reading the pass's prompt pushes the host's deadline back
+as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none), on
+cancellation, or when a session boundary discards the pass, and compaction then summarizes inline.
+
+Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
+that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and
+compactions where a memory provider contributes summary context (the first such compaction also stops
+further passes for that agent, since each would be thrown away). A running pass overtaken by compaction or a session
+boundary (including a rebind to another session id on `/resume` or `/branch`) is cancelled: it
+cannot publish, and its summary stream is closed rather than billed to completion. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+eviction or process restart simply means the next compaction runs inline; releasing the agent (cache
+eviction, a rewind, `close()`) also cancels a running pass. A held summary therefore helps only an
+agent that lives across turns (interactive CLI, TUI/Desktop and messaging sessions); a `-q --resume`
+chain builds a new agent per run and gets no head start. Pass log lines carry `session=<id>`, and
+opt-in shared metrics count adoption and every pass and splice outcome
+(`hermes.prepared_compaction.count`, see the shared-metrics guide). Plugin context engines,
+Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 
 
 ## Before/After Example
@@ -598,8 +846,9 @@ The marker is applied differently based on content type:
    for the compressed region but the system prompt cache survives. The rolling
    3-message window re-establishes caching within 1-2 turns.
 
-4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
-   sessions where the user takes breaks between turns.
+4. **TTL selection**: Default is `auto`: `1h` for human-paced sessions, where
+   the user takes breaks between turns, and `5m` for machine-paced ones. Pin
+   `5m` or `1h` to use one tier everywhere.
 
 5. **Model identity is part of the cache key**: Provider-side caches are scoped
    to the model (and account/API key) serving the request. Any mid-conversation
@@ -618,14 +867,24 @@ Prompt caching is automatically enabled when:
 - The provider supports `cache_control` (native Anthropic API or OpenRouter)
 
 ```yaml
-# config.yaml — TTL is configurable (must be "5m" or "1h")
+# config.yaml — TTL is configurable: "auto" (default), "5m", or "1h"
 prompt_caching:
-  cache_ttl: "5m"
+  cache_ttl: "auto"
 ```
+
+`"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, api_server, tool, batch, curator); under `auto` a side agent (`side_agent=True`: `/background`, `/btw`, `/refine`) takes `5m`, and a background-review or `/btw` fork routed to a different model is clamped to `5m` like a delegated child. Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
+
+The prompt-cache lifecycle (`agent/prompt_cache_lifecycle/`, no config key: `__init__` facade, `replay.py` replay shape and caps, `economics.py` `evaluate_economics`, `warmer.py` the controller, `edge.py` `EdgeDecision`, `human_paced` and the compaction/offload gates) is one controller per agent (`PromptCacheWarmer`, from `get_prompt_cache_warmer`) driven by the shared clock (`agent/prompt_cache_clock.py`, the only TTL source). The clock follows the API spec (`classify_route`, two rows): a request with `cache_control` markers is `anthropic_spec` on any wire or gateway (5m/1h declared as asked, clamped by `route_ttl_ceiling`); every other cached request is `openai_spec` (declared `30m`, a read refreshes to `max(existing, read + 30m)`), whatever the vendor or model generation. Only the expiry estimate departs from the tier (`_estimated_end`): a request sent with `prompt_cache_retention: 24h` keeps `guaranteed_until` at 30m (the warming deadline) but `estimated_until` at `read + 24h`, and an `is_local_endpoint` host has `estimated_until=None` with a known confidence, so neither is cold-pruned on the clock while `route_changed` and compaction still offload (chatgpt.com Codex strips the retention field: 30m stands). A provider profile with `prompt_cache_markers_from_catalog=True` (Nous) lets its `/models` catalog pick marker models (`prompt_caching.catalog_cache_markers`: a `cache_write` rate means markers); `agent/prompt_cache_routes.py` is the cross-session layer: `prompt_cache_clock._learn` feeds `observe` from every folded response (gap = send time minus the previous event's `sent_at`, against its tier), `PromptCacheWarmer.start`/`_refresh` apply `learned_window`, and `prompt_caching.learned_or_catalog_markers` lets a learned marker preference beat the catalog; rules need `MIN_SAMPLES` agreeing samples from `MIN_SAMPLES` distinct sessions (`observe(session_id=...)`), `_learn` skips a reply whose upstream differs from the cached one, a learned lifetime must exceed `longest_hit` (kept outside the trimmed `hit_gaps`), and facts expire after `EXPIRY_SECONDS`; the file lives under `get_hermes_home()` resolved per call. Pricing takes a catalog's `cache_write_1h` (else its single write rate) for 1h writes instead of the fixed 2x. At `cache_warming_delay_s` (5/6 of the TTL, at least 10 s before expiry) it decides once: **warm** (replay the last request with `replay_output_cap(model)`, 1 or 16 for OpenAI GPT-5/o-series, at most `WARM_BUDGET`=3 idle keep-alives per user message; while `agent._executing_tools` is set a keep-alive is booked on its run instead (`tool_warms`/`tool_spent_usd`), uncounted and bounded only by `evaluate_economics`' one-rewrite cap on that tool wait's spend; a miss counts in `_miss_streak` unless `prompt_cache_clock.response_upstream` (a gateway's upstream field, else the response id family: `chatcmpl` vs `gen` on Nous) differs from the reply that cached the prefix or it still read half the stable system+tools prefix; `REAL_MISSES_TO_STOP`=2 real misses (or `ANY_MISSES_TO_STOP`=3 of any kind) in a row set `_missed_route` (`_disable_warming`), so `start` refuses every later arm on that route for the session (`WARMING_DISABLED`, shown on `/context` as `warming_off`); a retried miss's rewrite is not charged to the money limit; `_MISSED_ROUTES` keeps it per session id across agent rebuilds and carries it to the compaction child; only a route switch or `/new` (`reset_session_state`, also dropping budget and latches) clears it. The idle budget is one `_Budget` object keyed on `_user_turn_count` that every run of the turn shares, each keep-alive reserved against it at admission (`_admit`) and reconciled with its billed cost in `_record`, so a run replaced mid-flight still counts; a miss, the third keep-alive or the money cap ends it (`_end_budget`; steps 2/3 decide either way), and a later tool-round reply carries the ended budget to the prompt the turn ends on (`_carry_ended_budget`). The replay is bounded per client: `replay_cap_honoured` admits the OpenAI/Anthropic SDKs as they are and any other client only through its `effective_output_cap` (native Gemini lifts thinking requests to 65,535, so they are not warmed); `bounded_chat_replay` drops `extra_body` output caps such as Gemini's long-decode `max_output_tokens`), then **compact** (budget over, proven/declared window of `MIN_COMPACT_WINDOW_SECONDS` or more, context at least `COMPACT_CONTEXT_FRACTION` of `threshold_tokens`, growth guard; no warmth check, the summary is a fresh aux request), else **expire + offload** (idle, cache certainly cold, once per stretch; the owner runs `turn_proactive_prune.offload_cold_history`). `PromptCacheWarmer.claim_edge(*, releasing=False, now=None) -> "compact" | "offload" | None` decides and latches steps 2/3 under the warmer lock (`edge_decision(...)` is the read-only `EdgeDecision(action, compact, offload)`); owners pass the action to their job as an argument. Nothing is sent after a compaction until the next user message. A budget ends at whichever comes first, `WARM_BUDGET` keep-alives, a miss, or the owner releasing the agent: `claim_edge(releasing=True)` runs the same gates at the release moment and cancels the live run; past the window the release offloads instead. Step 4 (cold return) is `agent/turn_proactive_prune.turn_start_cold_prune`; `prompt_cache_clock.prompt_cache_is_cold` (the one cold reading every prune and offload uses) also answers True on `route_changed`, so a `/model` or fallback switch offloads before the first request on the new route: `turn_proactive_prune.route_change_offload` runs before every request assembly, so a mid-turn fallback restart offloads too (the running turn is never shortened). Economics (`evaluate_economics`): read cost, plus the replay's real output cap (`replay_output_cap`, 16 on GPT-5/o-series) and any per-request fee, below the rewrite it prevents, a budget's total at most one rewrite, known prices, prefix at least `MIN_CACHEABLE_PREFIX_TOKENS`; no dollar floor. `write-on-hit` is learned only from keep-alive replays. `prompt_cache_lifecycle/tier.py` owns the `auto` tier for a person's chat: `adaptive_start_tier` starts a 1h choice on 5m (`_cache_ttl_adaptive`), `maybe_upgrade_cache_tier` (turn start, after `_user_turn_count += 1`) switches `_cache_ttl` to 1h only when the clock holds no guarantee and the last cache touch is over `UPGRADE_AFTER_SECONDS` old (so markers never change on a warm prefix), the upgrade is kept per session id (`carry_cache_tier` at the compaction boundary) and re-derived from a stored clock whose `requested_ttl` is 1h; `idle_warming_allowed` keeps idle keep-alives off until the upgrade.
+
+- Arming: `turn_response_check.check_api_response` calls `start_prompt_cache_warming` after each response is folded into the clock; `turn_api_request.build_request_payload` cancels the run (the real request refreshes the entry). `conversation_loop.run_conversation` calls `end_turn_prompt_cache_warming` on every turn exit: `human_paced` agents keep their budget and warm while idle; subagents, side agents (`/bg`, `/btw`), cache-parity forks (`_skip_prompt_cache_warming`) and `MACHINE_PACED_SOURCES` stop.
+- Step 2/3 owners poll `claim_edge()` every `CHECK_INTERVAL_SECONDS` and run `compress_now(..., trigger="cache_expiry")` (normal compression model; a ready `prepare_ahead` summary is reused because the trigger is not `force`) or the cold offload: `tui_gateway/session_reaper.py` (ticker and reapers queue jobs on at most 3 daemon workers, `_cache_expiry_submit`; profile scope per session; the action picks compaction or `_offload_expired_cache`) and `GatewaySessionWatchersMixin._compact_idle_sessions_before_cache_expiry` (housekeeping; also serves `hermes chat --cli`, whose `GatewayAgent` turns run in the gateway; the due-scan runs in `asyncio.to_thread`; `claim_gate` held across load→commit, `_profile_scope_for_source`, detached Desktop chats via `route_entry`, per-session bounded jobs). No owner sends anything after a compaction. Release owners: `GatewayAgentCacheMixin._sweep_idle_cached_agents` and `_enforce_agent_cache_cap` hand each evicted agent to `GatewaySessionWatchersMixin._compact_then_release` (release claim in `asyncio.to_thread`; a due chat runs its compact or offload job, then the agent is released exactly once: task done-callback, plus `run_watchers.drain_pending_cache_releases` at shutdown), and the TUI reapers (`_reap_idle_sessions`, `_enforce_session_cap`) go through `_compact_then_close` (compact or offload, then close if still reapable). A queued TUI job whose chat closed meanwhile is refused at `_manual_compress_turn` (`_closing`).
+- Archives: `_plan_compaction_window` is write-free (the prepared pass and every tool batch plan through it); `compress()` archives once, after its summary exists (`_commit_window`). `_assemble_with_archive_list` appends an `ARCHIVE_LIST_HEADING` list of every `cache/pruned` file a replaced row named that the kept rows and summary text do not, so `referenced_archive_refs` (the retention sweep) still sees each one.
+- Pricing: a keep-alive reply is priced at the tier its own request declared (`prompt_cache_clock.request_write_tier` + `turn_usage.with_write_tier`), as `record_response_usage` prices loop responses, so an OpenRouter 1h write with no tier split bills at 2x input.
+- Guards: each keep-alive is bound to `context_witness` at arm time and rechecked before send and before its reply is folded into the clock; `_admit` is the single admission under the lock `cancel` takes; the reset epoch and `session_totals_lock` fence the running totals; every send is bracketed by `pre/post_auxiliary_call` (`aux_task="cache_warm"`); `evaluate_economics` requires the read to cost less than the rewrite it prevents and keeps an idle budget's (or one tool wait's) billed total under that rewrite; unknown cache prices refuse arming; budget-based thinking is never replayed; usage is booked to the session and route snapshotted at arm time and folded into session totals only, never the compressor or usage anchors.
 
 The CLI shows caching status at startup:
 ```
-💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)
+💾 Prompt caching: ENABLED (Claude via OpenRouter, 1h TTL)
 ```
 
 

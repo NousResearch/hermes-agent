@@ -4,8 +4,8 @@ its GPU process (#106117) — and never overrides an explicit Mesa choice or fir
 import argparse
 from pathlib import Path
 
-import hermes_constants
 from hermes_cli import main_desktop
+from hermes_platform.host import runtime as host_runtime
 
 
 def _launch_env(monkeypatch, tmp_path, *, wsl: bool, dxg: bool, driver: bool) -> dict:
@@ -18,10 +18,10 @@ def _launch_env(monkeypatch, tmp_path, *, wsl: bool, dxg: bool, driver: bool) ->
         dxg_path.touch()
     if driver:
         driver_path.write_bytes(b"\x7fELF")
-    monkeypatch.setattr(hermes_constants, "_wsl_detected", wsl)
+    monkeypatch.setattr(host_runtime, "_wsl_detected", wsl)
     monkeypatch.setattr(main_desktop, "_WSL_DXG_DEVICE", dxg_path)
     monkeypatch.setattr(main_desktop, "_WSL_D3D12_DRIVERS", (tmp_path / "missing_dri.so", driver_path))
-    monkeypatch.setattr(main_desktop, "_desktop_launch_options", lambda: ([], "auto", "auto", "auto"))
+    monkeypatch.setattr(main_desktop, "_desktop_launch_options", lambda: ([], "auto", "auto", "auto", True))
     monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
     env, _flags = main_desktop._desktop_launch_env(argparse.Namespace(cwd=str(tmp_path)))
     return env

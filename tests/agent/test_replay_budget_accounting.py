@@ -19,7 +19,6 @@ from agent.context_compressor import (
     _NEWEST_TURN_ONLY_BUDGET_KEYS,
     _REPLAY_BUDGET_KEYS,
     _estimate_msg_budget_tokens,
-    _last_assistant_index,
 )
 from agent.model_metadata import estimate_tokens_rough
 from agent.turn_context import substitute_api_content
@@ -82,7 +81,7 @@ class TestChargeStaleThinking:
 
     def test_codex_sidecar_is_not_thinking_text(self):
         """The Codex sidecar is not stale thinking: the stale path drops nothing from it. Its
-        ciphertext is priced only by real usage (#104462), so the row costs the same as a bare one."""
+        replayed reasoning is billed on every request (#125920), so it is charged either way."""
         msg = _assistant(codex=True)
         full = _estimate_msg_budget_tokens(msg, charge_stale_thinking=True)
         stale = _estimate_msg_budget_tokens(msg, charge_stale_thinking=False)
@@ -90,7 +89,7 @@ class TestChargeStaleThinking:
         bare = _estimate_msg_budget_tokens(
             {"role": "assistant", "content": "done"}, charge_stale_thinking=False
         )
-        assert stale < bare + 100
+        assert stale > bare
 
     def test_default_is_conservative_full_charge(self):
         msg = _assistant(thinking=True)
@@ -125,22 +124,6 @@ class TestKeyPartition:
     def test_codex_fields_are_always_replayed_class(self):
         assert "codex_reasoning_items" in _ALWAYS_REPLAYED_BUDGET_KEYS
         assert "codex_message_items" in _ALWAYS_REPLAYED_BUDGET_KEYS
-
-
-class TestLastAssistantIndex:
-    def test_finds_newest_assistant(self):
-        msgs = [
-            {"role": "user", "content": "u"},
-            {"role": "assistant", "content": "a1"},
-            {"role": "user", "content": "u2"},
-            {"role": "assistant", "content": "a2"},
-            {"role": "tool", "content": "t"},
-        ]
-        assert _last_assistant_index(msgs) == 3
-
-    def test_no_assistant_returns_minus_one(self):
-        assert _last_assistant_index([{"role": "user", "content": "u"}]) == -1
-        assert _last_assistant_index([]) == -1
 
 
 class TestTailCutBehavior:

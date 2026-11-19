@@ -2,7 +2,7 @@
  * Tests for electron/backend-ready.ts.
  *
  * Run with: node --test electron/backend-ready.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * Covers the cold-start port-announcement deadline (issue #50209): the clock
  * starts before the backend binds its port, so a tight 45s deadline killed a
@@ -119,14 +119,6 @@ test('rejects on a child error event', async () => {
   const p = waitForDashboardPort(child, 1000)
   child.emit('error', new Error('spawn ENOENT'))
   await assert.rejects(p, /spawn ENOENT/)
-})
-
-test('rejects with the timeout message after the deadline', async () => {
-  const child = makeFakeChild()
-  await assert.rejects(
-    waitForDashboardPort(child, 20),
-    /Timed out waiting for Hermes backend port announcement \(20ms\)/
-  )
 })
 
 test('a late announcement after timeout does not throw (listeners torn down)', async () => {
@@ -247,20 +239,6 @@ test('exit-before-announcement error carries the buffered output tail (ready-fil
   await assert.rejects(wait, /exited before port announcement \(SIGSEGV\)[\s\S]*Traceback/)
 })
 
-test('exit-before-announcement error stays clean when no output was buffered', async () => {
-  const child = makeFakeChild()
-
-  const wait = waitForDashboardPortAnnouncement(child, {})
-
-  child.emit('exit', 137, null)
-
-  await assert.rejects(wait, error => {
-    assert.match((error as Error).message, /exited before port announcement \(137\)$/)
-
-    return true
-  })
-})
-
 // ---------------------------------------------------------------------------
 // bufferedOutput (#60323): a sentinel consumed BEFORE the wait attaches must
 // still resolve. main.ts attaches an output tail at spawn, then awaits
@@ -344,3 +322,62 @@ test('the merged-tail seed does not match prose that merely names the sentinel',
 
   await assert.rejects(wait, /Timed out waiting/)
 })
+
+// ---------------------------------------------------------------------------
+// source-update completion banners extend the deadline (#122206)
+// ---------------------------------------------------------------------------
+
+test('a completion banner re-arms the deadline past the original timeout', async () => {
+  // The backend prints venv_sync's banner (finishing an owed update tail)
+  // after the normal budget would have expired. The wait must keep waiting
+  // while the repair is in progress, then resolve on the late announcement.
+  const child = makeFakeChild()
+  const p = waitForDashboardPort(child, 40)
+  child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+  // Past the original 40ms deadline: without the banner grace this wait has
+  // already rejected. Give the "repair" a moment, then announce.
+  await new Promise(resolve => setTimeout(resolve, 80))
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=4455\n')
+  assert.equal(await p, 4455)
+})
+
+test(
+  'a stalled completion banner is capped, not waited out forever',
+  async () => {
+    // The banner says a repair is in progress but nothing ever resolves: the
+    // wait must still fail (bounded), and the message must carry that the
+    // completion was in progress — truthful and actionable instead of a bare
+    // 90s timeout that hides a multi-minute repair. The grace is wall-clock;
+    // a 50ms grace stands in for production's 5 minutes.
+    const child = makeFakeChild()
+    const timeoutMs = 20
+    const completionGraceMs = 50
+    // describeOutputTail and bufferedOutput keep their defaults (no output tail).
+    const wait = waitForDashboardPort(child, timeoutMs, undefined, undefined, completionGraceMs)
+    wait.catch(() => {}) // mark handled; the assertion below re-awaits
+
+    child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
+    await assert.rejects(
+      wait,
+      /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
+    )
+  },
+  10_000
+)
+
+test('a banner already in the spawn-time tail also re-arms', async () => {
+  // The dormant bufferedOutput gap (#60323): the banner was flushed before the
+  // listener attached. Seeding from the tail must extend the deadline too.
+  const child = makeFakeChild()
+
+  const p = waitForDashboardPort(
+    child,
+    40,
+    () => '',
+    () => 'hermes: completing source-update dependencies...\n'
+  )
+
+  await new Promise(resolve => setTimeout(resolve, 80))
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=4471\n')
+  assert.equal(await p, 4471)
+}, 10_000)

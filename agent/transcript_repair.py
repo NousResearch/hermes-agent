@@ -1,94 +1,69 @@
-"""Transcript repair for SessionDB batch appends: reconcile in-memory assistant rows with committed SQLite
-rows (blank-row in-place update, concurrent-winner adoption, watermark-compaction clone lookup) and sync
-markers after commit."""
+"""Flush marker sync for transcript batch appends: after a batch commits, each live message dict takes the persist
+marker, its row's identity, timestamp and ownership version, and what the store's canonical row hands it."""
 
 from __future__ import annotations
 
-import sqlite3
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, copy_identity_fields
 
 
-def is_content_blank(content: Any) -> bool:
-    """True when decoded message content is None, whitespace-only, or has no visible text parts."""
-    if content is None:
-        return True
-    if isinstance(content, str):
-        return not content.strip()
-    if isinstance(content, list):
-        return not "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text").strip()
-    return False
+# The durable payload fields a canonical row hands a live dict, ``role`` first: every column a transcript write stores
+# except row identity, the active flag and the ones the display index, timestamp and session linkage own.
+_SYNC_FIELDS = (
+    "role",
+    "content",
+    "tool_call_id",
+    "tool_calls",
+    "tool_name",
+    "effect_disposition",
+    "token_count",
+    "finish_reason",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+    "platform_message_id",
+    "observed",
+    "_compressed_summary",
+    "api_content",
+    "display_kind",
+    "display_metadata",
+    "absorbed_message_uids",
+    "tool_call_uids",
+)
+# Presentation-only metadata a matched (ours) row may hand to a live dict that lacks it.
+_LIVE_MISSING_METADATA = ("display_kind", "display_metadata")
+# Canonical-row markers: a matched row hands over only missing presentation metadata; a legacy (no-digest)
+# dict over a filled assistant row adopts only its content.
+_METADATA_ONLY = "_metadata_only"
+_CONTENT_ONLY = "_content_only"
 
 
-def resolve_and_repair_transcript_batch(
-    conn: sqlite3.Connection,
-    session_id: str,
-    messages: List[Dict[str, Any]],
-    encode_content_fn: Callable[[Any], Any],
-    decode_content_fn: Callable[[Any], Any],
-) -> List[Dict[str, Any]]:
-    """Partition a message batch within an active write transaction. An assistant message carrying an
-    existing integer ``_row_id`` targets its active SQLite row (or the active clone a watermark compaction
-    made of it): a blank row is updated in place; a non-blank one (concurrent winner) has its canonical
-    content adopted without overwrite. Returns the messages that must be inserted as fresh rows."""
-    inserted_rows: List[Dict[str, Any]] = []
-    for msg in messages:
-        existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
-        target_row = None
-        if isinstance(existing_row_id, int) and msg.get("role", "unknown") == "assistant":
-            target_row = _active_assistant_row(conn, session_id, existing_row_id)
-        if target_row is None:
-            inserted_rows.append(msg)
-            continue
-        target_id = int(target_row["id"])
-        decoded = decode_content_fn(target_row["content"])
-        msg["_row_id"] = target_id
-        if is_content_blank(decoded):
-            conn.execute(
-                "UPDATE messages SET content = ? "
-                "WHERE id = ? AND session_id = ? AND active = 1",
-                (encode_content_fn(msg.get("content")), target_id, session_id),
-            )
-        else:
-            msg["_canonical_content"] = decoded  # concurrent winner: adopt, don't overwrite
-    return inserted_rows
-
-
-def _active_assistant_row(conn: sqlite3.Connection, session_id: str, row_id: int):
-    """The active assistant row for ``row_id``, or the active clone a watermark compaction made of it."""
-    row = conn.execute(
-        "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE id = ? AND session_id = ?",
-        (row_id, session_id),
-    ).fetchone()
-    if row is None or row["role"] != "assistant":
-        return None
-    if int(row["active"] or 0) == 1:
-        return row
-    # Watermark compaction soft-archived the concurrent tail and cloned it.
-    return conn.execute(
-        "SELECT id, role, active, timestamp, content FROM messages "
-        "WHERE session_id = ? AND active = 1 AND role = 'assistant' "
-        "AND timestamp IS ? AND id != ? "
-        "ORDER BY id DESC LIMIT 1",
-        (session_id, row["timestamp"], row["id"]),
-    ).fetchone()
-
-
-def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: List[Dict[str, Any]]) -> None:
-    """Stamp _DB_PERSISTED_MARKER and sync canonical row ID / content onto live dicts after commit."""
+def sync_flushed_message_markers(batch_msgs: list[dict[str, Any]], batch_rows: list[dict[str, Any]]) -> None:
+    """Stamp persistence markers and sync canonical durable fields onto live dicts after commit."""
     for written, row in zip(batch_msgs, batch_rows):
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
-        if "_canonical_content" in row:
-            written["content"] = row["_canonical_content"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
+        copy_identity_fields(row, written)
+        if isinstance(row.get("timestamp"), (int, float)):
+            written["timestamp"] = row["timestamp"]
+        if isinstance(row.get(DB_ROW_SNAPSHOT), str):
+            written[DB_ROW_SNAPSHOT] = row[DB_ROW_SNAPSHOT]
+        canonical = row.get(CANONICAL_ROW)
+        if isinstance(canonical, dict) and canonical.get(_METADATA_ONLY):
+            # Our own row: only hand over presentation metadata the live dict lacks, never payload.
+            for key in _LIVE_MISSING_METADATA:
+                if canonical.get(key) is not None and written.get(key) is None:
+                    written[key] = canonical[key]
+        elif isinstance(canonical, dict) and canonical.get(_CONTENT_ONLY):
+            written["content"] = canonical["content"]
+        elif isinstance(canonical, dict):
+            for key in _SYNC_FIELDS:
+                if key in canonical and canonical[key] is not None:
+                    written[key] = canonical[key]
+                elif key not in ("role", "content"):
+                    written.pop(key, None)

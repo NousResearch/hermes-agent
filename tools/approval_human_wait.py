@@ -6,7 +6,7 @@ deadline in agent/tool_executor.py excludes this time so a slow human answer
 never times a batch out — but ONLY this time. Measuring at the source (rather
 than residency in the authorization gate, which is arbitrary code) is what keeps
 a wedged pre_tool_call plugin or a dead approval client from growing the
-exclusion 1:1 with wall clock and defeating the deadline entirely. Keyed by
+exclusion 1:1 with wall clock and defeating the deadline entirely (#79719). Keyed by
 session so one gateway session's pending approval cannot extend a different
 session's batch deadline; state is process-global like the rest of the approval
 state, bounded by _HUMAN_WAIT_MAX_SESSIONS.
@@ -17,18 +17,8 @@ import threading
 import time
 
 
-# ========================================================================= Human-wait accounting (per
-# session) ========================================================================= Tracks the wall-clock
-# time the agent spends verifiably blocked on a HUMAN prompt (CLI approval prompt, gateway approval
-# round-trip). The concurrent tool batch deadline in agent/tool_executor.py excludes this time so a slow
-# human answer never times a batch out — but ONLY this time. Measuring human waits at the source (rather
-# than residency in the authorization gate, which is arbitrary code) is what keeps a wedged pre_tool_call
-# plugin or a dead approval client from growing the exclusion 1:1 with wall clock and defeating the deadline
-# entirely (#79719). Keyed by session so one gateway session's pending approval cannot extend a different
-# session's batch deadline. State is process-global like the rest of this module's approval state; entries
-# are bounded by _HUMAN_WAIT_MAX_SESSIONS.
 class _HumanWaitState:
-    __slots__ = ("pending", "window_started", "completed_seconds")
+    __slots__ = ("completed_seconds", "pending", "window_started")
 
     def __init__(self) -> None:
         self.pending = 0
@@ -56,7 +46,8 @@ def human_wait_ceiling() -> float:
     ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
     value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
     from tools import approval_context
-    return float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    return min(MAX_SAFE_TIMEOUT_S, float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S)
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:

@@ -3,12 +3,15 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from tests.lock_contention import watch_file_lock_contention
+from tests.waiting import wait_until
 from gateway.pairing import (
     PairingStore,
     ALPHABET,
@@ -17,7 +20,7 @@ from gateway.pairing import (
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
-    _secure_write,
+    _save_json_file,
 )
 
 
@@ -82,19 +85,16 @@ class TestProfileScopedDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# _secure_write
+# _save_json_file
 # ---------------------------------------------------------------------------
 
 
-class TestSecureWrite:
+class TestSaveJsonFile:
 
-    @pytest.mark.skipif(
-        sys.platform.startswith("win"),
-        reason="POSIX file modes are not enforced on Windows",
-    )
+    @pytest.mark.platforms("posix")  # POSIX file modes are not enforced on Windows
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
-        _secure_write(target, "data")
+        _save_json_file(target, {"data": 1})
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
@@ -274,6 +274,25 @@ class TestApprovalFlow:
         assert "user_name" in result
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_internal_spacing(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            spaced_code = "   ".join(code)
+            result = store.approve_code("telegram", f"  {spaced_code}  ")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_words_still_fails(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            result = store.approve_code("telegram", f"code {code}")
+
+        assert result is None
 
     def test_approved_user_is_approved(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
@@ -459,7 +478,7 @@ class TestCodeExpiry:
     def test_expired_codes_cleaned_up(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            code = store.generate_code("telegram", "user1")
+            store.generate_code("telegram", "user1")
 
             # Manually expire all pending entries
             pending = store._load_json(store._pending_path("telegram"))
@@ -490,6 +509,146 @@ class TestRevoke:
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             assert store.is_approved("telegram", "user1") is False
 
+    def test_revoke_from_other_store_is_not_undone_by_inflight_approval(self, tmp_path, monkeypatch):
+        """Dashboard requests and the ``hermes pairing`` CLI each build their own store, so
+        an approval that read approved.json before a revoke landed must not write it back."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            seed = PairingStore()
+            seed._approve_user("telegram", "carol")
+            code = seed.generate_code("telegram", "alice", "Alice")
+            dashboard = PairingStore()
+            cli = PairingStore()
+        approved_path = dashboard._approved_path("telegram")
+        contended = watch_file_lock_contention(monkeypatch)
+        revoke_done = threading.Event()
+        revoke_result = []
+        real_load = dashboard._load_json
+
+        def revoke_in_other_process():
+            revoke_result.append(cli.revoke("telegram", "carol"))
+            revoke_done.set()
+
+        def load_then_let_revoke_run(path):
+            data = real_load(path)
+            if path == approved_path and not revoke_result and threading.current_thread().name == "dashboard":
+                threading.Thread(target=revoke_in_other_process, daemon=True).start()
+                # Unserialized stores let the revoke finish inside this window; serialized ones
+                # are seen blocking on the pairing lock instead.
+                wait_until(lambda: revoke_done.is_set() or contended.is_set(),
+                           what="the revoke finished or blocked on the pairing lock")
+            return data
+
+        dashboard._load_json = load_then_let_revoke_run
+        approver = threading.Thread(target=dashboard.approve_code, args=("telegram", code), name="dashboard")
+        approver.start()
+        approver.join(10)
+        assert revoke_done.wait(10)
+
+        final = json.loads(approved_path.read_text())
+        assert revoke_result == [True]
+        assert "alice" in final
+        assert "carol" not in final
+
+    def test_revoke_invalidates_same_user_pending_codes_only(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            approved_code = store.generate_code("telegram", "user1", "Alice")
+
+            limits = store._load_json(store._rate_limit_path())
+            limits["telegram:user1"] = time.time() - RATE_LIMIT_SECONDS - 1
+            store._save_json(store._rate_limit_path(), limits)
+
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            other_code = store.generate_code("telegram", "user2", "Bob")
+            store.approve_code("telegram", approved_code)
+
+            assert store.revoke("telegram", "user1") is True
+            pending = store.list_pending("telegram")
+
+            assert [entry["user_id"] for entry in pending] == ["user2"]
+            assert store.approve_code("telegram", stale_code) is None
+            assert store.approve_code("telegram", other_code) == {
+                "user_id": "user2",
+                "user_name": "Bob",
+            }
+
+    def test_failed_pending_write_leaves_revoke_retryable(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), \
+                patch("gateway.pairing._sync_allowlist_remove") as allowlist_remove:
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            real_save = PairingStore._save_json
+
+            def failing_pending_save(path, data):
+                if path == store._pending_path("telegram"):
+                    raise OSError("disk full")
+                real_save(path, data)
+
+            with patch.object(store, "_save_json", side_effect=failing_pending_save):
+                with pytest.raises(OSError):
+                    store.revoke("telegram", "user1")
+
+            assert store.is_approved("telegram", "user1") is True
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+            allowlist_remove.assert_called_once_with("telegram", "user1")
+
+    def test_unreadable_pending_file_still_revokes_and_kills_stale_codes(self, tmp_path):
+        """A pending file revoke can't read must neither block the revoke nor leave a
+        pre-revoke code that approves once the file reads again."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            pending_path, real_read = store._pending_path("telegram"), Path.read_text
+
+            def deny_pending(path, *args, **kwargs):
+                if path == pending_path:
+                    raise PermissionError("not readable")
+                return real_read(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", deny_pending):
+                assert store.revoke("telegram", "user1") is True
+
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+
+    @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+    def test_malformed_pending_file_is_reset_and_never_blocks_revoke(self, tmp_path, content):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            store._pending_path("telegram").write_text(content)
+
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert json.loads(store._pending_path("telegram").read_text()) == {}
+
+    @pytest.mark.parametrize("approve_via", ["code", "request_id"])
+    def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
+        """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor
+        the admin request id issued before the revoke may re-grant access."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            gateway = PairingStore()
+            gateway._approve_user("whatsapp", "15551234567")
+            stale_code = gateway.generate_code("whatsapp", "15551234567@s.whatsapp.net", "Alice")
+            dashboard, cli = PairingStore(), PairingStore()
+            [request] = dashboard.list_pending("whatsapp")
+
+            assert cli.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
+            if approve_via == "code":
+                assert dashboard.approve_code("whatsapp", stale_code) is None
+            else:
+                assert dashboard.approve_request("whatsapp", request["request_id"]) is None
+            assert gateway.is_approved("whatsapp", "15551234567") is False
+
 
 # ---------------------------------------------------------------------------
 # List & clear
@@ -519,14 +678,11 @@ class TestListAndClear:
 class TestUnreadablePairingFile:
     def test_permission_error_logs_warning_and_returns_empty(self, tmp_path, caplog):
         import logging
-        import builtins
 
         approved_path = tmp_path / "weixin-approved.json"
         approved_path.write_text(
             '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
         )
-
-        real_open = builtins.open
 
         def fake_read_text(self, *a, **kw):
             # Path.read_text uses Path.open internally; raise PermissionError
@@ -703,3 +859,52 @@ class TestProfileScopedStorage:
         )
 
 
+
+
+def test_approval_cache_reuses_parse_and_observes_replacement(tmp_path, monkeypatch):
+    store = _make_store(tmp_path)
+    other = _make_store(tmp_path)
+    path = store._approved_path("telegram")
+    store._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+    with patch("gateway.pairing.json.load", wraps=json.load) as parse:
+        for _ in range(5):
+            assert store.is_approved("telegram", "user1")
+        assert parse.call_count == 1
+        assert other.revoke("telegram", "user1")
+        assert not store.is_approved("telegram", "user1")
+        other._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+        assert store.is_approved("telegram", "user1")
+        before = path.stat()
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(path.read_bytes().replace(b"user1", b"user2"))
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+        assert path.stat().st_size == before.st_size
+        assert not store.is_approved("telegram", "user1")
+        assert store.is_approved("telegram", "user2")
+        path.unlink()
+        assert not store.is_approved("telegram", "user2")
+        other._save_json(path, {"user3": {}})
+        assert store.is_approved("telegram", "user3")
+
+
+def test_approval_cache_isolated_and_unreadable_files_fail_closed(tmp_path, monkeypatch):
+    first = _make_store(tmp_path / "first")
+    second = _make_store(tmp_path / "second")
+    path = first._approved_path("telegram")
+    first._save_json(path, {"user1": {}})
+    assert first.is_approved("telegram", "user1")
+    assert not second.is_approved("telegram", "user1")
+    original = Path.open
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("permission revoked")
+        return original(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", unreadable)
+        assert not first.is_approved("telegram", "user1")
+    first._save_json(path, {"user2": {}})
+    assert not first.is_approved("telegram", "user1")
+    assert first.is_approved("telegram", "user2")

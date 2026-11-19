@@ -6,11 +6,9 @@ and path-derived key against the enabled/disabled sets.
 """
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -22,8 +20,8 @@ def _make_plugin_dir(parent: Path, name: str, manifest: dict) -> Path:
     """Create a minimal plugin directory with a plugin.yaml."""
     d = parent / name
     d.mkdir(parents=True, exist_ok=True)
-    import yaml
-    (d / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+    import hermes_yaml as yaml
+    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (d / "__init__.py").write_text("def register(ctx): pass\n", encoding="utf-8")
     return d
 
@@ -68,8 +66,8 @@ class TestReadManifestInfo:
 
         d = tmp_path / "my-plugin"
         d.mkdir()
-        import yaml
-        (d / "plugin.yml").write_text(yaml.dump({"name": "my-plugin"}), encoding="utf-8")
+        import hermes_yaml as yaml
+        (d / "plugin.yml").write_text(yaml.safe_dump({"name": "my-plugin"}), encoding="utf-8")
         result = _read_manifest_info(d, "")
         assert result is not None
         assert result[0] == "my-plugin"
@@ -81,20 +79,6 @@ class TestReadManifestInfo:
 
 
 class TestDiscoverAllPlugins:
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_flat_plugins_still_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-
-        _make_plugin_dir(tmp_path, "disk-cleanup", {
-            "name": "disk-cleanup", "version": "1.0.0"
-        })
-        mock_user_dir.return_value = tmp_path
-        mock_bundled_dir.return_value = tmp_path / "nonexistent"
-
-        entries = _discover_all_plugins()
-        keys = [e[5] for e in entries]
-        assert "disk-cleanup" in keys
 
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -134,9 +118,9 @@ class TestDiscoverAllPlugins:
         # 3 levels: should NOT be found
         deep = tmp_path / "a" / "b" / "c"
         deep.mkdir(parents=True)
-        import yaml
+        import hermes_yaml as yaml
         (deep / "plugin.yaml").write_text(
-            yaml.dump({"name": "too-deep"}), encoding="utf-8"
+            yaml.safe_dump({"name": "too-deep"}), encoding="utf-8"
         )
         mock_user_dir.return_value = tmp_path
         mock_bundled_dir.return_value = tmp_path / "nonexistent"

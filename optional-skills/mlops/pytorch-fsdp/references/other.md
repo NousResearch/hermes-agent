@@ -601,6 +601,7 @@ PyTorch distributed package supports Linux (stable), MacOS (stable), and Windows
 
 As of PyTorch v1.8, Windows supports all collective communications backend but NCCL, If the init_method argument of init_process_group() points to a file it must adhere to the following schema:
 
+<!-- no-tmp: ok — verbatim upstream PyTorch docs (Windows d:/tmp example) -->
 Local file system, init_method="file:///d:/tmp/some_file"
 
 Shared file system, init_method="file://////{machine_name}/{share_folder_name}/some_file"

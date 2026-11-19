@@ -74,7 +74,7 @@ Each tool can optionally provide a `check_fn` — a callable that returns `True`
 
 - **API key present** — e.g., `lambda: bool(os.environ.get("SERP_API_KEY"))` for web search
 - **Service running** — e.g., checking if the Honcho server is configured
-- **Binary installed** — e.g., verifying `playwright` is available for browser tools
+- **Dependency installed** — e.g., verifying `browser-harness` is importable for `browser_exec`
 
 When `registry.get_definitions()` builds the schema list for the model, it runs each tool's `check_fn()`:
 
@@ -115,7 +115,7 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies `check_fn` filtering and returns OpenAI-format schemas.
 
-5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
+5. **Dynamic schema patching** — after filtering, schemas such as `execute_code`, `browser_cdp` and `delegate_task` are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
 ### Legacy toolset names
 
@@ -166,7 +166,7 @@ This ensures the model always receives a well-formed JSON string, never an unhan
 
 Four tools are intercepted before registry dispatch because they need agent-level state (TodoStore, MemoryStore, etc.):
 
-- `todo` — planning/task tracking
+- `todo_list` — planning/task tracking
 - `memory` — persistent memory writes
 - `session_search` — cross-session recall
 - `delegate_task` — spawns subagent sessions
@@ -212,10 +212,10 @@ The terminal system supports multiple backends:
 - local
 - docker
 - ssh
-- singularity
 - modal
 - daytona
 - vercel_sandbox
+- plugin backends registered through `ctx.register_terminal_environment_provider` (e.g. `singularity`)
 
 It also supports:
 

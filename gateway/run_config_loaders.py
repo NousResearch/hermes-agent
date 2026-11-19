@@ -21,7 +21,8 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT, parse_cron_drain_timeout,
     parse_restart_after_turn_timeout, parse_restart_drain_timeout,
-    parse_signal_interrupt_grace_timeout,
+    launchd_service_label, parse_signal_interrupt_grace_timeout, read_launchd_exit_timeout_s,
+    resolve_launchd_capped_drain,
 )
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
@@ -30,13 +31,95 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+
+def _profile_channel_overrides(home: Path, platform: Platform):
+    """A config holding only *platform*'s ``channel_overrides`` and ``allow_silence`` from *home*'s
+    config.yaml, read the way the loader does: merge every nested platform block, then the block
+    ``platform_section`` picks (a top-level ``<platform>:`` block first) wins for the overrides and
+    the platform keys it sets. ``GatewayConfig.from_dict(raw)`` alone reads only the nested form."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.config_loader import merge_platform_sections, platform_section
+    from gateway.run import _load_gateway_config
+    raw = _load_gateway_config(home / "config.yaml")
+    name, gateway_section = str(platform.value), raw.get("gateway")
+    merged = merge_platform_sections(raw, gateway_section, {}).get(name) or {}
+    overrides, extra = merged.get("channel_overrides"), PlatformConfig.from_dict(merged).extra
+    section, toplevel = platform_section(raw, name, (
+        gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+    if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+        overrides = section["channel_overrides"]
+    if toplevel and isinstance(section, dict):
+        # A root block's keys win, except over what the user authored under ``platforms.<p>.extra``.
+        authored = merged.get("extra")
+        extra = {**extra, **PlatformConfig.from_dict(section).extra,
+                 **(authored if isinstance(authored, dict) else {})}
+    return GatewayConfig.from_dict({"platforms": {name: {
+        "channel_overrides": overrides if isinstance(overrides, dict) else {},
+        "allow_silence": extra.get("allow_silence")}}})
+
+
+DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
+
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+
+
+def streaming_config_for_source(runner, source):
+    """The ``StreamingConfig`` of the profile that runs ``source``'s turn. Under ``multiplex_profiles``
+    ``runner.config`` is the launch profile's alone, so a served profile's own ``streaming`` block was
+    ignored (#136972). A served profile reads the GatewayConfig the multiplexer loaded for it (the
+    same loader as the launch one: ``gateway.streaming`` and gateway.json fallbacks included); the
+    launch profile, and a profile whose config is not cached, keep ``runner.config``."""
+    from gateway.config import StreamingConfig
+    from gateway.session_identity import identity_of
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False) is True and source is not None:
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (getattr(source, "profile", None) or None)
+        if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
+            config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
+    return getattr(config, "streaming", None) or StreamingConfig()
+
+
+def _allow_silence_value(value: Any) -> Optional[bool]:
+    """One parse for a room's and a platform's ``allow_silence``: a bool as is; a falsy token
+    (a quoted ``"false"``) is False at both levels; anything else, a quoted ``"true"`` included,
+    is None: opting in to silence takes a real boolean."""
+    from gateway.config import _bool_token
+    if isinstance(value, bool):
+        return value
+    return False if isinstance(value, str) and _bool_token(value) is False else None
+
+
+def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
+    """``allow_silence`` for ``source``: the room entry's, else the platform's.
+
+    The room entry is the first ``channel_overrides`` match along chat -> thread -> parent, as for
+    every channel override; an entry that sets only ``model``/``provider``/``system_prompt`` still
+    matches first, so its unset ``allow_silence`` falls to the platform, not to a parent entry.
+    """
+    if platform_config is None:
+        return None
+    from gateway.run import _channel_override_lookup_keys
+    overrides = platform_config.channel_overrides or {}
+    for key in _channel_override_lookup_keys(
+            source.chat_id, thread_id=source.thread_id, parent_id=source.parent_chat_id):
+        entry = overrides.get(key)
+        if entry is not None:
+            allow = _allow_silence_value(entry.allow_silence)
+            if allow is not None:
+                return allow
+            break
+    return _allow_silence_value((platform_config.extra or {}).get("allow_silence"))
+
+
+# "" = an unclassified source: treated as a DM, where a question must get a visible answer.
+_DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
 
 
 class GatewayConfigLoadersMixin:
@@ -45,8 +128,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:
         """``<section>.<key>`` from the gateway runtime config as a stripped string ("" when unset)."""
-        from gateway.run import _load_gateway_runtime_config
-        return str(cfg_get(_load_gateway_runtime_config(), section, key, default="") or "").strip()
+        from gateway.run import _load_gateway_config
+        return str(cfg_get(_load_gateway_config(), section, key, default="") or "").strip()
 
     @classmethod
     def _env_or_cfg_str(cls, env_var: str, section: str, key: str) -> str:
@@ -54,16 +137,16 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
         then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
         """
-        from gateway.run import _hermes_home, _load_gateway_runtime_config
+        from gateway.run import _gateway_config_home, _load_gateway_config
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            cfg = _load_gateway_runtime_config()
+            cfg = _load_gateway_config()
             file_path = str(
                 cfg.get("prefill_messages_file", "") or cfg_get(cfg, "agent", "prefill_messages_file", default="") or ""
             )
@@ -71,12 +154,12 @@ class GatewayConfigLoadersMixin:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = _hermes_home / path
+            path = _gateway_config_home() / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 logger.warning("Prefill messages file must contain a JSON array: %s", path)
@@ -88,24 +171,99 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
-        from gateway.run import _load_gateway_runtime_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
+        from gateway.run import _load_gateway_config
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
-        return resolve_ephemeral_system_prompt_from_config(_load_gateway_runtime_config())
+        return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
-    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
-        """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
+    def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
+        """``channel_overrides`` entry for this channel/thread in *source*'s serving profile (the
+        launch config without a source), or None (also when no config is bound)."""
         from gateway.run import _get_channel_override
-        config = getattr(self, "config", None)
+        config = self._serving_channel_config(source) if source is not None else getattr(self, "config", None)
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
+    def _serving_channel_config(self, source: SessionSource, *, unbound_reads_home: bool = False):
+        """The config whose ``channel_overrides`` serve *source*.
+
+        ``self.config`` (a ``gateway --config`` file included) belongs to the primary profile only.
+        A turn another multiplexed profile serves reads that profile's own config.yaml: chat ids
+        repeat across profiles' bots (a Telegram DM's id is the user's id), so the launch
+        profile's override would otherwise steer every routed bot in the same chat (#136198).
+        ``unbound_reads_home``: with no config bound, read the source's home too (the room policy).
+        """
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        if routed or (config is None and unbound_reads_home):
+            return _profile_channel_overrides(self._resolve_profile_home_for_source(source), source.platform)
+        return config
+
+    def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
+        """Evaluate existing exemptions before consulting the optional room/platform permission.
+
+        An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
+        unset everywhere does the warning policy apply: with warning notifications hidden for the
+        turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
+        final in a shared chat stays silent instead. Never in a DM: there the notice is the only
+        answer a direct question gets, and suppression predates this rule (legacy default).
+        """
+        from gateway.response_filters import silence_allowed
+        if silence_allowed(display_kind, reply_expected):
+            return True
+        allow = self._room_allow_silence(source)
+        shared = str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
+        if allow is None and shared and self._silence_notice_suppressed(source):
+            silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
+            if silent:
+                logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",
+                            source.platform.value, source.chat_id or "unknown")
+            return silent
+        return silence_allowed(display_kind, reply_expected, allow_silence=allow, agent_result=agent_result)
+
+    def _silence_notice_suppressed(self, source: SessionSource) -> bool:
+        """``display.suppress_warning_notifications`` for ``source.platform`` in the serving profile.
+
+        Read under the routed profile's scope, as crash recovery reads the diagnostic policy; a
+        failed read keeps the notice (presentation fails open).
+        """
+        from gateway.warning_notifications import warning_notifications_enabled
+        try:
+            with self._media_delivery_scope_for_source(source):
+                return not warning_notifications_enabled(source.platform)
+        except Exception:
+            logger.debug("Warning policy lookup failed for %s; keeping the notice", source.chat_id, exc_info=True)
+            return False
+
+    def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.
+
+        The first ``channel_overrides`` entry along chat -> thread -> parent decides when it sets
+        it (true or false); otherwise the platform's own ``platforms.<platform>.allow_silence``
+        applies, else None (the default reply rule).
+        """
+        try:
+            config = self._serving_channel_config(source, unbound_reads_home=True)
+            platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
+            return _effective_allow_silence(platform_config, source)
+        except Exception:
+            # No permission means the default reply rule; a lookup failure must not become an error reply.
+            logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
+
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default.
 
@@ -117,13 +275,13 @@ class GatewayConfigLoadersMixin:
         from hermes_cli.model_switch import resolve_effective_model
         return resolve_effective_model(
             None,  # session tier applied downstream (_apply_session_model_override)
-            self._channel_override(platform, chat_id, thread_id, parent_id),
+            self._channel_override(platform, chat_id, thread_id, parent_id, source),
             _resolve_gateway_model(user_config),
         )
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source: Optional[SessionSource] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -137,7 +295,7 @@ class GatewayConfigLoadersMixin:
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
         turn for the same reason.
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()
@@ -151,9 +309,9 @@ class GatewayConfigLoadersMixin:
 
         Closes #21256.
         """
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         from hermes_constants import resolve_reasoning_config
-        return resolve_reasoning_config(_load_gateway_runtime_config(), model)
+        return resolve_reasoning_config(_load_gateway_config(), model)
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -183,6 +341,10 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            # A local session runs its frozen (or followed) level, not the profile's.
+            return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
@@ -205,6 +367,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -219,23 +385,37 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+        """``agent.service_tier`` parsed like the CLI (``hermes_cli.cli_config_load``); None when unset/unknown."""
+        from hermes_cli.cli_config_load import _parse_service_tier_config
+
+        return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
+
+    def _daybreak_surface(self, source) -> bool:
+        """Whether a turn from ``source`` is the owner's own chat, the only place Daybreak may run: it is the
+        approved account's own access (OpenAI: no third-party or downstream use), and a messaging platform's
+        chats, a hosted room or an A2A peer can be other people. LOCAL is the canonical transport, not the
+        owner, so the route's frozen launch policy decides."""
+        from gateway.session_policy import DAYBREAK_LABELS, policy_for_source
+        if getattr(source, "platform", None) != Platform.LOCAL:
+            return False
+        try:
+            policy = policy_for_source(self, source)
+        except Exception:  # health: allow BLE001 -- an unreadable policy fails closed to standard requests
+            return False
+        return getattr(policy, "source", None) in DAYBREAK_LABELS
+
+    def _load_daybreak(self, source) -> bool:
+        """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``, on the owner's own chats
+        only. Read per turn so the Desktop switch reaches the next turn of a running chat without rebuilding
+        its cached agent."""
+        from gateway.run import _load_gateway_config
+        return self._daybreak_surface(source) and cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 
     @staticmethod
     def _load_show_reasoning() -> bool:
         """``display.show_reasoning`` toggle."""
-        from gateway.run import _load_gateway_runtime_config
-        return is_truthy_value(cfg_get(_load_gateway_runtime_config(), "display", "show_reasoning"), default=False)
+        from gateway.run import _load_gateway_config
+        return is_truthy_value(cfg_get(_load_gateway_config(), "display", "show_reasoning"), default=False)
 
     @classmethod
     def _load_busy_input_mode(cls) -> str:
@@ -270,14 +450,72 @@ class GatewayConfigLoadersMixin:
             text_mode = fallback_text
         return input_mode, text_mode
 
+    @staticmethod
+    def _busy_text_timing_from_config(config: dict) -> tuple[float, float]:
+        """``display.busy_text_debounce_seconds`` / ``display.busy_text_hard_cap_seconds`` for one
+        profile, without consulting process env (#116893). A non-numeric or negative value is
+        rejected with a warning naming the key, never silently coerced."""
+        from gateway.platforms.base import DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS, DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS
+        out = []
+        for key, default in (("busy_text_debounce_seconds", DEFAULT_BUSY_TEXT_DEBOUNCE_SECONDS),
+                             ("busy_text_hard_cap_seconds", DEFAULT_BUSY_TEXT_HARD_CAP_SECONDS)):
+            raw = cfg_get(config, "display", key, default=None)
+            if raw is None or raw == "":
+                out.append(default)
+                continue
+            try:
+                value = float(raw)
+                if value < 0 or value != value:
+                    raise ValueError(raw)
+            except (TypeError, ValueError):
+                logger.warning("display.%s=%r is not a non-negative number; using %s", key, raw, default)
+                value = default
+            out.append(value)
+        return out[0], out[1]
+
+    @staticmethod
+    def _human_delay_from_config(config: dict) -> Optional[tuple[int, int]]:
+        """``human_delay.{mode,min_ms,max_ms}`` for one profile as a ``(lo_ms, hi_ms)`` range, or
+        ``None`` when off (#116895). ``natural`` is the fixed 800-2500 range; ``custom`` reads the
+        bounds and rejects non-integer, negative or inverted values with a warning naming the key,
+        falling back to the natural range instead of letting ``random.uniform`` raise at send."""
+        mode = str(cfg_get(config, "human_delay", "mode", default="off") or "off").strip().lower()
+        if mode == "off":
+            return None
+        lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        if mode != "natural":
+            if mode != "custom":
+                logger.warning("human_delay.mode=%r is not off/natural/custom; using natural", mode)
+                return DEFAULT_HUMAN_DELAY_RANGE_MS
+            bounds = []
+            for key, default in (("min_ms", lo), ("max_ms", hi)):
+                raw = cfg_get(config, "human_delay", key, default=None)
+                try:
+                    value = default if raw is None or raw == "" else int(raw)
+                    if value < 0:
+                        raise ValueError(raw)
+                except (TypeError, ValueError):
+                    logger.warning("human_delay.%s=%r is not a non-negative integer; using %s", key, raw, default)
+                    value = default
+                bounds.append(value)
+            lo, hi = bounds
+            if lo > hi:
+                logger.warning("human_delay.min_ms=%s exceeds human_delay.max_ms=%s; using natural range", lo, hi)
+                lo, hi = DEFAULT_HUMAN_DELAY_RANGE_MS
+        return lo, hi
+
     def _snapshot_profile_busy_modes(self, profile_name: str, config: dict) -> None:
-        """Cache a routed profile's busy policy for this gateway lifetime."""
+        """Cache a routed profile's busy policy and pacing for this gateway lifetime."""
         input_mode, text_mode = self._busy_modes_from_config(
             config, fallback_input=getattr(self, "_busy_input_mode", "interrupt"),
             fallback_text=getattr(self, "_busy_text_mode", "interrupt"),
         )
         self.__dict__.setdefault("_busy_input_modes_by_profile", {})[profile_name] = input_mode
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
+        self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
+            self._busy_text_timing_from_config(config))
+        self.__dict__.setdefault("_human_delay_by_profile", {})[profile_name] = (
+            self._human_delay_from_config(config))
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -325,17 +563,50 @@ class GatewayConfigLoadersMixin:
             cls._warn_unparsable_timeout("restart_drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
         return value
 
+    @staticmethod
+    def _load_launchd_exit_timeout(drain_timeout: float) -> Optional[float]:
+        """Read the live launchd ``ExitTimeOut`` this job runs under, if any.
+
+        launchd is the one supervisor the gateway cannot size from config: the per-user (gui)
+        domain clamps ``ExitTimeOut`` (measured 60s on macOS 26), and any signal-driven stop that
+        drains past it is SIGKILLed mid-teardown — the unclean-exit half of the state.db
+        corruption class. Returns ``None`` (fail-open, drain unchanged) when not launchd-owned or
+        when ``launchctl print`` is unavailable. Logs a WARNING when the configured drain exceeds
+        the live budget so the misconfiguration is visible at boot, not at the next SIGKILL.
+        """
+        label = launchd_service_label()
+        if label is None:
+            return None
+        # read_launchd_exit_timeout_s is already fail-open (returns None on any probe failure).
+        exit_timeout = read_launchd_exit_timeout_s(label)
+        if exit_timeout is None:
+            return None
+        effective = resolve_launchd_capped_drain(drain_timeout, exit_timeout)
+        if effective < drain_timeout:
+            logger.warning(
+                "restart_drain_timeout=%.0fs exceeds the live launchd exit timeout (%.0fs) for %s; "
+                "signal-driven stops will drain at most %.0fs so teardown finishes before launchd "
+                "SIGKILLs (launchd clamps ExitTimeOut in the per-user domain).",
+                drain_timeout, exit_timeout, label, effective,
+            )
+        else:
+            logger.info(
+                "launchd exit timeout for %s is %.0fs (drain %.0fs fits)",
+                label, exit_timeout, drain_timeout,
+            )
+        return exit_timeout
+
     @classmethod
     def _load_env_or_agent_cfg_timeout(cls, env_var: str, cfg_key: str, parse, default: float) -> float:
         """Env var (non-empty) else ``agent.<cfg_key>``; warn once when a supplied value fails to parse.
 
         ``0`` is a valid value; the parser falls back to ``default`` on garbage."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         env_raw = os.getenv(env_var)
         if env_raw is not None and str(env_raw).strip() != "":
             raw: object = env_raw
         else:
-            raw = cfg_get(_load_gateway_runtime_config(), "agent", cfg_key, default=None)
+            raw = cfg_get(_load_gateway_config(), "agent", cfg_key, default=None)
         value = parse(raw)
         if raw is not None and str(raw).strip() != "":
             cls._warn_unparsable_timeout(cfg_key, raw, default)
@@ -351,7 +622,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """
@@ -363,8 +634,8 @@ class GatewayConfigLoadersMixin:
     @classmethod
     def _load_signal_interrupt_grace_timeout(cls) -> float:
         """``gateway.signal_interrupt_grace_timeout``: unexpected-signal post-interrupt grace in seconds."""
-        from gateway.run import _load_gateway_runtime_config
-        raw = cfg_get(_load_gateway_runtime_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
+        from gateway.run import _load_gateway_config
+        raw = cfg_get(_load_gateway_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
         value = parse_signal_interrupt_grace_timeout(raw)
         if raw is not None and raw != "":
             cls._warn_unparsable_timeout(
@@ -381,11 +652,15 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
-        """Background process notification mode from env/config (default ``concise``)."""
-        from gateway.run import _load_gateway_runtime_config
-        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        """Background process notification mode from env/config (default ``concise``), resolved for
+        the AMBIENT profile — callers deciding for another profile's event enter its scope first
+        (``_completion_event_scope``). The env override reads through the secret scope so a served
+        secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
+        from gateway.run import _load_gateway_config
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
-            raw = cfg_get(_load_gateway_runtime_config(), "display", "background_process_notifications")
+            raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")
             if raw is False:
                 mode = "off"
             elif raw not in {None, ""}:
@@ -399,19 +674,19 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
-            return _load_gateway_runtime_config().get("provider_routing", {}) or {}
+            return _load_gateway_config().get("provider_routing", {}) or {}
         except Exception:
             return {}
 
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Fallback chain: ``fallback_providers`` (kept first) merged with legacy ``fallback_model``."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR} expansion apply here too.
-            return get_fallback_chain(_load_gateway_runtime_config()) or None
+            return get_fallback_chain(_load_gateway_config()) or None
         except Exception:
             return None
 
@@ -426,30 +701,33 @@ class GatewayConfigLoadersMixin:
         ``self._fallback_model`` at process start, so a chain configured (or changed) after ``hermes
         gateway`` was running never reached messaging sessions even though the same process's cron jobs fell
         back correctly. Fixes #60955.
+
+        Reads the ACTIVE gateway home (the routed profile under multiplexing, else the launch home)
+        and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
+        home handed every secondary profile the default profile's fallback chain.
         """
-        from gateway.run import _hermes_home
+        from hermes_cli.config_backend import config_exists
+        from gateway.run import _gateway_config_home
+        from hermes_constants import hermes_home_key
+        home = _gateway_config_home()
+        by_home = getattr(self, "_fallback_model_by_home", None)
+        if by_home is None:
+            by_home = self._fallback_model_by_home = {}
+        home_key = hermes_home_key(home)
         try:
-            from hermes_cli.config import read_user_config_raw
-            cfg_path = _hermes_home / "config.yaml"
-            if not cfg_path.exists():
-                self._fallback_model = None
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg_path = home / "config.yaml"
+            if not config_exists(cfg_path):
+                by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
-            # Raw primitive (raises on parse failure) is required here: the canonical fail-open
-            # loader would return {} on a torn mid-edit write and WIPE the last known-good chain.
-            # The overlay/expansion below fixes the managed-scope/${VAR} drift without losing that.
-            cfg = read_user_config_raw(cfg_path)
-            with suppress(Exception):
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            with suppress(Exception):
-                from hermes_cli.config import _expand_env_vars
-                expanded = _expand_env_vars(cfg)
-                if isinstance(expanded, dict):
-                    cfg = expanded
+            # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain
+            # below survives, instead of being WIPED by an empty fail-open result.
+            cfg = load_user_config_effective(cfg_path, fail_closed=True)
         except Exception:
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
+            self._fallback_model = by_home.get(home_key, self._fallback_model)
             return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
+        by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
 
     @staticmethod

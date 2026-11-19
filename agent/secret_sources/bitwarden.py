@@ -1,7 +1,7 @@
 """Bitwarden Secrets Manager (`bws` CLI) integration.
 
 Pulls API keys from BSM at startup so they need not live in ``~/.hermes/.env``.
-``bws`` is auto-installed into ``<hermes_home>/bin/bws`` (one pinned version,
+``bws`` is auto-installed into the PM tool store (one pinned version,
 SHA-256-verified against the published checksum). The one bootstrap secret is
 the access token in ``.env``; every other key can live in BSM. One
 ``bws secret list <project_id>`` call per fetch, cached in-process and on disk
@@ -12,44 +12,37 @@ purpose: one cross-platform binary beats the ``bitwarden-sdk-secrets`` Rust whee
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import os
-import platform
 import re
 import shutil
-import subprocess
-import tempfile
 import time
-import urllib.error
-import urllib.request
-import zipfile
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
-    fingerprint as _token_fingerprint, resolve_cache_home,
+    current_cache_path, fingerprint as _token_fingerprint, remove_cache_file, resolve_cache_home,
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
-    is_valid_env_name as _is_valid_env_name, get_source_environment, run_cli, source_child_env,
+    is_valid_env_name as _is_valid_env_name, build_minimal_provider_env, get_source_environment, run_cli,
 )
 
 logger = logging.getLogger(__name__)
 
-# Pinned upstream version — never auto-resolve "latest": release shape (asset
-# names, CLI flags) may change between majors and updates must be deliberate.
-_BWS_VERSION = "2.0.0"
-_BWS_RELEASE_BASE = f"https://github.com/bitwarden/sdk-sm/releases/download/bws-v{_BWS_VERSION}"
-_BWS_CHECKSUM_NAME = f"bws-sha256-checksums-{_BWS_VERSION}.txt"
-_BWS_DOWNLOAD_TIMEOUT = 60
+# bws's global env options (besides the token, which callers pass explicitly).
+# BWS_CONFIG_FILE / BWS_PROFILE can select a self-hosted server; dropping them
+# would send the token to the default (US Cloud) endpoint instead.
+BWS_ENV_ALLOW = ("BWS_SERVER_URL", "BWS_CONFIG_FILE", "BWS_PROFILE")
+
 _BWS_RUN_TIMEOUT = 30
 
-# <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
+# <hermes_home>/bws_cache.json holds only secret VALUES (never the access
 # token); kept out of .env so users editing .env don't commit BSM-sourced secrets.
-_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
+_CacheKey = tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
 _DISK_CACHE_BASENAME = "bws_cache.json"
 _ENCRYPTED_CACHE_BASENAME = "bws_cache.enc.json"
 _ENCRYPTED_CACHE_VERSION = 1
@@ -68,7 +61,110 @@ _disk_cache_path = _DISK_CACHE.path
 
 
 def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    return resolve_cache_home(home_path) / "cache" / _ENCRYPTED_CACHE_BASENAME
+    return resolve_cache_home(home_path) / _ENCRYPTED_CACHE_BASENAME
+
+
+def _current_encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    return current_cache_path(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
+
+
+# --- Validation for the values that reach the bws child ----------------------
+
+# BSM project ids are UUIDs: what the `project_id` config key is documented to
+# hold and the only shape `bws secret list` accepts.
+_PROJECT_ID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
+)
+# Plaintext HTTP is tolerated only against the local machine, where there is no
+# network to sniff. Everything else carries the access token, so it must be TLS.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+class BitwardenConfigError(RuntimeError):
+    """A configured value failed validation before bws ran; nothing was sent."""
+
+
+def validate_project_id(project_id: str) -> str:
+    """Return ``project_id`` stripped, or raise ``ValueError``. The value goes into the
+    ``bws`` argv, so a non-UUID is rejected before the spawn rather than handed to the CLI."""
+    candidate = (project_id or "").strip()
+    if not candidate:
+        raise ValueError("Bitwarden project_id is empty")
+    if not _PROJECT_ID_RE.match(candidate):
+        raise ValueError(f"secrets.bitwarden.project_id {candidate!r} is not a project UUID "
+                         "(xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).  Run "
+                         "`hermes secrets bitwarden setup` to pick a project.")
+    return candidate
+
+
+def validate_server_url(server_url: str) -> str:
+    """Return ``server_url`` stripped, or raise ``ValueError``.
+
+    The access token is sent to whatever endpoint this names, so a bad value is an
+    exfiltration channel rather than a typo: a phished setup answer or a committed config
+    pointing at ``http://attacker.example`` ships the token off in cleartext. Empty is valid
+    (``bws`` default, US Cloud). Rules: HTTPS, a real host, no embedded credentials;
+    plaintext HTTP only for loopback (self-hosted users tunnelling to a local port)."""
+    candidate = (server_url or "").strip()
+    if not candidate:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(candidate)
+    except ValueError as exc:  # malformed IPv6 literal, bad port, …
+        raise ValueError(f"secrets.bitwarden.server_url {candidate!r} is not a valid URL: {exc}") from exc
+    if parts.scheme not in ("https", "http"):
+        raise ValueError(f"secrets.bitwarden.server_url {candidate!r} must be an https:// URL")
+    if not parts.hostname:
+        raise ValueError(f"secrets.bitwarden.server_url {candidate!r} has no host")
+    # `user:pass@host` lets a hostile value read as the real vault while pointing
+    # somewhere else — and it would put credentials in the env var.
+    if parts.username or parts.password:
+        raise ValueError("secrets.bitwarden.server_url must not embed credentials (user:pass@host)")
+    if parts.scheme == "http" and parts.hostname.lower() not in _LOOPBACK_HOSTS:
+        raise ValueError(f"secrets.bitwarden.server_url {candidate!r} uses plaintext http:// "
+                         "— the access token would cross the network unencrypted.  Use "
+                         "https:// (http:// is accepted only for localhost).")
+    return candidate
+
+
+def apply_server_url_to_env(env: dict[str, str], server_url: str) -> Optional[str]:
+    """Set ``BWS_SERVER_URL`` on ``env`` for a bws child. Returns a warning.
+
+    Every value that reaches ``BWS_SERVER_URL`` passes :func:`validate_server_url` here,
+    whichever way it arrived, because this is the one place that writes the variable. The
+    endpoint it names receives ``BWS_ACCESS_TOKEN``, so an unchecked value is an exfiltration
+    channel, and a caller that forgets to validate must not be able to open one.
+
+    ``server_url`` is the configured value and wins when set. When it is empty, ``bws``
+    would otherwise inherit whatever ``BWS_SERVER_URL`` the parent shell happened to carry —
+    an ambient value nothing validated.
+
+    A value that fails validation is dropped rather than raised on: callers here are status
+    and verification paths that should still report on the rest of the setup. Dropping falls
+    back to the ``bws`` default (US Cloud), Bitwarden's own endpoint, so the fallback cannot
+    leak the token either. Fetch callers validate ahead of this (see
+    :func:`fetch_bitwarden_secrets`) and fail loudly instead.
+
+    Returns a human-readable warning when a value was dropped, else ``None``."""
+    if server_url:
+        try:
+            env["BWS_SERVER_URL"] = validate_server_url(server_url)
+        except ValueError as exc:
+            env.pop("BWS_SERVER_URL", None)
+            return (f"Ignoring the configured Bitwarden server_url: {exc}.  "
+                    "Falling back to the bws default (US Cloud).")
+        return None
+    inherited = (env.get("BWS_SERVER_URL") or "").strip()
+    if not inherited:
+        return None
+    try:
+        validate_server_url(inherited)
+    except ValueError as exc:
+        env.pop("BWS_SERVER_URL", None)
+        return (f"Ignoring BWS_SERVER_URL from the environment: {exc}.  "
+                "Falling back to the bws default (US Cloud).")
+    env["BWS_SERVER_URL"] = inherited
+    return None
 
 
 # First matching rule wins. The BSM identity endpoint rejects a revoked /
@@ -90,146 +186,30 @@ def _classify_bws_error(message: str) -> ErrorKind:
 # --- Binary discovery + lazy install ----------------------------------------
 
 
-def _hermes_bin_dir() -> Path:
-    """Where Hermes stores its managed binaries. Profile-aware."""
-    from hermes_constants import get_hermes_home
-
-    return get_hermes_home() / "bin"
-
-
 def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin/bws`` first, then PATH, then optional auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
-    system = shutil.which("bws")
-    if system:
+    """External tools do not require PM platform support; acquire only on a miss."""
+    if system := shutil.which("bws"):
         return Path(system)
+    import pm
+
+    selected = pm.installed_package("bws")
+    if selected is not None:
+        return selected.binary
     if install_if_missing:
         try:
-            return install_bws()
-        except Exception as exc:  # noqa: BLE001 — never block startup
+            pm.ensure("bws")
+            return pm.installed_package("bws").binary
+        except Exception as exc:
             logger.warning("bws auto-install failed: %s", exc)
     return None
 
 
-def _platform_binary_name() -> str:
-    return "bws.exe" if platform.system() == "Windows" else "bws"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch, libc) → upstream asset filename (Rust target-triple style)."""
-    system = platform.system()
-    machine = platform.machine().lower()
-    arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-
-    if system == "Darwin":  # universal binary covers Intel + Apple Silicon
-        return f"bws-macos-universal-{_BWS_VERSION}.zip"
-    if system == "Windows":
-        return f"bws-{arch}-pc-windows-msvc-{_BWS_VERSION}.zip"
-    if system == "Linux":
-        # glibc default; musl only if ldd says so (a wrong guess surfaces as a loader error).
-        libc = "gnu"
-        try:
-            res = subprocess.run(["ldd", "--version"], capture_output=True, text=True, encoding='utf-8',
-                                 errors='replace', timeout=2, stdin=subprocess.DEVNULL)
-            if "musl" in (res.stdout + res.stderr).lower():
-                libc = "musl"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return f"bws-{arch}-unknown-linux-{libc}-{_BWS_VERSION}.zip"
-
-    raise RuntimeError(f"Unsupported platform for bws auto-install: {system} {machine}")
-
-
 def install_bws(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned ``bws`` binary; raises on any failure
-    (the auto-install path catches; the setup wizard shows the error)."""
-    bin_dir = _hermes_bin_dir()
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-    if target.exists() and not force:
-        return target
+    """Explicit setup/repair; PM re-verifies even a warm entry (including force)."""
+    import pm
 
-    asset_name = _platform_asset_name()
-    with tempfile.TemporaryDirectory(prefix="hermes-bws-") as tmpdir:
-        tmp = Path(tmpdir)
-        zip_path = tmp / asset_name
-        checksum_path = tmp / _BWS_CHECKSUM_NAME
-
-        logger.info("Downloading %s", f"{_BWS_RELEASE_BASE}/{asset_name}")
-        _http_download(f"{_BWS_RELEASE_BASE}/{asset_name}", zip_path)
-        _http_download(f"{_BWS_RELEASE_BASE}/{_BWS_CHECKSUM_NAME}", checksum_path)
-
-        expected = _expected_sha256(checksum_path, asset_name)
-        actual = _sha256_file(zip_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
-
-        with zipfile.ZipFile(zip_path) as zf:
-            member = _pick_zip_member(zf, _platform_binary_name())
-            extracted = _safe_extract_member(zf, member, tmp)
-
-        # Stage in the final directory so the rename can't cross filesystems.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-
-    logger.info("Installed bws %s at %s", _BWS_VERSION, target)
-    return target
-
-
-def _http_download(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
-    try:
-        with urllib.request.urlopen(req, timeout=_BWS_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310
-            shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse standard ``sha256sum`` output (``<hex>  <filename>`` per line)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
-    """Find the binary in the zip; tolerate a top-level dir, prefer the shortest path."""
-    candidates = [n for n in zf.namelist() if n.split("/")[-1] == binary_name]
-    if not candidates:
-        raise RuntimeError(f"Could not find {binary_name} inside downloaded archive "
-                           f"(members: {zf.namelist()[:5]}...)")
-    return min(candidates, key=len)
-
-
-def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: Path) -> Path:
-    """Extract one member, refusing zip-slip: ``ZipFile.extract`` never verifies the
-    joined path stays inside ``dest_dir``, so containment is checked here first."""
-    dest_root = os.path.realpath(dest_dir)
-    target = os.path.realpath(os.path.join(dest_root, member))
-    try:  # commonpath raises for e.g. different Windows drives — treat as escape
-        contained = os.path.commonpath([dest_root, target]) == dest_root and target != dest_root
-    except ValueError:
-        contained = False
-    if not contained:
-        raise RuntimeError(f"Refusing to extract unsafe archive member {member!r}: "
-                           f"it escapes the extraction directory")
-    zf.extract(member, dest_root)
-    return Path(target)
+    pm.ensure("bws", explicit=True)
+    return pm.installed_package("bws").binary
 
 
 # --- Encrypted last-good cache (opt-in) -------------------------------------
@@ -268,9 +248,9 @@ def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entr
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, serialized_key.encode("utf-8"))
         payload = {"version": _ENCRYPTED_CACHE_VERSION, "key": serialized_key,
                    "salt": _b64e(salt), "nonce": _b64e(nonce), "ciphertext": _b64e(ciphertext)}
-        atomic_write_json(_encrypted_disk_cache_path(home_path), payload, tmp_prefix=".bws_cache_enc_")
+        atomic_write_json(_current_encrypted_disk_cache_path(home_path), payload)
         _STORE.disk.clear(home_path)
-    except Exception:  # noqa: BLE001 — best-effort cache only
+    except Exception:
         return
 
 
@@ -282,7 +262,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        payload = json.loads(_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8"))
+        payload = json.loads(_current_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
         serialized_key = _cache_key_str(cache_key)
         if (not isinstance(payload, dict)
                 or payload.get("version") != _ENCRYPTED_CACHE_VERSION
@@ -298,7 +278,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
             return None
         entry_age = time.time() - entry.fetched_at
         return None if entry_age < 0 or entry_age > max_age_seconds else entry
-    except Exception:  # noqa: BLE001 — cache miss on parse/decrypt/I/O errors
+    except Exception:
         return None
 
 
@@ -310,10 +290,12 @@ def fetch_bitwarden_secrets(
     cache_ttl_seconds: float = 300, use_cache: bool = True, server_url: str = "",
     home_path: Optional[Path] = None, encrypted_cache_enabled: bool = False,
     encrypted_cache_max_stale_seconds: float = 0,
-) -> Tuple[Dict[str, str], List[str]]:
+) -> tuple[dict[str, str], list[str]]:
     """Pull the secrets for ``project_id`` from BSM → ``(secrets, warnings)``.
 
-    ``server_url``: region / self-hosted instance (empty = US Cloud). With
+    ``server_url``: region / self-hosted instance (empty = US Cloud). Both ``project_id``
+    and ``server_url`` are validated first (:func:`validate_project_id`,
+    :func:`validate_server_url`). With
     ``encrypted_cache_enabled`` fresh entries are written AES-GCM encrypted and a
     last-good entry may be served after NETWORK/TIMEOUT failures for up to
     ``encrypted_cache_max_stale_seconds`` — independent of the fresh TTL, so
@@ -323,10 +305,15 @@ def fetch_bitwarden_secrets(
     """
     if not access_token:
         raise RuntimeError("Bitwarden access token is empty")
-    if not project_id:
-        raise RuntimeError("Bitwarden project_id is empty")
+    # Validate BEFORE the cache lookup: a rejected value must never be able to
+    # serve a cache entry, and the cache key should hold the checked form.
+    try:
+        project_id = validate_project_id(project_id)
+        server_url = validate_server_url(server_url)
+    except ValueError as exc:
+        raise BitwardenConfigError(str(exc)) from exc
 
-    cache_key = (_token_fingerprint(access_token), project_id, server_url or "")
+    cache_key = (_token_fingerprint(access_token), project_id, server_url)
 
     def _read_encrypted(max_age: float) -> Optional[_CachedFetch]:
         return _read_encrypted_disk_cache(cache_key=cache_key, access_token=access_token,
@@ -387,7 +374,7 @@ def _summarize_bws_stderr(raw: str) -> str:
     """Reduce a bws (color-eyre) error dump to its numbered cause lines joined with
     ``; `` (dropping ``Location:``/``Backtrace`` on); raw text if unrecognized."""
     text = raw.replace("\x1b", "").strip()
-    causes: List[str] = []
+    causes: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith(("Location:", "Backtrace omitted", "Run with ")):
@@ -397,15 +384,20 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
-def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> Tuple[Dict[str, str], List[str]]:
-    cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
-    # The bws child intentionally receives the access token; a profile-local
-    # fetch must not inherit sibling credentials (source_child_env).
-    env = source_child_env()
-    env["BWS_ACCESS_TOKEN"] = access_token
-    env.setdefault("NO_COLOR", "1")
-    if server_url:  # empty keeps whatever BWS_SERVER_URL the shell already had
-        env["BWS_SERVER_URL"] = server_url
+def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> tuple[dict[str, str], list[str]]:
+    # `--` terminates option parsing so the project id can never be read as a
+    # bws flag, whatever it contains. Matches `op read` in onepassword.py.
+    cmd = [str(bws), "secret", "list", "--output", "json", "--", project_id]
+    # The bws child gets its access token and an allowlisted env, never the
+    # post-dotenv provider credentials (or, under multiplex, a sibling's).
+    env = build_minimal_provider_env(allow_env=BWS_ENV_ALLOW,
+                                     extra_env={"BWS_ACCESS_TOKEN": access_token})
+    # Empty server_url keeps whatever BWS_SERVER_URL the shell already had (manual
+    # overrides keep working), but only once it validates — see apply_server_url_to_env.
+    env_warnings: list[str] = []
+    if inherited_warning := apply_server_url_to_env(env, server_url):
+        logger.warning("%s", inherited_warning)
+        env_warnings.append(inherited_warning)
 
     proc = run_cli(cmd, env=env, timeout=_BWS_RUN_TIMEOUT, label="bws",
                    timeout_message=f"bws timed out after {_BWS_RUN_TIMEOUT}s fetching secrets")
@@ -416,7 +408,7 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
 
     raw = proc.stdout.strip()
     if not raw:
-        return {}, ["bws returned no output (empty project?)"]
+        return {}, env_warnings + ["bws returned no output (empty project?)"]
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -424,8 +416,8 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
     if not isinstance(payload, list):
         raise RuntimeError(f"bws returned unexpected shape: {type(payload).__name__}")
 
-    secrets: Dict[str, str] = {}
-    warnings: List[str] = []
+    secrets: dict[str, str] = {}
+    warnings: list[str] = list(env_warnings)
     for item in payload:
         key, value = (item.get("key"), item.get("value")) if isinstance(item, dict) else (None, None)
         if not isinstance(key, str) or not isinstance(value, str):
@@ -470,7 +462,8 @@ class BitwardenSource(SecretSource):
                                 "default": {"enabled": False, "max_stale_seconds": 0}},
             "override_existing": {"description": "BSM values overwrite .env/shell values", "default": True},
             "auto_install": {"description": "Auto-download the pinned bws binary", "default": True},
-            "server_url": {"description": "Region / self-hosted endpoint (empty = US Cloud)", "default": ""},
+            "server_url": {"description": "Region / self-hosted endpoint, https:// (empty = US Cloud)",
+                           "default": ""},
         }
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
@@ -503,6 +496,8 @@ class BitwardenSource(SecretSource):
                 encrypted_cache_enabled=bool(encrypted_cfg.get("enabled", False)),
                 encrypted_cache_max_stale_seconds=coerce_float(encrypted_cfg.get("max_stale_seconds", 0), 0.0),
             )
+        except BitwardenConfigError as exc:  # refused before any spawn: not a token or network failure
+            return result.fail(str(exc), ErrorKind.NOT_CONFIGURED)
         except RuntimeError as exc:
             result.fail(str(exc), _classify_bws_error(str(exc)))
             if result.error_kind == ErrorKind.AUTH_FAILED:  # say what the raw OAuth reject means first
@@ -519,121 +514,7 @@ class BitwardenSource(SecretSource):
 def clear_caches(home_path: Optional[Path] = None) -> None:
     """Drop in-process AND disk caches (plaintext and encrypted), e.g. after a token rotation."""
     _STORE.clear(home_path)
-    try:
-        _encrypted_disk_cache_path(home_path).unlink()
-    except (FileNotFoundError, OSError):
-        pass
+    remove_cache_file(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
 
 
 _reset_cache_for_tests = clear_caches
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import stat  # noqa: F401,E402
-
-def apply_bitwarden_secrets(
-    *,
-    enabled: bool,
-    access_token_env: str = "BWS_ACCESS_TOKEN",
-    project_id: str = "",
-    override_existing: bool = False,
-    cache_ttl_seconds: float = 300,
-    auto_install: bool = True,
-    server_url: str = "",
-    home_path: Optional[Path] = None,
-    encrypted_cache_enabled: bool = False,
-    encrypted_cache_max_stale_seconds: float = 0,
-) -> FetchResult:
-    """Pull secrets from BSM and set them on ``os.environ``.
-
-    This is the function ``load_hermes_dotenv()`` calls after the .env
-    files have loaded.  It is intentionally defensive — any failure
-    returns a :class:`FetchResult` with ``error`` set; it never raises.
-
-    ``server_url`` selects the Bitwarden region or self-hosted endpoint
-    (e.g. ``https://vault.bitwarden.eu`` for EU Cloud).  Empty string
-    means use ``bws``'s default (US Cloud).
-
-    Parameters mirror the ``secrets.bitwarden.*`` config keys so the
-    caller can just splat the dict in.
-    """
-    result = FetchResult()
-
-    if not enabled:
-        return result
-
-    access_token = os.environ.get(access_token_env, "").strip()
-    if not access_token:
-        result.error = (
-            f"secrets.bitwarden.enabled is true but {access_token_env} is "
-            "not set.  Run `hermes secrets bitwarden setup`."
-        )
-        return result
-
-    if not project_id:
-        result.error = (
-            "secrets.bitwarden.project_id is empty.  "
-            "Run `hermes secrets bitwarden setup`."
-        )
-        return result
-
-    binary = find_bws(install_if_missing=auto_install)
-    result.binary_path = binary
-    if binary is None:
-        result.error = (
-            "bws binary not available and auto-install is disabled.  "
-            "Run `hermes secrets bitwarden setup` to install."
-        )
-        return result
-
-    try:
-        secrets, warnings = fetch_bitwarden_secrets(
-            access_token=access_token,
-            project_id=project_id,
-            binary=binary,
-            cache_ttl_seconds=cache_ttl_seconds,
-            server_url=server_url,
-            home_path=home_path,
-            encrypted_cache_enabled=encrypted_cache_enabled,
-            encrypted_cache_max_stale_seconds=encrypted_cache_max_stale_seconds,
-        )
-    except RuntimeError as exc:
-        result.error = str(exc)
-        return result
-
-    result.secrets = secrets
-    result.warnings.extend(warnings)
-
-    for key, value in secrets.items():
-        if key == access_token_env:
-            # Don't let BSM clobber the very token we used to fetch
-            # itself — that would be a footgun if someone stored the
-            # token as a BSM secret too.
-            result.skipped.append(key)
-            continue
-        if not override_existing and os.environ.get(key):
-            result.skipped.append(key)
-            continue
-        os.environ[key] = value
-        result.applied.append(key)
-
-    return result
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DiskCache': ('agent.secret_sources._cache', 'DiskCache'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

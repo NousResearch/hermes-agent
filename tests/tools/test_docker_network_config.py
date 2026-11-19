@@ -6,7 +6,7 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 from tools.environments import docker as docker_env
 
 
@@ -23,8 +23,8 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     the SAME container_config keys. Each used to keep a private (key, default) table and drifted:
     the probe lost ``docker_network`` (bridge-networked probe under lockdown, #46358/#76906/#87995),
     execute_code lost ``docker_extra_args``/``docker_forward_env``/``docker_env`` (#84027/#100019)."""
-    import agent.prompt_builder as prompt_builder
-    import tools.code_execution_tool as code_execution_tool
+    from agent import prompt_builder
+    from tools import code_execution_tool
     import tools.terminal_tool_backends as backends
 
     config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "docker_network": False,
@@ -63,7 +63,8 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
 
 
 def _reuse_guard_harness(
-    monkeypatch, *, existing_mode: str, network: bool, extra_args=None
+    monkeypatch, *, existing_mode: str, network: bool, extra_args=None, existing_image: str = "python:3.11",
+    image_pinned: bool = False, image_pullable: bool = True,
 ):
     """Drive DockerEnvironment through the cross-process reuse path with a
     fake existing container whose NetworkMode is *existing_mode*.
@@ -86,7 +87,13 @@ def _reuse_guard_harness(
             # missing label as "<no value>".
             Result.stdout = "existing-container-id\trunning\t<no value>\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            Result.stdout = f"{existing_mode}\n"
+            # Two probes share `inspect`: image identity (must match for reuse) and network mode.
+            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
+        elif len(cmd) > 2 and cmd[1:3] == ["image", "inspect"]:
+            Result.returncode = 1  # never in the local store: the replacement must go through `pull`
+        elif len(cmd) > 1 and cmd[1] == "pull":
+            Result.returncode = 0 if image_pullable else 1
+            Result.stderr = "" if image_pullable else "pull access denied"
         elif len(cmd) > 1 and cmd[1] == "run":
             Result.stdout = "fresh-container-id\n"
         return Result()
@@ -103,6 +110,7 @@ def _reuse_guard_harness(
         network=network,
         extra_args=extra_args,
         persist_across_processes=True,
+        image_pinned=image_pinned,
     )
     return commands
 
@@ -129,9 +137,55 @@ def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
 
     # Default-network config never churns containers, even air-gapped ones
     # (operators may have created them via docker_extra_args).
-    assert not any(cmd[1] == "inspect" for cmd in commands)
+    assert not any(cmd[1] == "inspect" and ".HostConfig.NetworkMode" in cmd[3] for cmd in commands)
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)
+
+
+def test_reuse_recreates_container_built_from_another_image_when_pinned(monkeypatch):
+    """The user changed docker_image (config.yaml / TERMINAL_DOCKER_IMAGE): the old container is not
+    their sandbox any more and must be replaced, or the new image never takes effect."""
+    commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
+                                    existing_image="old/image:1", image_pinned=True)
+
+    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "container from another image must be removed"
+    assert any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands)
+
+
+def test_reuse_pulls_the_replacement_before_removing_the_old_container(monkeypatch):
+    """The old container's writable layer is the user's sandbox; it goes only once the image replacing it
+    is in the local store, so a private/misspelled tag or a registry outage never leaves them with
+    nothing."""
+    commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
+                                    existing_image="old/image:1", image_pinned=True)
+    kinds = [tuple(c[1:3]) for c in commands]
+    assert kinds.index(("pull", "python:3.11")) < kinds.index(("rm", "-f"))
+
+
+def test_reuse_keeps_the_old_container_when_the_replacement_cannot_be_pulled(monkeypatch, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger=docker_env.logger.name):
+        commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
+                                        existing_image="old/image:1", image_pinned=True, image_pullable=False)
+
+    assert any(cmd[1] == "pull" for cmd in commands)
+    assert not any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "nothing to replace it with: keep the sandbox"
+    assert not any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands)
+    assert "could not be pulled" in caplog.text and "keeping the current sandbox" in caplog.text
+
+
+def test_reuse_keeps_container_built_from_another_image_when_default_flipped(monkeypatch, caplog):
+    """A DEFAULT flip (nikolaik base -> hermes-sandbox:desktop) must not replace a sandbox the user has
+    state in: the existing container is kept and the log names the approval command. Same rule Modal
+    (snapshot wins) and Daytona (labeled sandbox wins) already apply."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger=docker_env.logger.name):
+        commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=True,
+                                        existing_image="old/image:1", image_pinned=False)
+
+    assert not any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "an unpinned default never removes a sandbox"
+    assert not any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands), "existing container reused"
+    assert "hermes config set terminal.docker_image python:3.11" in caplog.text
 
 
 def test_extra_args_network_none_emits_flag_once(monkeypatch):
@@ -154,3 +208,23 @@ def test_contradictory_network_request_fails_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="docker_network"):
         _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False, extra_args=["--network=host"])
+
+
+def test_pin_verdict_reaches_docker_environment_through_the_terminal_tool(monkeypatch):
+    """TERMINAL_DOCKER_IMAGE_PINNED must survive the terminal tool's config shaping
+    (``_CONTAINER_KEYS`` is an allowlist): a pinned image that the builder never sees is a pin
+    the runtime never honours, and the approval would silently do nothing."""
+    from tools import terminal_tool as tt
+    from tools.terminal_tool_backends import _build_docker_env, _container_config_from_config
+
+    seen = {}
+    monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment",
+                        lambda **kw: seen.update(kw) or object())
+    monkeypatch.setattr(tt, "_maybe_reap_docker_orphans", lambda cc: None)
+    monkeypatch.setattr(tt, "_docker_session_isolation_enabled", lambda: False)
+    for pinned in ("1", "0"):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE_PINNED", pinned)
+        cc = _container_config_from_config(tt._get_env_config())
+        _build_docker_env(image="x", cwd="/root", timeout=5, cc=cc, task_id="default", host_cwd=None)
+        assert seen["image_pinned"] is (pinned == "1")

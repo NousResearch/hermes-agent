@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from mcp.types import CallToolResult, EmbeddedResource, ResourceLink, TextContent, TextResourceContents
 
 from tools import mcp_tool
 from tools import mcp_tool_content as _mcp_content
 from tools import mcp_tool_handlers as _mcp_handlers
-
 
 class _FakeContentBlock:
     """Minimal content block with .text and .type attributes."""
@@ -18,7 +18,6 @@ class _FakeContentBlock:
     def __init__(self, text: str, block_type: str = "text"):
         self.text = text
         self.type = block_type
-
 
 class _FakeCallToolResult:
     """Minimal CallToolResult stand-in.
@@ -33,7 +32,6 @@ class _FakeCallToolResult:
         self.structuredContent = structuredContent
         # Real SDK exposes the wire ``_meta`` field as ``.meta`` (Pydantic alias).
         self.meta = meta
-
 
 def _fake_run_on_mcp_loop(coro_or_factory, timeout=30):
     coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -52,7 +50,6 @@ def _fake_run_on_mcp_loop(coro_or_factory, timeout=30):
     finally:
         loop.close()
 
-
 @pytest.fixture
 def _patch_mcp_server():
     """Patch _servers and the MCP event loop so _make_tool_handler can run."""
@@ -62,9 +59,9 @@ def _patch_mcp_server():
     # fresh loop that _fake_run_on_mcp_loop spins up, not at fixture import.
     fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
     with patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+         patch.dict(mcp_tool._server_trust_levels, {"test-server": "full"}), \
          patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
         yield fake_session
-
 
 class TestStructuredContentPreservation:
     """Ensure structuredContent from CallToolResult is forwarded."""
@@ -81,7 +78,6 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data == {"result": "hello"}
-
 
     def test_structured_content_none_falls_back_to_text(self, _patch_mcp_server):
         """When structuredContent is explicitly None, fall back to text."""
@@ -111,7 +107,6 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
-
 
 class TestMetaPassthrough:
     """Server ``_meta`` is surfaced, minus protocol-reserved keys.
@@ -165,7 +160,7 @@ class TestMetaPassthrough:
         assert data == {"result": "done"}
 
     def test_meta_with_structured_content(self, _patch_mcp_server):
-        """With usable text, structuredContent is suppressed but _meta rides."""
+        """Non-verbatim text keeps structuredContent; _meta still rides."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -178,6 +173,7 @@ class TestMetaPassthrough:
         data = json.loads(handler({}))
         assert data == {
             "result": "txt",
+            "structuredContent": {"ok": True},
             "_meta": {"com.example/k": "v"},
         }
 
@@ -205,7 +201,6 @@ class TestMetaPassthrough:
         data = json.loads(handler({}))
         assert data == {"result": "done"}
 
-
 class TestReservedMetaKeyPredicate:
     def test_reserved_prefixes(self):
         assert _mcp_content._is_reserved_mcp_meta_key("modelcontextprotocol.io/x")
@@ -218,13 +213,13 @@ class TestReservedMetaKeyPredicate:
         assert not _mcp_content._is_reserved_mcp_meta_key("plain-key")
         assert not _mcp_content._is_reserved_mcp_meta_key("/leading-slash")
 
-
 class TestContentStructuredArbitration:
-    """content and structuredContent are alternatives — never both.
+    """Only the spec's verbatim dual-emit is deduplicated (kimi-code#3234, narrowed).
 
-    Ported from MoonshotAI/kimi-code#3234: spec-following servers render
-    their data into content (verbatim dual-emit or a faithful human
-    reorganisation), so forwarding both sent the same information twice.
+    content being the serialized JSON of structuredContent is a deterministic
+    duplicate, so the structured copy is dropped. Any other usable text keeps
+    structuredContent alongside it (#115430): servers that return a status
+    summary in content were losing their only machine-readable result.
     """
 
     def test_dual_emit_suppresses_structured(self, _patch_mcp_server):
@@ -241,18 +236,190 @@ class TestContentStructuredArbitration:
         data = json.loads(handler({}))
         assert data == {"result": json.dumps(payload)}
 
-    def test_prose_summary_suppresses_structured(self, _patch_mcp_server):
-        """Lossy prose summaries also win — no heuristic is attempted."""
+    def test_dual_emit_forwards_one_copy(self, _patch_mcp_server):
+        """The dual-emit check compares parsed JSON per text block: a re-ordered,
+        indented, ASCII-escaped copy next to a status line still dedupes. An over-cap
+        payload next to usable text is also dropped — forwarding its truncated
+        stand-in as well would double the #56059 ceiling."""
         session = _patch_mcp_server
+        payload = {"a": "héllo", "b": 2}
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
-                content=[_FakeContentBlock("3 item(s) found")],
-                structuredContent={"items": [1, 2, 3]},
+                content=[_FakeContentBlock(json.dumps({"b": 2, "a": "héllo"}, indent=2)), _FakeContentBlock("done")],
+                structuredContent=payload,
             )
         )
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
-        assert data == {"result": "3 item(s) found"}
+        assert set(data) == {"result"} and data["result"].count('"b"') == 1
+        assert data["result"].endswith("done")
+        big = {"k": "z" * (_mcp_content._MCP_HARD_RESULT_CAP_CHARS + 10)}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(content=[_FakeContentBlock("done")], structuredContent=big)
+        )
+        assert json.loads(handler({})) == {"result": "done"}
+
+    def test_summary_plus_data_keeps_structured(self, _patch_mcp_server):
+        """#115430 reproducer shape: a status summary in content with the real data
+        (the jid needed by follow-up calls) only in structuredContent. A text-only
+        result is unchanged (control)."""
+        session = _patch_mcp_server
+        structured = {
+            "data": [{"jid": "12345@s.whatsapp.net", "name": "Contact"}],
+            "pagination": {"offset": 0, "limit": 1},
+        }
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock("Retrieved 1 chats (offset 0, limit 1)")],
+                structuredContent=structured,
+            )
+        )
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+        data = json.loads(handler({}))
+        assert data["result"] == "Retrieved 1 chats (offset 0, limit 1)"
+        assert data["structuredContent"] == structured
+        assert data["structuredContent"]["data"][0]["jid"] == "12345@s.whatsapp.net"
+        session.call_tool = AsyncMock(return_value=_FakeCallToolResult(content=[_FakeContentBlock("just text")]))
+        assert handler({}) == '{"result": "just text"}'
+
+    def test_sdk_wrapped_result_forwards_one_copy(self, _patch_mcp_server):
+        """The Python SDK wraps a non-object return as ``{"result": value}`` and puts the bare
+        value in ``content`` (one block per list item). Taken from a real ``MCPServer`` so the
+        contract follows the SDK: the model gets the value once, and a per-item list arrives as
+        one JSON copy so item types and boundaries survive (``[1, "1"]`` is not ``"1\\n1"``). A
+        wrapper whose value is NOT what the text says is distinct data and keeps its
+        ``structuredContent``."""
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("wrap")
+
+        @sdk.tool()
+        def text() -> str:
+            return "x" * 5000
+
+        @sdk.tool()
+        def mixed() -> list[int | str]:
+            return [1, "1"]
+
+        @sdk.tool()
+        def rows() -> list[dict]:
+            return [{"id": 1}, {"id": 2}]
+
+        @sdk.tool()
+        def lines() -> list[str]:
+            return ["ann\nbob", "carol"]
+
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool("text", {})))
+        assert json.loads(handler({})) == {"result": "x" * 5000}
+        for tool, value in (("mixed", [1, "1"]), ("rows", [{"id": 1}, {"id": 2}]), ("lines", ["ann\nbob", "carol"])):
+            session.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool(tool, {})))
+            data = json.loads(handler({}))
+            assert set(data) == {"result"} and json.loads(data["result"]) == value, (tool, data)
+        session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
+            content=[_FakeContentBlock("2 names")], structuredContent={"result": ["ann", "bob"]}))
+        assert json.loads(handler({}))["structuredContent"] == {"result": ["ann", "bob"]}
+
+    def test_plugin_call_mcp_keeps_sdk_structured_content(self, _patch_mcp_server):
+        """Only the model view collapses the SDK wrapper: ``ctx.call_mcp`` (the handler without
+        ``native_images``) still hands plugins the typed ``structuredContent``."""
+        from hermes_cli.plugins_context import PluginContext
+        from mcp.server import MCPServer
+
+        sdk = MCPServer("wrap")
+
+        @sdk.tool()
+        def rows() -> list[dict]:
+            return [{"id": 1}, {"id": 2}]
+
+        _patch_mcp_server.call_tool = AsyncMock(return_value=asyncio.run(sdk.call_tool("rows", {})))
+        envelope = PluginContext._mcp_envelope(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)({}))
+        assert envelope["structuredContent"] == {"result": [{"id": 1}, {"id": 2}]}
+
+    def test_dedup_never_equates_bool_and_number(self, _patch_mcp_server):
+        """Python's ``1 == True`` must not make a text block look like a copy of a
+        ``structuredContent`` it differs from; that copy would be dropped, and its data lost."""
+        session = _patch_mcp_server
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        for text, structured in (('{"enabled": 1}', {"enabled": True}), ("0", {"result": False})):
+            session.call_tool = AsyncMock(return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(text)], structuredContent=structured))
+            assert json.loads(handler({})) == {"result": text, "structuredContent": structured}
+
+    @pytest.mark.parametrize("text, structured", [
+        ("| a | b |\n|---|---|\n| 1 | 2 |", {"result": "| a | b |\n|---|---|\n| 1 | 2 |"}),
+        (json.dumps([{"url": "https://example.com", "text": "body"}]),
+         {"result": [{"url": "https://example.com", "text": "body"}]}),
+    ])
+    def test_fastmcp_wrapped_result_is_not_forwarded_twice(self, _patch_mcp_server, text, structured):
+        """FastMCP 3.x ``-> str`` / ``-> list`` shapes (one text block; a list is ONE JSON block):
+        the model gets the text once (operator repro)."""
+        _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(type="text", text=text)], structured_content=structured))
+        assert json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)({})) == {"result": text}
+
+    @pytest.mark.parametrize("structured", [{"result": "a different rendering"}, {"result": "| a |", "extra": 1}])
+    def test_wrapped_result_that_differs_from_text_is_kept(self, _patch_mcp_server, structured):
+        _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[TextContent(type="text", text="| a |")], structured_content=structured))
+        data = json.loads(_mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)({}))
+        assert data["structuredContent"] == structured
+
+    def test_wrap_marker_does_not_replace_the_equality_check(self, _patch_mcp_server):
+        """FastMCP >= 3.2 also flags the wrapper in ``_meta`` (``fastmcp.wrap_result``). The flag says
+        the shape is a wrapper, not that the text is a copy: a matching text block drops the
+        wrapper, a different one (a status line) keeps it."""
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        marker = {"fastmcp": {"wrap_result": True}}
+        for text, kept in (("the table", False), ("Retrieved 1 table", True)):
+            _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+                content=[TextContent(type="text", text=text)], structured_content={"result": "the table"},
+                meta=marker))
+            data = json.loads(handler({}))
+            assert ("structuredContent" in data) is kept, (text, data)
+            assert data["result"] == text and data["_meta"] == marker
+
+    def test_wrapped_copy_in_one_of_several_blocks(self, _patch_mcp_server):
+        """Per block, like the unwrapped dual-emit: a copy next to a status line or a resource link
+        is still one copy; a non-text block alone never counts as the copy."""
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        link = ResourceLink(type="resource_link", uri="file:///report.md", name="report")
+        for content in ([TextContent(type="text", text="done"), TextContent(type="text", text="the table")],
+                        [link, TextContent(type="text", text="the table")]):
+            _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+                content=content, structured_content={"result": "the table"}))
+            data = json.loads(handler({}))
+            assert set(data) == {"result"} and data["result"].count("the table") == 1, data
+        embedded = EmbeddedResource(type="resource", resource=TextResourceContents(uri="file:///t", text="the table"))
+        _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+            content=[embedded], structured_content={"result": "the table"}))
+        assert json.loads(handler({}))["structuredContent"] == {"result": "the table"}
+
+    def test_wrapped_result_spills_and_budgets_one_copy(self, _patch_mcp_server, tmp_path, monkeypatch):
+        """End to end through the real handler and the spill layer at the default MCP threshold:
+        a 30K table stays inline (the doubled payload crossed 50K and spilled), and a 60K table
+        spills as the text alone, with no escaped second copy in ``<mcp-result-metadata>``."""
+        import tools.tool_result_storage as trs
+        from tools.budget_config import DEFAULT_BUDGET, DEFAULT_MCP_RESULT_SIZE_CHARS
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0, native_images=True)
+        row = "| FY2027E | Revenue | 630.7 |\n"
+
+        def _call(size):
+            table = row * (size // len(row))
+            _patch_mcp_server.call_tool = AsyncMock(return_value=CallToolResult(
+                content=[TextContent(type="text", text=table)], structured_content={"result": table}))
+            return table, handler({})
+
+        table, out = _call(30_000)
+        assert len(out) < DEFAULT_MCP_RESULT_SIZE_CHARS
+        assert trs.maybe_persist_tool_result(out, "mcp_test_server_my_tool", "tc_inline", config=DEFAULT_BUDGET) == out
+        table, out = _call(60_000)
+        spilled = trs.maybe_persist_tool_result(out, "mcp_test_server_my_tool", "tc_spill", config=DEFAULT_BUDGET)
+        assert trs.PERSISTED_OUTPUT_TAG in spilled
+        assert (trs.get_spillover_dir() / "tc_spill.txt").read_text(encoding="utf-8-sig") == table
 
     def test_whitespace_only_content_falls_back(self, _patch_mcp_server):
         """Whitespace-only text is not usable content — fallback fires."""
@@ -281,7 +448,6 @@ class TestContentStructuredArbitration:
         handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
         data = json.loads(handler({}))
         assert data["result"] == payload
-
 
 class TestDroppedBlockNotice:
     """Unsupported content blocks surface a drop notice to the model.
@@ -322,9 +488,3 @@ class TestDroppedBlockNotice:
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
-
-    def test_notice_helper_minimal_block(self):
-        notice = _mcp_content._render_mcp_dropped_block_notice(
-            SimpleNamespace(), "mystery"
-        )
-        assert notice == "[MCP content dropped: unsupported block (type=mystery)]"

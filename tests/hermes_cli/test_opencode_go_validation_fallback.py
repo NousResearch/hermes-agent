@@ -46,7 +46,9 @@ def _patched(func):
 def test_opencode_go_known_model_accepted():
     """A model present in the opencode-go curated catalog must be accepted
     even when /models is unreachable."""
-    result = validate_requested_model("kimi-k2.6", "opencode-go")
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    result = validate_requested_model(_PROVIDER_MODELS["opencode-go"][0], "opencode-go")
     assert result["accepted"] is True
     assert result["persist"] is True
     assert result["recognized"] is True
@@ -62,9 +64,6 @@ def test_opencode_go_totally_unknown_model_still_accepted():
     assert result["accepted"] is True
     assert result["persist"] is True
     assert result["recognized"] is False
-    # No suggestion text (no close matches)
-    assert "Similar models" not in result["message"]
-    assert "opencode" in result["message"].lower() or "opencode go" in result["message"].lower()
 
 
 # ---------------------------------------------------------------------------

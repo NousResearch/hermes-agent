@@ -1,7 +1,7 @@
 """Background-loop plumbing for tools.mcp_tool: cross-process discovery file lock, scheduling
-coroutines onto the MCP loop from caller threads (with profile HOME override and dashboard OAuth
-flow propagation) and the loop's exception handler. Origin state (``_lock``, ``_mcp_loop``) is
-read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps working."""
+coroutines onto the MCP loop from caller threads and the loop's exception handler. Origin state
+(``_lock``, ``_mcp_loop``) is read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps
+working."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Coroutine, Optional
+from typing import Any, Optional
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_lifecycle as _lifecycle
 
@@ -67,12 +67,18 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     """``_LockCookie`` (acquired), ``None`` (held by another process) or ``_LOCK_UNAVAILABLE``
     (locking broken: run discovery unguarded)."""
     # The cached path lives on the ORIGIN module (tests reset ``tools.mcp_tool._MCP_DISCOVERY_LOCK_PATH``).
+    # A routed profile (multiplexed gateway) locks under ITS home: the launch profile's lock file
+    # would serialize discovery across profiles and never coordinate with B's own single-profile processes.
     from tools import mcp_tool as _origin
     try:
-        from hermes_constants import get_hermes_home
-        if _origin._MCP_DISCOVERY_LOCK_PATH is None:
-            _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
-        fh = open(_origin._MCP_DISCOVERY_LOCK_PATH, "w", encoding="utf-8")
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        if get_hermes_home_override() is not None:
+            lock_path = str(get_hermes_home() / ".mcp-discovery.lock")
+        else:
+            if _origin._MCP_DISCOVERY_LOCK_PATH is None:
+                _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
+            lock_path = _origin._MCP_DISCOVERY_LOCK_PATH
+        fh = open(lock_path, "w", encoding="utf-8")
     except Exception:
         return _core._LOCK_UNAVAILABLE
     try:
@@ -94,44 +100,6 @@ def _mcp_loop_exception_handler(loop, context):
         loop.default_exception_handler(context)
 
 
-def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
-    """Carry the caller's context-local HERMES_HOME override into ``coro`` (task-local on the MCP
-    loop, so concurrent scopes don't interfere)."""
-    try:
-        from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
-        home_override = get_hermes_home_override()
-    except Exception:
-        home_override = None
-    if not home_override:
-        return coro
-
-    async def _scoped():
-        token = set_hermes_home_override(home_override)
-        try:
-            return await coro
-        finally:
-            reset_hermes_home_override(token)
-
-    return _scoped()
-
-
-def _wrap_with_dashboard_oauth_flow(coro):
-    """Propagate a dashboard OAuth flow onto the dedicated MCP loop task."""
-    try:
-        from tools.mcp_dashboard_oauth import dashboard_oauth_flow, get_dashboard_oauth_flow
-        flow = get_dashboard_oauth_flow()
-    except Exception:
-        flow = None
-    if flow is None:
-        return coro
-
-    async def _scoped():
-        with dashboard_oauth_flow(flow):
-            return await coro
-
-    return _scoped()
-
-
 def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
     """The MCP loop when it is up, else None (read under ``_lock``)."""
     with _core._lock:
@@ -150,10 +118,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         if asyncio.iscoroutine(coro_or_factory):
             coro_or_factory.close()
         raise RuntimeError("MCP event loop is not running")
-    # run_coroutine_threadsafe copies the LOOP thread's context, so a per-request profile scope
-    # would vanish here; re-establish it inside the task's own context.
-    coro = _wrap_with_dashboard_oauth_flow(_wrap_with_home_override(
-        coro_or_factory() if callable(coro_or_factory) else coro_or_factory))
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
     future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message="MCP scheduling failed")
     if future is None:
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
@@ -194,8 +159,9 @@ def _signal_reconnect(server: Any) -> bool:
 
 def reconnect_mcp_server(server_name: str) -> bool:
     """Ask a currently-live MCP server to rebuild after external re-auth."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        server = _core._servers.get(server_name)
+        server = _core._servers.get(_resolve_server_key(server_name))
     return server is not None and _signal_reconnect(server)
 
 

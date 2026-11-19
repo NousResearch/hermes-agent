@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.turn_finalizer import finalize_turn
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class FakeAgent:
@@ -134,21 +135,24 @@ def test_fallback_timestamp_survives_delayed_sqlite_persistence(
     monkeypatch, tmp_path
 ):
     """The durable row records message creation, not the later DB flush."""
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage, ReplaceMode
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_session
 
     created_at = 1_781_976_577.25
     persisted_at = created_at + 600
     monkeypatch.setattr("agent.message_metadata.wall_time", lambda: created_at)
-    monkeypatch.setattr("hermes_state.time.time", lambda: persisted_at)
+    monkeypatch.setattr("time.time", lambda: persisted_at)
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("sess-test", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "sess-test", "cli")
     agent = FakeAgent()
 
     def persist_to_sqlite(messages, _conversation_history):
-        db.replace_messages(agent.session_id, messages)
-        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+        db.messages.replace_transcript(
+            agent.session_id, [NewMessage.from_live(m) for m in messages], ReplaceMode.DESTRUCTIVE)
+        agent.persisted_messages = conversation(db, agent.session_id)
 
     agent._persist_session = persist_to_sqlite
     messages = [
@@ -283,18 +287,22 @@ def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
     still holds the delivered text, that blank row is the durable transcript —
     Desktop reload shows nothing even though the user already saw the answer.
     """
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage, ReplaceMode
+    from persistence_assembly import open_persistence_reader
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("sess-test", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "sess-test", "cli")
     agent = FakeAgent()
     agent._current_streamed_assistant_text = "Already streamed to the user."
 
     def persist_to_sqlite(messages, _conversation_history):
-        db.replace_messages(agent.session_id, messages)
-        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+        db.messages.replace_transcript(
+            agent.session_id, [NewMessage.from_live(m) for m in messages], ReplaceMode.DESTRUCTIVE)
+        agent.persisted_messages = conversation(db, agent.session_id)
 
     agent._persist_session = persist_to_sqlite
     messages = [
@@ -333,8 +341,8 @@ def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
     assert assistants[0].get("tool_calls")
     assert sum(1 for m in assistants) == 2
 
-    reopened = SessionDB(db_path=tmp_path / "state.db")
-    reloaded = reopened.get_messages_as_conversation("sess-test")
+    with open_persistence_reader(tmp_path / "state.db") as reopened:
+        reloaded = conversation(reopened, "sess-test")
     assert reloaded[-1]["role"] == "assistant"
     assert reloaded[-1]["content"] == "Already streamed to the user."
     assert sum(1 for m in reloaded if m.get("role") == "assistant") == 2
@@ -447,3 +455,35 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         for m in result["messages"]
     )
 
+
+
+def _finalize(agent, *, exit_reason, final_response, failed=False, api_calls=3):
+    return finalize_turn(
+        agent, final_response=final_response, api_call_count=api_calls, interrupted=False, failed=failed,
+        messages=[{"role": "user", "content": "q"}, {"role": "assistant", "content": final_response or ""}],
+        conversation_history=[], effective_task_id="task", turn_id="turn", user_message="q",
+        original_user_message="q", _should_review_memory=False, _turn_exit_reason=exit_reason,
+    )
+
+
+def test_advisory_exit_reasons_keep_failed_false_but_carry_a_failure_code(monkeypatch):
+    """empty_response_exhausted / local_processing_error: Desktop and TUI get a specific code, yet
+    ``failed`` stays False so cron silence, the kanban breaker and gateway transcript persistence
+    behave exactly as before the code was added."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent_max = FakeAgent().max_iterations
+    for exit_reason, code in (("empty_response_exhausted", "empty_response"),
+                              ("local_processing_error(TypeError: x)", "loop_error")):
+        result = _finalize(FakeAgent(), exit_reason=exit_reason, final_response="the model's last thoughts")
+        assert result["failed"] is False, exit_reason
+        # ``completed`` follows the ordinary rule for a non-failed turn (not forced False here).
+        assert result["completed"] == (result["final_response"] is not None and 3 < agent_max), exit_reason
+        assert result["failure_reason"] == code and isinstance(result["failure_retryable"], bool)
+        assert "error" not in result  # not a failed turn: no error text for the gateway to append a notice to
+
+
+def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"

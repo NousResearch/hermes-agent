@@ -15,13 +15,12 @@ Generate images, video, and audio via diffusion workflows.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/comfyui` |
-| Path | `optional-skills/creative\comfyui` |
+| Path | `optional-skills/creative/comfyui` |
 | Version | `5.1.0` |
 | Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
 | License | MIT |
 | Platforms | macos, linux, windows |
 | Tags | `comfyui`, `image-generation`, `stable-diffusion`, `flux`, `sd3`, `wan-video`, `hunyuan-video`, `creative`, `generative-ai`, `video-generation` |
-| Related skills | [`stable-diffusion`](/docs/user-guide/skills/optional/mlops/mlops-stable-diffusion) |
 
 ## Reference: full SKILL.md
 
@@ -446,11 +445,11 @@ comfy model download \
   --url "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors" \
   --relative-path models/checkpoints
 
-# CivitAI (set token first):
-comfy model download \
+# CivitAI / gated HuggingFace: pass the token via env for this run only
+# (--set-civitai-api-token / --set-hf-api-token persist it to comfy-cli's config.ini)
+CIVITAI_API_TOKEN="$CIVITAI_API_TOKEN" comfy model download \
   --url "https://civitai.com/api/download/models/128713" \
-  --relative-path models/checkpoints \
-  --set-civitai-api-token "YOUR_TOKEN"
+  --relative-path models/checkpoints
 ```
 
 List installed: `comfy model list`.

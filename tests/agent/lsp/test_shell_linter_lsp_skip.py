@@ -18,9 +18,8 @@ These tests pin the contract:
   - When LSP is inactive or disabled-for-path, the shell linter runs
     exactly as before (regression guard for the default config).
   - The skip only applies to extensions in
-    ``_SHELL_LINTER_LSP_REDUNDANT`` — Python ``py_compile`` and
-    ``node --check`` keep running unconditionally because they're fast,
-    file-local, and correct.
+    ``_SHELL_LINTER_LSP_REDUNDANT`` — ``node --check`` keeps running
+    unconditionally because it's fast, file-local, and correct.
   - ``.tsx`` is intentionally NOT in either ``LINTERS`` or
     ``_SHELL_LINTER_LSP_REDUNDANT``: it had no ``LINTERS`` entry
     pre-PR (so it was already implicitly ``skipped`` via the
@@ -69,14 +68,6 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
     assert "LSP" in (result.message or "")
 
 
-
-
-
-
-
-
-
-
 def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     """A flaky LSP service must never break the shell-linter fallback —
     if ``enabled_for`` raises, we treat the file as "not handled" so the
@@ -91,27 +82,6 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     with patch.object(fops, "_lsp_local_only", return_value=True), \
          patch("agent.lsp.get_service", return_value=fake_svc):
         assert fops._lsp_will_handle(str(src)) is False
-
-
-
-
-def test_tsx_default_check_lint_returns_skipped(tmp_path):
-    """End-to-end: ``.tsx`` files get ``LintResult(skipped=True)`` from
-    ``_check_lint`` regardless of LSP status — this is the no-regression
-    contract that addresses Copilot review #3271017282."""
-    fops = _make_fops()
-    src = tmp_path / "foo.tsx"
-    src.write_text("export const X = () => <div/>\n")
-
-    # Even with LSP claiming the file, no shell linter runs for .tsx
-    # because there's no LINTERS entry — the ``ext not in LINTERS``
-    # branch fires before the LSP short-circuit is consulted.
-    with patch.object(fops, "_lsp_will_handle", return_value=True), \
-         patch.object(fops, "_exec") as exec_mock:
-        result = fops._check_lint(str(src))
-
-    assert result.skipped is True
-    assert not exec_mock.called, "no shell linter should run for .tsx"
 
 
 def test_ts_shell_linter_skipped_when_ancestor_tsconfig_present(tmp_path):
@@ -157,11 +127,11 @@ def test_ts_shell_linter_runs_when_no_ancestor_tsconfig(tmp_path):
 
     with patch.object(fops, "_lsp_local_only", return_value=True), \
          patch.object(fops, "_lsp_will_handle", return_value=False), \
-         patch.object(fops, "_has_command", return_value=True), \
-         patch.object(fops, "_exec", return_value=exec_result) as exec_mock:
+         patch.object(fops, "_local_workspace_untrusted", return_value=False), \
+         patch.object(fops, "_run_managed_node_linter", return_value=exec_result) as exec_mock:
         fops._check_lint(str(src))
 
-    assert exec_mock.called, "shell tsc should run when there's no project tsconfig"
+    assert exec_mock.called, "tsc should run when there's no project tsconfig"
 
 
 if __name__ == "__main__":  # pragma: no cover

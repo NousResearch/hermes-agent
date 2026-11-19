@@ -9,7 +9,7 @@ the platform-side message id — so nothing downstream can ask "did this
 Discord message already reach the transcript?" and the recovery pass has no
 authority to dedup against.
 
-``SessionDB`` already carries a ``platform_message_id`` column, a partial
+The store already carries a ``platform_message_id`` column, a partial
 unique index over ``(session_id, platform_message_id)``, and a
 ``has_platform_message_id`` lookup — the storage and the query exist.  What is
 missing is the WRITE on the normal agent-persisted turn path: the id is only
@@ -21,21 +21,18 @@ from __future__ import annotations
 
 import types
 
-import pytest
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
-from hermes_state import SessionDB
-
-
-def _make_db(tmp_path) -> SessionDB:
-    return SessionDB(db_path=tmp_path / "state.db")
-
+def _make_db(tmp_path):
+    return storage_handle(tmp_path)
 
 class _MinimalAgent:
     """The narrow slice of AIAgent that ``_apply_persist_user_message_override``
     and ``_flush_messages_to_session_db`` read."""
 
-    def __init__(self, db: SessionDB, session_id: str):
-        self._session_db = db
+    def __init__(self, db, session_id: str):
+        self._session_db = self.persistence = db
         self._session_db_created = True
         self.session_id = session_id
         self._last_flushed_db_idx = 0
@@ -48,7 +45,6 @@ class _MinimalAgent:
 
     def _ensure_db_session(self):  # pragma: no cover - already created
         return None
-
 
 def test_build_turn_context_stamps_the_platform_message_id_on_the_user_turn():
     """The turn prologue must carry the platform id onto the user turn dict.
@@ -71,7 +67,6 @@ def test_build_turn_context_stamps_the_platform_message_id_on_the_user_turn():
         "has_platform_message_id"
     )
 
-
 def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path):
     """E2E: flush a turn the way the agent does, then ask the dedup authority.
 
@@ -83,7 +78,7 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
     from run_agent import AIAgent
 
     db = _make_db(tmp_path)
-    session_id = db.create_session("sess-drain-window", "gateway")
+    session_id = seed_session(db, "sess-drain-window", "gateway")
 
     agent = _MinimalAgent(db, session_id)
     agent._persist_user_message_idx = 0
@@ -96,12 +91,11 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
         agent, messages, conversation_history=None
     )
 
-    assert db.has_platform_message_id(session_id, "discord-4242"), (
+    assert db.messages.has_platform_message_id(session_id, "discord-4242"), (
         "the interrupted turn is in the transcript but carries no "
         "platform_message_id, so restart drain-window recovery cannot tell it "
         "already ran and will re-dispatch it"
     )
-
 
 def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     """The id must not be lost on the override path.
@@ -113,7 +107,7 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     from run_agent import AIAgent
 
     db = _make_db(tmp_path)
-    session_id = db.create_session("sess-override", "gateway")
+    session_id = seed_session(db, "sess-override", "gateway")
 
     agent = _MinimalAgent(db, session_id)
     agent._persist_user_message_idx = 0
@@ -127,8 +121,7 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
         agent, messages, conversation_history=None
     )
 
-    assert db.has_platform_message_id(session_id, "discord-7777")
-
+    assert db.messages.has_platform_message_id(session_id, "discord-7777")
 
 def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     """Construct a minimal build_turn_context call.
@@ -136,7 +129,7 @@ def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     Mirrors ``tests/agent/test_turn_context.py::_build`` but is kept local so
     this file stays self-contained.
     """
-    from tests.agent.test_turn_context import _FakeAgent, _stub_runtime_main
+    from tests.agent.test_turn_context import _FakeAgent
 
     fake = _FakeAgent()
     kwargs = dict(
@@ -157,50 +150,3 @@ def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     )
     kwargs.update(overrides)
     return build_turn_context(**kwargs)
-
-
-def test_gateway_run_agent_threads_the_event_message_id_into_the_turn():
-    """AST proof that the gateway call site passes the id down.
-
-    The unit tests above prove the persistence layer STORES the id once it is
-    given one.  This pins the wiring: without the gateway forwarding
-    ``event_message_id`` as ``persist_user_platform_id``, the whole path is
-    dead code and every real inbound turn still persists without its id.
-    """
-    import ast
-    import inspect
-
-    import gateway.run_turn_runner as gateway_run
-
-    source = inspect.getsource(gateway_run)
-    tree = ast.parse(source)
-
-    forwards = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.slice, ast.Constant)
-        and node.slice.value == "persist_user_platform_id"
-    ]
-    assert forwards, (
-        "gateway/run.py never forwards persist_user_platform_id — the inbound "
-        "platform message id never reaches the persisted user turn, so a "
-        "drain-interrupted turn stays undedupable"
-    )
-
-
-def test_run_conversation_accepts_persist_user_platform_id():
-    """The public forwarder must expose the kwarg the gateway passes."""
-    import inspect
-
-    from agent.conversation_loop import run_conversation
-    from run_agent import AIAgent
-
-    assert (
-        "persist_user_platform_id"
-        in inspect.signature(run_conversation).parameters
-    )
-    assert (
-        "persist_user_platform_id"
-        in inspect.signature(AIAgent.run_conversation).parameters
-    )

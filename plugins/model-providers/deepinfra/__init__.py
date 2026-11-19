@@ -1,6 +1,9 @@
 """DeepInfra provider profile (chat surface; image-gen/TTS/STT are wired via
 their own plugin subsystems)."""
 
+from typing import Any
+
+from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort, requested_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -8,6 +11,23 @@ from providers.base import ProviderProfile
 class _DeepInfraProfile(ProviderProfile):
     """DeepInfra profile with live vision-default discovery, so shared vision
     resolution in ``agent/auxiliary_client.py`` stays provider-agnostic."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, **context: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Map Hermes reasoning controls to DeepInfra's top-level ``reasoning_effort``.
+
+        DeepInfra applies a per-model default when the field is absent (DeepSeek-V4.x off,
+        GLM/Qwen-Thinking on), so ``none`` is the only working off switch and an unset effort
+        is omitted rather than guessed. The core ``_supports_reasoning_extra_body`` allowlist
+        does not know this host, so the transport always passes ``supports_reasoning=False``
+        here — gating on it would make the method a permanent no-op (#111872).
+        """
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            return {}, {"reasoning_effort": "none"}
+        effort = requested_effort(reasoning_config)
+        clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+        return ({}, {"reasoning_effort": clamped}) if clamped in OPENAI_COMPAT_WIRE_EFFORTS else ({}, {})
 
     def default_vision_model(self):  # type: ignore[override]
         """First vision-capable *chat* model from the live catalog, or None. Key-gated so a box

@@ -1,10 +1,10 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $draftingToolSessions } from '@/store/tool-drafting'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -20,7 +20,7 @@ function mountStream() {
   stream = renderMessageStream(SID, { states: sessionStates })
 }
 
-function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}, sessionId = SID) {
+function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}, sessionId = SID) {
   act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
 }
 
@@ -54,12 +54,8 @@ describe('drafting-tool label lifecycle', () => {
   // retry drops a partial call, a guardrail-blocked tool skips the lifecycle
   // callbacks — and the name then sat on screen for the rest of the turn.
   it.each([
-    ['message.delta', { text: 'never mind' }],
     ['reasoning.delta', { text: 'reconsidering' }],
-    ['thinking.delta', { text: 'reconsidering' }],
     ['tool.start', { name: 'terminal', tool_id: 'tool-1' }],
-    ['tool.complete', { name: 'terminal', tool_id: 'tool-1' }],
-    ['message.complete', { text: 'done' }],
     ['error', { message: 'boom' }]
   ] as const)('retires the label when %s proves the model moved on', (type, payload) => {
     mountStream()

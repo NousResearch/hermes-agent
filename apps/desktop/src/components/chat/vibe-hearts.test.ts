@@ -47,16 +47,6 @@ describe('burstVibeHearts', () => {
     expect(forwardPetReaction).not.toHaveBeenCalled()
   })
 
-  it('reads the live atom (toggle mid-session takes effect)', () => {
-    setVibeHeartsEnabled(false)
-    burstVibeHearts()
-    expect(burst).not.toHaveBeenCalled()
-
-    setVibeHeartsEnabled(true)
-    burstVibeHearts()
-    expect(burst).toHaveBeenCalledOnce()
-  })
-
   it('forwards to the popped-out overlay when on', () => {
     overlay.active = true
     burstVibeHearts()

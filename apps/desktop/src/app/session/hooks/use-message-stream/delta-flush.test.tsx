@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import {
+  readInFlightTurnJournal,
+  recoverInFlightTurnJournal,
+  resetInFlightTurnJournalStateForTests
+} from '@/lib/inflight-turn-journal'
 
 import { useSessionStateCache } from '../use-session-state-cache'
 
@@ -122,116 +127,6 @@ describe('useMessageStream delta flush scheduling', () => {
     expect(updateSessionState).toHaveBeenCalledTimes(updatesAfterUnmount)
     expect(window.requestAnimationFrame).not.toHaveBeenCalled()
   })
-
-  it('stretches the flush gap when the deferred commit frame is expensive', async () => {
-    // The streaming-path $messages publish (React commit + Streamdown
-    // re-parse) is deferred to a view-sync rAF inside updateSessionState, so
-    // the flush cost must be measured through that frame. Simulate one
-    // expensive frame and expect the next gap to adapt to 3x the frame cost.
-    let now = 1000
-    vi.mocked(performance.now).mockImplementation(() => now)
-    const rafCallbacks: FrameRequestCallback[] = []
-    vi.mocked(window.requestAnimationFrame).mockImplementation(cb => {
-      rafCallbacks.push(cb)
-
-      return rafCallbacks.length
-    })
-
-    mountStream()
-
-    act(() => stream.appendDelta(SID, 'first'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    expect(assistantText()).toBe('first')
-    expect(rafCallbacks).toHaveLength(1)
-
-    // Frame started at 1040, the measurement callback runs at 1100: 60ms of
-    // in-frame work (view sync + commit), so the next floor is 180ms.
-    now = 1100
-    act(() => rafCallbacks[0](1040))
-
-    act(() => stream.appendDelta(SID, 'second'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(79)
-    })
-
-    expect(assistantText()).toBe('first')
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1)
-    })
-
-    expect(assistantText()).toBe('firstsecond')
-  })
-
-  it('keeps the write-cost floor when no frame fires (hidden renderer)', async () => {
-    // A parked renderer never runs rAF callbacks. The cost must stay at the
-    // synchronous store-write measurement so the gap falls back to the fixed
-    // 33ms floor instead of waiting on a frame that will never come.
-    let now = 1000
-    vi.mocked(performance.now).mockImplementation(() => now)
-    vi.mocked(window.requestAnimationFrame).mockImplementation(() => 1)
-
-    mountStream()
-
-    act(() => stream.appendDelta(SID, 'first'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    expect(assistantText()).toBe('first')
-
-    // 100ms later (well past the 33ms floor): the next flush is immediate.
-    now = 1100
-    act(() => stream.appendDelta(SID, 'second'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    expect(assistantText()).toBe('firstsecond')
-  })
-
-  it('ignores a late frame measurement once a newer flush has started', async () => {
-    let now = 1000
-    vi.mocked(performance.now).mockImplementation(() => now)
-    const rafCallbacks: FrameRequestCallback[] = []
-    vi.mocked(window.requestAnimationFrame).mockImplementation(cb => {
-      rafCallbacks.push(cb)
-
-      return rafCallbacks.length
-    })
-
-    mountStream()
-
-    act(() => stream.appendDelta(SID, 'a'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0)
-    })
-
-    // A second flush starts before the first flush's frame lands.
-    now = 1010
-    act(() => stream.appendDelta(SID, 'b'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(23)
-    })
-
-    expect(assistantText()).toBe('ab')
-    expect(rafCallbacks).toHaveLength(2)
-
-    // The stale callback must not overwrite the newer flush's cost. If it
-    // did, cost would read 30ms and the next gap would stretch to 70ms.
-    now = 1030
-    act(() => rafCallbacks[0](1000))
-
-    act(() => stream.appendDelta(SID, 'c'))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(13)
-    })
-
-    expect(assistantText()).toBe('abc')
-  })
 })
 
 describe('useMessageStream composed with the real useSessionStateCache', () => {
@@ -292,6 +187,8 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
+    resetInFlightTurnJournalStateForTests()
+    window.localStorage.clear()
     appendAssistantDelta = null
     cache = null
     published = []
@@ -303,6 +200,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
   afterEach(() => {
     cleanup()
+    resetInFlightTurnJournalStateForTests()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -393,5 +291,53 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     })
 
     expect(cachedText()).toBe('firstsecond')
+  })
+
+  it('recovers delivered deltas with parked timers and frames, including after switching sessions', () => {
+    let now = 0
+    vi.mocked(performance.now).mockImplementation(() => now)
+    const prompt: ChatMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'continue' }] }
+    const storedId = 'parked-recovery'
+    render(<ComposedHarness />)
+    act(() => {
+      cache!.updateSessionState(SID, state => ({
+        ...state,
+        storedSessionId: storedId,
+        busy: true,
+        messages: [prompt]
+      }))
+      appendAssistantDelta!(SID, 'first')
+    })
+
+    now = 34
+    act(() => appendAssistantDelta!(SID, ' second'))
+    expect(cachedText()).toBe('first second')
+    expect(readInFlightTurnJournal(storedId)).toBeNull()
+
+    // Neither timer nor rAF callbacks run. Data delivery must carry progress
+    // through both production buffers, not just journal an empty cached tail.
+    now = 401
+    act(() => appendAssistantDelta!(SID, ' third'))
+    now = 402
+    act(() => appendAssistantDelta!(SID, ' fourth'))
+    const recovered = recoverInFlightTurnJournal(storedId, [prompt])
+    expect(recovered.applied).toBe(true)
+    expect(recovered.messages.at(-1)?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'first second third fourth' })
+    ])
+    expect(publishedText()).toBe('')
+
+    // A session switch must not strand the old session's final quiet chunk.
+    now = 410
+    act(() => appendAssistantDelta!(SID, ' quiet'))
+    cache!.activeSessionIdRef.current = 'another-session'
+    now = 450
+    act(() => appendAssistantDelta!(SID, ' tail'))
+    expect(cachedText()).toBe('first second third fourth quiet tail')
+    act(() => vi.advanceTimersByTime(400))
+    expect(readInFlightTurnJournal(storedId)?.messages.at(-1)?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'first second third fourth quiet tail' })
+    ])
+    expect(publishedText()).toBe('')
   })
 })

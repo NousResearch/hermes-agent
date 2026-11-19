@@ -85,7 +85,7 @@ def test_parse_xprop_net_active_window_standard_output():
     assert _parse_xprop_net_active_window(raw) == 0x503000b
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_default_capture_prefers_x11_active_window_when_z_index_tied():
     """The ``_NET_ACTIVE_WINDOW`` tie-break is a Linux/X11-only branch of
     ``_select_capture_target``; run it where ``sys.platform`` really is
@@ -104,7 +104,7 @@ def test_default_capture_prefers_x11_active_window_when_z_index_tied():
     assert target["window_id"] == 84043449
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_default_capture_skips_desktop_helper_when_active_window_unknown():
     """Even without _NET_ACTIVE_WINDOW, ding/Desktop helpers must not win (#54173).
 

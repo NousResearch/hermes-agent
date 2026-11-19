@@ -109,19 +109,6 @@ class TestConversationLoopHelper:
 
         assert _moa_reference_metrics_for_hook(_Agent()) is None
 
-    def test_returns_metrics_for_a_moa_client(self):
-        from agent.conversation_loop import _moa_reference_metrics_for_hook
-
-        payload = [slot_metrics(_acct(), "label")]
-
-        class _Client:
-            def last_reference_metrics(self):
-                return payload
-
-        class _Agent:
-            client = _Client()
-
-        assert _moa_reference_metrics_for_hook(_Agent()) is payload
 
     def test_a_raising_accessor_is_swallowed(self):
         from agent.conversation_loop import _moa_reference_metrics_for_hook

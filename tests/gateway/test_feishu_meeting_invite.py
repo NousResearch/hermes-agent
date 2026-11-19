@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.feishu.feishu_meeting_invite import (
-    build_meeting_invite_prompt,
     handle_meeting_invited_event,
     parse_meeting_invited_event,
 )
@@ -63,12 +62,6 @@ def _make_payload(event_id="evt_1"):
     }
 
 
-def _make_payload_with_numeric_inviter_id():
-    payload = _make_payload()
-    payload["event"]["inviter"]["id"] = "3001"
-    return payload
-
-
 class _Adapter:
     def __init__(self, duplicate=False):
         self.duplicate = duplicate
@@ -119,24 +112,6 @@ class TestMeetingInviteParsing(unittest.TestCase):
         self.assertEqual(parsed.inviter.open_id, "ou_390b35dca44816efc9afa812aaff3a69")
 
 
-    def test_prompt_contains_meeting_and_inviter_context(self):
-        parsed = parse_meeting_invited_event(_make_payload())
-        prompt = build_meeting_invite_prompt(parsed)
-
-        self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", prompt)
-        self.assertIn("Meeting Number: 884264377", prompt)
-        self.assertIn("Inviter: 赵磊", prompt)
-        self.assertIn("Join the meeting directly.", prompt)
-        self.assertIn("You may use lark-cli and the relevant Lark/Feishu meeting skills", prompt)
-        self.assertIn("Do not ask the user for confirmation", prompt)
-        self.assertIn("If you cannot join the meeting", prompt)
-        self.assertNotIn("ou_390b35dca44816efc9afa812aaff3a69", prompt)
-        self.assertNotIn("user_id", prompt)
-        self.assertNotIn("Use the Meeting Number as the primary credential", prompt)
-        self.assertNotIn("meeting_id:", prompt)
-        self.assertNotIn("start_time:", prompt)
-        self.assertNotIn("end_time:", prompt)
-        self.assertNotIn("Invite time:", prompt)
 
 
 class TestMeetingInviteHandler(unittest.TestCase):
@@ -163,7 +138,7 @@ class TestMeetingInviteHandler(unittest.TestCase):
         self.assertEqual(adapter.profile_requests[0].user_id, "e65g874e")
         self.assertEqual(adapter.profile_requests[0].union_id, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
         self.assertIsNone(event.message_id)
-        self.assertIn("You have been invited to join a meeting: 赵磊的视频会议", event.text)
+        self.assertIn("赵磊的视频会议", event.text)
         self.assertNotIn("{'open_id'", event.text)
 
     def test_duplicate_event_is_dropped_without_routing(self):

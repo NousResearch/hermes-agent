@@ -19,16 +19,60 @@ logger = logging.getLogger(__name__)
 
 
 def _callback_api():
-    """Resolve the terminal_tool callback getters/setters (lazy: terminal_tool imports
-    tools.approval at load, so a top-level import risks a cycle for tools.approval callers)."""
+    """(getter, setter) pairs for every thread-local prompt callback a tool may need mid-dispatch
+    (lazy: terminal_tool imports tools.approval at load, so a top-level import risks a cycle).
+    Add a new per-thread prompt here — a callback missing from this table is silently absent on
+    every parallel/timeout worker, so the tool believes nobody can answer."""
+    from agent.vault_backends import unlock as vault_unlock
     from tools import terminal_tool as tt
 
-    return (tt._get_approval_callback, tt._get_sudo_password_callback,
-            tt.set_approval_callback, tt.set_sudo_password_callback)
+    return ((tt._get_approval_callback, tt.set_approval_callback),
+            (tt._get_sudo_password_callback, tt.set_sudo_password_callback),
+            (vault_unlock.get_unlock_prompt_callback, vault_unlock.set_unlock_prompt_callback),
+            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
+            (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback),
+            # The unlock owner: a manager unlocked on a worker must still be released with its session.
+            (vault_unlock.get_current_session_id, vault_unlock.set_current_session_id),
+            # A background fork's dispatch-side tool whitelist: without it a parallel batch escapes it.
+            (_get_tool_whitelist, _set_tool_whitelist))
+
+
+def _get_tool_whitelist():
+    """The thread's ``pre_tool_call`` tool whitelist as ``(allowed, deny_fmt)``, or None."""
+    from hermes_cli.plugins import _thread_tool_whitelist
+
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    return None if allowed is None else (allowed, getattr(_thread_tool_whitelist, "fmt", None))
+
+
+def _set_tool_whitelist(state) -> None:
+    from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
+
+    if state is None:
+        clear_thread_tool_whitelist()
+    elif state[1] is None:
+        set_thread_tool_whitelist(state[0])
+    else:
+        set_thread_tool_whitelist(*state)
+
+
+def capture_thread_callbacks() -> tuple:
+    """``(setter, callback)`` pairs for the *current thread's* prompt callbacks, to replay on
+    another thread (empty when none are installed or the API is unavailable). The elicitation
+    consent hop uses this: ``asyncio.to_thread`` carries neither contextvars nor ``threading.local``,
+    so the tool wrapper snapshots both at the call site."""
+    try:
+        return tuple((setter, cb) for getter, setter in _callback_api()
+                     for cb in (getter(),) if cb is not None)
+    except Exception:
+        logger.debug("Could not capture prompt callbacks for cross-thread replay",
+                     exc_info=True)
+        return ()
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:
-    """Wrap *target* to run with the *current* thread's ContextVars and approval/sudo callbacks.
+    """Wrap *target* to run with the *current* thread's ContextVars and per-thread prompt callbacks
+    (approval, sudo, password-manager unlock).
 
     Fail-closed: if callback installation raises they stay ``None`` — dangerous commands are then
     denied by ``prompt_dangerous_approval`` and the gateway approval queue blocks.
@@ -37,8 +81,7 @@ def propagate_context_to_thread(target: Callable) -> Callable:
     # (setter, parent callback) pairs; None when the callback API could not be captured.
     installs = None
     try:
-        get_approval, get_sudo, set_approval, set_sudo = _callback_api()
-        installs = ((set_approval, get_approval()), (set_sudo, get_sudo()))
+        installs = tuple((setter, getter()) for getter, setter in _callback_api())
     except Exception:
         logger.debug("Could not capture parent approval/sudo callbacks", exc_info=True)
 

@@ -3,6 +3,9 @@ import json
 
 import pytest
 
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
+
 
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])
 def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, explicit):
@@ -19,6 +22,10 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
                           user_id="user", notifier_profile="default", delivery_mode="notify",
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
         expected = kn.list_notify_subs(conn, owner)[0]
+    if explicit:
+        state = open_persistence(profile_scope(home=tmp_path), eager=True)
+        seed_session(state, explicit, "cli")
+        state.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
     monkeypatch.setenv("HERMES_SESSION_ID", "ephemeral")
     monkeypatch.setattr(async_delegation, "_current_origin_session_id", lambda: "api-origin")
@@ -59,3 +66,54 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
         metadata = kn.list_notify_subs(conn, result["task_id"])[0]["delivery_metadata"]
         assert metadata["scope_id"] == "guild"
         assert metadata["parent_chat_id"] == "forum"
+
+
+@pytest.mark.parametrize(("session_id", "persisted"), [
+    ("phantom-session", False),
+    ("persisted-session", True),
+])
+def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch, session_id, persisted):
+    """Ambient worker ids are provenance only after their state.db row exists."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from gateway.session_context import scoped_current_session_id
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    kb.init_db()
+    state = open_persistence(profile_scope(home=tmp_path), eager=True)
+    if persisted:
+        seed_session(state, session_id, "cli")
+    state.close()
+
+    # Bound the way agent construction publishes it (ContextVar); a bare os.environ value is
+    # masked once a surface has cleared its session vars, so it is not a stand-in here. The env
+    # var is set too so the reporter's unverified-env path (the pre-fix stamping seam) is exercised.
+    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
+    with scoped_current_session_id(session_id):
+        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, result["task_id"])
+    assert task.session_id == (session_id if persisted else None)
+
+
+def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, monkeypatch):
+    """In a multi-session process os.environ holds the LAST agent built; the request-scoped
+    binding names the conversation that actually ordered the card."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from gateway.session_context import scoped_current_session_id
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+    kb.init_db()
+    state = open_persistence(profile_scope(home=tmp_path), eager=True)
+    for sid in ("other-session", "ordering-session"):
+        seed_session(state, sid, "cli")
+    state.close()
+
+    with scoped_current_session_id("ordering-session"):
+        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, result["task_id"]).session_id == "ordering-session"

@@ -15,7 +15,7 @@ Play Pokemon via headless emulator + RAM reads.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/gaming/pokemon-player` |
-| Path | `optional-skills/gaming\pokemon-player` |
+| Path | `optional-skills/gaming/pokemon-player` |
 | Version | `1.0.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
@@ -64,7 +64,7 @@ Use an SSH reverse tunnel via localhost.run so the user can view
 the dashboard in their browser. Connect with ssh, forwarding local
 port 9876 to remote port 80 on the keyless localhost.run endpoint
 (ssh -R 80:localhost:9876 ssh://nokey@localhost.run). Redirect output
-to a log file, wait 10 seconds, then grep the log for the .lhr.life
+to a log file, wait 10 seconds, then search_files the log for the .lhr.life
 URL. Give the user the URL with /dashboard/ appended.
 The tunnel URL changes each time — give the user the new one if restarted.
 
@@ -94,7 +94,7 @@ This is faster than loading via the API after startup.
 
 ### Step 1: OBSERVE — check state AND take a screenshot
 GET /state for position, HP, battle, dialog.
-GET /screenshot and save to /tmp/pokemon.png, then use vision_analyze.
+GET /screenshot and save to ~/.hermes/cache/scratch/pokemon.png, then use vision_analyze.
 Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
 
 ### Step 2: ORIENT

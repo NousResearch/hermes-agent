@@ -50,11 +50,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 BOT_USER_ID = "U_BOT_123"
@@ -255,6 +255,8 @@ def test_ignore_other_user_mentions_env_wins_over_yaml(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"SLACK_IGNORE_OTHER_USER_MENTIONS"})  # set in .env
     monkeypatch.setenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "false")
 
     load_gateway_config()

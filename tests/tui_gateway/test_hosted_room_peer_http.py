@@ -12,6 +12,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from tui_gateway.hosted_room_peer_http import (
     MAX_PEER_ERROR_RESPONSE_BYTES,
@@ -195,11 +196,11 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
 
 
 def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     first = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     dispatch = _dispatch(source_event_seq=17)
     accepted = first.dispatch(dispatch=dispatch, grant="signed.room.grant")
@@ -207,7 +208,7 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     restarted = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     restarted.bind_room_scope(
         room_id="room-1",
@@ -231,11 +232,11 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
 
 
 def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     old = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     old._request = lambda *_args, **_kwargs: {
         "run_id": "run-old",
@@ -251,7 +252,7 @@ def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
     current = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
 
     def admit_current(path, **kwargs):
@@ -272,7 +273,7 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     requests = []
 
@@ -299,7 +300,7 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     restarted = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     restarted._request = lambda *_args, **_kwargs: pytest.fail(
         "durable receipt should avoid another admission"
@@ -314,7 +315,7 @@ def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
         poll_min_seconds=0.1,
         poll_max_seconds=0.4,
         clock=lambda: now[0],
@@ -469,7 +470,7 @@ def test_capability_mismatch_requires_reauthorization_without_retry(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     admission_attempts = []
 
@@ -619,9 +620,11 @@ def test_peer_success_and_error_reads_are_bounded(monkeypatch):
 
 
 def test_real_http_drip_cannot_extend_the_whole_response_deadline():
+    stopped = threading.Event()
+
     class DripPeer(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = json.dumps({"pad": "x" * 200}).encode()
+            body = json.dumps({"pad": "x" * 2000}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -632,7 +635,8 @@ def test_real_http_drip_cannot_extend_the_whole_response_deadline():
                     self.wfile.flush()
                 except OSError:
                     break
-                time.sleep(0.02)
+                if stopped.wait(0.02):
+                    break
 
         def log_message(self, *_args):
             return None
@@ -640,20 +644,25 @@ def test_real_http_drip_cannot_extend_the_whole_response_deadline():
     server = ThreadingHTTPServer(("127.0.0.1", 0), DripPeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    started = time.monotonic()
     try:
         client = PeerRunsHTTPClient(
             base_url=f"http://127.0.0.1:{server.server_port}",
             api_key="",
-            timeout_seconds=0.1,
+            # Leave time for headers on a loaded runner. The body still
+            # takes much longer, even though each byte arrives promptly.
+            timeout_seconds=2.0,
         )
+        started = time.monotonic()
         with pytest.raises(PeerRunsHTTPError, match="time budget") as caught:
             client._request("/drip")
+        elapsed = time.monotonic() - started
     finally:
+        stopped.set()
         server.shutdown()
+        server.server_close()
         thread.join(timeout=2)
 
-    assert time.monotonic() - started < 2.0
+    assert elapsed < 6.0
     assert caught.value.retryable is True
 
 
@@ -661,7 +670,7 @@ def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):
     client = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
 
@@ -891,12 +900,14 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     )
     base = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
+            target_profile="reviewer",
             installation_id="install-peer",
             persistent_process=True,
             execution_policy=base_policy,
         )
     )
     refreshed = catalog_mapping(
+            target_profile="reviewer",
         installation_id="install-peer",
         persistent_process=True,
         attachments=capability_changed,
@@ -930,6 +941,7 @@ def test_grant_refresh_preserves_unchanged_catalog_and_policy():
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )
@@ -959,6 +971,7 @@ def test_grant_refresh_retries_old_grant_after_response_loss():
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )

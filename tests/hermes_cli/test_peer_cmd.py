@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_author import TURN_AUTHOR_ENV
 from hermes_cli.subcommands import peer as peer_cmd
 
 
@@ -40,6 +41,106 @@ def test_base_url_bare_and_profile():
     assert peer_cmd._base_url(peer, "researcher") == "http://spark.lan:8377/p/researcher"
 
 
+class _ProfilePeer(BaseHTTPRequestHandler):
+    """A peer whose /p/<profile>/ prefix answers like the real api_server middleware: a profile it
+    does not serve is a 404 ``{"error": "Unknown or unconfigured profile"}`` before any handler."""
+
+    served: set = set()
+    probe_status: int = 200
+    refusal: dict = {"error": "Unknown or unconfigured profile"}
+    hits: list = []
+
+    def _answer(self):
+        _, _, profile, rest = (self.path.split("/", 3) + ["", "", "", ""])[:4]
+        type(self).hits.append(self.path)
+        if profile not in type(self).served:
+            return 404, type(self).refusal
+        if rest == "health":
+            return type(self).probe_status, {"status": "ok"}
+        if rest.startswith("api/sessions?"):
+            return 200, {"data": [{"id": f"bc_{profile}", "title": "Bot Chat"}]}
+        if rest.endswith("/chat"):
+            return 200, {"session_id": f"bc_{profile}", "message": {"content": f"from {profile}"}}
+        return 200, {"run_id": "run_1", "status": f"run in {profile}"}
+
+    def _reply(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        status, payload = self._answer()
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+_NOT_SERVED = {"error": {"message": "Profile 'hermes' exists on this host but this gateway does not serve it"}}
+
+
+@pytest.mark.parametrize("served,probe_status,refusal,expected", [
+    ({"default", "hermes"}, 200, None, "hermes"),   # a real legacy 'hermes' profile keeps precedence
+    # An older peer's generic 404 also covers a real 'hermes' profile it parks or runs standalone:
+    # ambiguous, so it is an error naming box/default, never a guessed delivery into the default.
+    ({"default"}, 200, None, None),
+    ({"default", "hermes"}, 503, None, "hermes"),   # a transient failure is no verdict, so never reroute
+    ({"default"}, 200, _NOT_SERVED, None),          # it has one but does not serve it: an error, not default
+])
+def test_hermes_handle_reaches_the_profile_the_peer_serves(
+        monkeypatch, capsys, served, probe_status, refusal, expected):
+    """``box/hermes`` names the peer's real 'hermes' profile when it has one; the client never
+    reroutes it to /p/default on its own (an upgraded peer aliases the handle server-side); dm,
+    status and stop all address the same mirror."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = served, probe_status, []
+    _ProfilePeer.refusal = refusal or {"error": "Unknown or unconfigured profile"}
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        replies = [
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="box/hermes", message="hi", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="box/hermes", run_id="run_1", json=True)),
+            peer_cmd.cmd_peer(SimpleNamespace(peer_action="stop", target="box/hermes", run_id="run_1", json=True)),
+        ]
+    finally:
+        server.shutdown()
+    captured = capsys.readouterr()
+    out, err = [json.loads(line) for line in captured.out.splitlines()], captured.err
+    if expected is None:
+        assert (replies, out) == ([1, 1, 1], [])
+        # A generic 404 is ambiguous (names box/default); a distinct refusal is relayed as the peer said it.
+        assert ("Profile 'hermes' exists" if refusal else "box/default") in err
+        assert {hit.split("/")[2] for hit in _ProfilePeer.hits} == {"hermes"}
+        return
+    assert replies == [0, 0, 0]
+    assert [out[0]["reply"], out[1]["status"], out[2]["status"]] == [
+        f"from {expected}", f"run in {expected}", f"run in {expected}"]
+    assert {hit.split("/")[2] for hit in _ProfilePeer.hits if not hit.endswith("/health")} == {expected}
+
+
+@pytest.mark.parametrize("target", ["box/Hermes", "box/HERMES"])
+def test_mixed_case_hermes_target_reaches_the_peers_real_hermes_profile(monkeypatch, capsys, target):
+    """Profile ids are lowercase, so ``box/Hermes`` is ``box/hermes``. A peer comparing prefixes
+    exactly (every peer before the case fix) answers ``/p/Hermes`` with its unknown-profile 404,
+    which the @hermes fallback read as "no hermes here" and rerouted the DM to the default."""
+    _ProfilePeer.served, _ProfilePeer.probe_status, _ProfilePeer.hits = {"default", "hermes"}, 200, []
+    _ProfilePeer.refusal = {"error": "Unknown or unconfigured profile"}
+    server = HTTPServer(("127.0.0.1", 0), _ProfilePeer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"box": {"url": f"http://127.0.0.1:{server.server_port}"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    try:
+        rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target=target, message="hi", json=True))
+    finally:
+        server.shutdown()
+    assert (rc, json.loads(capsys.readouterr().out)["reply"]) == (0, "from hermes")
+
+
 # ── registry round-trip (isolated config) ────────────────────────────────────
 
 
@@ -71,7 +172,7 @@ def test_add_list_remove_roundtrip(monkeypatch, capsys):
 
 
 def test_add_rejects_bad_name_and_url(monkeypatch):
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+    monkeypatch.setattr(peer_cmd, "_load_peers", dict)
     monkeypatch.setattr(peer_cmd, "_save_peers", lambda peers: None)
 
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="add", name="Bad Name!", url="http://x", key="", note="")) == 2
@@ -92,9 +193,13 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
 class _FakePeer(BaseHTTPRequestHandler):
     sessions: list = []
     chats: list = []
+    chat_bodies: list = []
     runs: list = []
     run_idempotency_keys: list = []
     auth_seen: list = []
+    chat_reply_content: str = "reply from the other machine"
+    run_status: str = "completed"
+    run_output: str = "async reply from the other machine"
 
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
@@ -122,9 +227,9 @@ class _FakePeer(BaseHTTPRequestHandler):
             return self._json({
                 "object": "hermes.run",
                 "run_id": "run_1",
-                "status": "completed",
+                "status": type(self).run_status,
                 "session_id": "bc_existing",
-                "output": "async reply from the other machine",
+                "output": type(self).run_output,
             })
         if self.path.startswith("/api/sessions"):
             data = [{"id": s, "title": "Bot Chat"} for s in type(self).sessions]
@@ -144,12 +249,13 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))
+            type(self).chat_bodies.append(body)
             return self._json({
                 "object": "hermes.session.chat.completion",
                 "session_id": "bc_1",
                 "message": {
                     "role": "assistant",
-                    "content": "reply from the other machine",
+                    "content": type(self).chat_reply_content,
                 },
             })
 
@@ -168,7 +274,7 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         return self._json({"error": {"message": "not found"}}, 404)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -176,9 +282,13 @@ class _FakePeer(BaseHTTPRequestHandler):
 def fake_peer_server():
     _FakePeer.sessions = []
     _FakePeer.chats = []
+    _FakePeer.chat_bodies = []
     _FakePeer.runs = []
     _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
+    _FakePeer.chat_reply_content = "reply from the other machine"
+    _FakePeer.run_status = "completed"
+    _FakePeer.run_output = "async reply from the other machine"
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -212,6 +322,56 @@ def test_dm_creates_bot_chat_then_chats(monkeypatch, capsys, fake_peer_server):
     assert all(a == "Bearer secret-key-123456" for a in _FakePeer.auth_seen)
 
 
+def test_dm_hides_a_bare_silence_marker_from_the_sending_agent(monkeypatch, capsys, fake_peer_server):
+    """A successful bare NO_REPLY/[SILENT] marker is a delivery decision, not
+    a message — same rule as the gateway's live Bot Chat completion, the
+    Desktop bot_relay.deliver RPC and the one-shot local `hermes chat -Q`
+    transport (tools/bot_mode_dm.py::_run_local_turn). `hermes peer dm` is a
+    4th Bot Mode delivery door and, before this fix, printed the raw marker
+    to the sending agent as if it were a real reply."""
+    _FakePeer.chat_reply_content = "NO_REPLY"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NO_REPLY" not in out
+    assert "(no reply)" in out
+
+
+def test_dm_json_output_hides_a_bare_silence_marker_too(monkeypatch, capsys, fake_peer_server):
+    _FakePeer.chat_reply_content = "[SILENT]"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == ""
+
+
+def test_dm_delivers_prose_that_only_mentions_the_marker_normally(monkeypatch, capsys, fake_peer_server):
+    """Prose that merely mentions NO_REPLY must still be delivered — only an
+    EXACT whole-response marker is silence."""
+    _FakePeer.chat_reply_content = "The status is NO_REPLY needed right now, all clear."
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    assert "The status is NO_REPLY needed right now, all clear." in capsys.readouterr().out
+
+
 def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     _FakePeer.sessions = ["bc_existing"]
     monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
@@ -224,6 +384,45 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+# ── per-turn author (HERMES_TURN_AUTHOR set by the message_agent runner) ─────
+
+
+AUTHOR = {"id": "bot:dixie", "name": "dixie", "is_bot": True}
+
+
+def _peer_spark(monkeypatch, url, author_env):
+    _FakePeer.sessions = ["bc_existing"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    if author_env is None:
+        monkeypatch.delenv(TURN_AUTHOR_ENV, raising=False)
+    else:
+        monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps(author_env))
+
+
+@pytest.mark.parametrize("author_env, expected_body", [
+    ({**AUTHOR, "x": 1}, {"message": "ping", "author": AUTHOR}),
+    (None, {"message": "ping"}),
+], ids=["author from env", "no env"])
+def test_dm_body_carries_author_only_from_env(monkeypatch, fake_peer_server, author_env, expected_body):
+    _peer_spark(monkeypatch, fake_peer_server, author_env)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    assert _FakePeer.chat_bodies == [expected_body]
+
+
+def test_run_body_carries_author_from_env(monkeypatch, capsys, fake_peer_server):
+    _peer_spark(monkeypatch, fake_peer_server, AUTHOR)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="run", target="spark", message="long task", idempotency_key="ticket-1", json=True))
+
+    assert rc == 0
+    assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing", "author": AUTHOR}]
 
 
 # ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────
@@ -346,18 +545,6 @@ def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, o
     assert "Title already in use" in err
 
 
-def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
-    """Backward compat: an older peer ignores the new query params and returns
-    the plain visible listing — a visible Bot Chat must still resolve."""
-    _FakePeer.sessions = ["bc_visible"]
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
-    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
-
-    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
-    assert _FakePeer.sessions == ["bc_visible"]
 
 
 def test_run_starts_async_turn_with_canonical_session_and_idempotency(
@@ -454,7 +641,7 @@ class _AttackerOrigin(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -470,7 +657,7 @@ class _RedirectingPeer(BaseHTTPRequestHandler):
         self.send_header("Location", type(self).redirect_target + self.path)
         self.end_headers()
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -504,3 +691,178 @@ def test_request_strips_bearer_key_across_redirect_origin():
     assert all(header is None for header in _AttackerOrigin.auth_seen), (
         f"peer's Bearer key leaked to the redirect target: {_AttackerOrigin.auth_seen}"
     )
+
+
+# ── terminal sanitization of peer-controlled text ────────────────────────────
+
+EVIL_REPLY = "ok\x1b]8;;http://evil\x07click\x1b]8;;\x07\x1b[2J\x1b[H"  # OSC link + screen clear
+
+
+def test_dm_reply_is_sanitized_for_terminal(monkeypatch, capsys, fake_peer_server):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.chat_reply_content = EVIL_REPLY
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="hi", json=False))
+
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "\x1b" not in out.out
+    assert "\x07" not in out.out
+    assert "ok" in out.out and "click" in out.out
+
+
+def test_run_ctl_output_and_error_sanitized(monkeypatch, capsys):
+    monkeypatch.setattr(
+        peer_cmd, "_request",
+        lambda *a, **k: {"status": "failed\x1b[31m", "output": "", "error": "boom\x1b[2J"})
+
+    rc = peer_cmd._peer_run_ctl(
+        SimpleNamespace(json=False, run_id="run_1"), "status", "spark", None, "http://x", "k")
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "\x1b" not in captured.out + captured.err
+    assert "failed" in captured.out
+    assert "boom" in captured.err
+
+
+def test_peer_failure_sanitizes_http_detail(capsys):
+    import io
+    import urllib.error
+
+    body = json.dumps({"error": {"message": "nope\x1b[2J\x07"}}).encode()
+    exc = urllib.error.HTTPError("http://x", 500, "err", {}, io.BytesIO(body))
+    rc = peer_cmd._peer_failure("spark", exc)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\x07" not in err
+    assert "nope" in err
+
+
+def test_request_non_json_error_sanitized(monkeypatch):
+    import contextlib
+
+    class _Resp:
+        def read(self):
+            return b"\x1b[2Jnot-json\x07"
+
+    @contextlib.contextmanager
+    def _fake_open(req, timeout=None):
+        yield _Resp()
+
+    import hermes_cli.urllib_security as us
+    monkeypatch.setattr(us, "open_credentialed_url", _fake_open)
+    with pytest.raises(RuntimeError) as ei:
+        peer_cmd._request("http://x/v1/x", "k")
+    assert "\x1b" not in str(ei.value) and "\x07" not in str(ei.value)
+    assert "not-json" in str(ei.value)
+
+
+def test_status_output_sanitized_e2e(monkeypatch, capsys, fake_peer_server):
+    """status prints the peer's stored run output — real HTTP path, escape-laden."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.run_status = "failed\x1b[31m"
+    _FakePeer.run_output = "partial out\x1b[2J\x1b[H"
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="status", target="spark", run_id="run_1", json=False))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "\x1b" not in captured.out + captured.err
+    assert "partial out" in captured.out
+    assert "failed" in captured.out
+
+
+def test_status_json_output_stays_structured(monkeypatch, capsys, fake_peer_server):
+    """--json keeps raw fields (json.dumps escapes controls); only text output is sanitized."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.run_output = "out\x1b[2J"
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="status", target="spark", run_id="run_1", json=True))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # still valid JSON — controls escaped, not printed raw
+    assert payload["output"] == "out\x1b[2J"
+
+
+def test_peer_dm_timeout_message_sanitizes_session_id(monkeypatch, capsys):
+    """The TimeoutError-with-session path prints the peer-supplied session id."""
+    import socket
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "k")
+
+    def _fake_request(url, key, **kw):
+        if "/chat" in url:
+            raise TimeoutError("timed out")
+        return {}
+
+    monkeypatch.setattr(peer_cmd, "_request", _fake_request)
+    monkeypatch.setattr(peer_cmd, "_ensure_bot_chat", lambda b, k: "bc_\x1b[2Jevil")
+
+    rc = peer_cmd._peer_dm(
+        SimpleNamespace(json=False), "hi", "spark", None, "http://x", "k")
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert "bc_evil" in err
+
+
+def test_status_malformed_status_line_is_sanitized_not_a_traceback(monkeypatch, capsys):
+    """A peer (or MITM) answering a non-HTTP status line must not crash with its raw bytes."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def _serve():
+        conn, _ = sock.accept()
+        conn.recv(65536)
+        conn.sendall(b"XTTP/1.1 \x1b]2;PWNED\x07\x1b[2J 200 OK\r\n\r\n")
+        conn.close()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark", run_id="run_1", json=False))
+    sock.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\x07" not in err
+    assert "malformed HTTP response" in err and "XTTP/1.1" in err
+
+
+def test_status_peer_closing_without_response_stays_a_transport_failure(monkeypatch, capsys):
+    """RemoteDisconnected is an HTTPException AND an OSError: it is "could not reach", not malformed."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+
+    def _serve():
+        conn, _ = sock.accept()
+        conn.recv(65536)
+        conn.close()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark", run_id="run_1", json=False))
+    sock.close()
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Could not reach peer 'spark'" in err and "malformed" not in err

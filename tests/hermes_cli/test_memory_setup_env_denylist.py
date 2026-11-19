@@ -171,7 +171,7 @@ def test_value_with_embedded_newline_is_stripped():
     assert "EVIL" not in _env_file_keys()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_env_file_created_with_secure_permissions(tmp_path):
     """Regression guard for the TOCTOU window the direct ``Path.write_text``
     + post-hoc ``chmod`` implementation had: ``save_env_value`` creates the

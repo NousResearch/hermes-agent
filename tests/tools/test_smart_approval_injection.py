@@ -166,6 +166,39 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         mock_call_llm.return_value = self._make_response("I think this is probably fine")
         assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
 
+    @patch("agent.auxiliary_client.call_llm")
+    def test_empty_answer_escalates_with_warning(self, mock_call_llm):
+        """The #117428 failure mode: a 200 response with empty content (finish_reason==
+        "length" after a reasoning model spent the whole max_tokens budget on hidden
+        reasoning) must escalate AND log at WARNING — at default log levels it is otherwise
+        indistinguishable from a genuine ESCALATE verdict."""
+        response = self._make_response("")
+        response.choices[0].finish_reason = "length"
+        mock_call_llm.return_value = response
+        with self.assertLogs("tools.approval", level="WARNING") as logs:
+            assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+        assert any("empty answer" in message and "length" in message
+                   for message in logs.output), logs.output
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_empty_answer_without_finish_reason_still_warns(self, mock_call_llm):
+        """A missing finish_reason must not hide the empty-answer WARNING: the field is
+        populated unevenly across OpenAI-compatible providers."""
+        response = self._make_response(None)
+        response.choices[0].finish_reason = None
+        mock_call_llm.return_value = response
+        with self.assertLogs("tools.approval", level="WARNING") as logs:
+            assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
+        assert any("finish_reason=None" in message for message in logs.output), logs.output
+
+    @patch("agent.auxiliary_client.call_llm")
+    def test_recognized_verdict_does_not_warn(self, mock_call_llm):
+        """The WARNING is specific to empty answers — firing on healthy calls too would
+        train operators to skim past it, the exact failure #117428 describes."""
+        mock_call_llm.return_value = self._make_response("APPROVE")
+        with self.assertNoLogs("tools.approval", level="WARNING"):
+            assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
+
 
 if __name__ == "__main__":
     unittest.main()

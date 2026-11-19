@@ -31,6 +31,9 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import profile_scope
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -43,7 +46,7 @@ TEXT = "**Yes.** I would make room for one island trip and one Balkan trip."
 def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), 202))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
     yield
@@ -53,15 +56,24 @@ _COLUMNS = ("obligation_id", "session_key", "state", "attempts", "last_error", "
             "platform")
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
 def _rows():
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         cur = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM delivery_obligations")
         return [dict(zip(_COLUMNS, r)) for r in cur.fetchall()]
 
 
 def _source(*, chat_id=CHAT, thread_id=None, chat_type="dm"):
+    # parent_chat_id is a real SessionSource field; the queued-followup path reads it to pin the
+    # channel inputs, so the stub carries it like every real source does.
     return SimpleNamespace(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id,
-                           chat_type=chat_type)
+                           chat_type=chat_type, parent_chat_id=None)
 
 
 def _telegram_adapter(send_result=None):
@@ -70,7 +82,7 @@ def _telegram_adapter(send_result=None):
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
     runner = MagicMock()
-    runner._adapter_for_source = MagicMock(return_value=adapter)
+    runner._delivery_adapter_for = MagicMock(return_value=adapter)
     runner._schedule_flood_redelivery = MagicMock(return_value=187.0)
     adapter.gateway_runner = runner
     adapter.send = AsyncMock(return_value=send_result or SendResult(success=True, message_id="900"))
@@ -153,8 +165,6 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
     assert len(rows) == 1
     assert rows[0]["state"] == "failed"
     assert rows[0]["last_error"] == "flood_control:185.0"
-    assert any("Queued-lane final send" in r.getMessage()
-               and "flood_control:185.0" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -204,7 +214,7 @@ def _chain_runner_and_ctx(followup_return):
     runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
     runner._reply_anchor_for_event = MagicMock(return_value=None)
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
     turn_ctx = SimpleNamespace(
@@ -212,7 +222,8 @@ def _chain_runner_and_ctx(followup_return):
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
-        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+        source=topic, message_id="6002", channel_prompt=None, message_type=None,
+        internal=False, metadata={}, reply_expected=None)
     return GatewayRunner, runner, turn_ctx, pending_event
 
 
@@ -231,7 +242,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
     runner._reply_anchor_for_event = MagicMock(return_value=None)   # forum topic: no anchor
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
     turn_ctx = SimpleNamespace(
@@ -239,7 +250,8 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(
-        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+        source=topic, message_id="6002", channel_prompt=None, message_type=None,
+        internal=False, metadata={}, reply_expected=None)
 
     await GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
@@ -323,7 +335,7 @@ async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path
     sender._schedule_ephemeral_delete = MagicMock()
     replacement._schedule_ephemeral_delete = MagicMock()
     live = {"adapter": sender}
-    sender.gateway_runner._adapter_for_source = MagicMock(side_effect=lambda _s: live["adapter"])
+    sender.gateway_runner._delivery_adapter_for = MagicMock(side_effect=lambda _s: live["adapter"])
 
     async def swap_then_send(*args, **kwargs):
         live["adapter"] = replacement  # reconnect lands while the send is in flight

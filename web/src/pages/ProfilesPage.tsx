@@ -45,6 +45,8 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
+import { ProfileCreationReceipt, type CreationReceipt } from "./ProfileCreationReceipt";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -253,12 +255,28 @@ function ProfileActionsMenu({
   );
 }
 
+function creationReceiptFor(title: string, warnings: string[] = [], modelFailed = false): CreationReceipt | null {
+  const messages = [
+    ...(modelFailed
+      ? ["Profile created, but the model could not be saved — set it from the profile editor."]
+      : []),
+    ...warnings,
+  ];
+  return messages.length ? { title, messages } : null;
+}
+
+function useCreationFeedback() {
+  const { toast, showToast } = useToast();
+  const [creationReceipt, setCreationReceipt] = useState<CreationReceipt | null>(null);
+  return { toast, showToast, creationReceipt, setCreationReceipt };
+}
+
 export default function ProfilesPage() {
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const { toast, showToast } = useToast();
+  const { toast, showToast, creationReceipt, setCreationReceipt } = useCreationFeedback();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
   const { setProfile } = useProfileScope();
@@ -300,7 +318,7 @@ export default function ProfilesPage() {
       modelInherit: p.modelInherit ?? "Inherit from clone / default",
       modelLoading: p.modelLoading ?? "Loading models…",
       modelNone:
-        p.modelNone ?? "No authenticated providers — set a key first",
+        p.modelNone ?? "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
@@ -399,7 +417,7 @@ export default function ProfilesPage() {
         setProfiles(res.profiles);
         setActiveInfo(active);
       })
-      .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
+      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e)}`, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.status.error]);
 
@@ -447,13 +465,11 @@ export default function ProfilesPage() {
         provider: picked?.provider,
         model: picked?.model,
       });
-      showToast(`${t.profiles.created}: ${name}`, "success");
-      if (picked && res.model_set === false) {
-        showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
-          "error",
-        );
-      }
+      const title = `${t.profiles.created}: ${name}`;
+      const receipt = creationReceiptFor(title, res.warnings, Boolean(picked) && res.model_set === false);
+      // Replaced only by a successful create: a failed retry keeps the last receipt.
+      setCreationReceipt(receipt);
+      if (!receipt) showToast(title, "success");
       setNewName("");
       setNewDescription("");
       setNoSkills(false);
@@ -463,7 +479,7 @@ export default function ProfilesPage() {
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -488,7 +504,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -507,7 +523,7 @@ export default function ProfilesPage() {
         prev ? { ...prev, active } : { active, current: active },
       );
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSettingActive(null);
     }
@@ -542,7 +558,7 @@ export default function ProfilesPage() {
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
         }
       }
     },
@@ -557,7 +573,7 @@ export default function ProfilesPage() {
       activeSoulRequest.current = null;
       setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSoulSaving(false);
     }
@@ -603,7 +619,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       descSavingCount.current -= 1;
@@ -637,7 +653,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       describingCount.current -= 1;
@@ -680,7 +696,7 @@ export default function ProfilesPage() {
       );
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setModelSaving(false);
     }
@@ -707,7 +723,7 @@ export default function ProfilesPage() {
       const res = await api.getProfileSetupCommand(name);
       cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       return;
     }
     if (await copyTextToClipboard(cmd)) {
@@ -725,7 +741,7 @@ export default function ProfilesPage() {
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -790,6 +806,7 @@ export default function ProfilesPage() {
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
+      <ProfileCreationReceipt receipt={creationReceipt} onDismiss={() => setCreationReceipt(null)} />
 
       <DeleteConfirmDialog
         open={profileDelete.isOpen}

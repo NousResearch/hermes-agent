@@ -1,0 +1,42 @@
+name: hermes-unlimited
+repo: https://github.com/rrglab/hermes-unlimited
+sha: 183cc5f6eb441bee0815cceb6250310025b2ea6b
+description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service, request, human-oversight time and cost records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
+maintainer: rrglab
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+version: "0.2.0-beta.7"
+title: "Hermes Unlimited"
+readme: true
+known_issues:
+  - "Experimental public core; no live billing, payment settlement or independently attested customer fulfillment."
+  - "Human oversight/AI recovery cost inputs are MODEL_SUBMITTED_UNVERIFIED; no independent financial value or ROI is established."
+  - "Community adapter discovery is catalog-only metadata; no external provider integration is activated or independently verified."
+  - "Company Memory recall is read-only; stored verification labels are not independently attested by the plugin."
+  - "Specialist Factory uses local plugin declarations only when Hermes does not expose a host tool registry; these are not live verified capabilities. External toolsets require an explicit host registry. No execution authority is granted."
+  - "Economic evaluation is advisory comparison of MODEL_SUBMITTED_UNVERIFIED costs against MODEL_SUBMITTED_UNVERIFIED scenario caps, not an approved budget, verified ROI, or execution decision."
+  - "Requires a configured JustYou session validator, signed Ed25519 profile bindings and provisioned tenant boards."
+capabilities:
+  provides_tools:
+    - hermes_unlimited_status
+    - unlimited_company_task
+    - unlimited_company_result
+    - unlimited_company_create
+    - unlimited_service_publish
+    - unlimited_service_request
+    - unlimited_company_list
+    - unlimited_a2ui_surface
+    - unlimited_service_dispatch
+    - unlimited_service_result
+    - unlimited_oversight_record
+    - unlimited_oversight_costs
+    - unlimited_oversight_report
+    - unlimited_adapter_discover
+    - unlimited_memory_recall
+    - unlimited_specialist_factory
+    - unlimited_economic_evaluate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HERMES_UNLIMITED_JUSTYOU_SESSION_TOKEN

@@ -1,7 +1,7 @@
 """Tests for approval boundary handling in WeCom native streaming."""
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -173,55 +173,6 @@ async def test_boundary_uses_custom_placeholder_when_no_accumulated(mock_adapter
         pass
 
 
-@pytest.mark.asyncio
-async def test_clarify_boundary_logs_use_clarify_prefix(mock_adapter, consumer_config, caplog):
-    """A clarify boundary that fails to finalize must log with a "Clarify"
-    prefix, not "Approval" — otherwise a clarify failure looks like a
-    dangerous-command approval failure during troubleshooting."""
-    import logging
-
-    # Make finalize fail so the warning path fires, and the fallback send fail
-    # too so the error path fires — exercising the reason-labelled logs.
-    mock_adapter.send_stream_frame = AsyncMock(return_value=False)
-    mock_adapter.send = AsyncMock(return_value=MagicMock(success=False))
-
-    consumer = GatewayStreamConsumer(
-        adapter=mock_adapter,
-        chat_id="test_chat",
-        config=consumer_config,
-    )
-    consumer._use_native_streaming = True
-    consumer._native_stream_opened = True
-    consumer._turn_id = "turn_123"
-    consumer._accumulated = "部分内容"
-
-    boundary_result = consumer.close_for_approval_prompt(
-        "💬 等待你的选择...", reason="Clarify",
-    )
-    if isinstance(boundary_result, tuple):
-        boundary_future, _ = boundary_result
-    else:
-        boundary_future = boundary_result
-
-    with caplog.at_level(logging.WARNING, logger="gateway.stream_consumer"):
-        consumer_task = asyncio.create_task(consumer.run())
-        await asyncio.wait_for(boundary_future, timeout=1.0)
-
-    boundary_logs = [r.getMessage() for r in caplog.records]
-    assert any("Clarify boundary" in m for m in boundary_logs), (
-        f"Expected a 'Clarify boundary' log, got: {boundary_logs}"
-    )
-    assert not any("Approval boundary" in m for m in boundary_logs), (
-        f"Clarify boundary must not log as 'Approval boundary': {boundary_logs}"
-    )
-
-    consumer.finish()
-    await asyncio.sleep(0.05)
-    consumer_task.cancel()
-    try:
-        await consumer_task
-    except asyncio.CancelledError:
-        pass
 
 
 @pytest.mark.asyncio

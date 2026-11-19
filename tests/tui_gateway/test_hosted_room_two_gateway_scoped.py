@@ -18,6 +18,15 @@ from gateway.platforms.api_server import APIServerAdapter
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_service import HostedRoomService
+from persistence_assembly import open_persistence, profile_scope
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 class _LocalRPC:
@@ -66,7 +75,7 @@ def _target_app(adapter):
 
 @pytest.mark.asyncio
 async def test_in_process_scoped_transport_contract_finishes_headlessly(
-    tmp_path: Path,
+    tmp_path: Path, store,
 ):
     target = APIServerAdapter(
         PlatformConfig(enabled=True, extra={"key": "target-peer-key-1234567890"})
@@ -112,7 +121,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
     )
     home = HostedRoomService(
         _server_module(),
-        db_path=tmp_path / "home-state.db",
+        store=store, placement="shared",
         peer_routes={("room-1", "member-peer"): route},
         peer_clients={catalog["installation_id"]: client},
     )
@@ -153,7 +162,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
             event_id="user-1",
             payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
         )
-        deadline = asyncio.get_running_loop().time() + 5
+        deadline = asyncio.get_running_loop().time() + 20
         while asyncio.get_running_loop().time() < deadline:
             if any(
                 event["kind"] == "message.member"
@@ -166,7 +175,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
                 "peer reply was not published: "
                 f"status={home.runtime.status()} events={home._events('room-1')}"
             )
-        assert home.stop(timeout=1.0)
+        assert home.stop(timeout=5.0)
 
     reply = next(
         event

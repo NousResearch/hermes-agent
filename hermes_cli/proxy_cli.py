@@ -14,6 +14,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.proxy_sources import iron_proxy as ip
+from agent.redact import mask_secret
+from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
 
 
@@ -25,8 +27,8 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     # (name, help, handler, [(flag, add_argument kwargs), ...]) — declaration order is the
     # ``--help`` order, so keep it stable.
     commands = [
-        ("install", f"Download iron-proxy binary (v{ip._IRON_PROXY_VERSION})", cmd_install, [
-            ("--force", dict(action="store_true", help="Re-download even if a managed copy already exists")),
+        ("install", "Install the PM-pinned iron-proxy binary", cmd_install, [
+            ("--force", dict(action="store_true", help="Verify and repair the managed copy")),
         ]),
         ("setup", "Interactive wizard: install + CA + mint tokens + write config", cmd_setup, [
             ("--tunnel-port", dict(type=int, default=None,
@@ -73,7 +75,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     console = Console()
     try:
         binary = ip.install_iron_proxy(force=bool(args.force))
-    except Exception as exc:  # noqa: BLE001 — top-level user-facing error funnel
+    except Exception as exc:
         console.print(f"[red]✗ install failed:[/red] {exc}")
         console.print("  Manual install: https://github.com/ironsh/iron-proxy/releases")
         return 1
@@ -127,7 +129,7 @@ def _setup_install_binary(console: Console) -> bool:
             binary = ip.install_iron_proxy()
         version = ip.iron_proxy_version(binary) or "(version unknown)"
         console.print(f"  [green]✓[/green] {binary}  {version}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ install failed: {exc}[/red]")
         return False
     return True
@@ -137,7 +139,7 @@ def _setup_ca_cert(console: Console):
     _step(console, 2, "Generate a CA cert")
     try:
         ca_crt, ca_key = ip.ensure_ca_cert()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console.print(f"  [red]✗ CA generation failed: {exc}[/red]")
         return None
     console.print(f"  [green]✓[/green] {ca_crt}")
@@ -147,7 +149,7 @@ def _setup_ca_cert(console: Console):
 def _setup_mint_tokens(console: Console, args: argparse.Namespace):
     """Discover providers, merge with existing tokens (rotating on request), print the table."""
     _step(console, 3, "Mint proxy tokens for known providers")
-    available_env_names: List[str] = []
+    available_env_names: list[str] = []
     if args.from_bitwarden:
         available_env_names = _bitwarden_env_names(console)
         if available_env_names is None:
@@ -314,7 +316,7 @@ def _setup_restart_daemon(console: Console, args: argparse.Namespace, proxy_cfg:
     if do_restart:
         try:
             new_status = ip.start_proxy(install_if_missing=bool(proxy_cfg.get("auto_install", True)))
-        except Exception as exc:  # noqa: BLE001 — user-facing funnel
+        except Exception as exc:
             console.print(f"  [yellow]⚠ could not start iron-proxy with the new config: {exc}[/yellow]")
             console.print("  Run [cyan]hermes egress start[/cyan] manually before launching new Docker sandboxes.")
         else:
@@ -391,8 +393,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             refresh_secrets_from_bitwarden=refresh_bw,
             bitwarden_config=bw_cfg,
         )
-    except Exception as exc:  # noqa: BLE001 — top-level user-facing funnel
-        console.print(f"[red]✗ failed to start iron-proxy:[/red] {exc}")
+    except Exception as exc:
+        console.print(f"[red]✗ failed to start iron-proxy:[/red] {console_safe(str(exc))}")
         return 1
     if not status.pid:
         console.print("[red]✗ iron-proxy did not come up cleanly[/red]")
@@ -430,7 +432,7 @@ def cmd_reload(args: argparse.Namespace) -> int:
     console = Console()
     try:
         ip.reload_proxy()
-    except Exception as exc:  # noqa: BLE001 — top-level user-facing funnel
+    except Exception as exc:
         console.print(f"[red]✗ reload failed:[/red] {exc}")
         return 1
     console.print("[green]✓[/green] iron-proxy ruleset reloaded in-place (no restart, connections preserved)")
@@ -457,7 +459,7 @@ def format_status_text(*, show_tokens: bool = False) -> str:
     if mappings:
         lines.extend(["", "Token mappings:"])
         for m in mappings:
-            tok = m.proxy_token if show_tokens else _redact_token(m.proxy_token)
+            tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
             lines.append(f"  - {m.real_env_name}: {tok} ({', '.join(m.upstream_hosts)})")
     uncovered = ip.discover_uncovered_providers()
     if uncovered:
@@ -531,7 +533,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def _bitwarden_env_names(console: Console) -> Optional[List[str]]:
+def _bitwarden_env_names(console: Console) -> Optional[list[str]]:
     """Secret names from Bitwarden for ``setup --from-bitwarden``; prints the error and returns
     ``None`` on any failure so the wizard aborts loudly instead of falling back to the host env.
     """
@@ -560,8 +562,8 @@ def _bitwarden_env_names(console: Console) -> Optional[List[str]]:
             return None
         console.print(f"  Pulled {len(names)} env names from Bitwarden.")
         return names
-    except Exception as exc:  # noqa: BLE001 — explicit user-facing error
-        console.print(f"  [red]✗ Could not enumerate Bitwarden secrets: {exc}[/red]")
+    except Exception as exc:
+        console.print(f"  [red]✗ Could not enumerate Bitwarden secrets: {console_safe(str(exc))}[/red]")
         console.print(
             "  Either fix the Bitwarden config and retry, or rerun setup "
             "without --from-bitwarden (the proxy will read secrets from the host process env at start time)."
@@ -574,7 +576,7 @@ def _load_env_file_into_environ() -> int:
     Never overrides an exported value; only known provider names, so unrelated secrets stay out."""
     try:
         file_env = load_env()
-    except Exception:  # noqa: BLE001 — best-effort convenience, never fatal
+    except Exception:
         return 0
     added = 0
     known = set(ip._BEARER_PROVIDERS) | set(ip._NON_BEARER_PROVIDERS)
@@ -594,7 +596,7 @@ def _mappings_table(mappings, env_header: str, hosts_header: str, *, show_tokens
     table.add_column(hosts_header, style="dim")
     table.add_column("Proxy token", style="green")
     for m in mappings:
-        tok = m.proxy_token if show_tokens else _redact_token(m.proxy_token)
+        tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
         table.add_row(m.real_env_name, ", ".join(m.upstream_hosts), tok)
     return table
 
@@ -638,9 +640,3 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
         ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
         ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
     ]
-
-
-def _redact_token(token: str) -> str:
-    if len(token) < 16:
-        return token
-    return f"{token[:12]}…{token[-4:]}"

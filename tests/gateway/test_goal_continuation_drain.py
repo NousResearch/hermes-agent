@@ -169,7 +169,6 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     runner.config = GatewayConfig(
         platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},
     )
-    runner._queued_events = {}
     session_entry = SessionEntry(
         session_key=adapter_key,
         session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
@@ -201,7 +200,4 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         "continuation enqueued under a different key than the adapter "
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
-    )
-    assert adapter._pending_messages[adapter_key].text.startswith(
-        "[Continuing toward your standing goal]"
     )

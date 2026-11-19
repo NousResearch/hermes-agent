@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+from contextlib import suppress
+import tempfile
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -64,21 +67,58 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
     validated_files = [(_validate_bundle_rel_path(rel_path), content) for rel_path, content in bundle.files.items()]
-    dest = _quarantine_dir() / skill_name
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    for rel_path, file_content in validated_files:
-        file_dest = dest.joinpath(*rel_path.split("/"))
-        file_dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(file_content, bytes):
-            file_dest.write_bytes(file_content)
-        else:
-            file_dest.write_text(file_content, encoding="utf-8")
+    quarantine_dir = _quarantine_dir()
+    if _is_path_redirect(quarantine_dir):
+        raise ValueError(f"Unsafe quarantine directory: {quarantine_dir}")
+    # Per-request staging dir so concurrent installs/scans of one name never share a tree; the
+    # bundle keeps its own name inside it because the scanner reports ``skill_path.name``.
+    staging = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=quarantine_dir))
+    dest = staging / skill_name
+    try:
+        dest.mkdir()
+        for rel_path, file_content in validated_files:
+            file_dest = dest.joinpath(*rel_path.split("/"))
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(file_content, bytes):
+                file_dest.write_bytes(file_content)
+            else:
+                # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
+                # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
+                file_dest.write_text(file_content, encoding="utf-8", newline="")
+    except BaseException:
+        # Callers only clean up a returned path: a failed or interrupted write must not strand a partial tree.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return dest
 
 
-def _category_skill_dirs(directory: Path) -> List[str]:
+def discard_quarantine(q_path: Path) -> None:
+    """Remove a quarantined bundle together with its per-request staging dir."""
+    from tools.skills_hub import _quarantine_dir
+    root, staging = _quarantine_dir().resolve(), q_path.parent.resolve()
+    shutil.rmtree(staging if staging != root and staging.is_relative_to(root) else q_path, ignore_errors=True)
+
+
+_INSTALL_LOCK_HOLDER = threading.local()
+# Same-profile installs queue: profile create spawns one install per hub skill at once, and two
+# quick Desktop Install clicks must both land. One budget covers the whole wait, queued installs included.
+_INSTALL_LOCK_TIMEOUT_S = 600.0
+
+
+def hub_install_lock():
+    """One profile's Skills Hub install lock (fetch through lock.json persistence), so a CLI and a
+    dashboard install cannot interleave their target rmtree/move. Waits behind the running and queued
+    installs; raises ``TimeoutError`` once this waiter has waited ``_INSTALL_LOCK_TIMEOUT_S`` in total."""
+    from hermes_cli.auth import _file_lock
+    from tools.skills_hub import _hub_dir, ensure_hub_dirs
+
+    ensure_hub_dirs()
+    return _file_lock(_hub_dir() / "install.lock", _INSTALL_LOCK_HOLDER, _INSTALL_LOCK_TIMEOUT_S,
+                      f"Waited over {int(_INSTALL_LOCK_TIMEOUT_S // 60)} minutes for other Skills Hub installs in this "
+                      f"profile (one may be waiting at its install prompt); try again once they finish")
+
+
+def _category_skill_dirs(directory: Path) -> list[str]:
     """Names of non-hidden child dirs holding at least one active SKILL.md
     anywhere below (nested layouts like ``mlops/training/<skill>`` count).
 
@@ -140,7 +180,7 @@ def _check_install_target(install_dir: Path) -> None:
 
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
-    scan_provenance: Optional[Dict[str, Any]] = None,
+    scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
@@ -182,6 +222,9 @@ def install_from_quarantine(
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
+    if quarantine_path.parent.resolve() != _quarantine_dir().resolve():
+        with suppress(OSError):
+            quarantine_path.parent.rmdir()
     installed_hash = content_hash(install_dir)
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
@@ -200,7 +243,7 @@ def install_from_quarantine(
     return install_dir
 
 
-def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
+def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
     from tools.skills_hub import HubLockFile, append_audit_log
     lock = HubLockFile()
@@ -217,6 +260,8 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    from hermes_cli.observability.shared_metrics_disabled import record_skill_removed
+    record_skill_removed(skill_name)
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 
@@ -248,10 +293,19 @@ def _source_matches(source: SkillSource, source_name: str) -> bool:
     return source.source_id() == _SOURCE_ID_ALIASES.get(source_name, source_name)
 
 
+
+def _current_revision_or_empty(src, identifier: str) -> str:
+    """A probe failure must degrade one row to the full-fetch path, not abort the whole check."""
+    try:
+        return src.current_revision(identifier)
+    except Exception:
+        logger.debug("current_revision probe failed for %s", identifier, exc_info=True)
+        return ""
+
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
-    sources: Optional[List[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
-) -> List[dict]:
+    sources: Optional[list[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
+) -> list[dict]:
     """Check installed hub skills for upstream changes.
 
     Each entry is fetched ONLY from adapters matching its recorded source.
@@ -268,7 +322,7 @@ def check_for_skill_updates(
     if sources is None:
         sources = create_source_router(auth=auth)
 
-    results: List[dict] = []
+    results: list[dict] = []
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
         row = {"name": entry.get("name", ""), "identifier": identifier, "source": source_name}
@@ -285,8 +339,16 @@ def check_for_skill_updates(
             # instead of re-paying it on every update run (#104291).
             results.append({**row, "status": "orphaned"})
             continue
+        matching = [src for src in sources if _source_matches(src, source_name)]
+        recorded = (entry.get("metadata") or {}).get("source_revision", "")
+        if recorded and any(_current_revision_or_empty(src, identifier) == recorded for src in matching):
+            # Same upstream tree as at install time: the bundle bytes cannot differ, so
+            # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
+            content_hash = entry.get("content_hash", "")
+            results.append({**row, "status": "up_to_date", "current_hash": content_hash, "latest_hash": content_hash})
+            continue
         bundle = None
-        for src in filter(lambda s: _source_matches(s, source_name), sources):
+        for src in matching:
             try:
                 bundle = src.fetch(identifier)
             except Exception:

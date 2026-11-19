@@ -61,7 +61,7 @@ class TestCacheDocumentFromBytes:
 
     def test_empty_filename_uses_fallback(self):
         path = cache_document_from_bytes(b"data", "")
-        assert "document" in os.path.basename(path)
+        assert Path(path).read_bytes() == b"data"
 
 
 # ---------------------------------------------------------------------------

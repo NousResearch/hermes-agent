@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { renameProfile } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { migrateTilesForProfile } from '@/store/session-states'
 
 import { RenameProfileDialog } from './rename-profile-dialog'
 
@@ -25,6 +26,10 @@ vi.mock('@/store/gateway', () => ({
   retireLocalProfileGateways: vi.fn()
 }))
 
+vi.mock('@/store/session-states', () => ({
+  migrateTilesForProfile: vi.fn()
+}))
+
 it('retires the old-name local gateways before issuing the rename', async () => {
   const order: string[] = []
 
@@ -45,6 +50,9 @@ it('retires the old-name local gateways before issuing the rename', async () => 
   await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed'))
   expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
   expect(order).toEqual(['retire', 'rename'])
+  // The sessions moved with the directory: tabs / cached tails / remembered ids keyed by the
+  // old name follow, else every restored tab 404s against a backend that no longer exists (#111868).
+  expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
 })
 
 it('does not retire gateways when validation rejects the submit', async () => {

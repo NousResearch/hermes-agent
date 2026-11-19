@@ -22,14 +22,16 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import {
   $sidebarListGroupIds,
+  $sidebarShowAllSessions,
   $sidebarWorkspaceNodeOpen,
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
-import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
+import { SIDEBAR_FOCUS_VISIBLE, SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
 import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
@@ -82,15 +84,19 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
+          aria-expanded={open}
           // min-w-0 lets the label truncate at narrow sidebar widths instead of
           // pushing the header's trailing action icons out of view.
-          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
+          className={cn(
+            'group/section-label flex w-fit min-w-0 items-center gap-1 rounded-sm bg-transparent text-left leading-none',
+            SIDEBAR_FOCUS_VISIBLE
+          )}
           onClick={onToggle}
           type="button"
         >
           {labelBody}
           <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100 group-focus-visible/section-label:opacity-100"
             open={open}
           />
         </button>
@@ -110,11 +116,13 @@ interface SidebarSessionsSectionProps {
   activeSessionId: null | string
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  /** `session` is the clicked row: its `archived` flag is what the menu
+   *  showed, so it decides Archive vs Unarchive. */
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
-  onNewSessionInWorkspace?: (path: null | string) => void
+  onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
@@ -125,6 +133,8 @@ interface SidebarSessionsSectionProps {
   headerAction?: React.ReactNode
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
+  // Owner groups inside a messaging platform: the section's footer pages them.
+  embeddedGroups?: boolean
   tree?: SidebarWorkspaceTree[]
   // Project overview: when present, render a drill-in list of project rows
   // instead of sessions. Clicking a row enters that project (onEnterProject),
@@ -133,6 +143,10 @@ interface SidebarSessionsSectionProps {
   projectOverview?: SidebarProjectTree[]
   // Per-project preview rows (from the backend tree), keyed by project id.
   projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // The exclusion the previews were built with (pins, filter misses, removed
+  // ids) plus how many of each project's `sessionCount` it hides — applied
+  // again when a row hydrates its full lanes on "Show all".
+  projectOverviewHidden?: { isHidden: (session: SessionInfo) => boolean; counts: Record<string, number> }
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -175,6 +189,11 @@ interface SidebarSessionsSectionProps {
   // pinned, messaging groups, and the project overview, where the order isn't
   // strictly by recency so a bucket would be misleading.
   grouping?: 'date' | 'none' | 'status'
+  // Keep the caller's row order instead of re-sorting by group recency
+  // (defaults to `pinned`, the only pre-ordered caller). The search results
+  // set it too: their order is the backend's ranking (exact id matches
+  // first), which recency re-sorting would bury under newer quoting rows.
+  preserveOrder?: boolean
   // Inbox style: render every flat session row as a three-line card (project ·
   // age / title / model · size). A render variant that composes with whichever
   // grouping is active — the flat recents list opts in; dense tree surfaces
@@ -204,8 +223,10 @@ export function SidebarSessionsSection({
   headerAction,
   footer,
   groups,
+  embeddedGroups = false,
   projectOverview,
   projectOverviewPreviews,
+  projectOverviewHidden,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -224,26 +245,26 @@ export function SidebarSessionsSection({
   dndSensors,
   showProfileTags = false,
   grouping = 'none',
+  preserveOrder = pinned,
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
+  const showAllSessions = useStore($sidebarShowAllSessions)
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
   const sectionOpen = collapsible ? open : true
-  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
+  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0 || group.mode === 'profile'))
   // A defined project list is itself content (even an empty project should
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
 
-  // Lanes count as content even with no rows left in them: the backend only
-  // emits a lane that has sessions, so a lane surviving with zero rows means
-  // they were filtered out (pinned) — the branch is real and must still render.
-  // A genuinely empty project has no lanes at all and keeps its empty state.
+  // Declared repos are content even before their first session: each repo header owns the action that starts
+  // a session in that folder. Lanes likewise survive filtering and must still render.
   const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.some(repo => repo.groups.length > 0))
+    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.length > 0)
   )
 
   const showEmptyState =
@@ -257,8 +278,8 @@ export function SidebarSessionsSection({
   // recency sort — the drag order is layered on per date group below, so the
   // buckets stay truthful and a reorder never costs the list its dividers.
   const displayEntries = useMemo(
-    () => flattenSessionsWithBranches(sessions, { preserveOrder: pinned }),
-    [sessions, pinned]
+    () => flattenSessionsWithBranches(sessions, { preserveOrder }),
+    [sessions, preserveOrder]
   )
 
   const renderRow = useCallback(
@@ -268,7 +289,7 @@ export function SidebarSessionsSection({
         card,
         isPinned: pinned,
         isSelected: session.id === activeSessionId,
-        onArchive: () => onArchiveSession(session.id),
+        onArchive: () => onArchiveSession(session.id, session),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
@@ -370,6 +391,24 @@ export function SidebarSessionsSection({
     (items: SessionInfo[]) =>
       flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
     [renderRow]
+  )
+
+  // Limit complete groups, not sessions, so a burst and its branches stay
+  // together. Compute boundaries from the whole pool, just like Updated.
+  const renderPreviewRows = useCallback(
+    (items: SessionInfo[], projectId: string) => {
+      const rows = groupEntriesByRecency(
+        flattenSessionsWithBranches(items),
+        undefined,
+        undefined,
+        showAllSessions ? Infinity : 2
+      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
+
+      const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
+
+      return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
+    },
+    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -493,6 +532,8 @@ export function SidebarSessionsSection({
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
       <Component
         activeProjectId={activeProjectId}
+        hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
+        isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
@@ -503,7 +544,7 @@ export function SidebarSessionsSection({
         // preview rows instead of the live overlay.
         previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
-        renderRows={renderRows}
+        renderRows={showAllSessions ? items => renderPreviewRows(items, project.id) : renderRows}
       />
     )
 
@@ -528,6 +569,7 @@ export function SidebarSessionsSection({
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
     inner = (
       <GatewayProfileGroups
+        embedded={embeddedGroups}
         groups={groups}
         onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}
@@ -589,7 +631,7 @@ export function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
@@ -608,6 +650,15 @@ export function SidebarSessionsSection({
     </SidebarGroup>
   )
 }
+
+// Painted imperatively by session-drag.ts while a session hovers a pin
+// (Pinned) or unpin (any other list) target — same ring as a project row drop
+// target.
+const DROP_TARGET_RING =
+  'rounded-[6px] data-[session-drop-hover=true]:outline-2 data-[session-drop-hover=true]:-outline-offset-2 data-[session-drop-hover=true]:outline-sidebar-ring'
+
+const sessionDropTargetProps = (pinned: boolean) =>
+  pinned ? { 'data-session-pin-drop': '' } : { 'data-session-unpin-drop': '' }
 
 interface SortableSessionRowProps {
   session: SessionInfo

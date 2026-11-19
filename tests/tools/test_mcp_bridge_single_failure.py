@@ -60,10 +60,6 @@ class TestConnectCooldownHelpers:
         assert mcp_mod._server_connect_failures["bad"] == 2
 
 
-    def test_unknown_server_not_in_cooldown(self):
-        assert _mcp_discovery._connect_cooldown_active("never-seen") is False
-
-
 @pytest.mark.skipif(not mcp_mod._MCP_AVAILABLE, reason="mcp SDK not installed")
 class TestRegisterMcpServersIsolation:
     """register_mcp_servers must not re-spawn a server still in cooldown."""

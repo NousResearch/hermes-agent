@@ -70,7 +70,7 @@ def _jittered(seconds: float) -> float:
 # Credential patterns to strip from error messages: GitHub PAT, OpenAI-style key, Bearer token,
 # and ``token= / key= / API_KEY= / password= / secret=`` assignments.
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_]{1,255}|Bearer\s+\S+"
+    r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){0,254}|Bearer\s+\S+"
     r"|(?:token|key|API_KEY|password|secret)=[^\s&,;\"']{1,255})", re.IGNORECASE)
 
 
@@ -84,7 +84,18 @@ def _env_ref_name(ref: str) -> str:
 
 def _sanitize_error(text: str) -> str:
     """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    from tools.ansi_strip import strip_unicode_tags
+    return strip_unicode_tags(_CREDENTIAL_PATTERN.sub("[REDACTED]", text))
+
+
+def exact_mcp_identifier(value, what: str):
+    """*value* unchanged: a name/uri the server matches a later request against must round-trip
+    byte-exact, so a hidden TAG/bidi char in it is logged rather than stripped (stripping would make
+    the prompt, resource or tool uncallable)."""
+    from tools.ansi_strip import strip_tool_metadata_text
+    if isinstance(value, str) and strip_tool_metadata_text(value) != value:
+        logger.warning("MCP %s %r carries invisible characters; kept as-is (the server matches it)", what, value)
+    return value
 
 
 def _exc_str(exc: BaseException) -> str:
@@ -122,11 +133,11 @@ _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
-    """Parse a bool-like config value with safe fallback."""
+    """Parse a bool-like config value with safe fallback (YAML ``0``/``1`` are numbers, not words)."""
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
+    if isinstance(value, (bool, int, float)):
+        return bool(value)
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in _TRUE_WORDS:
@@ -135,6 +146,36 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
             return False
     logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
     return default
+
+
+def mcp_server_enabled(cfg: dict) -> bool:
+    """Whether ``mcp_servers.<name>`` is on. The ONE reader of the ``enabled`` key: the MCP client,
+    the toolset resolver, the profile editor, and every list/status surface call it, so a value
+    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on.
+    A legacy ``disabled: true`` (pre-v46 profile editor) also means off and wins over ``enabled``,
+    as v46 resolves it: a file stamped by a newer build runs no step, so v46 may not have run."""
+    return (_parse_boolish(cfg.get("enabled", True), default=True)
+            and not _parse_boolish(cfg.get("disabled", False), default=False))
+
+
+def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
+    """Switch ``mcp_servers.<name>`` on or off for every writer. A legacy ``disabled`` is dropped
+    in the same write: the reader above lets it win, so leaving it would undo an enable."""
+    cfg["enabled"] = bool(on)
+    cfg.pop("disabled", None)
+
+
+def drop_legacy_disabled_for_key(located) -> bool:
+    """A generic write of ``mcp_servers.<name>.enabled`` (``hermes config set``) also drops the
+    legacy ``disabled``, as :func:`write_mcp_server_enabled` does, or an enable would not take.
+    *located*: ``hermes_cli.config._locate_nested`` of the written key, so a server name with a
+    dot resolves to the same entry the write landed on. True when it dropped one."""
+    if located is None:
+        return False
+    parents, entry, key = located
+    if key != "enabled" or len(parents) != 2 or parents[0][1] != "mcp_servers" or not isinstance(entry, dict):
+        return False
+    return entry.pop("disabled", None) is not None
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

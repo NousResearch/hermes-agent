@@ -13,7 +13,10 @@ import logging
 import os
 import re
 import shlex
+import signal
 import stat
+import sys
+from itertools import pairwise
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -34,7 +37,9 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # while every real command position (text start, whitespace, `;`/`&`/`|`, `$(`, backtick,
     # U+FFFD) still matches.
     # See #77173.
-    r"(?:(?<![/\w.\-])hermes\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
+    # same command, so the suffix is optional here.
+    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by
@@ -56,9 +61,166 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
-    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
+    # cannot reach inside `taskkill`, so they are named outright. Service-control forms (`net stop`,
+    # `sc stop`) presuppose a service install this guard has no evidence of and stay uncovered.
+    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
+
+# Branch E: process killers whose TARGET is the interpreter image hosting the gateway. A supervised
+# gateway is literally `python.exe` / `python3.12` (`python -m hermes_cli.main gateway run`), so
+# `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
+# yet terminate it (#113667). Token-aware rather than a line regex: option VALUES are never read as
+# targets (`pkill -u <user> chrome`), `-f` cmdline patterns are judged as patterns, and other image
+# names (`taskkill /F /IM chrome.exe`) stay available. Numeric-PID kills of OTHER processes stay
+# allowed (the explicit PID / `proc_*` id IS the ownership-scoped route the rejection points to); a
+# literal PID equal to the gateway's own is refused only when the caller passes ``gateway_pid``
+# (same PID namespace by construction, see `_targets_gateway_pid`).
+_INTERPRETER_IMAGE_RE = re.compile(r"^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
+_HOST_INTERPRETER_NAME = Path(sys.executable).name.lower() if sys.executable else ""
+_KILLER_VALUE_OPTIONS = {
+    # procps pkill/pgrep options that consume the next token, so the value is never the pattern.
+    "pkill": frozenset({
+        "-g", "--pgroup", "-G", "--group", "-P", "--parent", "-s", "--session", "-t", "--terminal",
+        "-u", "--euid", "-U", "--uid", "-F", "--pidfile", "--ns", "--nslist", "-d", "--delimiter",
+        "--signal", "-O", "--older", "-r", "--runstates", "--cgroup", "-A", "--ignore-ancestors",
+    }),
+    "killall": frozenset({"-s", "--signal", "-u", "--user", "-o", "--older-than", "-y", "--younger-than",
+                          "-n", "--ns", "-Z", "--context"}),
+}
+_KILLER_VALUE_OPTIONS["pgrep"] = _KILLER_VALUE_OPTIONS["pkill"]
+_KILLER_VALUE_OPTIONS["pidof"] = frozenset({"-o", "--omit-pid", "-S", "--separator"})
+# Regex metacharacters a pkill/pgrep ERE may carry around the interpreter name (`^python3?$`, `python.*`).
+_ERE_TAIL = re.compile(r"[.*+?\\\[\](){}|].*$")
+_ERE_WILDCARD_ONLY = re.compile(r"^[.*+?$\s]*$")
+_NAME_KILLERS = frozenset({"pkill", "killall", "taskkill", "stop-process"})
+_NAME_ENUMERATORS = frozenset({"pgrep", "pidof", "get-process"})
+_KILL_VERB_RE = re.compile(r"(?i)\b(?:kill|taskkill|stop-process)\b")
+# A `-f` pattern that does not start with the interpreter reaches the gateway cmdline
+# (`python -m hermes_cli.main gateway run` / `hermes gateway run`) only through its own tokens;
+# an unrelated script that merely contains "hermes" (`hermes-polis/run.sh`, `my_hermes_bot.py`)
+# cannot match it. Same hermes+gateway pairing as Branch D, plus the module path.
+_GATEWAY_CMDLINE_TOKEN_RE = re.compile(r"(?i)hermes_cli|\bhermes\b[^\n]*\bgateway\b|\bgateway\b[^\n]*\bhermes\b")
+# Rejection text for Branch E, shared by every tool surface that runs the guard so the agent is
+# pointed at the ownership-scoped route (proc_* id / explicit PID) rather than the shell.
+HOST_INTERPRETER_KILL_REJECTION = (
+    "Blocked: this command kills every process whose image/name matches the Python "
+    "interpreter, which is the process hosting this gateway (and this command). "
+    "Stop only the process you own instead: process(action=\"kill\", session_id=\"proc_…\") "
+    "for a background job Hermes started, or kill/taskkill by its explicit PID."
+)
+
+
+def _is_interpreter_image(value: str, *, substring: bool = False) -> bool:
+    """True when *value* (a process/image name, `*`-wildcard allowed) denotes the Python interpreter
+    that hosts the gateway. *substring*: pkill/pgrep match an ERE anywhere in the name, so `py`
+    reaches `python3` too."""
+    name = value.strip().strip("\"'").lower().removesuffix(".exe")
+    if not name:
+        return False
+    if name.endswith("*"):
+        prefix = name.rstrip("*")
+        return "python".startswith(prefix) or _HOST_INTERPRETER_NAME.startswith(prefix)
+    if _INTERPRETER_IMAGE_RE.match(name) or name == _HOST_INTERPRETER_NAME.removesuffix(".exe"):
+        return True
+    return substring and len(name) >= 2 and "python".startswith(name)
+
+
+def _pattern_reaches_host_interpreter(pattern: str, *, full_cmdline: bool, exact: bool) -> bool:
+    """pkill/pgrep/killall operand semantics: an ERE against the process NAME (or, with `-f`, the full
+    command line). `python -m hermes_cli.main …` is the gateway's own cmdline, so a `-f` pattern
+    that names the interpreter and then only wildcards or a `hermes` token reaches it, while
+    `python mt_add.py` (a specific script) does not."""
+    core = pattern.strip().strip("\"'").lstrip("^")
+    core = core.removesuffix("$")
+    head, _, rest = core.partition(" ") if full_cmdline else (core, "", "")
+    # A literal interpreter name first (`python3.12`: the dot is a version separator, not an ERE
+    # wildcard); only then read the head as an ERE with a metacharacter tail (`python3?`, `python.*`).
+    match = None if _is_interpreter_image(head, substring=not exact) else _ERE_TAIL.search(head)
+    if match:
+        rest = head[match.start():] + " " + rest
+        head = head[: match.start()]
+    if not _is_interpreter_image(head, substring=not exact):
+        return full_cmdline and bool(_GATEWAY_CMDLINE_TOKEN_RE.search(core))
+    return not rest.strip() or bool(_ERE_WILDCARD_ONLY.match(rest)) or "hermes" in rest.lower()
+
+
+def _killer_targets_host_interpreter(name: str, args: list[str]) -> bool:
+    """Whether killer/enumerator *name* with argv *args* would select the host interpreter."""
+    if name in ("pkill", "pgrep", "killall", "pidof"):
+        # pkill/pgrep: ERE anywhere in the name unless -x; killall: exact name unless -r; pidof: exact.
+        exact = name == "pidof" or (name == "killall") != any(t in ("-r", "--regexp", "-x", "--exact") for t in args)
+        full_cmdline = name in ("pkill", "pgrep") and any(t in ("-f", "--full") for t in args)
+        operands: list[str] = []
+        position = 0
+        while position < len(args):
+            token = args[position]
+            if token == "--":
+                operands += args[position + 1:]
+                break
+            if token in _KILLER_VALUE_OPTIONS[name]:
+                position += 2
+                continue
+            if not token.startswith("-"):
+                operands.append(token)
+            position += 1
+        return any(_pattern_reaches_host_interpreter(op, full_cmdline=full_cmdline, exact=exact) for op in operands)
+    if name == "taskkill":
+        for position, token in enumerate(args[:-1]):
+            option = token.lower().lstrip("/-")
+            value = args[position + 1]
+            if option == "im" and _is_interpreter_image(value):
+                return True
+            if option == "fi":
+                filter_match = re.match(r"(?i)\s*['\"]?imagename\s+eq\s+(\S+)", value)
+                if filter_match and _is_interpreter_image(filter_match.group(1)):
+                    return True
+        return False
+    # Stop-Process / Get-Process: `-Name`/`-ProcessName` (also `-Name:value`), comma lists, positional
+    # names for Get-Process.
+    values: list[str] = []
+    for position, token in enumerate(args):
+        option, _, inline_value = token.partition(":")
+        if option.lower() in ("-name", "-processname", "-n"):
+            values.append(inline_value if inline_value else (args[position + 1] if position + 1 < len(args) else ""))
+        elif name == "get-process" and not token.startswith("-") and (position == 0 or not args[position - 1].startswith("-")):
+            values.append(token)
+    return any(_is_interpreter_image(part) for value in values for part in value.split(","))
+
+
+def _segment_names_host_interpreter(tokens: list[str], killers: frozenset[str]) -> bool:
+    """Whether a tokenized segment runs one of *killers* against the host interpreter. The
+    executable is read at the wrapper-peeled position first, then at the first killer token anywhere
+    in the segment (`xargs kill`, Python argv lists)."""
+    index = _executed_command_index(tokens)
+    candidates = [index] if index is not None else []
+    candidates += [i for i, token in enumerate(tokens) if _executable_name(token).lower().removesuffix(".exe") in killers]
+    for position in candidates:
+        name = _executable_name(tokens[position]).lower().removesuffix(".exe")
+        if name in killers and _killer_targets_host_interpreter(name, tokens[position + 1:]):
+            return True
+    return False
+
+
+def contains_host_interpreter_kill(text: str) -> bool:
+    """Branch E entrypoint: a process killer aimed at the interpreter image hosting the gateway, or a
+    name-derived PID feed into one (`pgrep python | xargs kill`, `kill $(pidof python3)`,
+    `Get-Process python | Stop-Process`). Segment-tokenized, so quoted/spliced spellings and Python
+    argv lists resolve the same way the shell resolves them."""
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    kill_verb_present = bool(_KILL_VERB_RE.search(normalized))
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+        # Python argv lists (`subprocess.run(["taskkill", "/IM", "python.exe"])`) re-split only when
+        # list punctuation was present, so a quoted `-f 'python my_script.py'` stays one operand.
+        for tokens in ([segment, stripped.split()] if stripped != joined else [segment]):
+            if _segment_names_host_interpreter(tokens, _NAME_KILLERS):
+                return True
+            if kill_verb_present and _segment_names_host_interpreter(tokens, _NAME_ENUMERATORS):
+                return True
+    return False
 
 # Every branch uses `[^\n]*` between verb and label so matches cannot span unrelated lines. A POSIX
 # backslash-newline continuation is therefore collapsed to a space before matching (as the shell
@@ -87,12 +249,16 @@ _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
     r"hermes\s+"
-    # Any global flags before the profile selector (each may carry a value).
-    r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
+    # Each flag has one parse: '-' plus its remainder, never two ways to split
+    # '--'. A following flag cannot also be an optional value (#129281).
+    # Possessive token/space runs avoid repartitioning whitespace on failure;
+    # whole flag groups can still backtrack to expose the profile selector.
+    # Do not cap the number of flags: that would silently allow long self-stops.
+    r"(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
     # Any global flags between the selector and the subcommand.
-    r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
+    r"(?:\s++-\S++(?:\s++(?!-\S)\S++)?)*"
     r"\s+gateway\s+(?:restart|stop)"
 )
 
@@ -207,18 +373,10 @@ _BINARY_MAGICS = (
 # --- profile identity -------------------------------------------------------------------------
 
 def _current_profile_name() -> Optional[str]:
-    """Profile running the guard: ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` env first, then
-    ``hermes_cli.profiles.get_active_profile_name`` (from ``HERMES_HOME``); ``None`` if neither."""
-    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
-        value = os.environ.get(env_name)
-        if value and value.strip():
-            return value.strip()
-    try:
-        from hermes_cli.profiles import get_active_profile_name
+    """Profile running the guard (``hermes_cli.profiles.current_profile_name``); ``None`` if none."""
+    from hermes_cli.profiles import current_profile_name
 
-        return get_active_profile_name() or None
-    except Exception:
-        return None
+    return current_profile_name()
 
 
 def _named_profile_is_current(named: str) -> bool:
@@ -264,9 +422,12 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Heredoc bodies that are provably inert data (quoted delimiter, data-sink consumer like `cat > file
     # <<'EOF'`) are masked before scanning (#88336): a runbook line "a human can run: hermes gateway
     # restart" inside such a body is documentation, not a command this shell will execute.
+    # ``mask_code_consumers=False`` keeps python/osascript bodies visible: their payload reaches a
+    # shell at runtime (``os.system``, ``do shell script``), so masking it here would let an inline
+    # lifecycle command hide in the blanked body (#127698).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    text = strip_inert_heredoc_bodies(text, mask_code_consumers=False)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
@@ -299,7 +460,29 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # defined in an earlier `;`-separated segment (`label=${item%%:*}; launchctl bootout
     # "gui/$uid/$label"`), so neither the same-span regex nor same-segment tokenization sees verb and label
     # together. Check "verb anywhere AND label anywhere" instead.
-    return _contains_launchctl_gateway_lifecycle(normalized)
+    # Branch E (#113667): killers aimed at the interpreter image itself carry no hermes/gateway token.
+    return _contains_launchctl_gateway_lifecycle(normalized) or contains_host_interpreter_kill(normalized)
+
+
+def first_gateway_lifecycle_match(text: str) -> Optional[str]:
+    """The command-shaped span ``contains_gateway_lifecycle_command`` keys on, for rejection text.
+
+    Covers the raw and shell-tokenized regex passes; None when only the profile-flag, split-label
+    launchctl or interpreter-kill pass fired (callers then fall back to a generic message).
+    """
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", strip_inert_heredoc_bodies(text or ""))
+    match = _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+    if match:
+        return match.group(0)
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        for candidate in (joined, _ARGV_LIST_PUNCTUATION.sub(" ", joined)):
+            match = _GATEWAY_LIFECYCLE_PATTERN.search(candidate)
+            if match:
+                return match.group(0)
+    return None
 
 
 # Whole-walk work limits. The per-file cap and depth bound above limit one read, not the walk: a
@@ -318,9 +501,18 @@ _MAX_LIFECYCLE_SCAN_REMOTE_READS = 64
 
 
 class _LifecycleScanBudget:
-    """Shared work budget for one complete referenced-script walk."""
+    """Shared work budget for one complete referenced-script walk. ``refusal`` records why the walk
+    failed closed for a reason other than a lifecycle command (budget, size, device, live SQLite,
+    cloud placeholder) so the caller can tell the model the real reason (#113944)."""
 
-    __slots__ = ("bytes_remaining", "lines_remaining", "paths_remaining", "remote_reads_remaining")
+    __slots__ = (
+        "bytes_remaining",
+        "lines_remaining",
+        "paths_remaining",
+        "refusal",
+        "remote_reads_remaining",
+        "scanned_bodies",
+    )
 
     def __init__(self) -> None:
         # Read the module constants at construction so tests/operators can lower them at runtime.
@@ -328,9 +520,16 @@ class _LifecycleScanBudget:
         self.lines_remaining = _MAX_LIFECYCLE_SCAN_LINES
         self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
         self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
+        self.refusal: Optional[str] = None
+        self.scanned_bodies: set[str] = set()
 
-    def charge_text(self, text: str) -> bool:
-        """Charge *text* before tokenization; False when it does not fit."""
+    def charge_text(self, text: str, *, written_body: bool = False) -> bool:
+        """Charge *text* before tokenization; False when it does not fit. A *written_body* is a
+        substring of text already charged, so only its first scan is free: one ``tee`` body
+        written to many paths is charged again for every further path."""
+        if written_body and text not in self.scanned_bodies:
+            self.scanned_bodies.add(text)
+            return True
         # UTF-8 is >= one byte per code point, so the char count is a free lower bound.
         if len(text) > self.bytes_remaining:
             return False
@@ -386,12 +585,35 @@ def lifecycle_scan_root_within_budget(text: str) -> bool:
         return False
 
 
-def _budget_exhausted(what: str, depth: int) -> bool:
+def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bool:
     logger.warning(
         "lifecycle guard scan budget exhausted (%s at depth %d); "
         "failing closed — see _MAX_LIFECYCLE_SCAN_* in cron/lifecycle_guard.py",
         what, depth,
     )
+    budget.refusal = f"the scan budget was exhausted ({what} at depth {depth})"
+    return True
+
+
+def _unreadable_reason(path: Path) -> str:
+    """Name why an *executed* script failed closed without being scanned (live SQLite, device,
+    oversized). Message-only: the fail-closed verdict itself came from the bounded reader."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    if has_live_connection(path):
+        return f"`{path}` is a SQLite database open in this gateway process"
+    try:
+        metadata = os.stat(path)
+    except OSError:
+        return f"`{path}` could not be read"
+    if not stat.S_ISREG(metadata.st_mode):
+        return f"`{path}` is not a regular file"
+    return f"`{path}` is larger than the scan cap ({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget"
+
+
+def _refuse_unreadable(budget: _LifecycleScanBudget, path: Path, reason: str) -> bool:
+    logger.warning("lifecycle guard cannot scan referenced script %s: %s; failing closed", path, reason)
+    budget.refusal = reason
     return True
 
 
@@ -422,9 +644,9 @@ def _split_logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _shlex_tokens(line: str) -> list[str]:
+def _shlex_tokens(line: str, punctuation_chars: str = ";&|()") -> list[str]:
     """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=punctuation_chars)
     lexer.whitespace_split = True
     lexer.commenters = "#"
     return list(lexer)
@@ -578,6 +800,240 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+
+
+# Shell syntax words that may precede the executed command in a `;`/`&&`-split segment
+# (`if true; then kill N; fi`). Peeled only for the PID check; shlex has already dropped quotes, so a
+# quoted `'then' kill N` peels too — a harmless over-block of a command that sends nothing.
+_PID_SCAN_SYNTAX_PREFIXES = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"})
+# A redirection operator, longest first: a partial `<<` match on `<<<` would leave the here-string
+# word (`kill <<< -0 N`) to be read as an argument. Operator-only tokens also consume the next word.
+_REDIRECT_OPERATOR_RE = re.compile(r"\d*(?:<<<|<<-|<<|<>|>>|>\||<|>)")
+_KILL_LISTING_OPTIONS = frozenset({"-l", "-L", "--list", "--table"})
+_KILL_SIGNAL_VALUE_OPTIONS = frozenset({"-s", "-n", "--signal"})
+# Signals that leave the gateway running: 0 sends nothing, and SIGUSR2 is the documented
+# faulthandler stack dump (registered with chain=False in gateway/run_startup.py).
+_NONLETHAL_KILL_SIGNALS = frozenset({"0"} | ({"USR2", str(int(signal.SIGUSR2))} if hasattr(signal, "SIGUSR2") else set()))
+
+
+def _is_nonlethal_signal(spec: str) -> bool:
+    return spec.upper().removeprefix("SIG") in _NONLETHAL_KILL_SIGNALS
+
+
+def _is_nonlethal_signal_option(arg: str) -> bool:
+    """``-0`` / ``-s0`` / ``--signal=0``, ``-USR2`` / ``-SIGUSR2`` / ``-sUSR2`` / ``-12`` (Linux numbering)."""
+    return arg[:1] == "-" and (
+        _is_nonlethal_signal(arg.removeprefix("--signal=").lstrip("-"))
+        or (arg[:2] in ("-s", "-n") and _is_nonlethal_signal(arg[2:]))
+    )
+
+
+def _is_pid_operand(token: str, pid: int, *, group: bool = False) -> bool:
+    """*token* names *pid*: ``N``, ``+N``, or (when *group*) the process-group target ``-N`` — the
+    supervised gateway leads its own process group, so a group kill reaches it too."""
+    if token[:1] == "+" or (group and token[:1] == "-"):
+        token = token[1:]
+    # Text compare: int() raises past 4300 digits, which would abort the whole walk.
+    return token.isascii() and token.isdecimal() and token.lstrip("0") == str(pid)
+
+
+def _kill_targets_pid(args: list[str], pid: int) -> bool:
+    """Whether POSIX/procps ``kill`` with *args* signals literal *pid* (listings and signal-0 probes
+    send nothing). A ``-N`` is a signal number until a signal or ``--`` was given; after that it is
+    a process-group target."""
+    position = 0
+    signal_given = False
+    while position < len(args):
+        arg = args[position]
+        if arg == "--":
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
+        # Only before a signal was given: after one, `-0` / `-12` are process-group targets.
+        if arg in _KILL_LISTING_OPTIONS or (not signal_given and _is_nonlethal_signal_option(arg)):
+            return False
+        if arg in _KILL_SIGNAL_VALUE_OPTIONS:
+            if _is_nonlethal_signal(args[position + 1] if position + 1 < len(args) else ""):
+                return False
+            signal_given = True
+            position += 2
+            continue
+        if _is_pid_operand(arg, pid, group=signal_given):
+            return True
+        if redirect := _REDIRECT_OPERATOR_RE.match(arg):  # `kill 2>/dev/null -0 N`: not an operand
+            position += 2 if redirect.end() == len(arg) else 1
+            continue
+        if not arg.startswith("-"):
+            # The first operand ends option parsing: every later word is a target, so in
+            # `kill 99 -N` the `-N` is a process group and `kill 99 -s 0 N` still signals N.
+            return any(_is_pid_operand(token, pid, group=True) for token in args[position + 1:])
+        signal_given = True
+        position += 1
+    return False
+
+
+_STOP_PROCESS_VALUE_PARAMS = frozenset({"-id", "-name", "-n", "-processname", "-inputobject"})
+_WHATIF_SWITCHES = frozenset({"-whatif", "-wi", "-whatif:$true", "-wi:$true"})
+# Stop-Process parameters that take no argument: a `-WhatIf` right after one of these (or after a
+# colon-bound `-X:v`) is a switch; after any other `-X` it may be X's value (`-ErrorVariable -WhatIf`).
+_STOP_PROCESS_SWITCHES = _WHATIF_SWITCHES | frozenset(
+    {"-force", "-passthru", "-confirm", "-cf", "-verbose", "-vb", "-debug", "-db"}
+)
+_WHATIF_PREVIEW_COMMANDS = frozenset({"stop-process", "spps", "kill"})
+# Fail-closed: any of these ANYWHERE in the raw command, quoted or not, turns the preview exemption
+# off. Line breaks other than space/tab (CR, LF, NEL, U+2028/U+2029, NBSP, ...), statement and pipeline
+# separators, call/background `&`, blocks, (sub)expressions, splats, backtick escapes, comments,
+# redirections, `--`/`--%`, Unicode dashes/quotes, and a nested powershell/pwsh (-c / -EncodedCommand).
+_WHATIF_PREVIEW_DISQUALIFIER_RE = re.compile(r"(?i)[^\S \t]|[;|&{}()@$#`,%\\<>\u2010-\u201f]|--|powershell|pwsh")
+# A colon-bound WhatIf (or a prefix of it): only `:$true` is a preview, `:$false` / `:0` run the stop.
+_WHATIF_BOUND_RE = re.compile(r"(?i)-(?:wh[a-z]*|wi):")
+
+
+def _preview_words(command: str) -> Optional[list[tuple[str, bool]]]:
+    """Space/tab-separated words of *command*, each with whether it contains a quote; None when a
+    quote is unbalanced."""
+    words: list[tuple[str, bool]] = []
+    current: list[str] = []
+    quote, quoted = "", False
+    for ch in command:
+        if quote or ch not in " \t":
+            if not quote and ch in "'\"":
+                quote, quoted = ch, True
+            elif ch == quote:
+                quote = ""
+            current.append(ch)
+        elif current:
+            words.append(("".join(current), quoted))
+            current, quoted = [], False
+    if quote:
+        return None
+    if current:
+        words.append(("".join(current), quoted))
+    return words
+
+
+def _is_stop_process_whatif_preview(command: str) -> bool:
+    """Whether the WHOLE raw *command* is one ``Stop-Process … -WhatIf`` statement, i.e. a preview that
+    signals nothing. Exempt only when: no disqualifier (``_WHATIF_PREVIEW_DISQUALIFIER_RE``) appears
+    anywhere; the first word is Stop-Process/spps/kill; every colon-bound WhatIf is ``:$true``; and
+    ``-WhatIf`` / ``-wi`` (optionally ``:$true``) is an unquoted word that does not follow a
+    parameter which takes a value. ``$`` is a disqualifier too, so ``-WhatIf:$true`` is the only word
+    that may carry one."""
+    words = _preview_words(command)
+    if not words or words[0][1] or words[0][0].lower() not in _WHATIF_PREVIEW_COMMANDS:
+        return False
+    # Words split on space/tab only, so every other separator stays inside a word and is seen here.
+    others = [word for word, _ in words if word.lower() not in _WHATIF_SWITCHES]
+    if any(_WHATIF_BOUND_RE.search(word) or _WHATIF_PREVIEW_DISQUALIFIER_RE.search(word) for word in others):
+        return False
+    for (previous, _), (word, quoted) in pairwise(words):
+        previous = previous.lower()
+        # `-X: v` binds the NEXT word to X even when it looks like a parameter (`-ErrorVariable: -WhatIf`).
+        after_value_param = previous[:1] == "-" and (
+            previous.endswith(":") or ":" not in previous and previous not in _STOP_PROCESS_SWITCHES
+        )
+        if not quoted and word.lower() in _WHATIF_SWITCHES and not after_value_param:
+            return True
+    return False
+
+
+def _windows_killer_targets_pid(name: str, args: list[str], pid: int, *, whatif_preview: bool = False) -> bool:
+    """``taskkill /PID n`` (local only: ``/S`` names another host) or ``Stop-Process -Id n`` —
+    also ``/PID:n`` / ``-Id:n``, comma lists split across spaces, and Stop-Process's positional Id.
+    *whatif_preview*: the whole command is a ``-WhatIf`` preview (``_is_stop_process_whatif_preview``)."""
+    # `-Id 1, 2` tokenizes as `1,` `2`: rejoin comma lists before reading values.
+    args = re.sub(r"\s*,\s*", ",", " ".join(args)).split()
+    lowered = [arg.lower() for arg in args]
+    # PowerShell's WhatIf switch previews Stop-Process without signaling the target. Decided on the
+    # raw command, not these shlex args: shlex drops quotes and `{`/`}`/CR boundaries, so a -WhatIf
+    # bound to a scriptblock, a later CR statement or a -ErrorVariable value would look like a switch.
+    if name == "stop-process" and whatif_preview:
+        return False
+    if name == "taskkill" and "/s" in lowered:
+        return False
+    flags = ("/pid", "-pid") if name == "taskkill" else ("-id",)
+    values: list[str] = []
+    position = 0
+    while position < len(args):
+        flag, colon, inline = lowered[position].partition(":")
+        if flag in flags:
+            values.append(inline if colon else (args[position + 1] if position + 1 < len(args) else ""))
+        elif name == "stop-process" and not lowered[position].startswith("-"):
+            # The positional operand binds to -Id. A bare token after an unlisted option
+            # (`-ErrorAction Stop -Id N`) may be that option's value, so keep scanning.
+            values.append(args[position])
+        if name == "stop-process" and flag in _STOP_PROCESS_VALUE_PARAMS and not colon:
+            position += 1
+        position += 1
+    return any(_is_pid_operand(part, pid) for value in values for part in value.split(","))
+
+
+# Wrappers whose payload is a command STRING run in the same PID namespace; their joined operands
+# are re-scanned for the literal-PID check.
+_PID_SCAN_STRING_RUNNERS = {"eval": None, "powershell": ("-c", "-command"), "pwsh": ("-c", "-command"),
+                            "cmd": ("/c", "/k")}
+
+
+def _string_runner_payload(name: str, args: list[str]) -> Optional[str]:
+    """Command text ``eval …`` / ``powershell -c …`` / ``cmd /c …`` hands to a parser, else None."""
+    flags = _PID_SCAN_STRING_RUNNERS[name]
+    if flags is None:
+        return " ".join(args)
+    lowered = [arg.lower() for arg in args]
+    return next((" ".join(args[i + 1:]) for i, flag in enumerate(lowered) if flag in flags), None)
+
+
+# Command-substitution bodies (backtick and `$(…)`, including inside double quotes) run as commands.
+# Matched on raw text, so a single-quoted literal over-blocks — harmless for a gateway-PID kill.
+_PID_SCAN_SUBSTITUTION_RE = re.compile(r"`([^`]*)`|\$\(([^()]*)\)")
+
+
+def _targets_gateway_pid(
+    command: str, gateway_pid: int, *, depth: int = 0, rescan: Optional[Callable[[str], bool]] = None,
+) -> bool:
+    """An executed ``kill`` / ``taskkill`` / ``Stop-Process`` whose LITERAL PID operand is the gateway's
+    own (#149944). Dynamic PIDs (``$(pgrep …)``, ``$PPID``) are not resolved. ``sh -c`` payloads and
+    referenced scripts reach this through the recursive walk; ``eval`` / ``powershell -c`` / ``cmd /c``
+    payloads go to *rescan* (the walk passes its own ``recurse``, so they open ``sh -c`` payloads and
+    scripts too). Command substitutions are matched on raw text, quotes included, so they are re-scanned
+    by this check alone: the full walk would fail closed on an inert ``'$(bash /dev/null)'``."""
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    rescan = rescan or (lambda text: _targets_gateway_pid(text, gateway_pid, depth=depth + 1))
+    # Only the top-level command can be a preview: a nested payload / script / substitution never is.
+    whatif_preview = depth == 0 and _is_stop_process_whatif_preview(command)
+    command = strip_inert_heredoc_bodies(command)
+    if depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+        for match in _PID_SCAN_SUBSTITUTION_RE.finditer(command):
+            body = match.group(1) if match.group(1) is not None else match.group(2)
+            if _targets_gateway_pid(body, gateway_pid, depth=depth + 1):
+                return True
+    for segment in _iter_command_segments(command):
+        offset = 0
+        while offset < len(segment):
+            token = segment[offset]
+            if token in _PID_SCAN_SYNTAX_PREFIXES:
+                offset += 2 if token == "time" and segment[offset + 1:offset + 2] == ["-p"] else 1
+            elif redirect := _REDIRECT_OPERATOR_RE.match(token):  # `>/dev/null kill N`
+                offset += 2 if redirect.end() == len(token) else 1  # `> f kill` vs `>f kill`
+            else:
+                break
+        segment = segment[offset:]
+        index = _executed_command_index(segment)
+        if index is None:
+            continue
+        name = _executable_name(segment[index]).lower().removesuffix(".exe")
+        name = "stop-process" if name == "spps" else name  # PowerShell's built-in Stop-Process alias
+        args = segment[index + 1:]
+        if name == "kill" and _kill_targets_pid(args, gateway_pid):
+            return True
+        if name in ("taskkill", "stop-process") and _windows_killer_targets_pid(
+            name, args, gateway_pid, whatif_preview=whatif_preview,
+        ):
+            return True
+        if name in _PID_SCAN_STRING_RUNNERS and depth < _MAX_REFERENCED_SCRIPT_DEPTH:
+            payload = _string_runner_payload(name, args)
+            if payload and rescan(payload):
+                return True
+    return False
 
 
 def _direct_lifecycle_scan(command: str) -> bool:
@@ -765,6 +1221,59 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+def _heredoc_write_targets(unit: str) -> Iterator[str]:
+    """Paths a ``cat``/``tee`` heredoc command line writes its body to (``cat > P <<'EOF'``,
+    ``cat <<'EOF' | tee -a P``). Redirect operators tokenize apart from words, so attached
+    spellings (``cat >P<<'EOF'``, ``cat <<'EOF'>P``) yield P too."""
+    try:
+        tokens = _shlex_tokens(unit, ";&|()<>")
+    except ValueError:
+        return
+    for segment in _split_segments(tokens):
+        index = _executed_command_index(segment)
+        if index is None or _executable_name(segment[index]) not in {"cat", "tee"}:
+            continue
+        operator = None
+        for token in segment[index + 1:]:
+            if operator is not None:
+                if operator in {">", ">>", ">|", "&>", "&>>"}:
+                    yield token
+                operator = None
+            elif set(token) <= set("<>|&"):
+                operator = token
+            elif _executable_name(segment[index]) == "tee" and not token.startswith("-"):
+                yield token
+
+
+def _collect_heredoc_written_scripts(
+    command: str, cwd: Optional[str], written: Optional[dict[Path, list[str]]],
+) -> dict[Path, list[str]]:
+    """Add every body a heredoc in *command* writes to a path to *written*. The file does not exist
+    yet when the guard runs, so a later ``bash P`` / ``systemd-run P`` can only be scanned through
+    the body text (#148561). EVERY body is kept, not the last: the script may run between two
+    writes (``>`` then run then overwrite) or hold several appended bodies (``>>``)."""
+    from tools.shell_heredoc import iter_heredoc_bodies
+
+    written = {} if written is None else written
+    for unit, body in iter_heredoc_bodies(command):
+        for target in _heredoc_write_targets(unit):
+            for path in _resolved_or_nothing(target, cwd):
+                bodies = written.setdefault(_resolve_lenient(path), [])
+                if body not in bodies:
+                    bodies.append(body)
+    return written
+
+
+def _walk_candidates(command: str, walk_command: str, cwd: Optional[str], executed: bool) -> list[tuple[Path, bool]]:
+    """Referenced-script candidates: executed-view paths first, then paths only mentioned in masked
+    bodies. A heredoc body written to a candidate path is that script's text (see the walk); a body
+    that is only written stays documentation (#88336)."""
+    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    if walk_command != command:
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    return candidates
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -778,6 +1287,28 @@ def _has_binary_magic(data: bytes) -> bool:
 
 
 def _read_referenced_script(
+    path: Path, *, max_bytes: Optional[int] = None
+) -> tuple[Optional[str], bool]:
+    """Read a referenced script without racing SQLite connection lifecycle.
+
+    The registry check must cover the complete ``open``/``read``/``close``
+    sequence. A separate ``has_live_connection`` check would leave a race in
+    which another thread opens SQLite after the check but before this function
+    closes its descriptor, cancelling that connection's POSIX locks.
+    """
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+
+    try:
+        with offline_file_access(path, what="read referenced script"):
+            return _read_referenced_script_unlocked(path, max_bytes=max_bytes)
+    except LiveConnectionError:
+        return None, True
+    except (OSError, ValueError):
+        # Invalid path values, including embedded NULs, are not scripts.
+        return None, False
+
+
+def _read_referenced_script_unlocked(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads.
@@ -866,81 +1397,153 @@ def _sanitize_remote_script_text(
     return text, False
 
 
-def _read_script_for_scanning(script_path: str) -> str:
-    """Read a cron script with the bounded scanner. Non-regular/oversized inputs fail closed via a
-    lifecycle-shaped sentinel; missing/unreadable paths stay empty so scheduler validation reports
-    them."""
+def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
+    """``(text, refusal)``: read a cron script with the bounded scanner. Non-regular/oversized/live
+    SQLite inputs fail closed with a NAMED *refusal* (never a lifecycle-shaped verdict); missing or
+    unreadable paths stay empty so scheduler validation reports them."""
     resolved = _resolve_script_path(script_path)
     if resolved is None:
-        return ""
+        return "", None
     script_text, unsafe = _read_referenced_script(resolved)
     if unsafe:
-        return "hermes gateway restart"
-    return script_text or ""
+        return "", _unreadable_reason(resolved)
+    return script_text or "", None
 
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _scan_written_bodies(
+    bodies: list[str], recurse: Callable[..., bool], cwd: Optional[str], executed: bool,
+) -> bool:
+    """Scan the heredoc bodies written to one run path. Each body is one possible file version (an
+    overwrite replaces the last); their concatenation is the file ``>>`` appends build. Joined
+    overwrites can form a masked ``cat <<'DOC'`` around a command the file really runs, so the join
+    is never scanned alone. A body is a substring of charged text (charge_text frees its first
+    scan only); the join is new text, so it is charged like any other. A script built from large
+    ``>>`` appends therefore costs about twice its size: one near half the walk budget fails
+    closed on the budget refusal."""
+    bodies = list(dict.fromkeys(filter(None, bodies)))
+    if any(recurse(body, cwd, executed, charge=False) for body in bodies):
+        return True
+    return len(bodies) > 1 and recurse("".join(bodies), cwd, executed)
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
-    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    written: Optional[dict[Path, list[str]]] = None, charge: bool = True,
+    gateway_pid: Optional[int] = None,
 ) -> bool:
-    # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
-    if not budget.charge_text(command):
-        return _budget_exhausted("text", depth)
-    if _direct_lifecycle_scan(command):
-        return True
-    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
-        return True
+    """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
+    (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
 
-    def recurse(text: str, cwd: Optional[str]) -> bool:
+    *written* maps paths to the heredoc bodies written to them anywhere in the walk so far. It is
+    shared by every depth so a nested ``sh -c 'bash P'`` / ``systemd-run bash -c P`` payload still
+    resolves P to the body its parent wrote. ``charge=False`` is only for such a body: it is a
+    substring of text already charged, so its first scan is free and any repeat is charged."""
+    # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
+    if not budget.charge_text(command, written_body=not charge):
+        return _budget_exhausted(budget, "text", depth) if executed else False
+    # Before the PID check: a kill payload it rescans (`sh -c 'bash P'`) resolves P to its written body.
+    written = _collect_heredoc_written_scripts(command, cwd, written)
+
+    def recurse(text: str, cwd: Optional[str], executed: bool, charge: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, executed=executed, written=written,
+            charge=charge, gateway_pid=gateway_pid,
         )
 
-    for payload in _iter_shell_command_payloads(command):
-        if recurse(payload, cwd):
+    if _direct_lifecycle_scan(command) or (
+        executed and gateway_pid is not None
+        and _targets_gateway_pid(command, gateway_pid, depth=depth, rescan=lambda text: recurse(text, cwd, True))
+    ):
+        return True
+    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
+        return executed
+
+    # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
+    # now uses (#127698): the mask boundary is what separates "executed" from "mentioned" path
+    # candidates below. A path or `sh -c` payload inside a provably-inert heredoc body is never
+    # shell-executed, and an oversized data file mentioned there otherwise fails closed as a
+    # "script" (#110422). Code-bearing bodies do not need walk visibility: an inline payload in
+    # them is already caught by the direct scan, and a path they merely mention must stay a
+    # mention (#113944).
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    walk_command = strip_inert_heredoc_bodies(command)
+
+    for payload in _iter_shell_command_payloads(walk_command):
+        if recurse(payload, cwd, executed):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    # Paths named only inside a masked body are still READ: an interpreter body that hands
+    # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
+    # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
+    # trip them. Executed candidates come first so a mention never starves a real script's budget.
+    for script_path, candidate_executed in _walk_candidates(command, walk_command, cwd, executed):
+        if _scan_written_bodies(written.pop(_resolve_lenient(script_path), []), recurse, cwd, candidate_executed):
+            return True
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
-            return True
+            if candidate_executed:
+                return _refuse_unreadable(
+                    budget, script_path,
+                    f"`{script_path}` lives on a cloud-synced path (iCloud Drive / "
+                    "~/Library/CloudStorage) that the guard refuses to open",
+                )
+            continue
         resolved = _resolve_lenient(script_path)
         if resolved in visited:
             continue
         if not budget.charge_path():
-            return _budget_exhausted("paths", depth)
+            if candidate_executed:
+                return _budget_exhausted(budget, "paths", depth)
+            break  # remaining candidates are all mentions
         visited.add(resolved)
         # Never read more than the walk can still afford to tokenize; a file larger than the
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
-            return True
+            if candidate_executed:
+                return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
+            continue
         if script_text is None and read_remote_script is not None:
             # Local path missing; the remote backend's output crosses the same trust boundary as a
             # local read — sanitize identically (binary skip + size fail-closed).
             if not budget.charge_remote_read():
-                return _budget_exhausted("remote reads", depth)
+                if candidate_executed:
+                    return _budget_exhausted(budget, "remote reads", depth)
+                break
             script_text, unsafe = _sanitize_remote_script_text(
                 read_remote_script(str(script_path)), max_bytes=budget.bytes_remaining
             )
             if unsafe:
-                return True
+                if candidate_executed:
+                    return _refuse_unreadable(
+                        budget, script_path,
+                        f"`{script_path}` read from the backend exceeds the scan cap "
+                        f"({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget",
+                    )
+                continue
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
             return True
     return False
 
 
-def contains_gateway_lifecycle_command_or_referenced_script(
+def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
-) -> bool:
-    """Detect lifecycle/submit commands, including bounded nested scripts.
+    gateway_pid: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
+    size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
+    real lifecycle command or the command is allowed. *gateway_pid* additionally refuses executed
+    literal-PID kills of that process; pass it only when the command runs in this PID namespace.
 
     Total by construction: never raises. Direct scans are pure string ops; the referenced-script
     walk (filesystem, remote backends, shlex on decoded bytes) is best-effort defense-in-depth — an
@@ -951,11 +1554,13 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     every terminal command until the gateway restarts (#77780, #78256), which is strictly worse than either
     verdict.
     """
+    budget = _LifecycleScanBudget()
     try:
-        return _contains_unsafe_gateway_action(
-            command, cwd=cwd, depth=0, visited=set(), budget=_LifecycleScanBudget(),
-            read_remote_script=read_remote_script,
+        unsafe = _contains_unsafe_gateway_action(
+            command, cwd=cwd, depth=0, visited=set(), budget=budget,
+            read_remote_script=read_remote_script, gateway_pid=gateway_pid,
         )
+        return unsafe, budget.refusal if unsafe else None
     except Exception:
         logger.warning(
             "lifecycle guard referenced-script walk failed; "
@@ -963,10 +1568,22 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command)
+            return _direct_lifecycle_scan(command) or (
+                gateway_pid is not None and _targets_gateway_pid(command, gateway_pid)
+            ), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
-            return contains_gateway_lifecycle_command(command) or contains_launchctl_submit_command(command)
+            return (contains_gateway_lifecycle_command(command)
+                    or contains_launchctl_submit_command(command)), None
+
+
+def contains_gateway_lifecycle_command_or_referenced_script(
+    command: str, *, cwd: Optional[str] = None,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+) -> bool:
+    """Detect lifecycle/submit commands, including bounded nested scripts (see
+    ``scan_gateway_lifecycle`` for the contract)."""
+    return scan_gateway_lifecycle(command, cwd=cwd, read_remote_script=read_remote_script)[0]
 
 
 def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None) -> None:
@@ -976,6 +1593,7 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
     propagate."""
     combined = prompt or ""
     python_script = False
+    refusal: Optional[str] = None
     if script:
         resolved_script = _resolve_script_path(script)
         # Attribute the refusal correctly: not a lifecycle command, but a cloud path never opened.
@@ -994,24 +1612,34 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
                 "(e.g. ~/.hermes/scripts/) and recreate the job."
             )
         python_script = resolved_script is not None and resolved_script.suffix == ".py"
-        script_text = _read_script_for_scanning(script)
+        script_text, refusal = _read_script_for_scanning(script)
         if script_text:
             combined = f"{combined}\n{script_text}"
 
-    if python_script:
+    if refusal:
+        unsafe = True
+    elif python_script:
         # Python runs via the interpreter, never a POSIX shell, and the shell reference walk is a
         # false-positive generator on Python sources (pathlib "/" resolves to the filesystem root).
-        # The regex still scans the full text; non-regular/oversized files fail closed (sentinel).
+        # The regex still scans the full text; non-regular/oversized files fail closed above (named refusal).
         # The data-exemption masker tokenizes with shlex, so it is charged against the walk budget.
         # The direct command regex below still scans the full text, so a literal `hermes gateway restart`
         # embedded in a .py script is still blocked. See #77131, #78398.
-        if not _LifecycleScanBudget().charge_text(combined):
-            unsafe = _budget_exhausted("text", 0)
+        budget = _LifecycleScanBudget()
+        if not budget.charge_text(combined):
+            unsafe = _budget_exhausted(budget, "text", 0)
+            refusal = budget.refusal
         else:
             unsafe = _lifecycle_command_scan_with_data_exemption(combined)
     else:
-        unsafe = contains_gateway_lifecycle_command_or_referenced_script(
+        unsafe, refusal = scan_gateway_lifecycle(
             combined, cwd=_resolve_script_directory(script) if script else None
+        )
+    if unsafe and refusal:
+        raise GatewayLifecycleBlocked(
+            f"Blocked: the lifecycle guard could not scan this cron job or referenced script: {refusal}. "
+            "Nothing in the job is known to contain a gateway lifecycle command, but a script "
+            "the job executes must be scannable (a regular text file under 1 MiB) before it can run."
         )
     if unsafe:
         raise GatewayLifecycleBlocked(

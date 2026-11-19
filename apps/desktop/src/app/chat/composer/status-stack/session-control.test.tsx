@@ -169,7 +169,8 @@ describe('ComposerStatusStack session-control UI', () => {
 
     expect(mockRefreshSessionControl).toHaveBeenCalledWith(SID)
     expect(mockRefreshSessionGoal).not.toHaveBeenCalled()
-    // Legacy goal is rendered while capability is unknown
+    // Legacy goal remains available while capability is unknown.
+    fireEvent.click(screen.getByRole('button', { name: /Goal active/ }))
     expect(screen.getByText('Legacy Goal Title')).toBeTruthy()
   })
 
@@ -187,6 +188,7 @@ describe('ComposerStatusStack session-control UI', () => {
 
     renderStack()
 
+    fireEvent.click(screen.getByRole('button', { name: /Goal active/ }))
     expect(screen.getByText('Structured Goal Title')).toBeTruthy()
     expect(screen.queryByText('Legacy Goal Title')).toBeNull()
   })
@@ -253,6 +255,36 @@ describe('ComposerStatusStack session-control UI', () => {
       })
 
       expect(screen.getByText(/Heartbeat active · every 90s · due — waiting for idle/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 12b. the loop's next-run label is a live countdown, not a value frozen at render time
+  it('counts a loop down to its next wakeup and makes an overdue one explicit', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(1_700_000_030_000))
+
+    try {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: null, loop: sampleLoop({ next_due_at: 1_700_002_730 }) }) })
+      })
+
+      renderStack()
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · next 00:45:00/)).toBeTruthy()
+
+      act(() => {
+        vi.advanceTimersByTime(61_000)
+      })
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · next 00:43:59/)).toBeTruthy()
+
+      act(() => {
+        vi.advanceTimersByTime(44 * 60_000)
+      })
+
+      expect(screen.getByText(/Loop active · Run 3\/10 · due — waiting for idle/)).toBeTruthy()
     } finally {
       vi.useRealTimers()
     }

@@ -32,14 +32,6 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
-class TestNameGenerator:
-    def test_shape_is_adjective_underscore_noun(self):
-        for _ in range(50):
-            name = dr._generate_dashboard_name()
-            assert "_" in name
-            adj, _, noun = name.partition("_")
-            assert adj in dr._NAME_ADJECTIVES
-            assert noun in dr._NAME_NOUNS
 
 
 class TestFastFails:

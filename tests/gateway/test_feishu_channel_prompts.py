@@ -28,7 +28,6 @@ def _build_adapter(extra=None):
     adapter._resolve_sender_profile = AsyncMock(
         return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
     )
-    adapter._resolve_source_chat_type = Mock(return_value="group")
     adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
     adapter._dispatch_inbound_event = AsyncMock()
     return adapter
@@ -53,12 +52,6 @@ def _run_inbound(adapter, chat_id="oc_chat"):
     return adapter._dispatch_inbound_event.call_args.args[0]
 
 
-def test_resolve_channel_prompt_missing_config_is_safe():
-    # __new__ adapter without a config attribute (defensive getattr path).
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    bare = FeishuAdapter.__new__(FeishuAdapter)
-    assert bare._resolve_channel_prompt("oc_chat") is None
 
 
 def test_inbound_event_carries_channel_prompt():

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { IS_MAC } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import { ComposerDirectiveActions } from './directive-actions'
@@ -77,6 +78,22 @@ describe('ComposerDirectiveActions', () => {
     expect(openExternal).not.toHaveBeenCalled()
     await vi.waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
     expect(pillValue()).toBeNull()
+  })
+
+  // Platform-specific on purpose (same rule as lib/external-link.test.tsx):
+  // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
+  it('sends the pill to the system browser on the platform open-elsewhere modifier', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+
+    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com/docs' }])
+
+    hover(chips(editor, 'url')[0]!)
+    fireEvent.click(screen.getByRole('button'), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/docs')
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('runs the kind-specific action — a session chip opens the session', async () => {

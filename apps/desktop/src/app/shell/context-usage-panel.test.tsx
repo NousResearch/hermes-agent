@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
-import { ContextUsagePanel } from './context-usage-panel'
+import { ContextMeterDetail, ContextUsagePanel } from './context-usage-panel'
 import { useContextBreakdown } from './hooks/use-context-breakdown'
 
 const usage: UsageStats = {
@@ -84,20 +84,6 @@ describe('useContextBreakdown', () => {
     expect(result.current.breakdown).toBeNull()
     expect(requestGateway).toHaveBeenLastCalledWith('session.context_breakdown', { session_id: 'runtime-2' })
   })
-
-  it('reports the measured occupancy the backend sends, not just the estimate', async () => {
-    // `context_used` on the payload is already the measured figure once a turn
-    // has run — the estimate is the backend's own fallback, not a second value
-    // the client has to choose between.
-    const measured: ContextBreakdown = { ...breakdown, context_used: 12_000 }
-    const requestGateway = vi.fn().mockResolvedValue(measured)
-
-    const { result } = renderHook(() =>
-      useContextBreakdown({ busy: false, enabled: true, requestGateway, sessionId: 'runtime-1' })
-    )
-
-    await waitFor(() => expect(result.current.breakdown?.context_used).toBe(12_000))
-  })
 })
 
 describe('ContextUsagePanel', () => {
@@ -122,9 +108,29 @@ describe('ContextUsagePanel', () => {
     expect(screen.getByText('Conversation')).toBeTruthy()
   })
 
-  it('says so when there is no breakdown rather than painting an empty bar', () => {
-    render(<ContextUsagePanel breakdown={null} loading={false} usage={usage} />)
+  it('reports the live compression count, zero included, and never invents one', () => {
+    const { rerender } = render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
 
-    expect(screen.getByText('No context data yet')).toBeTruthy()
+    expect(screen.queryByTestId('context-panel-compressions')).toBeNull()
+
+    for (const compressions of [0, 3]) {
+      rerender(<ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, compressions }} />)
+      expect(screen.getByTestId('context-panel-compressions').textContent).toBe(`Compressions: ${compressions}`)
+    }
+  })
+})
+
+describe('ContextMeterDetail', () => {
+  it('adds the count to the meter only once the session has compacted', () => {
+    for (const compressions of [undefined, 0]) {
+      const { container, unmount } = render(<ContextMeterDetail bar="[██░░] 47%" compressions={compressions} />)
+
+      expect(container.textContent).toBe('[██░░] 47%')
+      unmount()
+    }
+
+    render(<ContextMeterDetail bar="[██░░] 47%" compressions={2} />)
+
+    expect(screen.getByTestId('context-meter-compressions').textContent).toBe('2')
   })
 })

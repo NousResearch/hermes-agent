@@ -43,7 +43,7 @@ Play Pokemon games via headless emulation using the `pokemon-agent` package.
 The repo is NousResearch/pokemon-agent on GitHub. Clone it, then
 set up a Python 3.10+ virtual environment. Use uv (preferred for speed)
 to create the venv and install the package in editable mode with the
-pyboy extra. If uv is not available, fall back to python3 -m venv + pip.
+pyboy extra. If uv is not available, fall back to python -m venv + pip.
 
 If a checkout already exists (e.g. ~/pokemon-agent with a venv ready),
 just cd there and source .venv/bin/activate instead of recloning.
@@ -64,7 +64,7 @@ Use an SSH reverse tunnel via localhost.run so the user can view
 the dashboard in their browser. Connect with ssh, forwarding local
 port 9876 to remote port 80 on the keyless localhost.run endpoint
 (ssh -R 80:localhost:9876 ssh://nokey@localhost.run). Redirect output
-to a log file, wait 10 seconds, then grep the log for the .lhr.life
+to a log file, wait 10 seconds, then search_files the log for the .lhr.life
 URL. Give the user the URL with /dashboard/ appended.
 The tunnel URL changes each time — give the user the new one if restarted.
 
@@ -94,7 +94,7 @@ This is faster than loading via the API after startup.
 
 ### Step 1: OBSERVE — check state AND take a screenshot
 GET /state for position, HP, battle, dialog.
-GET /screenshot and save to /tmp/pokemon.png, then use vision_analyze.
+GET /screenshot and save to ~/.hermes/cache/scratch/pokemon.png, then use vision_analyze.
 Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
 
 ### Step 2: ORIENT

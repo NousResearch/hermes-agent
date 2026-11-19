@@ -10,23 +10,7 @@ vi.mock('@hermes/ink', () => ({
   forceRedraw: forceRedrawMock
 }))
 
-import { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
-
-describe('refreshSessionView', () => {
-  afterEach(() => {
-    evictInkCachesMock.mockReset()
-    forceRedrawMock.mockReset()
-  })
-
-  it('evicts Ink caches and forces a full repaint', () => {
-    const stdout = {} as NodeJS.WriteStream
-
-    refreshSessionView(stdout)
-
-    expect(evictInkCachesMock).toHaveBeenCalledWith('all')
-    expect(forceRedrawMock).toHaveBeenCalledWith(stdout)
-  })
-})
+import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
 describe('scheduleResumeScrollToBottom', () => {
   afterEach(() => {

@@ -39,13 +39,12 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (  # noqa: E402
-    MessageEvent,
-    MessageType,
+from gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
-from gateway.run import GatewayRunner  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run import GatewayRunner
 
 
 def _make_internal_event(text: str = "[async delegation completed]") -> MessageEvent:
@@ -67,9 +66,7 @@ def _make_internal_event(text: str = "[async delegation completed]") -> MessageE
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()

@@ -1,14 +1,4 @@
-"""``hermes verify`` — detect a project's run recipe and smoke-test it.
-
-Scoped port of superagent-ai/grok-cli's verify subsystem entrypoint.
-Statically detects the project kind (or loads the saved manifest at
-``.hermes/environment.json``), then runs bootstrap/build/test phases and an
-optional background start + readiness poll, printing an evidence summary.
-
-Completed runs are recorded into the coding verification evidence ledger
-(:mod:`agent.verification_evidence`), so a passing ``hermes verify`` satisfies
-the verify-on-stop guard the same way a passing canonical test command does.
-"""
+"""``hermes verify`` — detect a project's run recipe and smoke-test it."""
 
 from __future__ import annotations
 
@@ -19,12 +9,7 @@ from pathlib import Path
 
 
 def run_verify_command(args) -> int:
-    from agent.verify import (
-        load_or_detect,
-        manifest_path,
-        run_verify,
-        save_manifest,
-    )
+    from agent.verify import load_or_detect, manifest_path, run_verify, save_manifest
 
     root = Path(getattr(args, "path", None) or ".").resolve()
     if not root.is_dir():
@@ -33,14 +18,14 @@ def run_verify_command(args) -> int:
 
     recipe, source = load_or_detect(root)
     if recipe is None:
-        message = (
-            f"No recognizable project found at {root}.\n"
-            f"Create {manifest_path(root)} to define a recipe manually."
-        )
         if args.json:
             print(json.dumps({"ok": False, "error": "no-recipe", "root": str(root)}))
         else:
-            print(message, file=sys.stderr)
+            print(
+                f"No recognizable project found at {root}.\n"
+                f"Create {manifest_path(root)} to define a recipe manually.",
+                file=sys.stderr,
+            )
         return 1
 
     if source == "detected":
@@ -55,22 +40,13 @@ def run_verify_command(args) -> int:
             print(f"Saved manifest: {path}")
 
     if args.detect_only:
-        payload = {"source": source, "recipe": recipe.to_dict()}
-        print(json.dumps(payload, indent=None if args.json else 2))
+        print(json.dumps({"source": source, "recipe": recipe.to_dict()}, indent=None if args.json else 2))
         return 0
 
-    phases = None
-    if args.phase:
-        phases = tuple(args.phase)
-
+    phases = tuple(args.phase) if args.phase else None
     result = run_verify(
-        root,
-        recipe,
-        phases=phases,
-        phase_timeout=args.timeout,
-        ready_timeout=args.ready_timeout,
-        skip_start=args.skip_start,
-        port_override=args.port,
+        root, recipe, phases=phases, phase_timeout=args.timeout, ready_timeout=args.ready_timeout,
+        skip_start=args.skip_start, port_override=args.port,
     )
 
     _record_evidence(root, recipe, result, partial=bool(phases or args.skip_start))
@@ -86,19 +62,9 @@ def run_verify_command(args) -> int:
 
 
 def _merge_project_facts_commands(root: Path, recipe) -> None:
-    """Fold ``detect_project_facts`` verify commands into a detected recipe.
+    """Fold ``detect_project_facts`` verify commands into a detected recipe (best-effort union).
 
-    Layer ownership: ``agent.coding_context`` owns the cheap prompt-time facts
-    (test/lint/build commands surfaced in the workspace snapshot and the
-    verify-on-stop nudge); ``agent.verify.recipes`` owns the deep runtime
-    recipe (framework, start command, port, readiness). When the two disagree
-    the runtime recipe must not *lose* commands the prompt layer already
-    promised the model — e.g. ``scripts/run_tests.sh`` or a ``pytest`` config
-    the recipe detector doesn't know about — so any project-facts verify
-    command not already covered is appended to the recipe's test list.
-
-    Never applied to a saved manifest (the user-edited manifest is the source
-    of truth) and never raises: this is a best-effort union.
+    Never applied to a saved manifest — the user-edited manifest is the source of truth.
     """
     try:
         from agent.coding_context import detect_project_facts
@@ -117,25 +83,16 @@ def _merge_project_facts_commands(root: Path, recipe) -> None:
 def _record_evidence(root: Path, recipe, result, *, partial: bool) -> None:
     """Record the completed run into the verification evidence ledger.
 
-    Best-effort and fail-silent: a ledger problem must never change the CLI's
-    exit code or output. ``partial`` (an explicit ``--phase`` subset or
-    ``--skip-start``) downgrades the scope to ``targeted`` so a partial pass
-    is never presented as a full workspace green.
+    Fail-silent: a ledger problem must never change the CLI's exit code or output. ``partial``
+    (a ``--phase`` subset or ``--skip-start``) downgrades the scope to ``targeted`` so a partial
+    pass is never presented as a full workspace green.
     """
     try:
         from agent.verification_evidence import record_verify_run
 
-        tails: list[str] = []
-        for p in result.phases:
-            if p.output_tail:
-                tails.append(f"[{p.phase}] {p.command}\n{p.output_tail}")
+        tails = [f"[{p.phase}] {p.command}\n{p.output_tail}" for p in result.phases if p.output_tail]
         if result.readiness is not None:
-            r = result.readiness
-            readiness_line = (
-                f"[start] {recipe.start} -> "
-                + (f"ready (HTTP {r.status_code})" if r.ready else f"not ready ({r.error or 'timeout'})")
-            )
-            tails.append(readiness_line)
+            tails.append(f"[start] {recipe.start} -> {_readiness_status(result.readiness)}")
         record_verify_run(
             root=root,
             session_id=os.environ.get("HERMES_SESSION_ID"),
@@ -146,6 +103,10 @@ def _record_evidence(root: Path, recipe, result, *, partial: bool) -> None:
         )
     except Exception:
         pass
+
+
+def _readiness_status(r) -> str:
+    return f"ready (HTTP {r.status_code})" if r.ready else f"not ready ({r.error or 'timeout'})"
 
 
 def _print_human_report(recipe, source, result) -> None:
@@ -161,11 +122,10 @@ def _print_human_report(recipe, source, result) -> None:
 
     if result.readiness is not None:
         r = result.readiness
-        status = f"ready (HTTP {r.status_code})" if r.ready else f"not ready ({r.error or 'timeout'})"
         print(f"  {'start'.ljust(max(5, max((len(p.phase) for p in result.phases), default=5)))}  "
               f"{'PASS' if r.ready else 'FAIL':<7}  {r.duration:6.1f}s  {recipe.start}")
         print()
-        print(f"Readiness: {r.url} -> {status}")
+        print(f"Readiness: {r.url} -> {_readiness_status(r)}")
 
     failed = [p for p in result.phases if not p.ok]
     print()

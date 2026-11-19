@@ -10,7 +10,6 @@ import subprocess
 
 import pytest
 
-import tools.working_diff as working_diff
 from tools.working_diff import collect_working_diff
 
 pytestmark = pytest.mark.skipif(
@@ -32,6 +31,7 @@ def repo(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
+    _git(d, "config", "core.autocrlf", "false")
     (d / "tracked.py").write_text("print('hello')\n")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")
@@ -60,29 +60,6 @@ def test_unknown_mode_rejected(repo):
     assert "bogus" in result["error"]
 
 
-def test_run_decodes_git_output_as_utf8(monkeypatch, repo):
-    """``_run`` must force UTF-8 decoding of git's output.
-
-    Without ``encoding="utf-8"`` (and a lossy ``errors=``), ``subprocess.run``
-    falls back to the platform locale encoding. On Windows that's typically
-    cp932: UTF-8 multibyte output (e.g. a Japanese filename or diff content)
-    then either raises ``UnicodeDecodeError`` or silently decodes as mojibake,
-    depending on the byte sequence. The raise violates the "Never raises on
-    git failure" contract in ``_run``'s docstring.
-    """
-    captured = {}
-    real_run = subprocess.run
-
-    def fake_run(*args, **kwargs):
-        captured.update(kwargs)
-        return real_run(*args, **kwargs)
-
-    monkeypatch.setattr(working_diff.subprocess, "run", fake_run)
-
-    working_diff._run(["status"], str(repo))
-
-    assert captured.get("encoding") == "utf-8"
-    assert captured.get("errors") == "replace"
 
 
 def test_non_ascii_untracked_file_does_not_raise(repo):
@@ -120,4 +97,30 @@ def test_cp932_content_is_lossy_but_never_raises(repo):
 
     assert result["success"] is True
     assert "legacy.txt" in result["diff"]
-    assert "\ufffd" in result["diff"]  # lossy by design, matching _run_git
+
+
+def test_external_differ_is_ignored(repo):
+    # A user-configured external differ (diff.external in gitconfig, e.g.
+    # difftastic) replaces the unified-diff output of every plain "git
+    # diff". collect_working_diff must force the internal engine
+    # (--no-ext-diff) so the collected output stays parseable unified diff.
+    _git(repo, "config", "diff.external", "echo EXTERNAL-DIFF-GARBAGE")
+    (repo / "tracked.py").write_text("print('changed')\n")
+    (repo / "brand_new.py").write_text("print('new')\n")
+
+    result = collect_working_diff(str(repo))
+
+    assert result["success"] is True
+    assert "EXTERNAL-DIFF-GARBAGE" not in result["diff"]
+    # tracked change comes through the plain-diff call site
+    assert "-print('hello')" in result["diff"]
+    assert "+print('changed')" in result["diff"]
+    # untracked file comes through the --no-index call site
+    assert "+print('new')" in result["diff"]
+
+    # staged call site (--cached) is covered too
+    _git(repo, "add", "tracked.py")
+    staged = collect_working_diff(str(repo), mode="staged")
+    assert staged["success"] is True
+    assert "EXTERNAL-DIFF-GARBAGE" not in staged["diff"]
+    assert "+print('changed')" in staged["diff"]

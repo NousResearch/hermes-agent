@@ -9,7 +9,7 @@
  * (gateway/kanban_watchers.py): 'completed' (kanban_db.complete_task —
  * payload: summary + artifacts), 'blocked' (payload: reason), 'gave_up'
  * (payload: error), 'crashed', 'timed_out', and 'block_loop_detected'
- * (payload: reason — the routed-to-triage human handoff).
+ * (payload: reason — the routed-to-triage orchestration handoff).
  *
  * Two delivery doors, complementary by design:
  *  - `host.notify` — the in-app toast, covers the foreground case;
@@ -92,11 +92,17 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
 }
 
 async function ensureBaseline(slug: string): Promise<void> {
-  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) { return }
+  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
+    return
+  }
+
   baselinePending.add(slug)
 
   try {
-    const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as { latest_event_id?: unknown }
+    const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
+      latest_event_id?: unknown
+    }
+
     seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
@@ -110,7 +116,9 @@ function trimmed(value: unknown): string {
 }
 
 /** The human handoff carried in the event payload, per kind (mirrors the
- *  payload contract the gateway watcher reads). */
+ *  payload contract the gateway watcher reads). `gave_up` deliberately has no
+ *  payload body: its `error` is raw worker text, which belongs in the toast
+ *  `detail` (see rawErrorFor), and the body is the plain-words i18n hint. */
 function bodyFor(kind: string, ev: CompletionEvent): string {
   const payload = ev.payload
 
@@ -123,51 +131,91 @@ function bodyFor(kind: string, ev: CompletionEvent): string {
   }
 
   if (kind === 'gave_up') {
-    return trimmed(payload?.error)
+    return t('notify.gaveUpBody')
   }
 
   return ''
+}
+
+/** Raw machine text that must never be the toast body — surfaced muted in `detail`. */
+function rawErrorFor(kind: string, ev: CompletionEvent): string {
+  return kind === 'gave_up' ? trimmed(ev.payload?.error) : ''
 }
 
 function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, ev: CompletionEvent): void {
   const taskId = (ev.task_id ?? '').trim()
   const body = bodyFor(kind, ev)
 
-  const artifacts = kind === 'completed' && Array.isArray(ev.payload?.artifacts)
-    ? (ev.payload!.artifacts as unknown[]).filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map(a => a.trim())
-    : []
+  const artifacts =
+    kind === 'completed' && Array.isArray(ev.payload?.artifacts)
+      ? (ev.payload!.artifacts as unknown[])
+          .filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+          .map(a => a.trim())
+      : []
 
-  const artifactText = artifacts.length === 1 ? (artifacts[0].split(/[\\/]/).pop() || artifacts[0]) : artifacts.length > 1 ? t('notify.artifacts', artifacts.length) : ''
-  const detail = [taskId, artifactText].filter(Boolean).join(' · ')
+  const artifactText =
+    artifacts.length === 1
+      ? artifacts[0].split(/[\\/]/).pop() || artifacts[0]
+      : artifacts.length > 1
+        ? t('notify.artifacts', artifacts.length)
+        : ''
+
+  const detail = [taskId, artifactText, rawErrorFor(kind, ev)].filter(Boolean).join(' · ')
   const title = t(spec.titleKey)
   const message = body || taskId || title
-  host.notify({ kind: spec.toast, title, message, ...(detail ? { detail } : {}), action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') } })
+  host.notify({
+    kind: spec.toast,
+    title,
+    message,
+    ...(detail ? { detail } : {}),
+    action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') }
+  })
 
   // Native OS notification — the desktop shell fires it only while the user
   // is away from Hermes (the toast above covers the foreground case). Isolated:
   // a missing/broken shell must not mark the toast as unfired.
-  try { osDoor?.notify({ title, body: [message, detail].filter(Boolean).join('\n') }) } catch { /* swallowed */ }
+  try {
+    osDoor?.notify({ title, body: [message, detail].filter(Boolean).join('\n') })
+  } catch {
+    /* swallowed */
+  }
 }
 
 /** Consume one /events frame for a board. Returns true when a terminal-event
  *  notification was fired. Never throws: notification failure cannot
  *  interfere with api.ts cache invalidation. */
 export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean> {
-  if (!events?.length || slug === '' || !rest) { return false }
+  if (!events?.length || slug === '' || !rest) {
+    return false
+  }
+
   await ensureBaseline(slug)
   const seen = seenEventIdByBoard.get(slug)
 
-  if (seen === undefined) { return false } // fail-closed
+  if (seen === undefined) {
+    return false
+  } // fail-closed
+
   let fired = false
   let cursor = seen
 
   for (const ev of events) {
-    if (typeof ev.id !== 'number' || ev.id <= cursor) { continue }
+    if (typeof ev.id !== 'number' || ev.id <= cursor) {
+      continue
+    }
+
     cursor = ev.id
     seenEventIdByBoard.set(slug, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
-    if (spec) { try { notifyOne(ev.kind!, spec, ev); fired = true } catch { /* swallowed */ } }
+    if (spec) {
+      try {
+        notifyOne(ev.kind!, spec, ev)
+        fired = true
+      } catch {
+        /* swallowed */
+      }
+    }
   }
 
   return fired

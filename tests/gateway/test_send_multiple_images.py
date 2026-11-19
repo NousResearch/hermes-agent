@@ -72,12 +72,13 @@ class _StubAdapter(BasePlatformAdapter):
 
 
 class TestBaseDefaultLoop:
-    def test_loops_per_image_by_default(self):
+    def test_loops_per_image_by_default(self, tmp_path):
+        local = tmp_path / "foo.png"
         a = _StubAdapter()
         images = [
             ("https://x.com/a.png", "alt 1"),
             ("https://x.com/b.png", "alt 2"),
-            ("file:///tmp/foo.png", "local"),
+            (local.as_uri(), "local"),
             ("https://x.com/c.gif", ""),
         ]
         _run(a.send_multiple_images("chat1", images))
@@ -85,31 +86,10 @@ class TestBaseDefaultLoop:
         assert len(a.sent_images) == 2
         assert len(a.sent_animations) == 1
         assert len(a.sent_files) == 1
-        assert a.sent_files[0][1] == "/tmp/foo.png"
+        assert a.sent_files[0][1] == str(local)
 
 
-# ---------------------------------------------------------------------------
-# Telegram mocks setup (shared with test_send_image_file pattern)
-# ---------------------------------------------------------------------------
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class TestTelegramMultiImage:
@@ -147,6 +127,37 @@ class TestTelegramMultiImage:
         sizes = [len(c.kwargs["media"]) for c in adapter._bot.send_media_group.await_args_list]
         assert sizes == [10, 5]
 
+    @pytest.mark.parametrize("body,sends,ambiguous", [("json", 2, None), ("html", 1, True)])
+    def test_album_on_a_5xx_resends_only_telegrams_json_answer(self, adapter, body, sends, ambiguous):
+        """Telegram's JSON 502 (PTB's unchained ``NetworkError('Bad Gateway')``) was not posted: the
+        same sendMediaGroup goes again, as text does. A proxy's HTML 502 page (PTB's NetworkError
+        chained to the failed body parse) may follow a posted album: one request, ambiguous."""
+        import json
+        import telegram
+        from telegram.error import NetworkError, TelegramError
+        telegram.InputMediaPhoto = MagicMock(side_effect=lambda media, caption=None: {"media": media})
+        if body == "json":
+            first = NetworkError("Bad Gateway")
+        else:
+            try:
+                try:
+                    json.loads("<html>")
+                except ValueError as parse:
+                    raise TelegramError("Invalid server response") from parse
+            except TelegramError as invalid:
+                first = NetworkError("Bad Gateway (502). Parsing the server response b'<html>' failed")
+                first.__cause__ = invalid
+        adapter._bot.send_media_group = AsyncMock(side_effect=[first, [MagicMock(message_id=1)]])
+        adapter.send_image = AsyncMock()
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = _run(adapter.send_multiple_images("12345", [(f"https://x.com/{i}.png", "") for i in range(2)]))
+
+        assert result.success is True
+        assert adapter._bot.send_media_group.await_count == sends
+        assert (result.raw_response or {}).get("ambiguous") is ambiguous
+        adapter.send_image.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Discord
@@ -166,7 +177,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class TestDiscordMultiImage:
@@ -314,7 +325,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 class TestSlackMultiImage:
@@ -351,13 +362,12 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
+from plugins.platforms.mattermost.adapter import MattermostAdapter
 
 
 class TestMattermostMultiImage:
     @pytest.fixture
     def adapter(self):
-        config = PlatformConfig(enabled=True, token="fake")
         # Minimal construction via object.__new__ to avoid full setup
         a = object.__new__(MattermostAdapter)
         a._base_url = "https://mm.example.com"
@@ -391,7 +401,7 @@ class TestMattermostMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402
+from plugins.platforms.email.adapter import EmailAdapter
 
 
 class TestEmailMultiImage:

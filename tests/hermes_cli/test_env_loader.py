@@ -1,14 +1,14 @@
 import codecs
-import importlib
 import os
-import sys
+
+import pytest
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
     """The post-recovery updater must not remap native vault dependencies."""
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     from hermes_cli import _early_recovery
 
     home = tmp_path / "hermes"
@@ -57,58 +57,40 @@ def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
     assert os.environ.get("\ufeffFIRST_KEY") is None
 
 
-def test_bomless_utf8_env_still_loads(tmp_path, monkeypatch):
-    """BOM-less UTF-8 .env files must keep loading after utf-8-sig."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_text("OPENAI_API_KEY=sk-plain\nSECOND_KEY=ok\n", encoding="utf-8")
+def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatch):
+    """Invariant: the key set the dashboard/profile scrub computes (``_env_keys_defined_in_dotenv``) equals
+    the key set the installers define (``load_hermes_dotenv`` into os.environ, ``load_env_file`` into a
+    profile scope). A BOM'd first line, ``export``, quotes and inline comments must not split them —
+    a key one side sees and the other doesn't is a scrub miss."""
+    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+    from agent.secret_scope import load_env_file
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("OPENAI_API_KEY") == "sk-plain"
-    assert os.getenv("SECOND_KEY") == "ok"
-
-
-def test_latin1_env_falls_back(tmp_path, monkeypatch):
-    """Invalid UTF-8 bytes must still load via the latin-1 fallback."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    # 0xE9 is "é" in latin-1 and not a valid UTF-8 lead sequence alone.
-    env_file.write_bytes(b"LATIN1_VALUE=caf\xe9\n")
-
-    monkeypatch.delenv("LATIN1_VALUE", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("LATIN1_VALUE") == "café"
-
-
-def test_utf8_bom_preserves_first_api_key_name(tmp_path, monkeypatch):
-    """Real-world case: BOM + first line is a provider API key name."""
     home = tmp_path / "hermes"
     home.mkdir()
     env_file = home / ".env"
     env_file.write_bytes(
-        b"\xef\xbb\xbfANTHROPIC_API_KEY=sk-test-123\nSECOND_KEY=ok\n"
+        b"\xef\xbb\xbfFIRST_KEY=first-value\n"
+        b"export EXPORTED_KEY='quoted # not a comment'\n"
+        b"COMMENTED_KEY=value # trailing comment\n"
+        b"EMPTY_KEY=\n"
     )
+    for key in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY", "\ufeffFIRST_KEY"):
+        monkeypatch.delenv(key, raising=False)
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-    monkeypatch.delenv("\ufeffANTHROPIC_API_KEY", raising=False)
+    load_hermes_dotenv(hermes_home=home)
+    installed = {k for k in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY") if k in os.environ}
+    scoped = load_env_file(env_file)
 
-    loaded = load_hermes_dotenv(hermes_home=home)
+    assert _env_keys_defined_in_dotenv(env_file) == installed == set(scoped)
+    assert "\ufeffFIRST_KEY" not in _env_keys_defined_in_dotenv(env_file)
+    assert scoped["EXPORTED_KEY"] == os.environ["EXPORTED_KEY"] == "quoted # not a comment"
+    assert scoped["COMMENTED_KEY"] == os.environ["COMMENTED_KEY"] == "value"
 
-    assert loaded == [env_file]
-    assert os.getenv("ANTHROPIC_API_KEY") == "sk-test-123"
-    assert os.getenv("SECOND_KEY") == "ok"
-    assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
+
+
+
+
+
 
 
 def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
@@ -137,21 +119,6 @@ def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
     assert os.getenv("BAD") == "café"
     assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
 
-def test_bomless_latin1_env_still_loads(tmp_path, monkeypatch):
-    """BOM-less cp1252/latin-1 .env files must keep loading after the BOM strip."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_bytes(b"LATIN1_VALUE=caf\xe9\nOTHER=ok\n")
-
-    monkeypatch.delenv("LATIN1_VALUE", raising=False)
-    monkeypatch.delenv("OTHER", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("LATIN1_VALUE") == "café"
-    assert os.getenv("OTHER") == "ok"
 
 def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
     """Stream-based latin-1 fallback must honor override= identically to dotenv_path."""
@@ -240,8 +207,8 @@ def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
     assert os.getenv("CJK_LABEL") == "日本語"
     after = env_file.read_bytes()
     assert after.decode("utf-8")  # strict
-    assert "café".encode("utf-8") in after
-    assert "日本語".encode("utf-8") in after
+    assert "café".encode() in after
+    assert "日本語".encode() in after
     assert b"\xef\xbf\xbd" not in after
 
 
@@ -280,7 +247,7 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     """
     import logging
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     # Isolate process-level seen-set so other tests' paths don't leak in.
@@ -620,3 +587,248 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
 
     # The other profile's .env value stands; the process config was not applied.
     assert os.getenv("TERMINAL_ENV") == "docker"
+
+
+def test_parent_injected_dashboard_session_token_survives_dotenv(tmp_path, monkeypatch):
+    """A parent that spawns `hermes dashboard` mints HERMES_DASHBOARD_SESSION_TOKEN and keeps it for
+    its own /api probes; a persisted token in ~/.hermes/.env must not replace it, or the parent gets
+    HTTP 401 from its own child (#115955). Ordinary keys keep the documented .env-wins precedence."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_DASHBOARD_SESSION_TOKEN=persisted-token\nHERMES_DASHBOARD_PUBLIC_URL=http://127.0.0.1:1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "link-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "http://127.0.0.1:43123")
+
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+    assert os.environ["HERMES_DASHBOARD_PUBLIC_URL"] == "http://127.0.0.1:1"  # control: .env still wins
+
+    # Reload with the same injection: the injected value still holds.
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "link-token"
+
+
+def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkeypatch):
+    """No injection: the .env token is published, and a later edit + reload replaces the value the
+    earlier pass published (the guard only protects values dotenv did not put there)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=first\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "first"
+
+    (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+
+# ---------------------------------------------------------------------------
+# Launch-only env keys: HERMES_MANAGED_DIR is a deployment bootstrap knob (#135200)
+# ---------------------------------------------------------------------------
+
+
+def test_user_env_cannot_repoint_managed_dir_with_launch_value(tmp_path, monkeypatch):
+    """A user ``.env`` naming another directory must not override the launch value.
+
+    The launch environment (service unit, container image) bakes the administrator's
+    managed dir in; the user's own ``.env`` is a user-writable layer and must never
+    repoint managed scope at a directory the user controls.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    admin_dir = tmp_path / "admin"
+    admin_dir.mkdir()
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    (admin_dir / ".env").write_text("SLACK_ALLOWED_USERS=admin-only\n", encoding="utf-8")
+    (untrusted_dir / ".env").write_text("SLACK_ALLOWED_USERS=*\n", encoding="utf-8")
+    (home / ".env").write_text(f"HERMES_MANAGED_DIR={untrusted_dir}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(admin_dir))
+
+    load_hermes_dotenv(hermes_home=home)
+
+    from hermes_cli import managed_scope
+    managed_scope.invalidate_managed_cache()
+    assert os.environ["HERMES_MANAGED_DIR"] == str(admin_dir)
+    assert managed_scope.load_managed_env() == {"SLACK_ALLOWED_USERS": "admin-only"}
+    # Not recorded as launch dotenv residue either: a routed child keeps the launch value.
+    from hermes_cli.env_loader import launch_dotenv_keys
+    assert "HERMES_MANAGED_DIR" not in launch_dotenv_keys()
+
+
+def test_user_env_cannot_set_managed_dir_without_launch_value(tmp_path, monkeypatch):
+    """No launch value: a user ``.env`` entry still must not set the managed dir."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("HERMES_MANAGED_DIR=/nonexistent/user-choice\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert "HERMES_MANAGED_DIR" not in os.environ
+
+
+def test_reload_env_skips_launch_only_keys(tmp_path, monkeypatch):
+    """``reload_env()`` (CLI ``/reload``, TUI ``reload.env``) must not repoint the managed
+    scope either — a user ``.env`` key is not a launch-environment value."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    (home / ".env").write_text(
+        f"HERMES_MANAGED_DIR={untrusted_dir}\nRELOAD_TEST_KEY=reloaded\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
+    monkeypatch.delenv("RELOAD_TEST_KEY", raising=False)
+
+    from hermes_cli import config as cfg
+    cfg.invalidate_env_cache()
+    try:
+        changed = cfg.reload_env()
+    finally:
+        cfg.invalidate_env_cache()
+
+    assert os.environ["HERMES_MANAGED_DIR"] == "/launch/admin-dir"
+    assert os.environ["RELOAD_TEST_KEY"] == "reloaded"  # control: other keys still reload
+    assert changed == 1
+
+
+# ---------------------------------------------------------------------------
+# HERMES_HOME is launch-only too (#144685): a single write to ~/.hermes/.env
+# must not relocate identity and policy wholesale on the next start.
+# ---------------------------------------------------------------------------
+
+
+def test_user_env_cannot_repoint_hermes_home_with_launch_value(tmp_path, monkeypatch):
+    """#144685 repro, end to end: with the launch environment pinning ``HERMES_HOME`` at
+    directory *a*, a ``HERMES_HOME=b`` line in *a*'s own ``.env`` must be ignored — both
+    ``os.environ`` and ``get_hermes_home()`` (SOUL.md, config.yaml, plugins, skills, cron
+    all resolve from it) must keep answering *a*."""
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    (home_a / ".env").write_text(f"HERMES_HOME={home_b}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    load_hermes_dotenv(load_external_secrets=False)
+
+    from hermes_constants import get_hermes_home
+    assert os.environ["HERMES_HOME"] == str(home_a)
+    assert get_hermes_home() == home_a.resolve()
+
+
+def test_user_env_cannot_set_hermes_home_without_launch_value(tmp_path, monkeypatch):
+    """Same refusal when the launch environment never set the key: the ``.env`` must not
+    introduce it either, or a fresh install's first write would pin the home."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(f"HERMES_HOME={tmp_path / 'planted'}\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert "HERMES_HOME" not in os.environ
+
+
+def test_lowercase_launch_only_keys_in_user_env_are_ignored(tmp_path, monkeypatch, caplog):
+    """Windows env names are case-insensitive: ``hermes_managed_dir=`` / ``hermes_home=`` would
+    set the real keys there, so the loader refuses every letter case (on POSIX the lowercase
+    name is a distinct variable, and refusing it is harmless)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        f"hermes_managed_dir={tmp_path}/untrusted\nHermes_Home={tmp_path}/b\n", encoding="utf-8")
+    # Clear the lowercase names BEFORE setting HERMES_HOME: on Windows they fold onto the real keys.
+    monkeypatch.delenv("hermes_managed_dir", raising=False)
+    monkeypatch.delenv("Hermes_Home", raising=False)
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        load_hermes_dotenv(load_external_secrets=False)
+
+    # POSIX: the lowercase names stay unset. Windows (keys upper-cased): the real keys keep their values.
+    assert {"hermes_managed_dir", "Hermes_Home"}.isdisjoint(set(os.environ))  # iterate: `in` folds case
+    assert "HERMES_MANAGED_DIR" not in os.environ
+    assert os.environ["HERMES_HOME"] == str(home)
+    assert "hermes_managed_dir" in caplog.text  # the operator sees why the line had no effect
+
+
+def test_launch_only_warning_is_logged_once_per_profile_home(tmp_path, monkeypatch, caplog):
+    """The gateway reloads .env on every turn: a leftover line warns once per home, not per turn,
+    and a second profile home with the same line still gets its own warning."""
+    homes = []
+    for name in ("a", "b"):
+        home = tmp_path / name
+        home.mkdir()
+        (home / ".env").write_text(f"HERMES_MANAGED_DIR={tmp_path}/untrusted\n", encoding="utf-8")
+        homes.append(home)
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        for home in homes:
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            for _ in range(3):
+                load_hermes_dotenv(load_external_secrets=False)
+
+    assert "HERMES_MANAGED_DIR" not in os.environ
+    assert caplog.text.count("launch-only key HERMES_MANAGED_DIR") == 2
+
+
+def test_config_yaml_launch_only_warning_is_keyed_by_profile_home(tmp_path, monkeypatch, caplog):
+    """The ``config.yaml`` source label is the same string for every home, so only the home part
+    of the once-only key gives a second profile its own warning."""
+    from hermes_cli.env_loader import bridge_config_scalars
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        for name in ("a", "b"):
+            home = tmp_path / name
+            home.mkdir()
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            for _ in range(3):
+                target: dict[str, str] = {}
+                bridge_config_scalars({"HERMES_MANAGED_DIR": f"{tmp_path}/untrusted"}, target)
+                assert target == {}
+
+    assert caplog.text.count("config.yaml: ignoring launch-only key HERMES_MANAGED_DIR") == 2
+
+
+def test_reload_env_skips_lowercase_launch_only_key(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("hermes_managed_dir=/user/controlled\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("hermes_managed_dir", raising=False)
+
+    from hermes_cli import config as cfg
+    cfg.invalidate_env_cache()
+    try:
+        cfg.reload_env()
+    finally:
+        cfg.invalidate_env_cache()
+
+    assert "hermes_managed_dir" not in os.environ
+
+
+@pytest.mark.platforms("windows")
+def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_path, monkeypatch):
+    """Native Windows fold: ``hermes_managed_dir=`` would overwrite ``HERMES_MANAGED_DIR``."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(f"hermes_managed_dir={tmp_path / 'untrusted'}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "admin"))
+
+    load_hermes_dotenv(load_external_secrets=False)
+
+    assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")

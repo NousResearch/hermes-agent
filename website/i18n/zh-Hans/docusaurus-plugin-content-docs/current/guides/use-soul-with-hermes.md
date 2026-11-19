@@ -258,7 +258,7 @@ vim ~/.hermes/SOUL.md
 
 ## 相关文档
 
-- [个性与 SOUL.md](/user-guide/features/personality)
-- [上下文文件](/user-guide/features/context-files)
-- [配置](/user-guide/configuration)
-- [技巧与最佳实践](/guides/tips)
+- [个性与 SOUL.md](../user-guide/features/personality.md)
+- [上下文文件](../user-guide/features/context-files.md)
+- [配置](../user-guide/configuration.md)
+- [技巧与最佳实践](./tips.md)

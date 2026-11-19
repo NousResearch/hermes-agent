@@ -73,18 +73,22 @@ class TestBudgetExcludesReasoningDetailsEnvelope:
             f"thinking prose charged twice (delta {both - once} tokens)"
         )
 
-    def test_codex_reasoning_items_still_charged(self):
-        """Codex Responses genuinely replays these on every request (#55572);
-        the exclusion is scoped to reasoning_details only."""
+    def test_codex_encrypted_content_is_priced_by_provider_count_not_bytes(self):
+        """Ciphertext bytes are never priced as text (a native compaction checkpoint alone is ~5M
+        chars, #100611). Replayed reasoning costs the provider-reported count stamped on its turn
+        (#125920); a checkpoint costs 0 in both the budget walk and the trigger estimator."""
+        from agent.message_metadata import stamp_reasoning_tokens
+        from agent.model_metadata import estimate_messages_tokens_rough
+
         base = {"role": "assistant", "content": "hi"}
-        loaded = dict(
-            base,
-            codex_reasoning_items=[{"encrypted_content": "e" * 20_000}],
-        )
-        assert (
-            _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base)
-            > 4_000
-        )
+        loaded = dict(base, codex_reasoning_items=[{"type": "reasoning", "encrypted_content": "e" * 20_000}])
+        stamp_reasoning_tokens(loaded, 1_500)
+        # + the item's JSON skeleton (type key, blanked field), never its 20k bytes of ciphertext
+        assert 1_500 <= _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base) < 1_550
+        assert 1_500 <= estimate_messages_tokens_rough([loaded]) - estimate_messages_tokens_rough([base]) < 1_550
+        checkpoint = dict(base, codex_reasoning_items=[{"type": "compaction", "encrypted_content": "e" * 5_000_000}])
+        assert _estimate_msg_budget_tokens(checkpoint) - _estimate_msg_budget_tokens(base) < 50
+        assert estimate_messages_tokens_rough([checkpoint]) - estimate_messages_tokens_rough([base]) < 50
 
 
 class TestReasoningDetailsTextChars:

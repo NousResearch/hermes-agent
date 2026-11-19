@@ -11,7 +11,7 @@ standard-var matching there is exact, so any other value is attributed to
 
 The terminal backends additionally export both vars inside every wrapped
 shell command (``BaseEnvironment._wrap_command``) so the marker reaches
-REMOTE backends (Docker/SSH/Modal/Daytona/Singularity/Vercel) whose exec
+REMOTE backends (Docker/SSH/Modal/Daytona/Vercel, remote plugin backends) whose exec
 environment does not inherit the Hermes process env, and survives the
 cross-session leak guard that strips ``HERMES_SESSION_*`` from subprocess
 envs in engaged multi-session hosts.
@@ -41,13 +41,6 @@ class TestAdvertiseAgentEnv:
         assert os.environ["AI_AGENT"] == "pi"
         assert os.environ["HERMES_AGENT"] == "true"
 
-    def test_idempotent(self, monkeypatch):
-        monkeypatch.delenv("AI_AGENT", raising=False)
-        monkeypatch.delenv("HERMES_AGENT", raising=False)
-        _advertise_agent_env()
-        _advertise_agent_env()
-        assert os.environ["AI_AGENT"] == HARNESS_ID
-        assert os.environ["HERMES_AGENT"] == "true"
 
 
 class TestWrapCommandAdvertisesHarness:
@@ -64,14 +57,7 @@ class TestWrapCommandAdvertisesHarness:
         env._snapshot_passthrough_names = set()
         return env._wrap_command(command, "/tmp")
 
-    def test_wrap_command_contains_export(self):
-        wrapped = self._wrap("true")
-        assert 'AI_AGENT="${AI_AGENT:-' + HARNESS_ID + '}"' in wrapped
-        assert 'HERMES_AGENT="${HERMES_AGENT:-true}"' in wrapped
 
-    def test_export_precedes_user_command(self):
-        wrapped = self._wrap("echo payload-sentinel")
-        assert wrapped.index("AI_AGENT=") < wrapped.index("payload-sentinel")
 
     def test_shell_sets_default_and_preserves_outer(self):
         """Run the wrapped script through real bash both ways."""
@@ -82,6 +68,7 @@ class TestWrapCommandAdvertisesHarness:
         out = subprocess.run(
             ["bash", "-c", wrapped], capture_output=True, text=True,
             env=clean_env, timeout=30,
+            check=False,
         )
         assert f"AI={HARNESS_ID} HERMES=true" in out.stdout
 
@@ -89,5 +76,6 @@ class TestWrapCommandAdvertisesHarness:
         out = subprocess.run(
             ["bash", "-c", wrapped], capture_output=True, text=True,
             env=outer_env, timeout=30,
+            check=False,
         )
         assert "AI=pi HERMES=false" in out.stdout

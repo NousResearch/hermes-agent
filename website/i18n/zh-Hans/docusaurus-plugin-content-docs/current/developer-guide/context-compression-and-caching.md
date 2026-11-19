@@ -36,7 +36,7 @@ context:
 
 通过 `hermes plugins` → Provider Plugins → Context Engine 进行配置，或直接编辑 `config.yaml`。
 
-关于构建上下文引擎插件，请参阅 [Context Engine 插件](/developer-guide/context-engine-plugin)。
+关于构建上下文引擎插件，请参阅 [Context Engine 插件](./context-engine-plugin.md)。
 
 ## 双重压缩系统
 

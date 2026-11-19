@@ -13,7 +13,7 @@ automatic-compaction guards:
 - the anti-thrash / fallback-streak breaker.
 
 These tests pin that composition end-to-end with a real ``AIAgent`` wired to
-a real ``SessionDB``: when a guard says no, the idle path must be a strict
+a real store: when a guard says no, the idle path must be a strict
 no-op for the turn (no compressor call, no session rotation, no flush
 re-baseline, no user-message re-anchor).
 """
@@ -25,17 +25,18 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
-
 from agent.turn_context import build_turn_context
 
 from tests.agent.test_compression_concurrent_fork import _build_agent_with_db
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
+def _prep_idle_agent(db, session_id: str, *, idle_after: int = 60,
                      idle_gap: float = 3600.0):
     """Real AIAgent (mock compressor) primed so the idle trigger is eligible."""
     agent = _build_agent_with_db(db, session_id)
+    agent.persistence = db  # the handle is the agent's store and its storage interface
     agent.compression_enabled = True
     agent.compression_idle_compact_after_seconds = idle_after
     agent._last_activity_ts = time.time() - idle_gap
@@ -45,6 +46,7 @@ def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
     agent.context_compressor.summary_target_ratio = 0.20
     agent.context_compressor.protect_first_n = 2
     agent.context_compressor.protect_last_n = 2
+    agent.context_compressor.awaiting_real_usage_after_compression = False
     # No active failure cooldown unless a test installs one.
     agent.context_compressor.get_active_compression_failure_cooldown = (
         lambda *a, **k: None
@@ -53,18 +55,20 @@ def _prep_idle_agent(db: SessionDB, session_id: str, *, idle_after: int = 60,
     return agent
 
 
-def _run_prologue(agent, history, user_message="hello again"):
+def _run_prologue(agent, history, user_message="hello again",
+                  rough_tokens: int = 999_999):
     """Invoke ``build_turn_context`` the way ``conversation_loop`` does.
 
     The token-threshold preflight gate is pinned False so these tests
     exercise the IDLE trigger in isolation (the preflight path has its own
-    coverage in ``test_turn_context.py``).
+    coverage in ``test_turn_context.py``). ``rough_tokens`` pins the estimate
+    that the idle floor is compared against.
     """
     with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None), \
          patch("agent.turn_context._should_run_preflight_estimate",
                return_value=False), \
          patch("agent.turn_context.estimate_request_tokens_rough",
-               return_value=999_999):
+               return_value=rough_tokens):
         return build_turn_context(
             agent=agent,
             user_message=user_message,
@@ -93,9 +97,9 @@ def _history(n: int = 20) -> list:
 
 def test_idle_compaction_status_emitted_by_default(tmp_path: Path) -> None:
     """Control: the default engine keeps the 💤 idle-resume status line."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "IDLE_LOUD"
-    db.create_session(sid, source="cli")
+    seed_session(db, sid, "cli")
     agent = _prep_idle_agent(db, sid)
     # MagicMock would auto-create the hook attributes as truthy mocks; pin
     # the default-engine surface explicitly.
@@ -121,10 +125,10 @@ def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None
     block must treat that skip as a strict no-op: no compressor call, no
     rotation, no flush re-baseline, anchor untouched.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "IDLE_LOCKED"
-    db.create_session(sid, source="cli")
-    assert db.try_acquire_compression_lock(sid, "external_holder") is True
+    seed_session(db, sid, "cli")
+    assert db.coordination.try_acquire_compression_lock(session_id=sid, holder="external_holder") is True
 
     agent = _prep_idle_agent(db, sid)
     history = _history()
@@ -136,13 +140,69 @@ def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None
     assert agent.session_id == sid
     # The external holder still owns the lock (we must not have stolen or
     # released someone else's lease).
-    assert db.get_compression_lock_holder(sid) == "external_holder"
+    assert db.coordination.get_compression_lock_holder(session_id=sid) == "external_holder"
     # Turn state untouched: full history + this turn's user message, anchor on
     # the just-appended message, flush baseline not re-baselined to None-then-
     # doubled semantics.
     assert len(ctx.messages) == len(history) + 1
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello again"
+
+
+def _prep_recompaction_agent(db, sid: str):
+    """Idle-eligible agent with the #97239 threshold/floor numbers.
+
+    threshold 127,510 x target_ratio 0.20 => a 25,502 theoretical floor, the
+    same one the reported session kept clearing while never actually
+    shrinking below ~44,579.
+    """
+    agent = _prep_idle_agent(db, sid, idle_after=1, idle_gap=747.0)
+    agent.context_compressor.threshold_tokens = 127_510
+    agent.context_compressor.summary_target_ratio = 0.20
+    agent.context_compressor.emit_automatic_compaction_status = True
+    del agent.context_compressor.get_automatic_compaction_status_message
+    return agent
+
+
+def _pin_compress_seam(agent):
+    """Stub the forwarder so these tests assert the idle DECISION only.
+
+    Whether ``compress_context`` then rotates, locks or aborts is covered by
+    the tests above; here the question is purely whether the idle floor let
+    the turn through. Returning the input list is the documented "skipped"
+    shape, so the caller's re-baseline stays disarmed either way.
+    """
+    seam = MagicMock(side_effect=lambda messages, *a, **k: (messages, "SYSTEM"))
+    agent._compress_context = seam
+    return seam
+
+
+def test_idle_compaction_skips_a_transcript_that_has_not_grown(tmp_path: Path) -> None:
+    """The reported loop: re-compacting a session the last pass just produced.
+
+    ``last_compression_rough_tokens`` records what the previous pass actually
+    emitted (44,579). The theoretical floor (25,502) is far below it, so the
+    old predicate re-fired a full multi-minute summary on every idle resume
+    even though the transcript had not grown at all (#97239).
+    """
+    db = storage_handle(tmp_path)
+    sid = "IDLE_RECOMPACT"
+    seed_session(db, sid, "cli")
+    agent = _prep_recompaction_agent(db, sid)
+    agent.context_compressor.last_compression_rough_tokens = 44_579
+    seam = _pin_compress_seam(agent)
+
+    ctx = _run_prologue(agent, _history(), rough_tokens=44_579)
+
+    seam.assert_not_called()
+    agent.context_compressor.compress.assert_not_called()
+    assert agent.session_id == sid
+    assert len(ctx.messages) == len(_history()) + 1
+    assert ctx.current_turn_user_idx == len(ctx.messages) - 1
+
+
+
+
 
 
 def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
@@ -155,9 +215,9 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     """
     from agent.context_compressor import ContextCompressor
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "IDLE_THRASH"
-    db.create_session(sid, source="cli")
+    seed_session(db, sid, "cli")
     agent = _prep_idle_agent(db, sid)
 
     with patch(
@@ -170,10 +230,10 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
             protect_last_n=2,
             quiet_mode=True,
         )
-    compressor.bind_session_state(db, sid)
+    compressor.bind_session_state(db, sid, persistence=db)
     # Trip the breaker durably (#54923: the strike counter now round-trips
     # state.db, and the gate re-reads durable rows before honoring a block).
-    db.set_compression_ineffective_count(sid, 2)
+    db.lineage.set_compression_ineffective_count(sid, 2)
     compressor._ineffective_compression_count = 2  # breaker tripped
     compressor.compress = MagicMock()
     agent.context_compressor = compressor

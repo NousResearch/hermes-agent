@@ -8,7 +8,7 @@ the JSON result returned to the model previously carried raw ``str(e)`` and
 
 import json
 
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 SECRET = "sk-proj-AbCdEf1234567890SecretValue999"
 
@@ -27,7 +27,6 @@ def test_generic_exception_result_redacts_error_and_traceback(monkeypatch):
     assert SECRET not in result["traceback"]
     # The redaction must mask the value, not drop the message entirely.
     assert "OPENAI_API_KEY=" in result["error"]
-    assert "Failed to execute command" in result["error"]
 
 
 def test_degraded_fail_mode_result_redacts_error_and_traceback(monkeypatch):

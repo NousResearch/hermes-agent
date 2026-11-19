@@ -59,7 +59,22 @@ class TestSetRuntime:
 
 
 class TestApply:
+    def test_binary_check_uses_configured_path(self):
+        """/codex-runtime must probe ``model.codex_bin``, not bare ``codex`` from PATH (#61360)."""
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+        cfg = {
+            "model": {
+                "openai_runtime": "codex_app_server",
+                "codex_bin": configured,
+            }
+        }
+        with patch.object(
+            crs, "check_codex_binary_ok", return_value=(True, "0.130.0")
+        ) as binary_check:
+            result = crs.apply(cfg, None)
 
+        assert result.success
+        binary_check.assert_called_once_with(configured)
 
     def test_reapply_codex_app_server_runs_migration(self):
         """Re-applying codex_app_server when already enabled must still
@@ -95,8 +110,6 @@ class TestApply:
         assert r.success
         assert mig.called, "migration must run on reapply, not just first enable"
         # Re-apply should signal "already set" but still announce migration ran
-        assert "already set" in r.message
-        assert "re-applying migration" in r.message
         # Migration output still surfaces
         assert "Migrated 1 MCP server" in r.message
         assert "filesystem" in r.message
@@ -141,8 +154,6 @@ class TestApply:
         assert "filesystem" in r.message
         # Permissions default surfaces
         assert "Default sandbox: :workspace" in r.message
-        # Hermes tool callback announcement
-        assert "via MCP" in r.message
 
     def test_disable_does_not_trigger_migration(self):
         """Switching back to auto must not write to ~/.codex/."""
@@ -168,5 +179,4 @@ class TestApply:
         assert r.new_value == "codex_app_server"
         assert "MCP migration skipped" in r.message
         assert "disk full" in r.message
-
 

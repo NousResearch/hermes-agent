@@ -21,7 +21,7 @@ class TestGatewayPerModelReasoningConfig:
                 },
             },
         }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: fake_cfg)
 
         result = gateway_run.GatewayRunner._load_reasoning_config()
         assert result is not None
@@ -42,7 +42,7 @@ class TestGatewayPerModelReasoningConfig:
                 "reasoning_effort": False,  # YAML boolean, not string
             },
         }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: fake_cfg)
 
         result = gateway_run.GatewayRunner._load_reasoning_config()
         assert result is not None
@@ -69,7 +69,7 @@ class TestGatewaySessionEffectiveModel:
                 },
             },
         }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: fake_cfg)
 
         # Session switched (session-only) to claude-opus-4.5 — its override
         # must win over the config default model's override.
@@ -111,7 +111,7 @@ class TestApiServerPerModelReasoning:
         from gateway.platforms.api_server import APIServerAdapter
 
         monkeypatch.setattr(
-            gateway_run, "_load_gateway_runtime_config", lambda: self._cfg(),
+            gateway_run, "_load_gateway_config", lambda: self._cfg(),
         )
         adapter = APIServerAdapter(PlatformConfig())
 

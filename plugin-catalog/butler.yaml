@@ -1,0 +1,33 @@
+name: butler
+repo: https://github.com/Intenzi/hermes-butler
+sha: "09e47dbdab7d3dbe3e41b95b5102dd902709351a"
+version: "0.4.1"
+title: Butler
+description: "Turns the Hermes desktop pet into an on-screen operator: WALK draws a guide on the real controls and verifies each step from the macOS Accessibility tree, DESCRIBE reads the control under your pointer (role, label, enabled state, value) without letting the click reach your app, and WATCH announces one condition from an app in the background and keeps it until you acknowledge it. Accessibility only: no screenshots, no OCR, no Screen Recording, no Input Monitoring. Disclosure — macOS only; needs the Accessibility permission, which lets its helper read the controls and text of other apps on screen. On first use it downloads its native screen helper from the author's GitHub release and refuses it unless it matches the checksum pinned in the plugin source (otherwise it compiles the bundled Swift source with swiftc), and LOOK mode intercepts clicks across the screen until you pick or cancel. Sending from the pet into a chat requires `allow_gateway_injection: true` for this plugin."
+maintainer: Intenzi
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Intenzi/hermes-butler/blob/main/README.md
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - butler_capture
+    - butler_guide_start
+    - butler_guide_status
+    - butler_look
+    - butler_say
+    - butler_stop
+    - butler_watch_ack
+    - butler_watch_start
+    - butler_watch_status
+    - butler_watch_stop
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "macOS only: the companion is a native Swift helper, and every feature that reads the screen needs the Accessibility grant."
+  - "Guides are single-active: a second guide is refused with a hint unless replace=true."
+  - "WATCH runs one app at a time; Chromium/Electron trees need the window to have been opened once before their controls are visible."
+  - "LOOK's click-catcher covers the screen while armed, so clicks do not reach other apps until you cancel or pick."

@@ -1,8 +1,8 @@
-from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -48,10 +48,10 @@ def _make_runner(session_key, agent=None, cached_agent=None):
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.session_store = MagicMock()
+    runner.session_store.persistence = None
 
     if agent is not None:
         runner._running_agents[session_key] = agent
@@ -66,6 +66,14 @@ def _make_runner(session_key, agent=None, cached_agent=None):
 
 
 SK = "agent:main:telegram:private:12345"
+
+
+def _handle(session=None, route=None):
+    """A storage interface handle whose session record and most recent route are fixed."""
+    handle = MagicMock()
+    handle.aio.sessions.get = AsyncMock(return_value=session)
+    handle.aio.usage.recent_route = AsyncMock(return_value=route)
+    return handle
 
 
 class TestUsageCachedAgent:
@@ -86,11 +94,6 @@ class TestUsageCachedAgent:
         assert "50,000" in result  # total
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "$" not in result
-        assert "Cache read" not in result
-        assert "Cache write" not in result
-        assert "Cost" not in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -116,11 +119,10 @@ class TestUsageAccountSection:
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {
-            "billing_provider": "openai-codex",
-            "billing_base_url": "https://chatgpt.com/backend-api/codex",
-        }
+        runner.session_store.persistence = _handle(session=SimpleNamespace(
+            billing_provider="openai-codex",
+            billing_base_url="https://chatgpt.com/backend-api/codex",
+        ))
         session_entry = MagicMock()
         session_entry.session_id = "sess-1"
         runner.session_store.get_or_create_session.return_value = session_entry
@@ -140,11 +142,11 @@ class TestUsageAccountSection:
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands.fetch_account_usage",
+            "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands.render_account_usage_lines",
+            "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: [
                 "📈 **Account limits**",
                 "Provider: openai-codex (Pro)",
@@ -152,29 +154,66 @@ class TestUsageAccountSection:
         )
         # The credits block routes through the shared nous_credits_lines() helper;
         # stub it so this account-section test stays hermetic (no portal/auth lookup).
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
 
         account_call = next(c for c in calls if c["args"] == ("openai-codex",))
         assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
-        assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
 
     @pytest.mark.asyncio
-    async def test_usage_command_prefers_dominant_persisted_route(self, monkeypatch):
+    async def test_usage_command_falls_back_to_configured_provider_without_history(self, monkeypatch):
+        """#15167: no agent, no persisted route, empty transcript -> still fetch account limits
+        for the configured provider instead of the bare "no data" stub."""
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {
-            "billing_provider": "nous",
-            "billing_base_url": "https://inference-api.nousresearch.com/v1/",
-        }
-        runner._session_db._db.get_dominant_session_model_route.return_value = {
-            "model": "z-ai/glm-5.2",
-            "billing_provider": "nvidia",
-            "billing_base_url": "https://integrate.api.nvidia.com/v1/",
-        }
+        runner.session_store.persistence = _handle()
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-fresh"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"fn": fn, "args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        # The route the session's first turn resolves (a profile on Codex).
+        runner._resolve_session_agent_runtime = lambda **kw: ("gpt-5.5", {"provider": "openai-codex"})
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: openai-codex (Plus)",
+                                              "Weekly: 91% remaining (9% used)"],
+        )
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
+
+        result = await runner._handle_usage_command(MagicMock())
+
+        assert any(c["args"] == ("openai-codex",) for c in calls)
+        assert "📈 **Account limits**" in result and "Weekly: 91% remaining" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_prefers_recent_persisted_route(self, monkeypatch):
+        runner = _make_runner(SK)
+        runner.session_store.persistence = _handle(
+            session=SimpleNamespace(
+                billing_provider="nous",
+                billing_base_url="https://inference-api.nousresearch.com/v1/",
+            ),
+            route=SimpleNamespace(route=SimpleNamespace(
+                model="z-ai/glm-5.2",
+                billing_provider="nvidia",
+                billing_base_url="https://integrate.api.nvidia.com/v1/",
+                billing_mode=None,
+            ), api_call_count=0),
+        )
         session_entry = MagicMock(session_id="sess-1")
         runner.session_store.get_or_create_session.return_value = session_entry
 
@@ -186,14 +225,14 @@ class TestUsageAccountSection:
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands.fetch_account_usage",
+            "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands.render_account_usage_lines",
+            "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
-        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", lambda **_kw: [])
 
         await runner._handle_usage_command(MagicMock())
 

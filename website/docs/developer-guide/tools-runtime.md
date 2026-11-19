@@ -65,7 +65,7 @@ Each import triggers the module's `registry.register()` calls. Errors in optiona
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool.discover_mcp_tools()` reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)
@@ -74,7 +74,7 @@ Each tool can optionally provide a `check_fn` — a callable that returns `True`
 
 - **API key present** — e.g., `lambda: bool(os.environ.get("SERP_API_KEY"))` for web search
 - **Service running** — e.g., checking if the Honcho server is configured
-- **Binary installed** — e.g., verifying `playwright` is available for browser tools
+- **Dependency installed** — e.g., verifying `browser-harness` is importable for `browser_exec`
 
 When `registry.get_definitions()` builds the schema list for the model, it runs each tool's `check_fn()`:
 
@@ -115,7 +115,7 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 4. **Registry filtering** — the resolved tool name set is passed to `registry.get_definitions()`, which applies `check_fn` filtering and returns OpenAI-format schemas.
 
-5. **Dynamic schema patching** — after filtering, `execute_code` and `browser_navigate` schemas are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
+5. **Dynamic schema patching** — after filtering, schemas such as `execute_code`, `browser_cdp` and `delegate_task` are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
 ### Legacy toolset names
 
@@ -132,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-run_agent.py agent loop
+agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
@@ -166,7 +166,7 @@ This ensures the model always receives a well-formed JSON string, never an unhan
 
 Four tools are intercepted before registry dispatch because they need agent-level state (TodoStore, MemoryStore, etc.):
 
-- `todo` — planning/task tracking
+- `todo_list` — planning/task tracking
 - `memory` — persistent memory writes
 - `session_search` — cross-session recall
 - `delegate_task` — spawns subagent sessions
@@ -212,10 +212,10 @@ The terminal system supports multiple backends:
 - local
 - docker
 - ssh
-- singularity
 - modal
 - daytona
 - vercel_sandbox
+- plugin backends registered through `ctx.register_terminal_environment_provider` (e.g. `singularity`)
 
 It also supports:
 
@@ -223,6 +223,20 @@ It also supports:
 - background process management
 - PTY mode
 - approval callbacks for dangerous commands
+
+`tools/process_registry_checkpoint.py` owns running-process checkpoints and
+PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
+writes one atomic, redacted receipt per process under the profile's
+`logs/process-results/`. Producers cannot overwrite another parent's results by
+rewriting the shared PID checkpoint. The registry persists the receipt before
+releasing its completion event; one-shot linger waits on that event. The existing
+process query methods load retained snapshots without adopting PIDs or enqueuing
+notifications. Reads require the commissioning durable session or its compression
+continuation; knowing a handle alone does not authorize a retained result read.
+The registry captures that owner before starting any output reader, including on
+CLI and non-notifying processes, and preserves the producer's profile context in
+reader threads. Receipt redaction is forced independently of live-output opt-out;
+retention is bounded by age and count.
 
 ## Concurrency
 

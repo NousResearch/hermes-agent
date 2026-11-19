@@ -18,9 +18,10 @@ transcript) or, failing recovery, to a fresh session.
 """
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -41,27 +42,38 @@ def _make_entry(key: str, session_id: str, **kw) -> SessionEntry:
     )
 
 
+def _record(row: dict) -> SimpleNamespace:
+    """A ``sessions.get`` record carrying *row*'s fields, whose ``as_session_row()`` is the row dict."""
+    return SimpleNamespace(**row, as_session_row=lambda: dict(row))
+
+
 def _db_returning(rows: dict) -> MagicMock:
-    """SessionDB mock where get_session maps session_id -> row dict."""
+    """Mock store (legacy and storage handle) where get_session / sessions.get map session_id -> row."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
+    db.sessions.get.side_effect = lambda sid: _record(rows[sid]) if sid in rows else None
     # By default recovery finds nothing (forces a fresh session).
-    db.find_latest_gateway_session_for_peer.return_value = None
-    db.reopen_session.return_value = None
-    db.create_session.return_value = None
+    db.routing.latest_session_for_peer.return_value = None
     # No compression continuation → the tip is the session itself (identity),
-    # mirroring the real SessionDB.get_compression_tip. Without this a bare Mock
+    # mirroring the real lineage tip. Without this a bare Mock
     # would return a Mock the routing heal then assigns as session_id.
-    db.get_compression_tip.side_effect = lambda sid: sid
+    db.get_compression_tip.side_effect = db.lineage.tip.side_effect = lambda sid: sid
     return db
+
+
+def _peer(**row):
+    """The ``routing.latest_session_for_peer`` answer for a recovered row (messages iff it has activity)."""
+    row.setdefault("last_activity_at", None)
+    session = SimpleNamespace(session_id=row.pop("id"), session_key=None, message_count=0, origin=None, **row)
+    return SimpleNamespace(session=session, has_messages=row["last_activity_at"] is not None)
 
 
 def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
     """Build a SessionStore with a mock SessionDB, bypassing disk load."""
-    config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
+    config = GatewayConfig()
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
-    store._db = db_mock
+    store._db, store._persistence_beside = db_mock, lambda db: db
     store._loaded = True
     return store
 
@@ -102,10 +114,8 @@ class TestRuntimeStaleGuard:
         """Stale ``ws_orphan_reap`` entry → recovery reopens the SAME session_id (#63207)."""
         source = _source()
         db = _db_returning({"sid_stale": {"end_reason": "ws_orphan_reap", "id": "sid_stale"}})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_stale",
-            "started_at": (datetime.now() - timedelta(hours=2)).timestamp(),
-        }
+        db.routing.latest_session_for_peer.return_value = _peer(
+            id="sid_stale", started_at=(datetime.now() - timedelta(hours=2)).timestamp())
         store = _make_store_with_db(tmp_path, db)
         key = store._generate_session_key(source)
         store._entries[key] = _make_entry(key, "sid_stale")
@@ -113,69 +123,12 @@ class TestRuntimeStaleGuard:
         result = store.get_or_create_session(source)
 
         assert result.session_id == "sid_stale"
-        db.reopen_session.assert_called_once_with("sid_stale")
-        db.create_session.assert_not_called()
+        db.sessions.reopen.assert_called_once_with("sid_stale")
+        db.sessions.create.assert_not_called()
 
 
-    def test_stale_agent_close_overdue_policy_creates_fresh_session(
-        self, tmp_path,
-    ):
-        """Stale `agent_close` entry + overdue reset policy → fresh session.
-
-        The #54878 self-healing path popped the stale sessions.json entry and
-        recovered the same session_id from the DB without checking whether a
-        daily/idle reset was actually due.  This test guards the fix at
-        gateway/session.py:1765 — when the session is overdue under the
-        configured reset policy, we must create a fresh session (new id,
-        auto-reset metadata set, reopen_session NOT called).
-        """
-        source = _source()
-        # Idle policy: reset after 60 minutes of inactivity.
-        config = GatewayConfig(
-            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
-        )
-        db = _db_returning({"sid_stale": {"end_reason": "agent_close", "id": "sid_stale"}})
-        # Recovery would normally reopen this row — but it shouldn't, because
-        # the reset policy says this session is overdue.
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_stale",
-            "started_at": (datetime.now() - timedelta(hours=3)).timestamp(),
-        }
-
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-        store._loaded = True
-
-        key = store._generate_session_key(source)
-        # Entry last updated 2 hours ago → well past the 60-minute idle window.
-        store._entries[key] = _make_entry(key, "sid_stale")
-        store._entries[key].updated_at = datetime.now() - timedelta(hours=2)
-
-        result = store.get_or_create_session(source)
-
-        # Fresh session — NOT the stale session_id.
-        assert result.session_id != "sid_stale"
-        # Auto-reset metadata is set.
-        assert result.was_auto_reset is True
-        assert result.auto_reset_reason == "idle"
-        # reopen_session must NOT have been called (we skipped recovery).
-        db.reopen_session.assert_not_called()
-        # A brand-new session row was created.
-        db.create_session.assert_called_once()
-
-
-class TestRecoveredSessionResetPolicy:
-    """Recovery must not resurrect sessions as freshly active.
-
-    ``_create_entry_from_recovered_row`` used to stamp ``updated_at=now`` on
-    the rebuilt entry, so an opt-in idle/daily ``session_reset`` policy could
-    never fire across a gateway restart: the recovered session always looked
-    freshly active, and every subsequent message bumped ``updated_at`` again
-    — a recovered stale session could never age out. The entry now carries
-    the durable ``last_activity_at`` the finder already returns on the row
-    and the recovery paths evaluate ``_should_reset`` before resuming.
-    """
+class TestRecoveredSessionActivity:
+    """Recovery keeps the durable session and activity timestamp."""
 
     def test_recovered_entry_carries_durable_last_activity(self, tmp_path):
         """A recovered mapping reports the DB's last message time, not now()."""
@@ -183,11 +136,8 @@ class TestRecoveredSessionResetPolicy:
         started = (datetime.now() - timedelta(hours=3)).timestamp()
         last_activity = (datetime.now() - timedelta(hours=2)).timestamp()
         db = _db_returning({})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_recovered",
-            "started_at": started,
-            "last_activity_at": last_activity,
-        }
+        db.routing.latest_session_for_peer.return_value = _peer(
+            id="sid_recovered", started_at=started, last_activity_at=last_activity)
         store = _make_store_with_db(tmp_path, db)  # default mode="none"
 
         result = store.get_or_create_session(source)
@@ -197,70 +147,30 @@ class TestRecoveredSessionResetPolicy:
         assert result.updated_at == datetime.fromtimestamp(last_activity)
         assert result.reset_had_activity is True
 
-    def test_recovered_session_past_idle_policy_resets_instead_of_resuming(
-        self, tmp_path,
-    ):
-        """Lost mapping + overdue recoverable row → reset, not silent resume."""
-        source = _source()
-        config = GatewayConfig(
-            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=60),
-        )
-        db = _db_returning({})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_idle",
-            "started_at": (datetime.now() - timedelta(hours=3)).timestamp(),
-            "last_activity_at": (
-                datetime.now() - timedelta(hours=2)
-            ).timestamp(),
-        }
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-        store._loaded = True
-        # No in-memory entry: the mapping was lost (e.g. crash before save).
 
-        result = store.get_or_create_session(source)
-
-        assert result.session_id != "sid_idle"
-        assert result.was_auto_reset is True
-        assert result.auto_reset_reason == "idle"
-        assert result.reset_had_activity is True
-        assert result.prev_session_id == "sid_idle"
-        db.reopen_session.assert_not_called()
-        db.promote_to_session_reset.assert_called_once_with("sid_idle", "idle")
-        db.end_session.assert_not_called()
-        db.create_session.assert_called_once()
-
-    def test_default_none_policy_recovery_resumes_unchanged(self, tmp_path):
-        """mode="none" (the default) still resumes recoverable rows as before."""
+    def test_recovery_resumes_unchanged(self, tmp_path):
+        """Recoverable rows resume as before."""
         source = _source()
         db = _db_returning({})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_recovered",
-            "started_at": (datetime.now() - timedelta(days=30)).timestamp(),
-            "last_activity_at": (
-                datetime.now() - timedelta(days=30)
-            ).timestamp(),
-        }
+        db.routing.latest_session_for_peer.return_value = _peer(
+            id="sid_recovered", started_at=(datetime.now() - timedelta(days=30)).timestamp(),
+            last_activity_at=(datetime.now() - timedelta(days=30)).timestamp())
         store = _make_store_with_db(tmp_path, db)  # default mode="none"
 
         result = store.get_or_create_session(source)
 
         assert result.session_id == "sid_recovered"
-        db.reopen_session.assert_called_once_with("sid_recovered")
-        db.promote_to_session_reset.assert_not_called()
-        db.end_session.assert_not_called()
-        db.create_session.assert_not_called()
+        db.sessions.reopen.assert_called_once_with("sid_recovered")
+        db.sessions.promote_to_reset.assert_not_called()
+        db.sessions.end.assert_not_called()
+        db.sessions.create.assert_not_called()
 
     def test_recovery_tolerates_row_without_last_activity(self, tmp_path):
         """A row lacking last_activity_at falls back to created_at."""
         source = _source()
         started = (datetime.now() - timedelta(hours=3)).timestamp()
         db = _db_returning({})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_recovered",
-            "started_at": started,
-        }
+        db.routing.latest_session_for_peer.return_value = _peer(id="sid_recovered", started_at=started)
         store = _make_store_with_db(tmp_path, db)
 
         result = store.get_or_create_session(source)
@@ -289,8 +199,8 @@ class TestAdvanceCompressionSession:
         assert result is original
         assert result.session_id == "sid_tip"
         assert store.peek_session_id(key) == "sid_tip"
-        db.end_session.assert_not_called()
-        db.reopen_session.assert_not_called()
+        db.sessions.end.assert_not_called()
+        db.sessions.reopen.assert_not_called()
 
     def test_repoint_does_not_touch_activity_clock(self, tmp_path):
         """Compression repoint is bookkeeping — it must not bump updated_at.
@@ -311,6 +221,3 @@ class TestAdvanceCompressionSession:
 
         assert result is not None
         assert result.updated_at == idle
-        assert store.suspend_recently_active(max_age_seconds=120) == 0
-
-

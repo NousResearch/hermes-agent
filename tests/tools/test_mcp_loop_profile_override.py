@@ -1,12 +1,10 @@
-"""Regression tests for HERMES_HOME override propagation onto the MCP loop.
+"""The caller's context reaches coroutines scheduled onto the MCP loop.
 
-Tasks scheduled via run_coroutine_threadsafe are created inside the MCP
-event-loop thread, so they copy THAT thread's context — not the scheduling
-thread's. A per-request profile scope (dashboard ?profile= endpoints, e.g.
-the MCP "Test server" probe) would silently vanish for anything resolving
-get_hermes_home() inside the coroutine, most visibly OAuth token-store
-paths. _run_on_mcp_loop now wraps scheduled coroutines with the caller's
-override (mcp_tool._wrap_with_home_override).
+A per-request profile scope (dashboard ?profile= endpoints, e.g. the MCP
+"Test server" probe) and a dashboard OAuth flow are ContextVars on the
+calling thread. Anything inside the coroutine that resolves
+get_hermes_home() (OAuth token-store paths) or the active dashboard flow
+must see the caller's values, not the loop thread's.
 """
 import os
 
@@ -15,11 +13,11 @@ import pytest
 
 @pytest.fixture
 def mcp_loop():
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool_loop as _mcp_loop
 
-    mcp_tool._ensure_mcp_loop()
-    yield mcp_tool
-    mcp_tool._stop_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
+    yield _mcp_loop
+    _mcp_loop._stop_mcp_loop()
 
 
 def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
@@ -45,7 +43,6 @@ def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
     token = set_hermes_home_override(str(profile_home))
     try:
         assert mcp_loop._run_on_mcp_loop(read_home(), timeout=10) == str(profile_home)
-        # Factory form must be wrapped too.
         assert mcp_loop._run_on_mcp_loop(lambda: read_home(), timeout=10) == str(
             profile_home
         )
@@ -58,7 +55,7 @@ def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
 
 def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
     """Two threads carrying DIFFERENT overrides scheduling onto the same
-    loop must each see their own home — the wrapper is task-local."""
+    loop must each see their own home."""
     import threading
 
     from hermes_constants import (
@@ -98,13 +95,15 @@ def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
     assert results == {"a": str(home_a), "b": str(home_b)}
 
 
-def test_wrap_is_noop_without_override(mcp_loop):
-    """No active override → the coroutine passes through unwrapped."""
+def test_dashboard_oauth_flow_propagates_to_mcp_loop(mcp_loop):
+    from tools.mcp_dashboard_oauth import dashboard_oauth_flow, get_dashboard_oauth_flow
 
-    async def trivial():
-        return 42
+    async def read_flow():
+        return get_dashboard_oauth_flow()
 
-    coro = trivial()
-    wrapped = mcp_loop._wrap_with_home_override(coro)
-    assert wrapped is coro
-    coro.close()
+    flow = object()
+    assert mcp_loop._run_on_mcp_loop(read_flow(), timeout=10) is None
+    with dashboard_oauth_flow(flow):
+        assert mcp_loop._run_on_mcp_loop(read_flow(), timeout=10) is flow
+        assert mcp_loop._run_on_mcp_loop(lambda: read_flow(), timeout=10) is flow
+    assert mcp_loop._run_on_mcp_loop(read_flow(), timeout=10) is None

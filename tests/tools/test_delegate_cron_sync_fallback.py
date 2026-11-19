@@ -26,7 +26,6 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 import tools.delegate_tool as dt
 
@@ -47,10 +46,10 @@ def _make_real_child():
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         child = AIAgent(
             api_key="test-key-1234567890",
@@ -83,7 +82,7 @@ def _make_real_child():
     # Keep the test hermetic: no session persistence.
     child._persist_disabled = True
     child._session_db = None
-    child._session_json_enabled = False
+
     return child
 
 
@@ -117,7 +116,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
         "api_mode": None, "command": None, "args": None,
     }
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     # spawn_background_review_thread's target resolves _run_review_in_thread
     # from module globals at call time, so this records (and wedges) the
     # review replay without touching the child's own code paths.

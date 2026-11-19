@@ -22,7 +22,7 @@
  *  5. Open session A → dot clears.
  *  6. Restart once more → the cleared state must persist too (no zombie dot).
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, type Page, test } from '@playwright/test'
@@ -35,7 +35,7 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { restartMockServer } from './mock-server'
+import { restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 /** Finished-unread dot aria-label (from i18n en.ts). */
 const UNREAD_DOT_LABEL = 'Finished — unread'

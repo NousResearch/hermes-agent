@@ -23,6 +23,7 @@ test('first-run setup gate skips non-bootstrap backends', async () => {
   const gate = createFirstRunSetupGate({ promptChoice: backend => prompts.push(backend), stuckAfterMs: 0 })
 
   await gate.wait({ kind: 'remote' })
+  await gate.wait({ kind: 'python', local: 'bundled' })
   await gate.wait(null)
 
   assert.deepEqual(prompts, [])

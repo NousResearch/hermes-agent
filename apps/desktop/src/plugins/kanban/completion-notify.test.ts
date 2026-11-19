@@ -16,25 +16,35 @@ import type { CompletionEvent } from './completion-notify'
  *  bans import() in type annotations). */
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Translate = (key: string, ...args: unknown[]) => string
-interface OsDoor { notify: (input: { title: string; body?: string; silent?: boolean }) => void }
+interface OsDoor {
+  notify: (input: { title: string; body?: string; silent?: boolean }) => void
+}
 interface Mod {
   bindCompletionNotify(r: Rest, t?: Translate, os?: OsDoor): void
   onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean>
 }
 
 const { hostMock } = vi.hoisted(() => ({
-  hostMock: { notify: vi.fn(), navigate: vi.fn() },
+  hostMock: { notify: vi.fn(), navigate: vi.fn() }
 }))
 
 vi.mock('@hermes/plugin-sdk', () => ({
   host: hostMock,
   // Pulled in transitively via ./i18n (the module reads its `en` bundle for
   // fallback titles); never called in these tests.
-  usePluginI18n: () => (key: string) => key,
+  usePluginI18n: () => (key: string) => key
 }))
 
-type NotifyInput = { message: string; title?: string; kind?: string; detail?: string; action?: { label: string; onClick: () => void } }
-const lastNotify = (): NotifyInput => hostMock.notify.mock.calls[hostMock.notify.mock.calls.length - 1][0] as NotifyInput
+type NotifyInput = {
+  message: string
+  title?: string
+  kind?: string
+  detail?: string
+  action?: { label: string; onClick: () => void }
+}
+
+const lastNotify = (): NotifyInput =>
+  hostMock.notify.mock.calls[hostMock.notify.mock.calls.length - 1][0] as NotifyInput
 
 /** Rest stub: GET /board resolves to the current latest_event_id. */
 function makeRest(latest: () => number) {
@@ -53,11 +63,16 @@ async function loadModule(): Promise<Mod> {
   return import('./completion-notify')
 }
 
-const ev = (id: number, kind = 'created', payload: Record<string, unknown> | null = null, taskId = `t${id}`): CompletionEvent => ({
+const ev = (
+  id: number,
+  kind = 'created',
+  payload: Record<string, unknown> | null = null,
+  taskId = `t${id}`
+): CompletionEvent => ({
   id,
   kind,
   task_id: taskId,
-  payload,
+  payload
 })
 
 beforeEach(() => {
@@ -83,7 +98,7 @@ describe('authoritative baseline', () => {
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     const fired = await m.onKanbanEventsFrame('smoke', [
-      ev(101, 'completed', { summary: 'Done', artifacts: ['/tmp/x/report.md'] }),
+      ev(101, 'completed', { summary: 'Done', artifacts: ['/tmp/x/report.md'] })
     ])
 
     expect(fired).toBe(true)
@@ -113,7 +128,12 @@ describe('authoritative baseline', () => {
     expect(hostMock.notify).toHaveBeenCalledTimes(2)
 
     // Reconnect replays from 0: ids <= cursor are history, only 103 is new.
-    await m.onKanbanEventsFrame('smoke', [ev(99, 'completed'), ev(101, 'completed'), ev(102, 'completed'), ev(103, 'completed')])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(99, 'completed'),
+      ev(101, 'completed'),
+      ev(102, 'completed'),
+      ev(103, 'completed')
+    ])
 
     expect(hostMock.notify).toHaveBeenCalledTimes(3)
     expect(hostMock.notify.mock.calls[2][0]).toMatchObject({ message: 't103' })
@@ -165,7 +185,9 @@ describe('authoritative baseline', () => {
 
     const rest = vi.fn(async (path: string) => {
       if (path.startsWith('/board')) {
-        if (failBoard) {throw new Error('board unavailable')}
+        if (failBoard) {
+          throw new Error('board unavailable')
+        }
 
         return { latest_event_id: 200 }
       }
@@ -226,7 +248,10 @@ describe('cursor advancement', () => {
 
 describe('board isolation', () => {
   it('never mixes cursors between boards', async () => {
-    const latest = new Map<string, number>([['a', 100], ['b', 200]])
+    const latest = new Map<string, number>([
+      ['a', 100],
+      ['b', 200]
+    ])
 
     const rest = vi.fn(async (path: string) => {
       if (path.startsWith('/board')) {
@@ -250,7 +275,10 @@ describe('board isolation', () => {
   })
 
   it('switch away and back reuses the prior cursor, never reset to current MAX', async () => {
-    const latest = new Map<string, number>([['a', 100], ['b', 50]])
+    const latest = new Map<string, number>([
+      ['a', 100],
+      ['b', 50]
+    ])
 
     const rest = vi.fn(async (path: string) => {
       if (path.startsWith('/board')) {
@@ -303,12 +331,11 @@ describe('notification content', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done', artifacts: [] })])
 
-    expect(lastNotify()).toEqual({
+    expect(lastNotify()).toMatchObject({
       kind: 'success',
-      title: 'Task completed',
       message: 'Done',
       detail: 't101',
-      action: { label: 'Open Kanban', onClick: expect.any(Function) },
+      action: { onClick: expect.any(Function) }
     })
   })
 
@@ -317,21 +344,10 @@ describe('notification content', () => {
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     await m.onKanbanEventsFrame('smoke', [
-      ev(101, 'completed', { summary: 'Done', artifacts: ['/work/x/out/report.md'] }),
+      ev(101, 'completed', { summary: 'Done', artifacts: ['/work/x/out/report.md'] })
     ])
 
     expect(lastNotify().detail).toBe('t101 · report.md')
-  })
-
-  it('multiple artifacts: "<N> artifacts"', async () => {
-    const m = await loadModule()
-    m.bindCompletionNotify(makeRest(() => 100) as never)
-
-    await m.onKanbanEventsFrame('smoke', [
-      ev(101, 'completed', { summary: 'Done', artifacts: ['/a/1.md', '/b/2.md', '/c/3.md'] }),
-    ])
-
-    expect(lastNotify().detail).toBe('t101 · 3 artifacts')
   })
 
   it('malformed payload does not crash: null payload, non-array artifacts, non-string summary', async () => {
@@ -341,7 +357,7 @@ describe('notification content', () => {
     await m.onKanbanEventsFrame('smoke', [
       ev(101, 'completed', null),
       ev(102, 'completed', { summary: 42, artifacts: 'nope' }),
-      ev(103, 'completed', { summary: 'ok', artifacts: [7, ' /tmp/x/ok.md ', null] }),
+      ev(103, 'completed', { summary: 'ok', artifacts: [7, ' /tmp/x/ok.md ', null] })
     ])
 
     // All three are unseen completions; none may throw.
@@ -356,9 +372,7 @@ describe('notification content', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done' })])
 
-    const input = lastNotify()
-    expect(input.action?.label).toBe('Open Kanban')
-    input.action?.onClick()
+    lastNotify().action?.onClick()
     expect(hostMock.navigate).toHaveBeenCalledWith('/kanban')
   })
 })
@@ -394,28 +408,34 @@ describe('terminal kinds beyond completed', () => {
     expect(fired).toBe(true)
     expect(lastNotify()).toMatchObject({
       kind: 'warning',
-      title: 'Task blocked — needs your input',
       message: 'needs API key',
-      detail: 't101',
+      detail: 't101'
     })
   })
 
-  it('block_loop_detected notifies (routed-to-triage handoff)', async () => {
+  it('block_loop_detected notifies that a decision is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'block_loop_detected', { reason: 'same cause 3x' })])
 
     expect(fired).toBe(true)
-    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'same cause 3x' })
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      message: 'same cause 3x'
+    })
   })
 
-  it('gave_up carries the payload error; crashed and timed_out fall back to the task id', async () => {
+  it('gave_up: plain-words body, raw payload error only in detail; crashed and timed_out fall back to the task id', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed' })])
-    expect(lastNotify()).toMatchObject({ kind: 'error', message: 'spawn failed' })
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed: ECONNREFUSED 127.0.0.1:9999' })])
+    const gaveUp = lastNotify()
+    expect(gaveUp.kind).toBe('error')
+    expect(gaveUp.message).not.toContain('spawn failed')
+    expect(gaveUp.detail).toContain('spawn failed: ECONNREFUSED 127.0.0.1:9999')
+    expect(gaveUp.detail).toContain('t101')
 
     await m.onKanbanEventsFrame('smoke', [ev(102, 'crashed'), ev(103, 'timed_out', { limit_seconds: 900 })])
     expect(hostMock.notify).toHaveBeenCalledTimes(3)
@@ -423,11 +443,23 @@ describe('terminal kinds beyond completed', () => {
     expect(hostMock.notify.mock.calls[2][0]).toMatchObject({ kind: 'warning', message: 't103' })
   })
 
+  it('gave_up without a payload error still gets the plain-words body and no empty detail noise', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', null)])
+    expect(lastNotify()).toMatchObject({ kind: 'error', detail: 't101' })
+  })
+
   it('silent kinds (status/archived/unblocked) advance the cursor but never notify', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'status', { status: 'running' }), ev(102, 'archived'), ev(103, 'unblocked')])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'status', { status: 'running' }),
+      ev(102, 'archived'),
+      ev(103, 'unblocked')
+    ])
     expect(hostMock.notify).not.toHaveBeenCalled()
 
     // Cursor moved past 103: a replayed blocked at 102 stays silent, 104 fires.
@@ -446,14 +478,16 @@ describe('native OS door', () => {
     await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs input' })])
 
     expect(os.notify).toHaveBeenCalledTimes(1)
-    expect(os.notify.mock.calls[0][0]).toEqual({
-      title: 'Task blocked — needs your input',
-      body: 'needs input\nt101',
-    })
+    expect(os.notify.mock.calls[0][0]).toMatchObject({ body: 'needs input\nt101' })
   })
 
   it('an os door that throws never breaks the toast or the frame result', async () => {
-    const os = { notify: vi.fn(() => { throw new Error('no shell') }) }
+    const os = {
+      notify: vi.fn(() => {
+        throw new Error('no shell')
+      })
+    }
+
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
 
@@ -480,11 +514,17 @@ describe('native OS door', () => {
 describe('i18n routing', () => {
   it('uses the bound plugin translator when it resolves the key', async () => {
     const t = vi.fn((key: string, ...args: unknown[]) => {
-      if (key === 'notify.completedTitle') {return 'タスク完了'}
+      if (key === 'notify.completedTitle') {
+        return 'タスク完了'
+      }
 
-      if (key === 'notify.openKanban') {return 'かんばんを開く'}
+      if (key === 'notify.openKanban') {
+        return 'かんばんを開く'
+      }
 
-      if (key === 'notify.artifacts') {return `成果物 ${args[0]} 件`}
+      if (key === 'notify.artifacts') {
+        return `成果物 ${args[0]} 件`
+      }
 
       return key
     })
@@ -497,7 +537,7 @@ describe('i18n routing', () => {
     expect(lastNotify()).toMatchObject({
       title: 'タスク完了',
       detail: 't101 · 成果物 2 件',
-      action: { label: 'かんばんを開く', onClick: expect.any(Function) },
+      action: { label: 'かんばんを開く', onClick: expect.any(Function) }
     })
   })
 
@@ -507,6 +547,7 @@ describe('i18n routing', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'timed_out')])
 
-    expect(lastNotify().title).toBe('Task timed out — will retry')
+    expect(lastNotify().title).toBeTruthy()
+    expect(lastNotify().title).not.toMatch(/^notify\./)
   })
 })

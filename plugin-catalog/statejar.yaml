@@ -1,0 +1,29 @@
+name: statejar
+repo: https://github.com/KING-OF-FLAME/statejar-integrations
+sha: e4cb293be7dac91093d0376d190af3e0a6a70c1b
+subdir: hermes/statejar
+description: "Verifiable memory for Hermes Agent (memory.provider statejar): typed facts with one value per field, append-only content-addressed versions, recall of only what a message needs with the handle of the state it came from, and an audit trail of every disclosure. Disclosure — the user's current message (first 2,000 characters) is sent to api.statejar.com as a recall query on every turn, and the user's own messages (three words or more), every entry Hermes's built-in memory tool saves, and the text or query the agent passes to the statejar_* tools are sent there with STATEJAR_API_KEY; assistant replies and tool output are not captured, and API keys, tokens, private keys, passwords and card numbers are removed locally first (best effort). StateJar's server sends each captured message to a cloud model provider it uses for extraction (today Google Gemini and OpenRouter). A capture queue is kept under the Hermes home (created mode 600; a queue rewritten after a failed send uses default permissions). Only the primary agent writes; cron and subagent runs only recall."
+maintainer: KING-OF-FLAME
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+version: "0.1.0"
+title: StateJar
+docs_url: https://statejar.com/docs/hermes
+homepage_url: https://statejar.com
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+  - statejar_search
+  - statejar_remember
+  - statejar_forget
+  - statejar_list
+  provides_hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - on_session_switch
+  provides_middleware: []
+  requires_env:
+  - STATEJAR_API_KEY

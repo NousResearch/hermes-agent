@@ -1,0 +1,16 @@
+name: memtomem
+repo: https://github.com/memtomem/memtomem
+sha: 1d7616b06c0f56283cb8b80c021e0b3ddd6f5862
+subdir: packages/memtomem-hermes-plugin
+version: "0.1.23"
+description: "Markdown-first long-term memory shared across your coding agents: a local memtomem MCP server plus six memory skills (index, recall, remember, search, setup, status). Notes live in ~/.memtomem and are searchable from Hermes, Claude Code, Codex CLI and Kimi Code. Runs at user scope. Disclosure — the server is launched with `uvx --python 3.12` and downloaded from PyPI (memtomem[onnx]==0.7.10, with huggingface-hub held at 1.20 or later) on first start, with Python 3.12 if uv cannot find one; it runs as a stdio MCP server for the session, with PYTHON_DOTENV_DISABLED=1 so it loads no .env file and HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so its Hugging Face downloads neither open a saved Hugging Face login nor use HF_TOKEN. It reads the directories you ask it to index and watches its configured index roots while it runs. With a fresh BM25-only configuration nothing else leaves the machine on its own; an existing memtomem configuration may enable Hugging Face model downloads, a remote embedding or LLM provider, Cohere reranking, search webhooks or scheduled maintenance jobs that run without a tool call and can send stored notes to the configured LLM, its fetch action downloads a URL on request, and turning reranking on through mem_do (rerank.enabled) loads the configured reranker at once, downloading the default local model from Hugging Face when it is not cached. The server runs as your user and is not confined to ~/.memtomem: actions that take a path (indexing, ingest, import) read it wherever you can, context_detect and context_diff read other coding agents' instruction files, skills, hook settings and MCP configuration, and its own writes, mostly under its configured memory and project directories, can follow existing directory links out of them and include runtime files such as locks under the system temp directory. Since 0.7.9 the context-gateway writes into other agents' files are not on MCP (the mm context CLI and the web UI keep them), and export bundles go to ~/.memtomem/exports/; see the README's \"Files outside memtomem's own data\"."
+maintainer: memtomem
+tier: community
+category: general
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/memtomem/memtomem/tree/1d7616b06c0f56283cb8b80c021e0b3ddd6f5862/packages/memtomem-hermes-plugin
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

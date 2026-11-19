@@ -12,6 +12,8 @@ import threading
 import time
 
 import pytest
+import hermes_cli.config as _cfg_mod
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 class TestGetConfigOffLoop:
@@ -51,7 +53,7 @@ class TestGetConfigOffLoop:
         acquired = threading.Event()
 
         def _holder():
-            with web_server._SKILLS_PROFILE_LOCK:
+            with _web_server_profiles._SKILLS_PROFILE_LOCK:
                 acquired.set()
                 release.wait(hold_s)
 
@@ -131,7 +133,7 @@ class TestRouterOffLoop:
         acquired = threading.Event()
 
         def _holder():
-            with web_server._SKILLS_PROFILE_LOCK:
+            with _web_server_profiles._SKILLS_PROFILE_LOCK:
                 acquired.set()
                 release.wait(hold_s)
 
@@ -186,7 +188,7 @@ class TestConfigMutationLock:
     """Off-loop read-modify-write handlers must not lose concurrent updates.
 
     config.py's _CONFIG_LOCK covers each load/save individually; the span
-    between them is serialized by web_server._CONFIG_MUTATION_LOCK. Two
+    between them is serialized by config_backend.CONFIG_MUTATION_LOCK. Two
     concurrent writers touching DIFFERENT keys must both survive."""
 
     @pytest.fixture(autouse=True)
@@ -207,7 +209,7 @@ class TestConfigMutationLock:
         # Race the two handlers' load→mutate→save spans. This is probabilistic,
         # not deterministically gated: the slow save_config below widens the
         # unserialized race window to ~150ms so a lost update is near-certain
-        # without _CONFIG_MUTATION_LOCK, while remaining impossible with it.
+        # without CONFIG_MUTATION_LOCK, while remaining impossible with it.
         results = []
 
         def _put_theme():
@@ -220,7 +222,7 @@ class TestConfigMutationLock:
 
         # Widen the race window: make save_config slow so an unserialized
         # interleave is near-certain, not just possible.
-        real_save = web_server.save_config
+        real_save = _cfg_mod.save_config
 
         def _slow_save(cfg, **kwargs):
             time.sleep(0.15)
@@ -228,7 +230,7 @@ class TestConfigMutationLock:
 
         threads = []
         try:
-            web_server.save_config = _slow_save
+            _cfg_mod.save_config = _slow_save
             threads = [
                 threading.Thread(target=_put_theme),
                 threading.Thread(target=_put_font),
@@ -238,7 +240,7 @@ class TestConfigMutationLock:
         finally:
             for t in threads:
                 t.join()
-            web_server.save_config = real_save
+            _cfg_mod.save_config = real_save
 
         assert all(code == 200 for _, code in results), results
         cfg = load_config()
@@ -256,7 +258,7 @@ class TestConfigMutationLock:
     def test_plugin_providers_put_serialized_against_other_writers(self):
         """PUT /api/dashboard/plugin-providers does config RMW through
         plugins_cmd._save_context_engine — it must hold the same
-        _CONFIG_MUTATION_LOCK as every other config writer, or a concurrent
+        CONFIG_MUTATION_LOCK as every other config writer, or a concurrent
         locked writer's update gets erased by its stale save."""
         try:
             from starlette.testclient import TestClient
@@ -314,5 +316,5 @@ class TestConfigMutationLock:
         assert (cfg.get("dashboard") or {}).get("theme") == "midnight", (
             "theme write lost to a concurrent plugin-providers write — "
             "PUT /api/dashboard/plugin-providers is not holding "
-            "_CONFIG_MUTATION_LOCK around its read-modify-write span"
+            "CONFIG_MUTATION_LOCK around its read-modify-write span"
         )

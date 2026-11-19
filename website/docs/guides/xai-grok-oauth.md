@@ -6,7 +6,7 @@ description: "Sign in with your SuperGrok or X Premium+ subscription to use Grok
 
 # xAI Grok OAuth (SuperGrok / X Premium+)
 
-Hermes Agent supports xAI Grok through a browser-based OAuth device-code login flow against [accounts.x.ai](https://accounts.x.ai), using either a **SuperGrok subscription** ([grok.com](https://x.ai/grok)) or an **X Premium+ subscription** (linked X account). No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+Hermes Agent supports xAI Grok through a browser-based OAuth device-code login flow against [accounts.x.ai](https://accounts.x.ai), using either a **SuperGrok subscription** ([grok.com](https://x.ai/grok)) or an **X Premium+ subscription** (linked X account). No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background. Comparing the two products? [Hermes Agent vs Grok Bot](https://hermes-agent.nousresearch.com/compare/grok-bot) covers model choice, platforms and pricing with sources.
 
 When you sign in with an X account that has Premium+, xAI automatically links the subscription status to your xAI session, so the OAuth flow works the same as it does for direct SuperGrok subscribers.
 
@@ -161,6 +161,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Chat | `grok-4.20-0309-non-reasoning` | Non-reasoning variant |
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
 | Image | `grok-imagine-image` | Default; ~5–10 s |
+| Image | `grok-imagine-image-2.0` | Typography/layout-aware; strongest quality; ~10–20 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
 | Video | `grok-imagine-video` | Text-to-video |
 | Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |

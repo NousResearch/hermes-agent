@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
+import { makeSessionInfo } from '../test/session-info'
+
 import { $activeGatewayProfile } from './profile'
 import {
   $cronSessions,
@@ -20,24 +22,7 @@ import {
   markSessionUnreadFinished
 } from './session-unread'
 
-const session = (over: Partial<SessionInfo>): SessionInfo => ({
-  archived: false,
-  cwd: null,
-  ended_at: null,
-  id: 'live',
-  input_tokens: 0,
-  is_active: false,
-  last_active: 0,
-  message_count: 0,
-  model: null,
-  output_tokens: 0,
-  preview: null,
-  source: null,
-  started_at: 0,
-  title: null,
-  tool_call_count: 0,
-  ...over
-})
+const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
 function resetAll() {
   clearAllSessionStates()

@@ -197,6 +197,11 @@ class TestClassifier:
             res = classify_login_control(_ctrl(type="password", autocomplete="current-password", label=label))
             assert res is not None and (res.token, res.score) == ("current-password", 100), label
 
+    def test_an_excluded_autocomplete_token_wins_over_a_declared_login_token(self):
+        # one-time-code / new-password are checked before any login token the same attribute declares.
+        for autocomplete in ("tel one-time-code", "current-password new-password"):
+            assert classify_login_control(_ctrl(type="tel", autocomplete=autocomplete)) is None, autocomplete
+
     def test_password_type_maps_current_password(self):
         res = classify_login_control(_ctrl(type="password"))
         assert res.token == "current-password"

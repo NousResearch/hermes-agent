@@ -8,7 +8,7 @@ import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, s
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -32,13 +32,14 @@ from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_p
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from agent.i18n import t
 from gateway.platforms.base import (
-    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
+    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
+from gateway.platforms.send_targets import StandaloneSendPolicy, regex_groups_parser
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
@@ -90,7 +91,8 @@ def _session_not_ready_error(ret: Any, errcode: Any, errmsg: Any) -> RuntimeErro
 
 def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """TCPConnector with certifi's CA bundle (``ilinkai.weixin.qq.com`` fails some system stores, e.g. Homebrew
-    OpenSSL); None without certifi so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
+    OpenSSL); None when no certifi bundle resolves (absent, or deleted by an install-environment rotation and
+    not re-derivable), so aiohttp's default (honors ``SSL_CERT_FILE`` under trust_env) applies.
     ``keepalive_timeout=2`` + ``enable_cleanup_closed`` drain idle CLOSE_WAIT sockets behind proxies like Warp.
 
     Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle connections drain promptly behind
@@ -100,12 +102,18 @@ def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """
     try:
         import ssl
-        import certifi
+
+        from agent.ssl_verify import certifi_bundle_path
     except ImportError:
         return None
     if not AIOHTTP_AVAILABLE:
         return None
-    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
+    # Re-derived when an install-environment rotation deleted the directory certifi was imported
+    # from, so a long-lived gateway does not pin a cacert.pem that no longer exists (#137255).
+    cafile = certifi_bundle_path()
+    if cafile is None:
+        return None
+    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=cafile), keepalive_timeout=2, enable_cleanup_closed=True)
 
 
 def _new_session(**kwargs: Any) -> aiohttp.ClientSession:
@@ -345,10 +353,17 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
+    from gateway.platforms.base import read_httpx_body_with_limit
+    from gateway.platforms.helpers import ssrf_checked_aiohttp_get
+
     async def _do() -> bytes:
-        async with session.get(url) as response:
+        # Callers vet ``url`` (is_safe_url for reply URLs, the CDN allowlist or configured CDN base for
+        # inbound media), so a fake-ip resolver answering the CDN with 198.18.x.x still works; every
+        # redirect hop is re-checked, since either can 302 anywhere.
+        async with ssrf_checked_aiohttp_get(session, url, first_hop_vetted=True) as response:
             response.raise_for_status()
-            return await response.read()
+            return await read_httpx_body_with_limit(
+                response, media_type="media", body=response.content.iter_chunked(65536))
     return await asyncio.wait_for(_do(), timeout=timeout_seconds)
 
 
@@ -703,7 +718,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._hermes_home = hermes_home = str(get_hermes_home())
         self._token_store = ContextTokenStore(hermes_home)
         self._typing_cache = TypingTicketCache()
-        self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
+        self._poll_session: Optional[aiohttp.ClientSession] = None
+        self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._account_id = _extra_or_secret(extra, "account_id")
@@ -718,7 +734,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
-        self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        self._rate_limit_circuit_until: float = 0.0
+        self._rate_limit_events: list[float] = []
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -891,7 +908,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             await self._token_store.set(self._account_id, sender_id, context_token)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
-        media_paths, media_types = [], []  # type: List[str], List[str]
+        media_paths: list[str] = []
+        media_types: list[str] = []
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
@@ -1020,7 +1038,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     attempt += 1
                     wait = self._send_chunk_retry_delay_seconds * attempt
                     logger.warning("[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
-                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, exc)
+                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or exc)
                     if wait > 0:
                         await asyncio.sleep(wait)
             assert last_error is not None
@@ -1055,8 +1073,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+            return SendResult(success=False, error=shown)  # the text may echo the proxy URL
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —
@@ -1086,7 +1104,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def send_image(self, chat_id: str, image_url: str, caption: str, reply_to: Optional[str] = None, metadata=None) -> SendResult:
         cleanup = image_url.startswith(("http://", "https://"))
-        file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        try:
+            file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
+        except Exception as exc:  # unsafe, failed or over gateway.max_inbound_media_bytes: keep the link
+            logger.warning("[%s] image download refused, sending the URL as text: %s", self.name, exc, exc_info=True)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         if not cleanup and not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         try:
@@ -1105,8 +1127,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
         except Exception as exc:
-            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+            return SendResult(success=False, error=shown)
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1244,7 +1266,7 @@ async def send_weixin_direct(
 
 
 # ---------------------------------------------------------------------------
-# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
+# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, gateway/outbound/senders.py
 # ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
 # ---------------------------------------------------------------------------
 
@@ -1252,6 +1274,12 @@ _INSTALL_HINT = "Weixin: aiohttp/cryptography not installed"
 
 
 _env_configured = env_is_connected("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN")
+
+
+def _config_connected(config: Any) -> bool:
+    """``config_connected_fn``: account_id AND token in the merged PlatformConfig; a token alone is
+    not enough, so this platform opts out of the generic ``token or api_key`` shortcut."""
+    return bool(config.extra.get("account_id") and (config.token or config.extra.get("token")))
 
 
 def _is_connected(config: Any) -> bool:
@@ -1273,11 +1301,11 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
     if not check_weixin_requirements():
         return send_error("Weixin requirements not met. Need aiohttp + cryptography.")
     try:
-        return await send_weixin_direct(extra=getattr(pconfig, "extra", None) or {}, token=getattr(pconfig, "token", None),
-                                        chat_id=chat_id, message=message, media_files=media_files)
+        return await send_weixin_direct(extra=(extra := getattr(pconfig, "extra", None) or {}), token=getattr(pconfig, "token", None), chat_id=chat_id, message=message, media_files=media_files)
     except Exception as e:
-        logger.debug("Weixin standalone send failed", exc_info=True)
-        return send_error(f"Weixin send failed: {e}")
+        hosts = (_extra_or_secret(extra, "base_url", ILINK_BASE_URL), _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL))
+        logger.debug("Weixin standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(*hosts, trust_env=gateway_trust_env()))))
+        return send_error(f"Weixin send failed: {shown or e}")
 
 
 # Weixin DM policy by menu index (index 2 = allowlist is prompted separately).
@@ -1301,9 +1329,9 @@ def interactive_setup() -> None:
     wizard and the facade seams tests patch keep intercepting."""
     from hermes_cli import gateway as gw
     from hermes_cli.gateway_setup_wizard import (
-        _confirm_reconfigure, _offer_home_channel, _print_setup_header, _prompt_csv, _save_env_values)
+        confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values)
 
-    _print_setup_header("💬 Weixin / WeChat")
+    print_setup_header("💬 Weixin / WeChat")
     print()
     gw._print_info_lines(
         "  1. Hermes will open Tencent iLink QR login in this terminal.",
@@ -1311,7 +1339,7 @@ def interactive_setup() -> None:
         "  3. Hermes will store the returned account_id/token in ~/.hermes/.env.",
         "  4. This adapter supports native text, image, video, and document delivery.",
     )
-    if not _confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
+    if not confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
         return
     if not check_weixin_requirements():
         gw.print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
@@ -1349,12 +1377,12 @@ def interactive_setup() -> None:
     ]
     access_idx = gw.prompt_choice("  How should direct messages be authorized?", access_choices, 0)
     if access_idx == 2:
-        allowlist = _prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
-        _save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
+        allowlist = prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
+        save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
         gw.print_success("  Weixin allowlist saved.")
     else:
         policy, allow_all, level, message = _WEIXIN_DM_POLICIES.get(access_idx, _WEIXIN_DM_POLICIES[3])
-        _save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
+        save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
         (gw.print_success if level == "success" else gw.print_warning)(message)
         if access_idx == 0:
             gw.print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
@@ -1364,19 +1392,19 @@ def interactive_setup() -> None:
     group_choices = ["Disable group chats (recommended)", "Allow all group chats", "Only allow listed group chat IDs"]
     group_idx = gw.prompt_choice("  How should group chats be handled?", group_choices, 0)
     if group_idx == 0:
-        _save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
+        save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
         gw.print_info("  Group chats disabled.")
     elif group_idx == 1:
-        _save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
+        save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
         gw.print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
     else:
-        allow_groups = _prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
-        _save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
+        allow_groups = prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
+        save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
         gw.print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
 
     if user_id:
         print()
-        _offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
+        offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
     print()
     gw.print_success("Weixin configured!")
     gw.print_info(f"  Account ID: {account_id}")
@@ -1384,13 +1412,37 @@ def interactive_setup() -> None:
         gw.print_info(f"  User ID: {user_id}")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when it improves readability, "
+    "but keep the message compact and chat-friendly. You can send media files natively: include "
+    "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
+    "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
+    "format ![alt](url) and they will be downloaded and sent as native media when possible."
+)
+_SEND_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=regex_groups_parser(_SEND_TARGET_RE, thread_group=False),
+        standalone_send=StandaloneSendPolicy(label="Weixin", media=True),
         name="weixin", label="Weixin / WeChat", adapter_factory=WeixinAdapter, check_fn=check_weixin_requirements,
+        dashboard_label="Weixin / WeChat (Personal)",
+        dashboard_description="Connect a personal WeChat account through Tencent's iLink Bot API.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
+        dashboard_env_vars=("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         is_connected=_is_connected, required_env=["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"], install_hint=_INSTALL_HINT,
-        setup_fn=interactive_setup, allowed_users_env="WEIXIN_ALLOWED_USERS", allow_all_env="WEIXIN_ALLOW_ALL_USERS",
+        config_connected_fn=_config_connected,
+        setup_fn=interactive_setup,
         cron_deliver_env_var="WEIXIN_HOME_CHANNEL",
         # Out-of-process send_message/cron; the adapter's own send() chunks (MAX_MESSAGE_LENGTH), so
         # max_message_length stays 0: send_message hands the full text + all media to one native send.
-        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True)
+        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        display_tier="low",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

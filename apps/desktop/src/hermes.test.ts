@@ -410,6 +410,46 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.sessions).toEqual([])
   })
 
+  it('keeps the endpoint-missing verdict on the gateway that 404d, not the one picked next', async () => {
+    api.mockImplementation(({ connectionId, path }: { connectionId?: string; path: string }) =>
+      path.startsWith('/api/profiles/sessions/sidebar') && connectionId === 'old-gateway'
+        ? Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+        : Promise.resolve(
+            path.startsWith('/api/profiles/sessions/sidebar')
+              ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+              : emptySessionsResponse
+          )
+    )
+
+    const req = {
+      recentsProfile: 'all' as const,
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    }
+
+    const batchedProbesOn = (connectionId: string) =>
+      api.mock.calls.filter(call => {
+        const arg = call[0] as { connectionId?: string; path: string }
+
+        return arg.connectionId === connectionId && arg.path.startsWith('/api/profiles/sessions/sidebar')
+      })
+
+    setApiRequestConnection('old-gateway')
+    await listSidebarSessions(req)
+    // A sidebar gateway pick re-scopes requests in place; nothing resets.
+    setApiRequestConnection('new-gateway')
+    await listSidebarSessions(req)
+    await listSidebarSessions(req)
+    setApiRequestConnection('old-gateway')
+    await listSidebarSessions(req)
+
+    expect(batchedProbesOn('new-gateway')).toHaveLength(2)
+    expect(batchedProbesOn('old-gateway')).toHaveLength(1)
+  })
+
   it('does NOT fall back on transient failures — only endpoint-missing shapes trigger legacy mode', async () => {
     api.mockRejectedValue(new Error('Request timed out after 60000ms'))
 

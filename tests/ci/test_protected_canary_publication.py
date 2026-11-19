@@ -19,8 +19,11 @@ import hermes_yaml
 import pytest
 
 from hermes_cli.release_channels import ChannelReader
-from scripts.releases import channel_releases, handoff
-from tests.ci.desktop_release_roles import canary_publisher, native_builds, stage_step
+from scripts.releases import channel_releases, desktop_targets, handoff, stable
+from scripts.releases.job_groups import DIAGNOSTIC_JOBS
+from tests.ci.desktop_release_roles import (
+    DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, gate, native_builds, needs_of, stage_step,
+)
 from tests.ci.test_desktop_release_tag_admission import _git, _seed_repo
 from tests.scripts.test_release_r2 import r2_server
 
@@ -157,13 +160,14 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
         env["RELEASE_TAG"] = env["HERMES_PAYLOAD_TAG"] = ""
         env["HERMES_BUILD_COMMIT"] = env["RELEASE_COMMIT"]
     root = clone / "apps/desktop/release"
-    native_leg(root, identity, env, platform, "x64")
-    script = stage_script(f"{platform}-x64", "commit" if commit_build else "release")
-    result = run(script, **env, TARGET=f"{platform}-x64")
+    arch = "x64" if platform == "win32" else "arm64"
+    native_leg(root, identity, env, platform, arch)
+    script = stage_script(f"{platform}-{arch}", "commit" if commit_build else "release")
+    result = run(script, **env, TARGET=f"{platform}-{arch}")
     assert result.returncode == 0, result.stdout + result.stderr
     prefix = f"releases/commit/{env['RELEASE_COMMIT']}/" if commit_build else f"releases/tag/{env['RELEASE_TAG']}/"
-    receipt = json.loads(r2_server.store[prefix + handoff.receipt_name(f"{platform}-x64")][0])
-    metadata_name = f"metadata-{'windows' if platform == 'win32' else 'macos'}-x64.json"
+    receipt = json.loads(r2_server.store[prefix + handoff.receipt_name(f"{platform}-{arch}")][0])
+    metadata_name = f"metadata-{'windows' if platform == 'win32' else 'macos'}-{arch}.json"
     if variant == "light" or commit_build:
         assert not any(row["path"].startswith("metadata-") for row in receipt["files"])
         return
@@ -175,17 +179,36 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
     assert metadata["version"] == (env["FIXTURE_WINDOWS_VERSION"] if platform == "win32" else env["RELEASE_TAG"][1:])
 
 
+def test_linux_build_results_never_gate_canary_publication():
+    jobs = workflow_jobs()
+    publisher = jobs[canary_publisher(jobs)]
+    assert set(needs_of(publisher)) == set(channel_releases.CANARY_NEEDS)
+    assert set(needs_of(publisher)).isdisjoint(DIAGNOSTIC_JOBS)
+    needs = admitted(needs_of(publisher))
+    for name in DIAGNOSTIC_JOBS:
+        needs[name] = {"result": "failure"}
+    tag = DOWNLOADABLE_DISPATCHES["tag"]
+    assert gate(publisher["if"], tag, needs)
+    for group in ("linux-x64", "linux-arm64"):
+        needs["validate"]["outputs"][group] = "false"
+    assert gate(publisher["if"], tag, needs)
+    needs["builds-table"]["result"] = "failure"
+    assert not gate(publisher["if"], tag, needs)
+    controller = {name: {"result": "success"} for name in channel_releases.CANARY_NEEDS}
+    stable.require_success({**controller, **{name: {"result": "failure"} for name in DIAGNOSTIC_JOBS}},
+                           list(channel_releases.CANARY_NEEDS))
+
+
 def stage_canary(clone, identity, env, run):
     root = clone / "apps/desktop/release"
     # Stage independent per-architecture job workspaces through the actual shell.
     import shutil
-    for platform in ("darwin", "win32"):
-        for arch in ("arm64", "x64"):
-            if root.exists():
-                shutil.rmtree(root)
-            native_leg(root, identity, env, platform, arch)
-            result = run(stage_script(f"{platform}-{arch}", "release"), **env, TARGET=f"{platform}-{arch}")
-            assert result.returncode == 0, result.stdout + result.stderr
+    for platform, arch in desktop_targets.TARGETS:
+        if root.exists():
+            shutil.rmtree(root)
+        native_leg(root, identity, env, platform, arch)
+        result = run(stage_script(f"{platform}-{arch}", "release"), **env, TARGET=f"{platform}-{arch}")
+        assert result.returncode == 0, result.stdout + result.stderr
     bundle = root / f"{identity['artifactNamePascal']}-{env['FIXTURE_WINDOWS_VERSION']}-win.msixbundle"
     with zipfile.ZipFile(bundle, "w") as package:
         package.writestr("AppxMetadata/AppxBundleManifest.xml", f'<Bundle><Identity Name="{identity["msixAppIdWithOrg"]}" Publisher="CN=Fixture" Version="{env["FIXTURE_WINDOWS_VERSION"]}"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
@@ -247,7 +270,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert resolved.manifest is not None
     assert resolved.manifest["request"]["windowsVersion"] == "26.913.0.1000"
     assert resolved.manifest["request"]["commit"] == env["RELEASE_COMMIT"]
-    assert len(resolved.manifest["packages"]) == 4
+    assert {(row["platform"], row["arch"]) for row in resolved.manifest["packages"]} == set(desktop_targets.TARGETS)
     # Bootstrap reads actual receipt-bound artifacts and the promoted native feeds,
     # rather than asking canary for a stable-only candidate manifest.
     from scripts.bundles.release_artifacts import write_appinstaller

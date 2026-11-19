@@ -33,6 +33,9 @@ export interface FirstRunCopy {
   skip: string
   skipTip: string
   skipFailed: string
+  /** A slash command sent in the onboarding chat before setup ends: it does not run. */
+  slashOffTitle: string
+  slashOffBody: string
   localModel: {
     title: string
     text: (model: string, size: string) => string

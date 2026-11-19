@@ -153,7 +153,6 @@ def _make_runner() -> tuple[GatewayRunner, _FakeAdapter]:
     runner.session_store = _FakeSessionStore()
     adapter = _FakeAdapter()
     runner.adapters = {Platform.DISCORD: adapter}
-    runner._queued_events = {}
     return runner, adapter
 
 

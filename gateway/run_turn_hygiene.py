@@ -175,10 +175,8 @@ class GatewayTurnHygieneMixin:
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
             if session_entry.last_prompt_tokens <= 0:
                 from agent.usage_anchor import persisted_anchor_tokens
-                _session_db = getattr(self, "_session_db", None)
-                _anchored = persisted_anchor_tokens(
-                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
-                )
+                _store = getattr(self, "persistence", None)
+                _anchored = persisted_anchor_tokens(_store, session_entry.session_id, history, persistence=_store)
             if session_entry.last_prompt_tokens > 0:
                 _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
             elif _anchored is not None:
@@ -195,17 +193,16 @@ class GatewayTurnHygieneMixin:
             # failing compression is not re-triggered on every restart.
             # The in-memory dict was reset on every restart, re-triggering the same failing compression and
             # wedging session storage (#74136).
-            _session_db = getattr(self, "_session_db", None)
-            _getter = getattr(getattr(_session_db, "_db", _session_db), "get_compression_failure_cooldown", None)
-            if _getter is not None:
-                _cooldown_state = None
+            _store = getattr(self, "persistence", None)
+            if _store is not None:
+                _cooldown, _now = None, time.time()
                 with suppress(Exception):
-                    _cooldown_state = _getter(session_entry.session_id)
-                if _cooldown_state and _cooldown_state.get("remaining_seconds", 0) > 0:
+                    _cooldown = _store.messages.read_compression_cooldown(session_entry.session_id, _now)
+                if _cooldown is not None and _cooldown.until - _now > 0:
                     logger.info(
                         "Session hygiene: skipping compression for %s; "
                         "previous failure cooldown active for %.1fs",
-                        session_entry.session_id, _cooldown_state["remaining_seconds"],
+                        session_entry.session_id, _cooldown.until - _now,
                     )
                     _needs_compress = False
 
@@ -230,9 +227,9 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_wait_for_summary(self, attempt, hs, session_entry):
         """Progress-aware inline wait for the detached hygiene compressor. Returns the compressed
         transcript; raises ``HygieneTurnHoldExceeded`` (turn-hold budget) or
-        ``asyncio.TimeoutError`` (idle/ceiling/fence cancel) for the caller's handlers.
-
-        Idle timeout (fence ticks per streamed token) + hard ceiling + turn-hold cap."""
+        ``asyncio.TimeoutError`` (idle/ceiling/fence cancel) for the caller's handlers. Idle timeout
+        (fence ticks per streamed token) + hard ceiling (moved back by prompt reading) + turn-hold cap."""
+        from agent.conversation_compression_deadline import effective_ceiling
         from gateway.run import HygieneTurnHoldExceeded, hygiene_wait_should_extend
         fence = attempt.commit_fence
         while True:
@@ -240,10 +237,9 @@ class GatewayTurnHygieneMixin:
                 raise TimeoutError
             # Charge the idle budget from the LAST PROGRESS event, else silence can approach 2x timeout.
             _hyg_waited = time.monotonic() - attempt.wait_started
-            _slice = min(
-                max(hs.timeout_seconds - fence.seconds_since_progress(), 0.005),
-                max(hs.total_ceiling_seconds - _hyg_waited, 0.005),
-            )
+            _ceiling = effective_ceiling(fence, hs.total_ceiling_seconds, attempt.wait_started)
+            _slice = min(max(hs.timeout_seconds - fence.seconds_since_progress(), 0.005),
+                         max(_ceiling - _hyg_waited, 0.005))
             # Cap the slice at the remaining turn-hold budget so a continuously-streaming worker can't
             # hold the turn until the ceiling. Budget exhausted → immediate timeout → abandonment.
             _turn_hold_remaining = hs.max_turn_hold_seconds - (time.monotonic() - attempt.wait_started)
@@ -258,6 +254,7 @@ class GatewayTurnHygieneMixin:
                 if fence.is_cancelled:
                     raise
                 _hyg_waited = time.monotonic() - attempt.wait_started
+                _ceiling = effective_ceiling(fence, hs.total_ceiling_seconds, attempt.wait_started)
                 _idle = fence.seconds_since_progress()
                 # Never hold the TURN past the budget even while the summary streams: proceed on the
                 # uncompressed transcript so the wire never trips a transport idle-timeout.
@@ -274,13 +271,13 @@ class GatewayTurnHygieneMixin:
                     )
                 if hygiene_wait_should_extend(
                     idle=_idle, timeout=hs.timeout_seconds, waited=_hyg_waited,
-                    ceiling=hs.total_ceiling_seconds, fence_cancelled=fence.is_cancelled,
+                    ceiling=_ceiling, fence_cancelled=fence.is_cancelled,
                 ):
                     if _slice >= _idle_left - 1e-9:
                         logger.info(
                             "Session hygiene compression for session %s still streaming after "
                             "%.0fs (last progress %.1fs ago) — extending wait (ceiling %.0fs)",
-                            session_entry.session_id, _hyg_waited, _idle, hs.total_ceiling_seconds,
+                            session_entry.session_id, _hyg_waited, _idle, _ceiling,
                         )
                     continue
                 raise
@@ -318,8 +315,9 @@ class GatewayTurnHygieneMixin:
 
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
         try:
-            _adapter = self._delivery_adapter_for(source)
+            _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
             if _adapter and source.chat_id:
                 await _adapter.emit_warning(source.chat_id, message, metadata=meta,
                                             logical_platform=source.platform)
@@ -424,8 +422,7 @@ class GatewayTurnHygieneMixin:
         worker crossed the commit boundary first."""
         from gateway.run import _hygiene_compression_timeout_message
         fence = attempt.commit_fence
-        _hyg_waited = time.monotonic() - attempt.wait_started
-        _hyg_total_exhausted = _hyg_waited >= hs.total_ceiling_seconds or fence.deadline_exceeded
+        _hyg_total_exhausted = fence.deadline_exceeded  # armed with the ceiling before the wait began
         if _hyg_total_exhausted:
             # The worker checks this deadline between digest calls; keep its lease until it exits so
             # an unchanged session cannot overlap a retry (the release below is then a no-op).
@@ -664,11 +661,13 @@ class GatewayTurnHygieneMixin:
 
     async def _hmwa_hygiene_build_agent(self, _hyg_model, _hyg_runtime, session_entry):
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
-        ``(agent, sync_session_db)``."""
+        ``(agent, storage interface handle)``."""
         from gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
+        from agent.prompt_caching import refresh_auto_cache_ttl
         from run_agent import AIAgent
         try:
-            _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
+            _hyg_record = await self.persistence.aio.sessions.get(session_entry.session_id)
+            _hyg_session_row = {"system_prompt": _hyg_record.system_prompt} if _hyg_record is not None else None
         except Exception as exc:
             _hyg_session_row = None
             logger.warning(
@@ -676,7 +675,7 @@ class GatewayTurnHygieneMixin:
                 "Preserving an empty prompt so the live turn rebuilds it with its "
                 "configured providers.", session_entry.session_id, exc, exc_info=True,
             )
-        _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
+        _hyg_session_db = getattr(self, "persistence", None)
         # With compression.checkpoint_required on, load the memory provider so the checkpoint exists
         # before any mutation; otherwise keep the fast path (no provider init).
         from hermes_cli.config import load_config as _load_cfg
@@ -688,13 +687,14 @@ class GatewayTurnHygieneMixin:
         _hyg_agent = AIAgent(
             **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
-            session_id=session_entry.session_id, session_db=_hyg_session_db,
+            session_id=session_entry.session_id, persistence=_hyg_session_db,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
         # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
         # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
         _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
+        refresh_auto_cache_ttl(_hyg_agent)
         return _hyg_agent, _hyg_session_db
 
     async def _hmwa_hygiene_detached_attempt(
@@ -711,9 +711,14 @@ class GatewayTurnHygieneMixin:
             # Hygiene owns the session binding, so prefer in-place compaction over minting a
             # continuation child. Without a SessionDB this stays False.
             _hyg_agent.compression_in_place = True
-            _bind_hyg_state = getattr(getattr(_hyg_agent, "context_compressor", None), "bind_session_state", None)
+            _hyg_engine = getattr(_hyg_agent, "context_compressor", None)
+            _bind_hyg_state = getattr(_hyg_engine, "bind_session_state", None)
             if callable(_bind_hyg_state):
-                _bind_hyg_state(_hyg_session_db, session_entry.session_id)
+                from agent.conversation_compression import context_engine_persistence, context_engine_session_db
+
+                # A plugin engine rebinds the SessionDB the agent bound it with, which the agent's close() closes.
+                _bind_hyg_state(context_engine_session_db(_hyg_agent, _hyg_session_db), session_entry.session_id,
+                                **context_engine_persistence(_bind_hyg_state, _hyg_session_db))
             # Never finalize on close() — that would end the live gateway session row.
             _hyg_agent._end_session_on_close = False
             _hyg_agent._print_fn = lambda *a, **kw: None

@@ -7,22 +7,60 @@ so it hits the same prefix cache, and runs under a dispatch-side tool whitelist.
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.i18n import t
-from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+from agent.prompt_cache_scope import conversation_id, resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
 _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
+# How long a turn bound with :func:`turn_waits_for_background_work` lets the session's running
+# background work finish before superseding it like a person's turn.
+_BACKGROUND_WORK_WAIT_SECONDS = 120.0
+_BACKGROUND_WORK_POLL_SECONDS = 0.1
+
+
+@dataclass
+class _TurnWait:
+    """One bound turn's wait: ``ends_wait`` ends it early once true (a person's input arrived for
+    the session, the gateway is draining); ``deadline`` is set by the turn's first wait and shared
+    by every later one (a cold /refine cancel, then the resident agent's first step)."""
+    ends_wait: Callable[[], bool]
+    deadline: Optional[float] = None
+
+
+# The bound turn's wait, or None for a turn that supersedes at once.
+_TURN_WAITS_FOR_BACKGROUND_WORK: contextvars.ContextVar[Optional[_TurnWait]] = contextvars.ContextVar(
+    "hermes_turn_waits_for_background_work", default=None)
+
+
+def _never() -> bool:
+    return False
+
+
+@contextmanager
+def turn_waits_for_background_work(ends_wait: Callable[[], bool] = _never) -> Iterator[None]:
+    """Bind around a turn no person asked for (a message a plugin injected): before it supersedes
+    the session's background review and plugin forks, the ones already running may finish, for up
+    to :data:`_BACKGROUND_WORK_WAIT_SECONDS` over the whole turn. ``ends_wait`` turning true ends
+    that wait at once (a person's input arrived behind the turn, the gateway drains). A person's
+    turn never binds it and supersedes them at once."""
+    token = _TURN_WAITS_FOR_BACKGROUND_WORK.set(_TurnWait(ends_wait))
+    try:
+        yield
+    finally:
+        _TURN_WAITS_FOR_BACKGROUND_WORK.reset(token)
 
 
 class _BackgroundReviewRun:
@@ -126,6 +164,34 @@ def _interrupt_background_review(
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
+def _await_background_work(agent: Any, wait: _TurnWait) -> None:
+    """Let the session's running review and launched plugin forks finish, for up to
+    :data:`_BACKGROUND_WORK_WAIT_SECONDS` in all, counted from the turn's first wait. A deferred fork is not waited for (it waits for
+    machine idle, which no turn brings). The wait ends early once the session agent is interrupted
+    (a person stopped or overtook the turn) or ``ends_wait()`` is true (a person's input is queued
+    behind the turn or steered or redirected into it, the gateway drains)."""
+    from agent.plugin_session_fork import launched_fork_runs
+
+    with _optional_lock(agent, "_background_review_lock"):
+        review = getattr(agent, "_background_review_run", None)
+    pending = [run for run in (review, *launched_fork_runs(agent)) if run is not None]
+    if not pending:
+        return
+    logger.info("Turn waits for %d background task(s) of session %s before starting",
+                len(pending), getattr(agent, "session_id", None))
+    if wait.deadline is None:
+        wait.deadline = time.monotonic() + _BACKGROUND_WORK_WAIT_SECONDS
+    deadline, ends_wait = wait.deadline, wait.ends_wait
+    for run in pending:
+        while not run.request_done.wait(timeout=min(_BACKGROUND_WORK_POLL_SECONDS,
+                                                     max(0.0, deadline - time.monotonic()))):
+            if (time.monotonic() >= deadline or getattr(agent, "_interrupt_requested", False)
+                    or ends_wait()):
+                logger.info("Background work of session %s still running; the turn supersedes it",
+                            getattr(agent, "session_id", None))
+                return
+
+
 def cancel_background_review_for_live_turn(
     agent: Any,
     *,
@@ -147,7 +213,18 @@ def cancel_background_review_for_live_turn(
     the run-thread wait), so this is the only thing that ever sets its ``_interrupt_requested``. Pass
     a reason-appropriate ``message``/``tool_reason`` when the caller isn't the live-turn-preemption
     path so diagnostics describe the real cause.
+
+    Inside :func:`turn_waits_for_background_work` (a plugin-injected turn) the running work is
+    first given its bounded wait (:func:`_await_background_work`); whatever is still running after
+    it is cancelled here as for any turn.
     """
+    from agent.plugin_session_fork import interrupt_plugin_forks
+
+    if (wait := _TURN_WAITS_FOR_BACKGROUND_WORK.get()) is not None:
+        _await_background_work(agent, wait)
+    # Plugin session forks share the session id too: fenced and interrupted alongside the review,
+    # awaited under the same bounded deadline.
+    plugin_runs = interrupt_plugin_forks(agent, message=message, tool_reason=tool_reason)
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
         legacy_agent = getattr(agent, "_background_review_agent", None)
@@ -157,14 +234,13 @@ def cancel_background_review_for_live_turn(
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
         _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
-    if run is None:
-        return
-    if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
-        logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; proceeding (%s)",
-            _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
-            message,
-        )
+    deadline = time.monotonic() + _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS
+    for label, pending in [("Background review", run)] * (run is not None) + [("Plugin session fork", r) for r in plugin_runs]:
+        if not pending.request_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            logger.warning(
+                "%s did not acknowledge cancellation within %.1fs; proceeding (%s)",
+                label, _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS, message,
+            )
 
 
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full
@@ -378,6 +454,14 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    # Without a grounding rule the reviewer saved trait guesses and one-off requests as standing
+    # facts. Store-neutral on purpose: scoped to USER.md only, the same guess moved to MEMORY.md.
+    "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
+    "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
+    "tools used, and never turn a one-off request into a standing preference (in either store) "
+    "unless the user marked it general ('always', 'from now on', 'remember') or stated a standing "
+    "like/dislike ('I hate X', 'stop doing Y'). If unsure, leave it "
+    "out — a wrong fact misleads every future session.\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (
@@ -472,7 +556,9 @@ _SKILL_REVIEW_PROMPT = (
     "new learning, PATCH that one first (re-load it with skill_view during this review — see "
     "Read-before-write below). It is the skill that was in play, so it's the right one to extend — "
     "whoever wrote it: hand-written, installed, bundled, and pinned skills are all yours to "
-    "improve.\n"
+    "improve. The one exception is a skill the user LOCKED (`hermes curator lock`): skill_manage "
+    "refuses it — do not retry and do not recreate it under another name; put the suggested "
+    "change in your summary instead.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). If no loaded skill fits but "
     "an existing class-level skill does, patch it. Add a subsection, a pitfall, or broaden a "
     "trigger.\n"
@@ -774,19 +860,35 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
     }
 
 
-def _record_review_usage_to_parent(parent_agent: Any, usage: dict[str, Any]) -> None:
-    """Record a fork's usage against the parent session (best-effort, never raises). The fork has
-    ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
-    them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
-    the transcript or ``sessions`` row."""
+def _record_review_usage_to_parent(
+    parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
+    session_id: Optional[str] = None, store: Any = None,
+) -> None:
+    """Record a fork's usage against the parent session (or ``session_id`` when given) under
+    ``task`` (best-effort, never raises), through ``store`` when given, else the parent's own
+    handle. The fork has ``_session_db = None`` so
+    conversation_loop's DB-gated accounting never sees its calls; route them through the
+    aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
+    or ``sessions`` row."""
     try:
         session_db = getattr(parent_agent, "_session_db", None)
-        session_id = getattr(parent_agent, "session_id", None)
+        session_id = session_id or getattr(parent_agent, "session_id", None)
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
+        from agent.agent_init_session import agent_interface
+        if (store := store if store is not None else agent_interface(parent_agent)) is not None:
+            from persistence.conversation.usage import TokenCounts
+            api_calls = counts.pop("api_calls")
+            store.usage.record_auxiliary_usage(
+                session_id, task, model=usage.get("model"),
+                billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
+                tokens=TokenCounts(**counts), estimated_cost_usd=usage.get("estimated_cost_usd"),
+                api_call_count=api_calls,
+            )
+            return
         session_db.record_auxiliary_usage(
-            session_id, task="background_review", model=usage.get("model"),
+            session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
             api_call_count=counts.pop("api_calls"), **counts,
@@ -984,6 +1086,14 @@ def build_cache_parity_fork(
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+    # A same-route fork shares the parent's warmed prefix; a routed fork's own prefix is never warmed.
+    review_agent._skip_prompt_cache_warming = True
+    if _routed and getattr(review_agent, "_cache_ttl", None) == "1h":
+        # A routed fork's cache is cold and nobody pauses between its calls: 1h writes buy nothing (#104168).
+        review_agent._cache_ttl = "5m"
+    elif not _routed and getattr(agent, "_cache_ttl_adaptive", False):
+        # The parent's markers as they are now (5m before its first pause, 1h after): same bytes, same cache.
+        review_agent._cache_ttl = agent._cache_ttl
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     # Fork-turn log tag: the fork shares the parent's session_id (and model on the
     # same-model path), so its turn-start/turn-exit log lines are otherwise
@@ -1001,8 +1111,10 @@ def build_cache_parity_fork(
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
     review_agent._end_session_on_close = False
-    review_agent._session_db = None
+    review_agent._session_db = review_agent.persistence = None
     review_agent.session_id = agent.session_id
+    # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
+    review_agent._inherited_conversation_id = conversation_id(agent)
     # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
@@ -1053,6 +1165,18 @@ def _bg_review_auto_deny(command, description, **kwargs):
     which would deadlock against the parent's TUI."""
     logger.warning("Background review auto-denied dangerous command: %s (%s)", command, description)
     return "deny"
+
+
+def _bg_review_skip_secret(var_name, prompt, metadata=None):
+    """Non-interactive secret capture: a skill the review opens never asks the user for a key.
+
+    The review thread inherits the turn's ContextVars, including the session owner's turn-scoped
+    secret prompt, so without this a ``skill_view`` of a skill with a missing required env var would
+    pop the masked "enter value" panel on the user's screen after the turn already finished.
+    """
+    logger.info("Background review skipped the secret prompt for %s", var_name)
+    return {"success": True, "reason": "background_review", "stored_as": var_name, "validated": False,
+            "skipped": True, "message": "Secret setup was skipped."}
 
 
 def _set_thread_approval_callback(callback: Any) -> None:
@@ -1135,6 +1259,7 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: list[dict] = field(default_factory=list)
     review_usage: dict[str, Any] = field(default_factory=dict)
+    store: Any = None  # the fork's own reference on the parent's store, for its usage write
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1142,6 +1267,20 @@ def _release_fork_clients(review_agent: Any) -> None:
     session-bound (close() kills that session's terminal processes), so release only clients."""
     with suppress(Exception):
         review_agent.release_clients()
+
+
+def release_cache_parity_fork(
+    parent_agent: Any, fork: Any, *, task: str, session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Teardown for a one-shot :func:`build_cache_parity_fork` caller (``/btw``, plugin side
+    questions): attribute the fork's usage under ``task`` to ``session_id`` (default: the parent's
+    current session), then release only its clients (never ``close()``, which tears down the
+    shared session's terminal sandbox, browser and file state). Never raises; returns the usage
+    snapshot."""
+    usage = _snapshot_review_usage(fork)
+    _record_review_usage_to_parent(parent_agent, usage, task=task, session_id=session_id)
+    _release_fork_clients(fork)
+    return usage
 
 
 def _run_review_fork(
@@ -1198,7 +1337,7 @@ def _run_review_fork(
         # still attributed. The recorder never raises.
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
-            _record_review_usage_to_parent(agent, st.review_usage)
+            _record_review_usage_to_parent(agent, st.review_usage, store=st.store)
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
         _track_review_fork(agent, st.review_agent, register=False)
@@ -1245,6 +1384,13 @@ def _run_review_in_thread(
         _set_thread_approval_callback(None)
         return
     st = _ReviewForkState()
+    # The gateway's stop may close the parent's handle while the review runs: the fork records its usage through its
+    # own reference on the same store, released when the fork finishes.
+    with suppress(Exception):
+        from agent.agent_init_session import agent_interface
+        if (parent_store := agent_interface(agent)) is not None:
+            from persistence_assembly import open_persistence
+            st.store = open_persistence(parent_store.scope)
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every
         # other thread's console for the whole review.
@@ -1253,7 +1399,8 @@ def _run_review_in_thread(
         # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
-        with thread_scoped_silence():
+        from tools.skills_tool import bind_turn_secret_capture
+        with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
@@ -1296,6 +1443,9 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
+        if st.store is not None:
+            with suppress(Exception):
+                st.store.close()
         # Clear the approval callback so a recycled thread-id doesn't inherit it.
         _set_thread_approval_callback(None)
 

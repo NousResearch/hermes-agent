@@ -457,6 +457,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 以及所有 `XDG_*` 变量。所有其他环境变量（API 密钥、token、密钥）均被**剥离**。
 
+由[外部密钥源](secrets/index.md)（Bitwarden、1Password、命令辅助程序）提供的变量也会传递，但 Hermes 管理的凭据除外：模型提供商密钥、Hermes 自身使用的工具密钥，以及机器人、网关和中继 token。这包括 Hermes 读取此类凭据时使用的所有名称：带编号的轮换密钥（`DEEPSEEK_API_KEY_2`）、[凭据池](features/credential-pools.md)条目所指向的任何变量（`source: env:MY_KEY`）、profile 的 `config.yaml` 作为提供商密钥指定的任何变量（`model`、`custom_providers`、`providers`、`auxiliary` 或 fallback 条目上的 `key_env` / `api_key_env`，或以 `${VAR}` / `${env:VAR}` 形式写入的 `api_key` 等凭据字段），以及当前 profile 使用的带 profile 后缀的形式（`TELEGRAM_BOT_TOKEN_<PROFILE>`）。无论这些凭据存放在哪里，都会被剥离。如果某个服务器需要其中之一，请在该服务器的 `env` 中显式声明（例如 `OPENAI_API_KEY: "${OPENAI_API_KEY}"`）。
+
 在 MCP 服务器的 `env` 配置中显式定义的变量会被透传：
 
 ```yaml
@@ -493,7 +495,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_navigate` 及所有支持 URL 的工具中均强制执行。
+当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_exec` 及所有支持 URL 的工具中均强制执行。
 
 完整详情请参见配置指南中的[网站黑名单](./configuration.md#网站黑名单)。
 
@@ -512,14 +514,14 @@ SSRF 防护对面向互联网的使用始终有效，DNS 失败被视为阻止�
 
 #### 有意允许私有 URL
 
-某些场景确实需要访问私有/内部 URL——将 `home.arpa` 解析到 RFC 1918 空间的家庭网络、仅限局域网的 Ollama/llama.cpp 端点、内部 wiki、云元数据调试等。对于这些情况，提供了一个全局选项：
+某些场景确实需要访问私有/内部 URL——将 `home.arpa` 解析到 RFC 1918 空间的家庭网络、仅限局域网的 Ollama/llama.cpp 端点、内部 wiki 等。对于这些情况，提供了一个全局选项：
 
 ```yaml
 security:
   allow_private_urls: true   # 默认：false
 ```
 
-开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT / 云元数据目标。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
+开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT 目标。云元数据端点（`169.254.169.254`、`metadata.google.internal` 等）即使开启此项也仍被阻止。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
 
 主机子字符串防护（即使底层 IP 是公共的，也能阻止 Unicode 同形字域名欺骗）无论此设置如何均保持开启。
 

@@ -1,9 +1,9 @@
 import type { MouseTrackingMode } from '@hermes/ink'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '@hermes/shared/gateway-types'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
@@ -81,6 +81,13 @@ const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
 const TRUTHY_MOUSE_ALL = new Set(['1', 'true', 'yes', 'on', 'all', 'full', 'any'])
 const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
 
+// `display.inline_images`: YAML 1.1 reads a bare `off` as false; the quoted string means the same.
+export const inlineImagesEnabled = (raw: unknown): boolean =>
+  raw !== false &&
+  String(raw ?? '')
+    .trim()
+    .toLowerCase() !== 'off'
+
 // `display.mouse_tracking` accepts boolean (`true` ⇒ all modes, `false` ⇒ off)
 // for back-compat, plus the string presets `off|wheel|buttons|all` (aliases:
 // `on`/`full`/`any`/`1`/`true`/... → `all`; `0`/`false`/`no`/`off` → `off`).
@@ -154,14 +161,23 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
 // an unrelated MCP edit. So `accepted` only moves on a confirmed reload —
 // to the server's loaded_rev (what discovery actually read), falling back
 // to the requested rev for older gateways. Retries are decoupled from
-// mtime: every poll re-compares, so a transiently broken server heals on
-// the next tick.
+// mtime: every poll re-compares, so a transiently broken server heals.
+//
+// A refused revision backs off (doubling up to MCP_RETRY_MAX_MS) instead of
+// retrying at poll rate: one parked MCP server made every open TUI re-send
+// reload.mcp every 5 s forever, each a gateway WARNING and a full reconcile
+// (#141769). A new revision retries at once.
+
+const MCP_RETRY_BASE_MS = 5000
+const MCP_RETRY_MAX_MS = 5 * 60_000
 
 export interface McpRevState {
   /** Last revision the server CONFIRMED it loaded (or boot baseline). */
   accepted: string
   /** A reload RPC is outstanding — don't stack another every poll tick. */
   inFlight: boolean
+  /** The revision whose reload was last refused, its consecutive refusals, and when it may retry. */
+  refused?: { failures: number; rev: string; retryAt: number }
 }
 
 export const syncMcpReload = async (
@@ -169,9 +185,16 @@ export const syncMcpReload = async (
   sid: string,
   nextMcpRev: string,
   state: McpRevState,
-  onReloaded?: () => void
+  onReloaded?: () => void,
+  now: () => number = Date.now
 ): Promise<void> => {
   if (!nextMcpRev || nextMcpRev === state.accepted || state.inFlight) {
+    return
+  }
+
+  const refused = state.refused?.rev === nextMcpRev ? state.refused : undefined
+
+  if (refused && now() < refused.retryAt) {
     return
   }
 
@@ -186,10 +209,19 @@ export const syncMcpReload = async (
 
     if (r?.status === 'reloaded') {
       state.accepted = String(r.loaded_rev || nextMcpRev)
+      state.refused = undefined
       onReloaded?.()
+    } else {
+      // Failure (null) or confirm_required: leave `accepted` unchanged so the
+      // same revision retries, after a backoff.
+      const failures = (refused?.failures ?? 0) + 1
+
+      state.refused = {
+        failures,
+        rev: nextMcpRev,
+        retryAt: now() + Math.min(MCP_RETRY_BASE_MS * 2 ** failures, MCP_RETRY_MAX_MS)
+      }
     }
-    // Failure (null) or confirm_required: leave `accepted` unchanged so the
-    // next poll tick retries the same revision.
   } finally {
     state.inFlight = false
   }
@@ -325,6 +357,7 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    inlineImages: inlineImagesEnabled(d.inline_images),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
@@ -337,6 +370,24 @@ export const applyDisplay = (
     // no separate TUI knob.
     timestamps: d.timestamps === true
   })
+}
+
+/** T9: on the shared owner the voice bit is the session's gateway `/voice` mode (`config.get
+ *  key=voice`), not the owner process's HERMES_VOICE env, which Ink's own env never reflected. */
+export const hydrateVoiceMode = async (
+  gw: GatewayClient,
+  setVoiceEnabled: (v: boolean) => void,
+  scope: { isCurrent: () => boolean; sid: string }
+) => {
+  if (!gw.isCanonical) {
+    return
+  }
+
+  const r = await quietRpc<{ value?: string }>(gw, 'config.get', { key: 'voice', session_id: scope.sid })
+
+  if (r && scope.isCurrent()) {
+    setVoiceEnabled(r.value === 'voice_only' || r.value === 'all')
+  }
 }
 
 export function useConfigSync({
@@ -363,6 +414,7 @@ export function useConfigSync({
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
+    void hydrateVoiceMode(gw, setVoiceEnabled, scope)
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
       if (!scope.isCurrent()) {return}
       mtimeRef.current = Number(r?.mtime ?? 0)

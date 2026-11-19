@@ -211,7 +211,10 @@ Common causes:
 
 ### "MCP server 'X' requires HTTP transport but mcp.client.streamable_http is not available"
 
-If the MCP dependencies are damaged, rebuild the recorded environment through PM:
+The parenthesized cause, when present, is the import's own error. A transient failure (two
+threads importing the SDK at once, or a dependency mid-swap during an update) is retried on the
+next connect attempt, so it recovers without a restart. If the error persists, the MCP
+dependencies are damaged; rebuild the recorded environment through PM:
 
 ```bash
 hermes pm repair

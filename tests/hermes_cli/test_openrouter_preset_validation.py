@@ -153,6 +153,16 @@ def test_preset_reference_does_not_bypass_custom_endpoint_validation():
     assert result["recognized"] is False
 
 
+@pytest.mark.parametrize("provider", ["custom", "custom:openrouter"])
+def test_custom_provider_on_openrouter_host_accepts_preset_without_catalog_note(provider):
+    """A custom provider pointed at openrouter.ai is OpenRouter: its dashboard presets never appear in
+    /v1/models, so the switch must not carry a "not found" note whose URL Telegram previews as models.json."""
+    with patch("hermes_cli.models.probe_api_models", side_effect=AssertionError("must not probe /models")):
+        result = validate_requested_model(
+            "@preset/email-copywriter", provider, api_key="key", base_url="https://openrouter.ai/api/v1")
+    assert result == {"accepted": True, "persist": True, "recognized": False, "message": None}
+
+
 def test_configured_alias_switches_preset_through_real_resolution_chain(tmp_path):
     """Exercise config loading, alias resolution, runtime resolution, and validation."""
     (tmp_path / "config.yaml").write_text(

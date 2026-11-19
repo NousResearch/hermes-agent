@@ -34,6 +34,8 @@ from agent.conversation_compression import (
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
 )
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 CHAIN_ENTRY = {
     "provider": "custom",
@@ -254,6 +256,38 @@ def test_total_ceiling_exhaustion_does_not_start_fallback():
     assert len(timeouts) == 1
 
 
+class _ReadThenStallWorker(_StalledSummaryWorker):
+    """The primary attempt's server reads the prompt (pushing the fence deadline back), then stalls."""
+
+    def __call__(self, fence: CompressionCommitFence):
+        if not self.routes:
+            assert fence.extend_deadline(10.0)
+        return super().__call__(fence)
+
+
+def test_stall_after_prompt_reading_still_funds_the_fallback():
+    """Prompt reading moves the fence deadline; the fallback must be budgeted from the moved deadline,
+    not the primary attempt's original one, or a long read followed by a stall skips the fallback."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary"}]
+    worker = _ReadThenStallWorker(compressed)
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            # Same budget as the exhaustion test above: without the extension the idle expiry spends it.
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 2, "the extended budget must fund the fallback attempt"
+    assert msgs == compressed
+    assert prompt == "summarized-prompt"
+    assert not timeouts
+
+
 def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):
     """The cancelled primary worker persists ``stall_interrupted`` while the fallback retry is already
     running; that cooldown must not no-op the retry (#112387). Real AIAgent, real ``compress_context``
@@ -265,17 +299,16 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     import agent.conversation_compression as cc
     from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from hermes_state import SessionDB
 
     session_id = "STALL_FALLBACK_SAME_TURN"
-    db = SessionDB(db_path=Path(tmp_path) / "state.db")
-    db.create_session(session_id, source="cli")
+    db = storage_handle(Path(tmp_path))
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            persistence=db, session_id=session_id, skip_context_files=True, skip_memory=True,
         )
     agent._compression_feasibility_checked = True
     agent.compression_in_place = True

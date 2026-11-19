@@ -93,3 +93,27 @@ test('a prerequisite attachment resolves the launch profile alias before prepari
     expect(calls[1]).toMatchObject({ method: 'session.mutate', params: { profile: 'work', expected_revision: 3 } })
   } finally { client.close() }
 })
+
+test('a zero timeout is no deadline on the canonical socket: the request is sent and waits (F3)', async () => {
+  // onboarding.state / onboarding.start pass 0 (NO_DEADLINE): the shared channel arms no timer for 0.
+  // The canonical wrapper used to read 0 as an already-spent deadline and throw before sending, so the
+  // first-run decision settled at once and the setup card covered a configured home until readiness answered.
+  vi.spyOn(JsonRpcGatewayClient.prototype, 'connect').mockResolvedValue()
+  const calls: Array<{ method: string; timeout?: number }> = []
+  let answer: (value: unknown) => void = () => undefined
+
+  vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async (method, _params, timeout) => {
+    calls.push({ method, timeout })
+
+    return new Promise(resolve => { answer = resolve }) as never
+  })
+  const client = new HermesGateway()
+  await client.connect('ws://localhost/api/ws?native_dial=fixture&ticket=fixture')
+
+  try {
+    const state = client.request('onboarding.state', {}, 0)
+    await vi.waitFor(() => expect(calls).toEqual([{ method: 'onboarding.state', timeout: 0 }]))
+    answer({ run: false, eligible: false })
+    await expect(state).resolves.toEqual({ run: false, eligible: false })
+  } finally { client.close() }
+})

@@ -93,6 +93,30 @@ class Package:
     # The arch guard accepts the x64 PE on these targets.
     emulated_arch_targets: frozenset[str] = frozenset()
 
+    minimum_glibc: dict[str, tuple[int, int]] = {}
+
+    def host_abi_reason(self, target: str, glibc: tuple[int, ...]) -> str | None:
+        """Execution eligibility given host ABI facts, independent of pin availability."""
+        floor = self.minimum_glibc.get(target)
+        if floor is None or glibc >= floor:
+            return None
+        version = ".".join(map(str, glibc))
+        return f"{self.name} requires glibc >= {floor[0]}.{floor[1]} on {target} (host has {version})"
+
+    def native_abi_reason(self, target: str) -> str | None:
+        from pm.store import current_target
+
+        if target not in self.minimum_glibc or target != current_target():
+            return None
+        try:
+            libc, _, version = (os.confstr("CS_GNU_LIBC_VERSION") or "").partition(" ")
+            parts = version.split(".")
+            if libc != "glibc" or len(parts) < 2 or not all(part.isdecimal() for part in parts):
+                raise ValueError(f"unexpected libc version: {libc} {version}")
+            return self.host_abi_reason(target, tuple(map(int, parts)))
+        except (OSError, ValueError) as exc:
+            raise InstallError(self.name, f"cannot determine host glibc version: {exc}") from exc
+
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)
 

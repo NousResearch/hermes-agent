@@ -336,6 +336,13 @@ it('keeps local deletion unavailable while descriptor bootstrap is still pending
   expect(screen.queryByText('Local delete Managed')).toBeNull()
 })
 
+it('keeps generic row actions unavailable during descriptor bootstrap', async () => {
+  api.mockImplementation(() => new Promise(() => undefined))
+  const managed = { name: 'Managed', description: '', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '1', managed_state: 'installed', installation_revision: 'r1', actions: ['uninstall'] } as SkillInfo
+  render(<QueryClientProvider client={queryClient}><SkillCatalog profile={profile} renderInstalledAction={() => <button>Generic row delete</button>} renderInstalledDetail={() => null} skills={[managed]} /></QueryClientProvider>)
+  expect(screen.queryByRole('button', { name: 'Generic row delete' })).toBeNull()
+})
+
 it('treats a disabled provider install as a normal local skill with no provider requests', async () => {
   api.mockResolvedValue(stock)
   setup([{ name: 'Local remainder', description: '', category: '', enabled: true, provenance: 'agent' }])

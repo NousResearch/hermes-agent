@@ -235,7 +235,7 @@ function ScopedSkillCatalog({
         if (entry.provider) { return <ProviderActions disabled={!!providerAction.state} entry={entry} onAction={(item, action) => void providerAction.begin(item, action)} /> }
         const skill = catalog.skillsById.get(entry.id)
 
-        return skill && renderInstalledAction ? renderInstalledAction(skill) : null
+        return skill && !skill.provider && renderInstalledAction ? renderInstalledAction(skill) : null
       }}
       renderInstalledDetail={entry => {
         if (entry.provider) { return <ProviderDetail entry={entry} key={entry.id} profile={profile} /> }

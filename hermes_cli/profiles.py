@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES, provider_plugin_snapshot_dir
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
@@ -146,7 +146,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = _non_exportable_entries(directory, names) | provider_plugin_snapshot_dir(directory, names, source_dir)
         if at_root:
             ignored.update(root_exclude & set(names))
             ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))

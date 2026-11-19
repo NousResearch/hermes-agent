@@ -305,8 +305,9 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
     THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
-    controls (country, state, expiry month) match an option by value or visible text. No marker is
-    left on filled controls so later model-driven DOM reads cannot address them deterministically.
+    controls (country, state, expiry month) match an option by value or visible text. The stamps stay
+    for the read-back; every caller removes them afterwards (``build_unstamp_js``) so later
+    model-driven DOM reads cannot address the filled controls deterministically.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]

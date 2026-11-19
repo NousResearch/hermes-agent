@@ -578,7 +578,8 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
     """Inspect the page for its code field and write the code (minted, else asked of the user)."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
-    from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
+    from agent.vault_login_classifier import (LoginControl, build_fill_js, build_inspection_js, build_otp_fills,
+                                              build_unstamp_js, classify_otp_controls)
 
     site = origin.split("://", 1)[-1]
     nonce = secrets.token_hex(8)
@@ -597,6 +598,7 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
         fills = build_otp_fills(otp_controls, code)
         result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
         del code
+        _eval_js(effective_task_id, build_unstamp_js(nonce))  # the fill script leaves its stamps for a read-back
         if not result.get("success"):
             failed = {"success": False, "error": str(result.get("error") or "fill failed")[:200]}
             if result.get("error_type"):
@@ -942,7 +944,7 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
     Returns ``{"success": True}`` or a refusal dict ready to be serialised: the caller does not have
     to interpret anything. Every error string is scrubbed of the secret before it leaves.
     """
-    from agent.vault_login_classifier import build_fill_js
+    from agent.vault_login_classifier import build_fill_js, build_unstamp_js
     from agent.vault_store import scrub_secret_from_text
 
     fill_result = _eval_js_secret(task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce))
@@ -961,6 +963,7 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
                           f"(now on {parsed.get('found') or 'unknown'}). Nothing was written.")}
     wrote = int(parsed.get("filled", 0) or 0) if isinstance(parsed, dict) else 0
     if not wrote:
+        _eval_js(task_id, build_unstamp_js(nonce))
         return {"success": False, "error_type": "fill_not_written", "filled_fields": 0,
                 "error": "No field accepted the write: nothing was filled on this page."}
     return {"success": True}

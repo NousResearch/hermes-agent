@@ -1617,6 +1617,53 @@ class TestTwoFactor:
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
 
+    @pytest.mark.parametrize("path", ["enter_code", "fill_not_written"])
+    def test_no_inspection_stamp_is_left_on_the_page(self, store, path):
+        """The fill script leaves its stamps for a read-back. enter_code has no read-back, and a fill no
+        field accepted stops before it: both must still remove the stamps, or a later model-driven
+        read can address the very control the vault targeted."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        page = {"stamped": False}
+        if path == "enter_code":
+            controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        else:
+            controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
+                         "type": "password"}]
+
+        def run(expression):
+            if 'setAttribute("data-hermes-vault-slot"' in expression:
+                page["stamped"] = True
+                return {"success": True, "result": json.dumps(controls)}
+            if "removeAttribute('data-hermes-vault-slot')" in expression:
+                page["stamped"] = False
+                return {"success": True, "result": {"unstamped": True}}
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            if "filled }" in expression:
+                return {"success": True, "result": {"filled": 1 if path == "enter_code" else 0}}
+            return {"success": True, "result": False}
+
+        meta = _add_login(store, origin="https://example.com")
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=lambda t, e: run(e)), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda t, e: run(e)):
+                if path == "enter_code":
+                    out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+                else:
+                    out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is (path == "enter_code"), out
+        if path == "fill_not_written":
+            assert out["error_type"] == "fill_not_written"
+        assert page["stamped"] is False
+
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool

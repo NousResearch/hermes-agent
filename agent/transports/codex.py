@@ -458,16 +458,24 @@ def _prepend_developer_instructions(input_items: list[dict[str, Any]], instructi
 
 def _apply_developer_instructions_if_needed(
     kwargs: dict[str, Any], model: Any, *, is_xai_responses: bool = False,
+    system_prompt: Optional[str] = None, keep_instructions: bool = False,
 ) -> None:
     # GPT-6.2+ appends top-level instructions after input and bills them uncached on every step.
     if not _uses_developer_instructions(model, is_xai_responses=is_xai_responses):
         return
-    instructions = kwargs.pop("instructions", None)
-    if not isinstance(instructions, str) or not instructions.strip():
+    instructions = kwargs.get("instructions") if keep_instructions else kwargs.pop("instructions", None)
+    prompt_text = system_prompt if system_prompt is not None else instructions
+    if not isinstance(prompt_text, str) or not prompt_text.strip():
         return
     input_items = kwargs.get("input")
-    if isinstance(input_items, list):
-        kwargs["input"] = _prepend_developer_instructions(input_items, instructions)
+    if not isinstance(input_items, list):
+        return
+    has_developer = any(
+        isinstance(item, dict) and item.get("type") in (None, "message") and item.get("role") == "developer"
+        for item in input_items
+    )
+    if not has_developer:
+        kwargs["input"] = _prepend_developer_instructions(input_items, prompt_text)
 
 
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
@@ -851,8 +859,6 @@ class ResponsesApiTransport(ProviderTransport):
         if endpoint.prompt_cache_key and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
 
-        _apply_developer_instructions_if_needed(kwargs, wire_model, is_xai_responses=is_xai_responses)
-
         cache_retention = _default_prompt_cache_retention_for_request(model, params.get("base_url"))
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)
@@ -874,6 +880,11 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
+
+        _apply_developer_instructions_if_needed(
+            kwargs, wire_model, is_xai_responses=is_xai_responses,
+            system_prompt=instructions, keep_instructions="instructions" in request_overrides,
+        )
 
         # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
         # top-level copy (e.g. from request_overrides) fails the call with TypeError before any

@@ -267,6 +267,53 @@ def test_gpt62_turn_instructions_override_and_harmony_sanitization_and_hooks():
     assert aux_system_prompt(post_cp_input, post_cp_wire) == expected_text
 
 
+def test_gpt62_preserves_developer_prompt_when_request_overrides_replaces_input():
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    prompt = "You are Hermes."
+    kwargs = transport.build_kwargs(
+        model="gpt-6.2-sol",
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Original"}],
+        tools=[],
+        request_overrides={"input": [{"role": "user", "content": "Overridden"}]},
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+    wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+    assert "instructions" not in wire
+    assert wire["input"][0] == {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": prompt}],
+    }
+    assert wire["input"][1] == {"type": "message", "role": "user", "content": "Overridden"}
+
+    both = transport.build_kwargs(
+        model="gpt-6.2-sol",
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Original"}],
+        tools=[],
+        request_overrides={
+            "input": [{"role": "user", "content": "Overridden"}],
+            "instructions": "Turn-only guidance.",
+        },
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+    both_wire = transport.preflight_kwargs(both, sanitize_harmony_tokens=True)
+
+    assert both_wire["instructions"] == "Turn-only guidance."
+    assert both_wire["input"][0] == {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": prompt}],
+    }
+    assert both_wire["input"][1] == {"type": "message", "role": "user", "content": "Overridden"}
+
+
 def test_codex_auxiliary_moves_system_prompt_to_developer_item_for_gpt62_plus():
     from agent.auxiliary_client import _CodexCompletionsAdapter
 

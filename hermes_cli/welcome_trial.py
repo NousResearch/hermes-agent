@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any, Optional
@@ -62,12 +61,13 @@ def _machine_is_used(assume_fresh: bool) -> bool:
 
 
 def _person_at_cli_setup() -> bool:
-    """A person is answering ``hermes setup`` in a terminal on this machine: an interactive stdin and
-    stdout, outside a container, not CI, and not a run the dashboard or Desktop spawned."""
+    """A person is answering ``hermes setup`` on this machine: an interactive stdin, outside a
+    container, not CI, and not a run the dashboard or Desktop spawned. stdout is not checked: a user
+    who logs the installer through ``tee`` is still at the keyboard."""
     from hermes_cli.setup import is_interactive_stdin, is_noninteractive
     from hermes_constants import is_container
 
-    return (is_interactive_stdin() and sys.stdout.isatty() and not is_noninteractive()
+    return (is_interactive_stdin() and not is_noninteractive()
             and not is_container() and not os.environ.get("CI"))
 
 

@@ -195,10 +195,12 @@ def _print_first_run_primer(config: dict) -> None:
     from hermes_cli.setup import Colors, color, print_success, print_warning
 
     model = config.get("model")
-    name = (model.get("default") if isinstance(model, dict) else model) or anon_auth.trial_model()
+    configured = (model.get("default") if isinstance(model, dict) else model) or ""
     print()
     try:
-        resolve_provider()
+        provider = resolve_provider()
+        # On the free tier the welcome host serves only ``nous/welcome`` (``pin_model_for_route``).
+        name = anon_auth.trial_model() if provider == "nous" and anon_auth.trial_model() else configured
         free = " (free)" if name == anon_auth.GUEST_MODEL else ""
         print_success(f"Hermes is ready. Model: {name}{free}" if name else "Hermes is ready.")
     except AuthError:

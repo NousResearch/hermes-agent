@@ -1,5 +1,6 @@
 import { mergeUsage, usageFromTick } from '@hermes/shared'
 
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -151,6 +152,10 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
       pendingSnapshotFence(event.replay_epoch, event.seq)
     )
   }
+}
+
+function invalidateOnContextReset(payload: { context_reset?: boolean } | undefined, sessionId: string): void {
+  if (payload?.context_reset) {invalidateContextBreakdown(sessionId)}
 }
 
 /** session.info / session.usage / session.title. */
@@ -541,6 +546,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const usage = usageFromTick(payload)
 
     if (usage && sessionId) {
+      invalidateOnContextReset(payload, sessionId)
       // Per-session twin first: a focused secondary tile reads this cache,
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({

@@ -128,16 +128,25 @@ def context_display_source(compressor: Any) -> str:
 
 
 def context_usage_fields(compressor: Any) -> dict[str, Any]:
-    """Current occupancy only; lifetime throughput is never a context fallback."""
+    """Current occupancy in a known window; lifetime throughput is never a context fallback.
+
+    The window is reported whether or not anything has been counted in it yet:
+    ``ContextCompressor.update_model`` adopts the new model's window and zeroes the previous
+    model's occupancy, and a status bar that has not received new occupancy keeps the old one.
+    Occupancy figures stay absent until there is a reading -- never substituted.
+    """
     used = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
     maximum = getattr(compressor, "context_length", 0) or 0
-    if not used or not maximum:
+    if not maximum:
         return {}
-    used = min(used, maximum)
-    source = context_display_source(compressor)
-    return {"context_used": used, "context_max": maximum,
-            "context_percent": max(0, min(100, round(used / maximum * 100))),
-            "context_source": source, "context_estimated": source != "provider_usage"}
+    fields: dict[str, Any] = {"context_max": maximum}
+    if used:
+        used = min(used, maximum)
+        source = context_display_source(compressor)
+        fields.update(context_used=used,
+                      context_percent=max(0, min(100, round(used / maximum * 100))),
+                      context_source=source, context_estimated=source != "provider_usage")
+    return fields
 
 
 def _categories(system_prompt: str, skills: str, tools: Sequence[dict], messages: list[dict],

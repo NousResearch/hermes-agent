@@ -530,6 +530,15 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+function contextLabel(usage: StatusRuleProps['usage'], compact: boolean, show: boolean, mark: string): string {
+  if (!show) {return ''}
+
+  if (!usage.context_max) {return (usage.total ?? 0) > 0 ? `${compactNumber(usage.total)} tok` : ''}
+  const used = usage.context_used == null ? '—' : compactNumber(usage.context_used)
+
+  return compact ? `${mark}${used}${used === '—' ? '' : ' tok'}` : `${mark}${used}/${compactNumber(usage.context_max)}`
+}
+
 export function StatusRule({
   battery,
   focusView,
@@ -569,19 +578,13 @@ export function StatusRule({
   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
 
   // On narrow terminals the context read-out collapses to a bare token count
-  // (`12k tok`) and the visual fill bar is dropped entirely.
-  const ctxLabel =
-    ok('context_detail') || ok('context_pct')
-      ? usage.context_max
-        ? segs.compactCtx
-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
-        : (usage.total ?? 0) > 0
-          ? `${compactNumber(usage.total)} tok`
-          : ''
-      : ''
+  // (`12k tok`) and the visual fill bar is dropped entirely. A window with no
+  // occupancy reading yet (a model switch adopts the new window before anything
+  // is counted in it) shows `—` for the used side: an unknown count is not a
+  // measured zero.
+  const ctxLabel = contextLabel(usage, segs.compactCtx, ok('context_detail') || ok('context_pct'), contextMark)
 
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+  const bar = !segs.compactCtx && usage.context_max && pct !== undefined && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.

@@ -108,6 +108,18 @@ describe('ContextUsagePanel', () => {
     expect(screen.getByText('Conversation')).toBeTruthy()
   })
 
+  it('reads an unknown occupancy as unknown, never as a measured zero', () => {
+    // A model switch adopts the new window and zeroes the old count (`session_usage.tui_usage`
+    // leaves the fields out), so the popover must not paint `0 / 500k` as if it had measured.
+    const switched: UsageStats = { calls: 1, context_max: 500_000, input: 0, output: 0, total: 50_000 }
+
+    render(<ContextUsagePanel breakdown={null} loading={false} usage={switched} />)
+
+    expect(screen.getByText('— / 500k Tokens')).toBeTruthy()
+    expect(screen.getByText('—')).toBeTruthy()
+    expect(screen.queryByText('0 / 500k Tokens')).toBeNull()
+  })
+
   it('reports the live compression count, zero included, and never invents one', () => {
     const { rerender } = render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
 

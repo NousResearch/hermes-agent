@@ -535,16 +535,23 @@ def _require_local_write(conn, ids):
 
 
 @contextmanager
-def session_write_budget(holder, ids: str | Iterable[str], patience_s: float | None = None):
-    """Serialize a scoped write against transfers that explicitly name its store."""
+def session_lock_budget(holder, ids: tuple[str, ...], patience_s: float | None = None):
+    """Hold a store's members until commit, leaving row checks to the writer."""
     from contextlib import nullcontext
 
-    ids = (ids,) if isinstance(ids, str) else tuple(dict.fromkeys(sid for sid in ids if sid))
     patience = holder._WRITE_PATIENCE_S if patience_s is None else patience_s
     deadline = time.monotonic() + patience
     managed = _managed_root_and_current(holder.db_path)
     locks = _lock_store_members(managed[0], (managed[1],), ids, deadline) if managed and ids else nullcontext()
     with locks:
+        yield deadline
+
+
+@contextmanager
+def session_write_budget(holder, ids: str | Iterable[str], patience_s: float | None = None):
+    """Serialize operations that check a scoped row before starting their write."""
+    ids = (ids,) if isinstance(ids, str) else tuple(dict.fromkeys(sid for sid in ids if sid))
+    with session_lock_budget(holder, ids, patience_s) as deadline:
         if ids:
             with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
                 _require_local_write(conn, ids)
@@ -562,7 +569,7 @@ def guarded_discovered_write(holder, discover, write, *, patience_s: float):
         if time.monotonic() >= deadline:
             break
         needed: set[str] = set()
-        with session_write_budget(holder, ids, max(0.0, deadline - time.monotonic())) as remaining:
+        with session_lock_budget(holder, tuple(ids), max(0.0, deadline - time.monotonic())):
             def guarded(conn):
                 needed.update(discover(conn))
                 if needed - ids:
@@ -570,7 +577,7 @@ def guarded_discovered_write(holder, discover, write, *, patience_s: float):
                 _require_local_write(conn, tuple(needed))
                 return write(conn)
 
-            result = holder._execute_write(guarded, patience_s=remaining)
+            result = holder._execute_write(guarded, patience_s=max(0.0, deadline - time.monotonic()))
             if result is not expand:
                 return result
         ids.update(needed)

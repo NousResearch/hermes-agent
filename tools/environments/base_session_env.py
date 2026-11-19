@@ -41,6 +41,27 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _cwd_fallback_marker(session_id: str) -> str:
+    return f"__HERMES_CWDFB_{session_id}__"
+
+
+def _cd_with_fallback(quoted_cwd: str, fallback_marker: str) -> str:
+    """The wrapper's ``cd``. A cwd removed inside the sandbox made it ``exit 126`` on every later
+    command (#62169); instead walk up to the nearest existing ancestor, then ``$HOME``, then ``/``
+    (the rule ``LocalEnvironment._usable_cwd`` applies host-side), and print where it landed so
+    ``execute`` reports it as ``cwd_fallback``. ``${d%/*}`` walks without needing ``dirname``.
+    Without *fallback_marker* (an explicit ``workdir``) a missing directory is refused."""
+    if not fallback_marker:
+        return f"builtin cd -- {quoted_cwd} || exit 126"
+    return (
+        f"builtin cd -- {quoted_cwd} 2>/dev/null || {{ __hermes_d={quoted_cwd}\n"
+        'while [ -n "$__hermes_d" ] && ! builtin cd -- "$__hermes_d" 2>/dev/null; do\n'
+        '  case $__hermes_d in /*/*|[!/]*/*) __hermes_d=${__hermes_d%/*};; /?*) __hermes_d=/;; *) __hermes_d=;; esac\n'
+        'done\n'
+        '[ -n "$__hermes_d" ] || builtin cd -- "$HOME" 2>/dev/null || builtin cd / || exit 126\n'
+        f"printf '\\n{fallback_marker}%s{fallback_marker}\\n' \"$(pwd -P)\"; }}")
+
+
 def _pipe_marker(session_id: str) -> str:
     return f"__HERMES_PIPE_{session_id}__"
 
@@ -114,7 +135,8 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
-        f"> {tmp_path}")
+        # ``>|``: the target is mktemp's existing file, which ``set -C`` would refuse with ``>``.
+        f">| {tmp_path}")
 
 
 def _snapshot_bootstrap_script(
@@ -163,7 +185,8 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
-    pipe_marker: str = "", persist_env: bool = True) -> str:
+    pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = (),
+    cwd_fallback_marker: str = "") -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
@@ -174,20 +197,27 @@ def _wrap_command_script(
     uses the same mktemp+mv atomic publish as the bootstrap and chains ``mv`` on the dump
     succeeding so a failed dump never replaces a good snapshot. ``umask 077`` is applied after
     the user's command so snapshot files (which may carry secrets) are private without
-    changing the command's umask.
+    changing the command's umask. *seed_snaps* (quoted paths) are read, first existing wins,
+    while *quoted_snap* does not exist yet: a delegated child's own snapshot starts as a copy of
+    its parent's shell state and its re-dump never writes the parent's file.
     """
     escaped = command.replace("'", "'\\''")
     capture = bool(pipe_marker) and _can_capture_pipestatus(command)
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
-    if snapshot_ready:
+    seeds = list(seed_snaps)
+    if snapshot_ready and seeds:
+        parts.append(
+            f"for __hermes_s in {quoted_snap} {' '.join(seeds)}; do "
+            'if [ -f "$__hermes_s" ]; then source "$__hermes_s" >/dev/null 2>&1 || true; break; fi; done')
+    elif snapshot_ready:
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
     parts += restore
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
-        f"builtin cd -- {quoted_cwd} || exit 126",
+        _cd_with_fallback(quoted_cwd, cwd_fallback_marker),
         _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'",
         "__hermes_ec=$?",
         "umask 077"]

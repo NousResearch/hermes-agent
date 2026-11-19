@@ -98,29 +98,31 @@ REPLIES = list(TASK.get("replies") or [])
 
 
 def fixtures():
-    with open(os.path.join(workspace, "run_tests.sh"), "w") as f:
+    with open(os.path.join(workspace, "run_tests.sh"), "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\necho 'collecting...'\nsleep 70\necho 'Ran 42 tests in 70.1s'\necho OK\n")
     os.chmod(os.path.join(workspace, "run_tests.sh"), 0o755)
     os.makedirs(os.path.join(workspace, "site"))
-    with open(os.path.join(workspace, "site", "index.html"), "w") as f:
+    with open(os.path.join(workspace, "site", "index.html"), "w", encoding="utf-8") as f:
         f.write("<h1>prefix-rediet fixture page</h1>\n")
-    with open(os.path.join(workspace, "backup.sh"), "w") as f:
+    with open(os.path.join(workspace, "backup.sh"), "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\necho backing up\n")
     os.chmod(os.path.join(workspace, "backup.sh"), 0o755)
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(), eager=True)
     t = time.time() - 30 * 86400
-    db.create_session("seed_shadow_vet", source="cli")
+    db.sessions.create(NewSession(session_id="seed_shadow_vet", source="cli"))
     for role, content in [
         ("user", "Back from the vet with Shadow. They put him on carprofen for the leg inflammation."),
         ("assistant", "Got it, what dose did they prescribe for Shadow?"),
         ("user", "Shadow's carprofen dose is 12.5 mg, twice a day with food. Two week course."),
         ("assistant", "Noted: Shadow takes 12.5 mg carprofen twice daily with food, for two weeks."),
     ]:
-        db.append_message("seed_shadow_vet", role, content=content, timestamp=t)
+        db.messages.append("seed_shadow_vet", NewMessage(role=role, content=content, timestamp=t))
         t += 60
-    db.create_session("seed_decoy", source="cli")
-    db.append_message("seed_decoy", "user", content="My cat Biscuit is on 5 mg cetirizine.", timestamp=t + 9e4)
+    db.sessions.create(NewSession(session_id="seed_decoy", source="cli"))
+    db.messages.append("seed_decoy", NewMessage(role="user", content="My cat Biscuit is on 5 mg cetirizine.", timestamp=t + 9e4))
     db.close()
 
 
@@ -305,7 +307,7 @@ def grade():
         bg_sleep = any(n == "terminal" and a.get("background") and "sleep" in str(a.get("command")) for n, a in calls)
         notes.append(f"background_sleep={bg_sleep}")
         try:
-            done = "done" in open(os.path.join(workspace, "status.txt")).read()
+            done = "done" in open(os.path.join(workspace, "status.txt"), encoding="utf-8").read()
         except OSError:
             done = False
         return (1.0 if done and not bg_sleep else 0.5 if done else 0.0), notes
@@ -314,7 +316,7 @@ def grade():
         for root, _, files in os.walk(os.path.join(hermes_home, "cron")):
             for fn in files:
                 if fn.endswith(".json"):
-                    jobs += open(os.path.join(root, fn)).read()
+                    jobs += open(os.path.join(root, fn), encoding="utf-8").read()
         notes.append(f"cron store bytes={len(jobs)}")
         return (1.0 if "backup.sh" in jobs else 0.0), notes
     if TASK_ID == "search_recall_dose":

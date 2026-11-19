@@ -37,9 +37,7 @@ def _make_runner(hermes_home=None):
     runner.adapters = {}
     runner._voice_mode = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._failed_platforms = {}
     # config is accessed by _check_slash_access and quick_commands lookup;
     # None makes policy_for_source return a disabled (allow-all) policy.
@@ -99,15 +97,12 @@ class TestUpdateCommandGatewayFlag:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)

@@ -1228,7 +1228,14 @@ def _host_supports_migration() -> Optional[str]:
 
 
 def cmd_migrate(args) -> None:
-    """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``."""
+    """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``; ``--backends`` is a report that changes no service."""
+    if getattr(args, "backends", False):
+        from hermes_cli.gateway_migrate_backends import cmd_backends_report
+        cmd_backends_report(args)
+        return
+    if getattr(args, "json", False):
+        print("✗ --json is only supported with --backends.", file=sys.stderr)
+        sys.exit(2)
     reason = _host_supports_migration()
     if reason:
         print(f"✗ {reason}")

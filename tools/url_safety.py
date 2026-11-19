@@ -100,6 +100,16 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
 _IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
 
+# IPv6 special-use ranges that are not general-purpose public destinations but that ipaddress
+# reports as global on some or all supported Python versions (fec0::/10 and 2001:20::/28 on every
+# 3.11-3.14 release). Listed explicitly so the verdict does not depend on the stdlib's tables.
+_BLOCKED_IPV6_SPECIAL_USE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "100::/64",      # Discard-only (RFC 6666)
+    "2001:2::/48",   # Benchmarking (RFC 5180)
+    "2001:20::/28",  # ORCHIDv2 (RFC 7343)
+    "fec0::/10",     # Deprecated site-local (RFC 3879)
+))
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
@@ -310,7 +320,8 @@ def _is_blocked_ip(ip: _IPAddress) -> bool:
     # classified by its embedded IPv4.
     ip = _embedded_ipv4(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
+            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK
+            or any(ip in net for net in _BLOCKED_IPV6_SPECIAL_USE_NETWORKS))
 
 
 def is_always_blocked_url(url: str) -> bool:
@@ -593,20 +604,36 @@ def _install_ssrf_guard_on_client(client: Any, *, is_async: bool = False) -> Non
         getattr(client, "__dict__", {}).get("_transport"), contextvars.ContextVar(var_name), is_async=is_async)
 
 
+# Identifying UA for Hermes-owned direct downloads: CDNs with basic bot detection
+# (upload.wikimedia.org, #89260) 403 the bare ``python-httpx/x`` default. Names the agent
+# rather than spoofing a browser (Wikimedia's User-Agent policy asks clients to identify).
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+
+
+def _with_default_user_agent(kwargs: dict) -> dict:
+    """``kwargs`` with a client-level ``User-Agent`` default; a caller's own UA (any case, any
+    ``headers=`` form) wins, and a caller-supplied headers object is never mutated."""
+    import httpx
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    return {**kwargs, "headers": headers}
+
+
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """``httpx.AsyncClient`` with connect-time SSRF validation: direct HTTP(S) connections are
     resolved, validated, and dialed by IP while the hostname is preserved for Host, SNI, and
-    certificate verification. Proxied requests delegate resolution to the proxy."""
+    certificate verification. Proxied requests delegate resolution to the proxy. Sends
+    ``DEFAULT_USER_AGENT`` unless the caller sets a ``User-Agent``."""
     import httpx
-    client = httpx.AsyncClient(**kwargs)
+    client = httpx.AsyncClient(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client, is_async=True)
     return client
 
 
 def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
+    """Create an ``httpx.Client`` with connect-time SSRF validation (same UA default)."""
     import httpx
-    client = httpx.Client(**kwargs)
+    client = httpx.Client(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client)
     return client
 

@@ -22,14 +22,18 @@ from agent.model_metadata_cache import _write_context_cache, locked_context_cach
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from agent.process_transport import is_local_server as _is_local_server
+from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_slot, endpoint_memo_key as _endpoint_memo_key
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -295,13 +299,13 @@ _BEDROCK_PROBE_FAILURE_CACHE: dict[tuple, float] = {}
 DEFAULT_CONTEXT_LENGTHS = {
     # Anthropic — bare ids only (prefixed ids resolve via OpenRouter/models.dev
     # and would collide: "anthropic/claude-sonnet-4" ⊂ "anthropic/claude-sonnet-4.6").
-    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
     "claude": 200000,  # catch-all for older Claude models
-    # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
-    # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
-    # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    # OpenAI direct-API windows (Codex OAuth has its own caps). 5.4-nano/-mini are 400k, not 1.05M;
+    # gpt-5.3-codex-spark is OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    "gpt-6.2-astra": 1050000, "gpt-6.2-sol": 1050000,
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
     "gpt-6.1-sol": 1050000, "gpt-6.1-terra": 1050000,  # Sol -pro too; both live on OpenRouter (Terra also Nous Portal, 2026-10-26)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
@@ -404,7 +408,7 @@ def is_grok_46_family(model: str) -> bool:
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 # Exact ids, not a family prefix: Opus 4.7 answers the parameter with an error, Opus 4.6 silently
 # runs and bills at standard speed, and a future Opus is unsupported until the docs list it.
-_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"})
+_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"})
 
 
 def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
@@ -836,7 +840,7 @@ _PRICING_UNIT_DIVISORS = {
     "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
-_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write", "cache_write_1h")
 
 
 def _normalize_token_rates(pricing: dict[str, Any], unit: Any) -> dict[str, Any]:
@@ -875,7 +879,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
-    }
+        "cache_write_1h": ("cache_write_1h", "input_cache_write_1h"),}
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         pricing: dict[str, Any] = {}
@@ -1008,12 +1012,6 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
-    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
-    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1034,7 +1032,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        memo = _endpoint_disk_cache_get(normalized) if not local else None
+        memo = _endpoint_disk_cache_get(_endpoint_disk_slot(memo_key)) if not local else None
         if memo is not None:
             return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
@@ -1072,7 +1070,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 with contextlib.suppress(Exception):
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
-                _endpoint_disk_cache_put(normalized, cache)
+                _endpoint_disk_cache_put(_endpoint_disk_slot(memo_key), cache)
             return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
@@ -1656,7 +1654,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6.2-astra": 272_000, "gpt-6.2-sol": 500_000, "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -2055,7 +2053,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         return context_length
     # Local endpoints: the num_ctx-aware probe first — _query_ollama_api_show is GGUF-first, which
     # can be larger and create a false-safe compression window.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if is_local_endpoint(base_url) else None
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 2b. Ollama native /api/show (GGUF-first for non-local). Non-Ollama servers 404/405 quickly.
@@ -2311,9 +2309,8 @@ def get_model_context_length(
                 logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport); falling through to hardcoded defaults", or_ctx, model)
             else:
                 return or_ctx
-    # 7. Local server before hardcoded defaults — ``Hermes-3-Llama-3.1-70B`` matches ``llama``
-    # (131072) even when vLLM runs at a lower ``--max-model-len``.
-    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if base_url and is_local_endpoint(base_url) else None
+    # 7. Local server before hardcoded defaults: vLLM's ``--max-model-len`` beats the ``llama`` 131072 row.
+    local_ctx = _probe_local_context_length(model, base_url, api_key, provider) if _is_local_server(base_url, provider) else None
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
@@ -2382,13 +2379,11 @@ def estimate_messages_tokens_rough(messages: list[dict[str, Any]], *, charge_sta
 
 
 def estimate_native_anthropic_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
-    """Estimate native Anthropic messages with replayed readable thinking charged exactly once."""
+    """Estimate native Anthropic messages with replayed thinking charged exactly once (at its billed size)."""
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_messages_tokens_rough(projected) + sum(
-        estimate_tokens_rough(text) for text in replayed_thinking
-    )
+    return estimate_messages_tokens_rough(projected) + sum(replayed_thinking)
 
 
 def estimate_native_anthropic_request_tokens_rough(
@@ -2399,9 +2394,7 @@ def estimate_native_anthropic_request_tokens_rough(
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_request_tokens_rough(
-        projected, system_prompt=system_prompt, tools=tools
-    ) + sum(estimate_tokens_rough(text) for text in replayed_thinking)
+    return estimate_request_tokens_rough(projected, system_prompt=system_prompt, tools=tools) + sum(replayed_thinking)
 
 
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
@@ -2459,6 +2452,7 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     per-image price re-prices cached rows without invalidating them."""
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
+    replay = codex_reasoning_replay_tokens(msg)  # stamp lives in display_metadata, outside the memo key
     try:
         pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
@@ -2468,19 +2462,16 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
-        return text + images * image_cost
+        return text + images * image_cost + replay
     if cached is not None:
-        return cached[1] + cached[2] * image_cost
+        return cached[1] + cached[2] * image_cost + replay
     text, images = _compute()
     remember_message_tokens(key, (pins, text, images))
-    return text + images * image_cost
+    return text + images * image_cost + replay
 
 
 def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
-
-
-_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 
 
 def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
@@ -2499,18 +2490,6 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
-def strip_opaque_replay_items(items: Any) -> Any:
-    """``codex_reasoning_items`` with ``encrypted_content`` blanked for local token estimation.
-    The ciphertext is priced by the provider's own count, never by its bytes (a compaction
-    checkpoint alone can be 5M chars, #100611); only real usage prices it."""
-    if not isinstance(items, list):
-        return items
-    return [
-        {k: ("" if k == "encrypted_content" else v) for k, v in item.items()} if isinstance(item, dict) else item
-        for item in items
-    ]
-
-
 def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
@@ -2520,9 +2499,9 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
-      ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
-      checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
-      prices them, and the usage anchor carries that price forward."""
+      ciphertext, never priced by bytes (a native compaction checkpoint alone can be 5M chars,
+      #100611); replayed reasoning is priced at its provider-reported count by
+      ``replayed_reasoning.codex_reasoning_replay_tokens``."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     drop_reasoning_dup = isinstance(_rc := msg.get("reasoning_content"), str) and bool(_rc.strip())

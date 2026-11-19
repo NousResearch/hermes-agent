@@ -81,7 +81,7 @@ const en: BotsMessages = {
     shareKeys: 'Share keys & accounts with the main profile',
     shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
-      'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+      'Subscriptions, OAuth logins, and API keys stay shared with the default profile (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
     needsModel:
       'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
     configureModel: 'Configure model',
@@ -332,11 +332,6 @@ const en: BotsMessages = {
     answerTo: member => `Answer @${member}`
   },
   tools: {
-    installHint: name => `Install "${name}" and add it to the list above`,
-    installed: name => `Skill "${name}" installed`,
-    installFailed: name => `Installing "${name}" failed`,
-    searchHint: 'Searching community + well-known sources — can take ~10s…',
-    resizeHint: 'Drag the corner to resize.',
     addServerFailed: 'Could not add server',
     noTarget: 'No target profile',
     setKeyFailed: key => `Failed to set ${key}`,
@@ -352,9 +347,7 @@ const en: BotsMessages = {
     setupFailed: 'Setup failed',
     signIn: 'Sign in…',
     setUp: 'Set up…',
-    skillsHub: 'Hermes Skills Hub',
     filterSkills: 'Filter skills…',
-    searchHub: 'Search the hub (community + well-known sources)…',
     noMcpServers: 'No MCP servers configured or in the catalog.'
   },
   screen: {
@@ -521,7 +514,7 @@ const ja: BotsMessages = {
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
     shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
-      'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+      'サブスクリプション、OAuth ログイン、API キーを default プロファイルとコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
     needsModel:
       'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
     configureModel: 'モデルを設定',
@@ -772,11 +765,6 @@ const ja: BotsMessages = {
     answerTo: member => `@${member}に回答`
   },
   tools: {
-    installHint: name => `「${name}」をインストールして上の一覧に追加`,
-    installed: name => `スキル「${name}」をインストールしました`,
-    installFailed: name => `「${name}」のインストールに失敗しました`,
-    searchHint: 'コミュニティと主要なソースを検索中 — 約 10 秒かかる場合があります…',
-    resizeHint: '角をドラッグしてサイズを変更できます。',
     addServerFailed: 'サーバーを追加できませんでした',
     noTarget: '対象プロファイルがありません',
     setKeyFailed: key => `${key} の設定に失敗しました`,
@@ -792,9 +780,7 @@ const ja: BotsMessages = {
     setupFailed: '設定に失敗しました',
     signIn: 'サインイン…',
     setUp: '設定…',
-    skillsHub: 'Hermes スキルハブ',
     filterSkills: 'スキルを絞り込み…',
-    searchHub: 'ハブを検索（コミュニティと既知のソース）…',
     noMcpServers: '設定済みまたはカタログ内の MCP サーバーはありません。'
   },
   screen: {
@@ -962,7 +948,7 @@ const zh: BotsMessages = {
     shareKeys: '与主配置档案共享密钥和账户',
     shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
-      '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+      '订阅、OAuth 登录和 API 密钥与 default 配置档案保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
     needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
     configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
@@ -1202,11 +1188,6 @@ const zh: BotsMessages = {
     answerTo: member => `回答 @${member}`
   },
   tools: {
-    installHint: name => `安装“${name}”并添加到上方列表`,
-    installed: name => `技能“${name}”已安装`,
-    installFailed: name => `安装“${name}”失败`,
-    searchHint: '正在搜索社区和常用来源 — 可能需要约 10 秒…',
-    resizeHint: '拖动角落可调整大小。',
     addServerFailed: '无法添加服务器',
     noTarget: '没有目标配置文件',
     setKeyFailed: key => `无法设置 ${key}`,
@@ -1222,9 +1203,7 @@ const zh: BotsMessages = {
     setupFailed: '设置失败',
     signIn: '登录…',
     setUp: '设置…',
-    skillsHub: 'Hermes 技能中心',
     filterSkills: '筛选技能…',
-    searchHub: '搜索技能中心（社区和常见来源）…',
     noMcpServers: '未配置 MCP 服务器，目录中也没有。'
   },
   screen: {
@@ -1388,7 +1367,7 @@ const zhHant: BotsMessages = {
     shareKeys: '與主要設定檔共用金鑰和帳戶',
     shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
-      '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+      '訂閱、OAuth 登入和 API 金鑰與 default 設定檔保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
     needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
     configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',
@@ -1628,11 +1607,6 @@ const zhHant: BotsMessages = {
     answerTo: member => `回覆 @${member}`
   },
   tools: {
-    installHint: name => `安裝「${name}」並新增至上方清單`,
-    installed: name => `技能「${name}」已安裝`,
-    installFailed: name => `安裝「${name}」失敗`,
-    searchHint: '正在搜尋社群和常用來源 — 可能需要約 10 秒…',
-    resizeHint: '拖曳角落可調整大小。',
     addServerFailed: '無法新增伺服器',
     noTarget: '沒有目標設定檔',
     setKeyFailed: key => `無法設定 ${key}`,
@@ -1648,9 +1622,7 @@ const zhHant: BotsMessages = {
     setupFailed: '設定失敗',
     signIn: '登入…',
     setUp: '設定…',
-    skillsHub: 'Hermes 技能中心',
     filterSkills: '篩選技能…',
-    searchHub: '搜尋技能中心（社群和常見來源）…',
     noMcpServers: '未設定 MCP 伺服器，目錄中也沒有。'
   },
   screen: {

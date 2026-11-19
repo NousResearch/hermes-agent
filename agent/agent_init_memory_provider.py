@@ -6,10 +6,15 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
-from hermes_constants import get_hermes_home
+from agent.agent_init_session import agent_interface
+from hermes_constants import get_hermes_home, hermes_home_key
+from persistence import SessionId
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 logger = logging.getLogger("run_agent")
 
@@ -98,37 +103,48 @@ def _stored_transcript_kwargs(agent) -> dict[str, Any]:
     count, resumed = 0, False
     if db:
         with suppress(Exception):
-            count = int((db.get_session_list_row(sid) or {}).get("message_count") or 0)
-            resumed = count > 0 and db.latest_message_row_id(sid, role="assistant", require_text=False) is not None
+            store = agent_interface(agent)
+            if store is not None:
+                row = store.sessions.list_row(sid)
+                count = int(row.message_count or 0) if row is not None else 0
+                resumed = count > 0 and store.messages.latest_row_id(sid, role="assistant", require_text=False) is not None
+            else:
+                count = int((db.get_session_list_row(sid) or {}).get("message_count") or 0)
+                resumed = count > 0 and db.latest_message_row_id(sid, role="assistant", require_text=False) is not None
     return {"resumed": resumed, "message_count": count}
 
 
-def _session_project_id(session_db, session_id: str, hermes_home) -> str | None:
-    """Resolve the workspace recorded for this session in its owner's store."""
+def _session_project_id(store: Persistence | None, session_id: str, hermes_home: str) -> str | None:
+    """Find the project for a destination session through its profile's owner store."""
+    if store is None:
+        return None
     from hermes_cli import projects_db
 
     try:
-        if session_db is None or Path(session_db.db_path).resolve().parent != Path(hermes_home).resolve():
+        if store.scope.hermes_home_key != hermes_home_key(hermes_home):
             return None
-        registry = Path(hermes_home) / "projects.db"
+        registry = store.scope.profile_dir / "projects.db"
         if not registry.is_file():
             return None
-        row = session_db.get_session(session_id) or {}
-        cwd = row.get("cwd")
-        if not cwd:
+        sid = SessionId(session_id)
+        row = store.sessions.get(sid)
+        if row is None:
             return None
-        owner_id = str(row.get("chat_id") or "")
-        route = row.get("session_key") or ""
-        if session_id.startswith("local-") or owner_id.startswith("local-") or route.split(":", 3)[2:3] == ["local"]:
-            from hermes_state_local import local_receipt
-
-            # Canonical sessions may display a different directory from the one
-            # their owner resolved for execution. Use the frozen execution cwd.
-            receipt = local_receipt(session_db, owner_id)
-            if receipt["route"] != route or session_id not in receipt.get("lineage", [owner_id]):
+        cwd = row.cwd
+        owner = row.chat_id or ""
+        route = row.session_key or ""
+        if sid.startswith("local-") or owner.startswith("local-") or route.split(":", 3)[2:3] == ["local"]:
+            if not owner:
                 return None
-            cwd = receipt["policy"]["cwd"]
-        if not cwd or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+            # A local session's display path can differ from the owner's execution workspace.
+            binding = store.bindings.receipt(SessionId(owner))
+            if binding.session_id != owner or binding.route != route or sid not in binding.lineage:
+                return None
+            cwd = binding.policy.get("cwd")
+        if not isinstance(cwd, str) or not cwd:
+            return None
+        path = Path(cwd)
+        if not path.is_absolute() or not path.is_dir():
             return None
         with projects_db.connect_closing(registry) as conn:
             project = projects_db.project_for_path(conn, cwd)
@@ -150,9 +166,10 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "agent_context": getattr(agent, "memory_agent_context", None)
         or (platform if platform in ("cron", "subagent") else "primary"),
     }
-    kwargs["_session_db"] = agent._session_db
+    store = agent_interface(agent)
+    kwargs["_session_store"] = store
     kwargs["session_project_id"] = (
-        _session_project_id(agent._session_db, agent.session_id, kwargs["hermes_home"])
+        _session_project_id(store, agent.session_id, kwargs["hermes_home"])
         if kwargs["agent_context"] == "primary" else None
     )
     # Documented in MemoryProvider.initialize: forks tell their shape apart by platform + parent.
@@ -165,12 +182,14 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
     # Session title (e.g. honcho derives chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
+            _st = (store.sessions.get_title(agent.session_id) if store is not None
+                   else agent._session_db.get_session_title(agent.session_id))
             if _st:
                 kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
+                _source = (store.sessions.get_title_source(agent.session_id) if store is not None
+                           else agent._session_db.get_session_title_source(agent.session_id))
                 if _source:
-                    kwargs["session_title_source"] = _source
+                    kwargs["session_title_source"] = _source.value if store is not None else _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:

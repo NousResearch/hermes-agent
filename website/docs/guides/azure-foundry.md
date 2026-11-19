@@ -273,6 +273,8 @@ model:
 
 With `AZURE_ANTHROPIC_KEY` set in `~/.hermes/.env`. Hermes detects `azure.com` in the base URL and short-circuits around the Claude Code OAuth token chain so the Azure key is used directly with `x-api-key` auth.
 
+Hermes never sends the Claude Code OAuth token to an `azure.com` host, from the runtime resolver (under `anthropic`, `claude` or `claude-code`, with `model.base_url`, `--base-url` or `delegation.base_url`) or model discovery: with no Azure key the resolver stops with `No Azure Anthropic API key found`. Keys added with `hermes auth add anthropic` are recorded for `api.anthropic.com` and do not serve a Foundry URL; use `model.api_key`, `key_env` or `AZURE_ANTHROPIC_KEY`. Detection is by the `azure.com` host suffix only: sovereign-cloud hosts (`*.azure.us`, `*.azure.cn`) and proxies in front of Foundry are not recognised.
+
 `key_env` is the canonical snake_case field name; `api_key_env` (and the camelCase `keyEnv` / `apiKeyEnv`) are accepted as aliases. If both `key_env` and `AZURE_ANTHROPIC_KEY`/`ANTHROPIC_API_KEY` are set, the `key_env`-named env var wins.
 
 ## Model discovery

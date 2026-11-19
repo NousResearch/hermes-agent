@@ -179,6 +179,15 @@ def _search_select_sql(snippet_sql: str, from_sql: str, where: list[str], order_
         """
 
 
+# A rewound row whose text survives nowhere else: compaction replaced it with a rewritten copy (same uid, different
+# content; a demoted tool result's stub), live or archived by a later compaction. Undo rows and verbatim carried
+# copies have no such twin.
+SUPERSEDED_ORIGINAL_SQL = (
+    "(m.active = 0 AND m.compacted = 0 AND m.message_uid IS NOT NULL AND EXISTS ("
+    "SELECT 1 FROM messages twin WHERE twin.session_id = m.session_id AND twin.message_uid = m.message_uid "
+    "AND twin.id <> m.id AND (twin.active = 1 OR twin.compacted = 1) AND twin.content IS NOT m.content))")
+
+
 def _search_filter_clauses(
     where: list[str], params: list, *, include_inactive: bool, source_filter: Optional[list[str]],
     exclude_sources: Optional[list[str]], role_filter: Optional[list[str]],
@@ -189,14 +198,10 @@ def _search_filter_clauses(
     rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
     ``sessions.started_at`` (inclusive / exclusive) and ``session_ids`` scopes to those
     sessions, both inside the query so LIMIT cannot be filled by out-of-scope hits. ``compacted_in_session``
-    keeps only that session's rows that left its live transcript: compaction-archived rows, plus a
-    superseded original whose live copy (same ``message_uid``) was rewritten, where a demoted tail
-    tool result keeps its only full text."""
+    keeps only that session's rows that left its live transcript: compaction-archived rows plus
+    superseded originals (``SUPERSEDED_ORIGINAL_SQL``)."""
     if compacted_in_session is not None:
-        where.append(
-            "m.session_id = ? AND (m.compacted = 1 OR (m.active = 0 AND m.message_uid IS NOT NULL AND EXISTS ("
-            "SELECT 1 FROM messages live WHERE live.session_id = m.session_id AND live.active = 1 "
-            "AND live.message_uid = m.message_uid AND live.content IS NOT m.content)))")
+        where.append(f"m.session_id = ? AND (m.compacted = 1 OR {SUPERSEDED_ORIGINAL_SQL})")
         params.append(compacted_in_session)
     elif not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")

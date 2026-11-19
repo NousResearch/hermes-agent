@@ -15,6 +15,7 @@ import logging
 import re
 import time
 from contextlib import ExitStack
+from itertools import zip_longest
 from pathlib import Path
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
@@ -229,8 +230,9 @@ def _get_message_storage_state(persistence, message_id) -> Optional[MessageStora
 
 
 def _is_compacted_state(state: Optional[MessageStorageState]) -> bool:
-    """Compaction-archived rows only; rewound (rewind/undo) rows must stay hidden."""
-    return state is not None and state.visibility is RowVisibility.COMPACTION_ARCHIVED
+    """Rows compaction took out of live context: archived rows and superseded originals (a demoted tool
+    result's full text). Plain rewound (rewind/undo) rows must stay hidden."""
+    return state is not None and (state.visibility is RowVisibility.COMPACTION_ARCHIVED or state.superseded)
 
 
 def _is_compacted_message(persistence, message_id) -> bool:
@@ -448,6 +450,21 @@ def _hydrate_hit(persistence, lineage_root: str, hit: SearchHit, result_detail: 
         detail=result_detail)
 
 
+def _search_rows(persistence, query: str, role_filter: Optional[list[str]], scan_limit: int, sort: Optional[str],
+                 after_ts: Optional[int], before_ts: Optional[int], **narrow) -> list[SearchHit]:
+    """The search every query shape runs: ``role_filter`` (default user/assistant), the discovery projection.
+
+    A tool role sends a search down the stored-row substring route, which can't read structured content (an image
+    turn's caption), so conversation roles search the word index separately and the two legs interleave."""
+    roles = role_filter or ["user", "assistant"]
+    groups = [g for g in ([r for r in roles if r != "tool"], [r for r in roles if r == "tool"]) if g]
+    legs = [persistence.search.search_messages(
+        query=query, role_filter=group, limit=scan_limit, offset=0,
+        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
+        after_ts=after_ts, before_ts=before_ts, **narrow) for group in groups]
+    return [hit for pair in zip_longest(*legs) for hit in pair if hit is not None][:scan_limit]
+
+
 def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
@@ -464,11 +481,9 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         title_started = _coerce_started_ts(title_meta.started_at if title_meta else None)
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
-    raw_results, err = _loud(lambda: persistence.search.search_messages(
-        query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0,
-        sort=SearchSort(sort) if sort else SearchSort.RELEVANCE,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+    raw_results, err = _loud(lambda: _search_rows(
+        persistence, query, role_filter, _DISCOVER_SCAN_LIMIT, sort, after_ts, before_ts,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES)), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -570,10 +585,7 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
                         "compression lineage lookup failed for %s", session_id)) or [session_id]
 
     def _search(scan_limit: int, **narrow):
-        return persistence.search.search_messages(
-            query=query, role_filter=role_filter or ["user", "assistant"], limit=scan_limit, offset=0,
-            sort=SearchSort(sort) if sort else SearchSort.RELEVANCE, fields=_DISCOVER_SEARCH_FIELDS,
-            after_ts=after_ts, before_ts=before_ts, **narrow)
+        return _search_rows(persistence, query, role_filter, scan_limit, sort, after_ts, before_ts, **narrow)
     # The own leg needs no Python filtering, so `limit` rows suffice; the other leg over-fetches for the guard.
     own_sid = current_session_id if current_session_id in scope else None
     own, err = (_loud(lambda: _search(limit, compacted_in_session=own_sid), "FTS5 search failed: %s", "Search failed")

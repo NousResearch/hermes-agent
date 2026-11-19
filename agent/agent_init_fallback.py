@@ -40,7 +40,7 @@ def _init_fallback_chain(agent, fallback_model):
             print(f"🔄 Fallback chain ({len(chain)} providers): " + " → ".join(labels))
 
 
-def recompute_init_fallback_api_mode(agent, fb_client) -> None:
+def recompute_init_fallback_api_mode(agent, fb_client, entry: dict[str, Any]) -> None:
     """Give an init-time fallback its own api_mode instead of the unreachable primary's.
 
     A Nous primary configured with ``api_mode: codex_responses`` otherwise leaves a fallback whose
@@ -49,12 +49,23 @@ def recompute_init_fallback_api_mode(agent, fb_client) -> None:
     The per-turn path (``try_activate_fallback``) already recomputes via
     ``_fallback_api_mode_resolved``; this keeps init in agreement, and runs before the
     ``_primary_runtime`` snapshot so ``restore_primary_runtime`` replays the recomputed mode.
+    The entry's hint comes first, as in ``bind_route_entry``: an explicit ``api_mode`` (on the entry
+    or its ``providers.<name>`` block) or a non-chat hint is kept, and only the chat default is
+    re-detected, so a declared Messages relay on a plain host stays on Messages (#33062, #81932).
+    An Actual route is pinned to chat completions before any hint, as in the binder.
     A detection failure keeps the primary's mode and never blocks the fallback itself.
     """
-    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    from agent.chat_completion_helpers import _fallback_api_mode_hint, _fallback_api_mode_resolved
+    from hermes_cli.providers import is_actual_route
+    fb_base_url = str(getattr(fb_client, "base_url", "") or "")
     try:
-        agent.api_mode = _fallback_api_mode_resolved(
-            agent, agent.provider, agent.model, str(getattr(fb_client, "base_url", "") or ""))
+        if is_actual_route(agent.provider, fb_base_url):
+            agent.api_mode = "chat_completions"  # Actual serves chat completions only, whatever the hint.
+        else:
+            explicit, hinted = _fallback_api_mode_hint(
+                entry, agent.provider, str(entry.get("base_url") or "").strip() or None)
+            agent.api_mode = hinted if explicit or hinted != "chat_completions" else _fallback_api_mode_resolved(
+                agent, agent.provider, agent.model, fb_base_url)
     except Exception:
         logger.debug("Init-time fallback api_mode detection failed for %s", agent.provider, exc_info=True)
         return
@@ -70,6 +81,7 @@ def _resolvable_fallback_entries(fallback_model, refused: list[tuple[str, str]],
     ``(provider, reason)`` and skipped.
     """
     from agent.auxiliary_client import resolve_provider_client
+    from agent.chat_completion_helpers import _fallback_api_mode_hint
     for _index, _fb in enumerate(_fallback_entries(fallback_model)):
         if _index < start:
             continue
@@ -77,9 +89,15 @@ def _resolvable_fallback_entries(fallback_model, refused: list[tuple[str, str]],
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
+            _fb_base_url = str(_fb.get("base_url") or "").strip() or None
+            # Tell the resolver a known wire: unhinted, it rewrites a dual-surface ``/anthropic`` base to
+            # ``/v1`` and a Messages client loses its path. The chat default is only a guess, so it stays
+            # unset and the resolver can still detect Messages from a named block's ``/anthropic`` base.
+            _explicit, _hinted = _fallback_api_mode_hint(_fb, _fb_provider, _fb_base_url)
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,
-                explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                explicit_base_url=_fb_base_url, explicit_api_key=_fb_explicit_key,
+                api_mode=_hinted if _explicit or _hinted != "chat_completions" else None,
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc, exc_info=True)
@@ -118,7 +136,7 @@ def _activate_init_fallback(agent, index, entry, fb_client, fb_model, _provider_
     from agent.agent_init import _client_kwargs_from_routed
     agent.provider = agent.requested_provider = entry["provider"]
     agent.model = fb_model or entry["model"]
-    recompute_init_fallback_api_mode(agent, fb_client)
+    recompute_init_fallback_api_mode(agent, fb_client, entry)
     client_kwargs = _client_kwargs_from_routed(fb_client, _provider_timeout)
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
     # The primary's pool must not rotate its keys into the fallback's route (the per-turn

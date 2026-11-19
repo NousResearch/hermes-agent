@@ -14,11 +14,15 @@ build (a third-party edge) where a test needs it to fail.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import hermes_yaml as yaml
 import providers as _providers
+from agent import anthropic_adapter
 from agent.credential_pool import CredentialPool
 from providers.base import ProviderProfile
 from run_agent import AIAgent
@@ -73,7 +77,6 @@ def _keyless_primary_agent(fallback_model, **extra):
 
 def _anthropic_sdk_rejecting(api_key):
     """Patch the Anthropic SDK build to fail for *api_key* only (an unusable native route)."""
-    from agent import anthropic_adapter
     real_build = anthropic_adapter.build_anthropic_client
 
     def build(key, *args, **kwargs):
@@ -121,3 +124,72 @@ def test_an_anthropic_wire_fallback_is_bound_to_a_native_anthropic_client(broken
     assert (agent.provider, agent.model, agent.api_mode) == ("anthropic", "claude-sonnet-4-5", "anthropic_messages")
     assert agent._anthropic_client is not None
     assert agent.client is None
+
+
+@pytest.mark.parametrize("make_agent", [
+    pytest.param(_broken_primary_agent, id="primary-client-raises"),
+    pytest.param(_keyless_primary_agent, id="primary-without-credentials"),
+])
+def test_a_named_provider_keeps_its_declared_api_mode_on_a_plain_host(broken_primary, make_agent, monkeypatch):
+    """A ``providers.<name>`` block declares its wire once; a plain host carries no Anthropic signal,
+    so init must take the declared ``api_mode``, as the per-turn binder does (#33062, #81932)."""
+    monkeypatch.setenv("MYRELAY_API_KEY", "sk-relay-test-123456")
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(yaml.safe_dump({"providers": {"myrelay": {
+        "name": "myrelay", "base_url": "http://127.0.0.1:9", "key_env": "MYRELAY_API_KEY",
+        "api_mode": "anthropic_messages", "default_model": "claude-sonnet-4-5",
+    }}}))
+
+    agent = make_agent([{"provider": "myrelay", "model": "claude-sonnet-4-5"}])
+
+    assert (agent.provider, agent.api_mode) == ("myrelay", "anthropic_messages")
+    assert agent._anthropic_client is not None
+    assert agent._anthropic_base_url.rstrip("/") == "http://127.0.0.1:9"
+    assert agent.client is None
+
+
+@pytest.mark.parametrize("make_agent", [
+    pytest.param(_broken_primary_agent, id="primary-client-raises"),
+    pytest.param(_keyless_primary_agent, id="primary-without-credentials"),
+])
+def test_an_anthropic_suffixed_fallback_keeps_its_messages_base_path(broken_primary, make_agent):
+    """The resolver rewrites a dual-surface ``/anthropic`` base to ``/v1`` unless it is told the wire;
+    a Messages client on the rewritten base would post to ``/v1/messages``."""
+    agent = make_agent([{"provider": "custom", "model": "claude-sonnet-4-5",
+                         "base_url": "https://api.minimax.io/anthropic", "api_key": "sk-ant-relay-123456"}])
+
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._anthropic_base_url.rstrip("/") == "https://api.minimax.io/anthropic"
+
+
+@pytest.mark.parametrize("make_agent", [
+    pytest.param(_broken_primary_agent, id="primary-client-raises"),
+    pytest.param(_keyless_primary_agent, id="primary-without-credentials"),
+])
+def test_an_actual_fallback_binds_chat_completions_whatever_its_declared_wire(broken_primary, make_agent):
+    """Actual serves chat completions only; the per-turn binder overrides every hint for it."""
+    agent = make_agent([{"provider": "custom", "model": "actual-model", "base_url": "https://api.actual.inc/v1",
+                         "api_key": "sk-actual-test-123456", "api_mode": "anthropic_messages"}])
+
+    assert agent.api_mode == "chat_completions"
+    assert agent.client is not None
+    assert agent._anthropic_client is None
+
+
+@pytest.mark.parametrize("make_agent", [
+    pytest.param(_broken_primary_agent, id="primary-client-raises"),
+    pytest.param(_keyless_primary_agent, id="primary-without-credentials"),
+])
+def test_a_named_provider_without_a_declared_wire_is_detected_from_its_anthropic_base(broken_primary, make_agent,
+                                                                                     monkeypatch):
+    """No ``api_mode`` declared: the resolver must still see the named block's ``/anthropic`` base
+    and build a Messages client on it, as init did before it consulted entry hints."""
+    monkeypatch.setenv("MMRELAY_API_KEY", "sk-mm-test-123456")
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(yaml.safe_dump({"providers": {"mmrelay": {
+        "name": "mmrelay", "base_url": "https://api.minimax.io/anthropic", "key_env": "MMRELAY_API_KEY",
+        "default_model": "MiniMax-M2",
+    }}}))
+
+    agent = make_agent([{"provider": "mmrelay", "model": "MiniMax-M2"}])
+
+    assert (agent.provider, agent.api_mode) == ("mmrelay", "anthropic_messages")
+    assert agent._anthropic_base_url.rstrip("/") == "https://api.minimax.io/anthropic"

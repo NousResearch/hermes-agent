@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 
@@ -54,7 +55,12 @@ class _FakeCDP:
         self.evaluates.append((msg["params"]["expression"], msg.get("sessionId")))
         return {"result": {"type": "string", "value": "ok"}}
 
+    def push(self, event: dict) -> None:
+        """Send a CDP event to the supervisor, as Chrome does when the page navigates."""
+        asyncio.run_coroutine_threadsafe(self.ws.send(json.dumps(event)), self.loop).result(5)
+
     async def _handle(self, ws) -> None:
+        self.ws = ws
         handlers = {"Target.getTargets": self._targets, "Target.attachToTarget": self._attach,
                     "Input.insertText": self._insert, "Runtime.evaluate": self._evaluate}
         async for raw in ws:
@@ -75,11 +81,58 @@ def supervisor():
         reg.stop_all()
 
 
+def _checked(sup, session_id):
+    """The document a focus check on ``session_id`` ran on, as the vault reads it."""
+    out = sup.evaluate_runtime("focusCheck()", session_id=session_id)
+    assert out["ok"] is True
+    return out["document"]
+
+
+def _navigate(sup, cdp, session_id, *, url, parent=None):
+    """Commit a document in a frame of ``session_id`` and wait until the supervisor saw it."""
+    frame_id = "child" if parent else "main"
+    frame = {"id": frame_id, "url": url, "securityOrigin": url.rsplit("/", 1)[0], **({"parentId": parent} if parent else {})}
+    cdp.push({"method": "Page.frameNavigated", "sessionId": session_id, "params": {"frame": frame}})
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with sup._state_lock:
+            seen = sup._frames.get(frame_id)
+        if seen is not None and seen.url == url:
+            return
+        time.sleep(0.01)
+    raise AssertionError("the supervisor never saw the navigation")
+
+
 def test_insert_goes_to_the_pinned_session(supervisor):
     sup, cdp = supervisor
     pinned = sup.current_page_session()
-    assert sup.insert_text("abc", session_id=pinned) == {"ok": True}
+    assert sup.insert_text("abc", session_id=pinned, document=_checked(sup, pinned)) == {"ok": True}
     assert cdp.inserts == [("abc", pinned)]
+
+
+def test_insert_refuses_once_the_checked_document_was_replaced(supervisor):
+    """A CDP session belongs to the tab, not to the document: a redirect that commits after the
+    focus check but before the keystroke keeps the session id. The text checked on the old
+    document must not land in the new one's focused input."""
+    sup, cdp = supervisor
+    pinned = sup.current_page_session()
+    document = _checked(sup, pinned)
+    _navigate(sup, cdp, pinned, url="https://evil.test/phish")
+
+    out = sup.insert_text("s3cret", session_id=pinned, document=document)
+    assert out["ok"] is False and out["code"] == "document_changed"
+    assert cdp.inserts == []
+    # A check on the new document vouches for that one.
+    assert sup.insert_text("x", session_id=pinned, document=_checked(sup, pinned)) == {"ok": True}
+
+
+def test_a_subframe_navigation_does_not_cancel_typing(supervisor):
+    """An ad or analytics iframe reloading is not the page the keystroke goes to."""
+    sup, cdp = supervisor
+    pinned = sup.current_page_session()
+    document = _checked(sup, pinned)
+    _navigate(sup, cdp, pinned, url="https://ads.test/frame", parent="main")
+    assert sup.insert_text("abc", session_id=pinned, document=document) == {"ok": True}
 
 
 def test_insert_refuses_once_the_supervisor_moved_to_another_session(supervisor):
@@ -90,7 +143,7 @@ def test_insert_refuses_once_the_supervisor_moved_to_another_session(supervisor)
     assert sup.focus_page("https://example.com")["ok"] is True
     assert sup.current_page_session() != pinned
 
-    out = sup.insert_text("s3cret", session_id=pinned)
+    out = sup.insert_text("s3cret", session_id=pinned, document=0)
     assert out["ok"] is False
     assert cdp.inserts == []
 

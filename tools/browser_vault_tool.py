@@ -286,7 +286,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
         return {"success": False, "error_type": "eval_failed",
                 "error": "The browser could not run the vault script."}
     if sup.get("ok"):
-        return {"success": True, "result": sup.get("result")}
+        return {"success": True, "result": sup.get("result"), "document": sup.get("document")}
     return {
         "success": False,
         "error_type": "supervisor_required"
@@ -739,8 +739,11 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         return {"ok": False, "success": False, "error_type": error_type, "filled_fields": 0,
                 "error": scrub_secret_from_text(message, secret)}
 
+    last = {"document": None}  # the document the latest script ran on (CDP supervisor)
+
     def _script(expression: str) -> Any:
         res = _eval_js_secret(task_id, expression)
+        last["document"] = res.get("document")
         if not res.get("success"):
             return None
         parsed = _parse_json_result(res.get("result"))
@@ -756,13 +759,15 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     if not pinned:
         return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
 
-    def _insert(text: str) -> Optional[dict[str, Any]]:
-        typed = supervisor.insert_text(text, session_id=pinned)
+    def _insert(text: str, document: Any) -> Optional[dict[str, Any]]:
+        # Typed only into the document the focus check ran on (``document``): a redirect that
+        # committed since is refused by the supervisor.
+        typed = supervisor.insert_text(text, session_id=pinned, document=document)
         if typed.get("ok"):
             return None
-        return _abort("fill_unverified",
-                      "The browser refused the trusted input for one field: "
-                      f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
+        error_type, message = _INSERT_REFUSALS.get(typed.get("code"), ("fill_unverified", ""))
+        return _abort(error_type, message or ("The browser refused the trusted input for one field: "
+                                              f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}"))
 
     # The page that holds the stamps must still be the bound origin: the supervisor's tab can
     # have navigated between the inspection and the first keystroke.
@@ -799,6 +804,9 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                     and int(checked.get("landed", 0) or 0) == 1
                     and not int(checked.get("reverted", 0) or 0))
 
+        def _focused_insert(text: str, *, refocus: bool = True) -> Optional[dict[str, Any]]:
+            return _assert_focus(refocus=refocus) or _insert(text, last["document"])
+
         def _assert_focus(*, refocus: bool = True) -> Optional[dict[str, Any]]:
             focus = _script(build_focus_js([f], nonce, expected_origin=page_origin, refocus=refocus))
             if isinstance(focus, dict) and focus.get("focused") == f["index"]:
@@ -815,7 +823,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                           f"focus now on {found or 'nothing'}) before the value could be typed. "
                           "Nothing further was typed.")
 
-        aborted = _assert_focus() or _insert(f["value"])
+        aborted = _focused_insert(f["value"])
         if aborted:
             return aborted
         verified = _verify()
@@ -833,7 +841,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # of the value would land in whatever took it. Only the first key may (re)focus the field.
         _script(build_clear_js([f], nonce, expected_origin=page_origin))
         for position, char in enumerate(str(f["value"])):
-            aborted = _assert_focus(refocus=position == 0) or _insert(char)
+            aborted = _focused_insert(char, refocus=position == 0)
             if aborted:
                 return aborted
             time.sleep(_TYPE_PER_KEY_DELAY_S)
@@ -850,6 +858,14 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
             return aborted
 
     return {"ok": True, "filled": filled + len(type_fills)}
+
+
+# ``insert_text`` refusals that name a page move, mapped to the cause the fill reports.
+_INSERT_REFUSALS = {
+    "session_changed": ("supervisor_required", _MOVED["error"]),
+    "document_changed": ("page_navigated", "The page navigated after the focus check, before the value could be "
+                                           "typed. Nothing further was typed; retry once the page settles."),
+}
 
 
 def _typing_channel(task_id: str) -> tuple[Any, Any, Any]:

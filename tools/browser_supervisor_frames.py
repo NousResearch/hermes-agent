@@ -76,6 +76,10 @@ class FrameTrackingMixin:
                 parent_frame_id=frame.get("parentId") or old.parent_frame_id, is_oopif=old.is_oopif,
                 cdp_session_id=old.cdp_session_id, name=str(frame.get("name") or old.name),
             )
+            if session_id and not frame.get("parentId"):
+                # A new top-level document on this session: a check made on the previous one no
+                # longer describes the page (``CDPSupervisor.insert_text``).
+                self._documents[session_id] = self._documents.get(session_id, 0) + 1
 
     def _on_frame_detached(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         """Drop a frame only when it's truly gone. ``reason="swap"`` = migrating processes
@@ -128,6 +132,7 @@ class FrameTrackingMixin:
         with self._state_lock:
             self._frames.update({fid: replace(f, cdp_session_id=None) for fid, f in self._frames.items()
                                  if f.cdp_session_id == sid})
+            self._documents.pop(sid, None)
 
     def _build_frame_tree_locked(self) -> dict[str, Any]:
         """Capped frame_tree payload (must hold state lock). Top frame = one with

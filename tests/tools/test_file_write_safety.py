@@ -66,6 +66,21 @@ class TestSshConfigApprovalGate:
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
 
+class TestShellRcApprovalGate:
+    """Login shell rc files pair with the terminal gate (#85321)."""
+
+    def test_shell_rc_not_hard_denied(self):
+        from agent.file_safety import is_write_denied
+
+        assert is_write_denied(os.path.expanduser("~/.bashrc")) is False
+
+    def test_shell_rc_is_approval_required(self):
+        from agent.file_safety import is_write_approval_required
+
+        for name in (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"):
+            assert is_write_approval_required(os.path.expanduser(f"~/{name}")) is True, name
+
+
 
 class TestSafeWriteRoot:
     """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
@@ -735,6 +750,25 @@ class TestProtectedInstructionFiles:
         res = self._write(tmp_path / "rules.mdc")
         assert res.get("error") and "BLOCKED" in res["error"]
 
+    @pytest.mark.parametrize("name", ["AGENT\u017f.md", "\u017foul.md", ".cur\u017forrule\u017f"])
+    def test_case_fold_spellings_are_gated(self, name):
+        """APFS folds long s to s, so these open the protected file (CERT/CC VU#604762)."""
+        import tools.file_tools_write_guards as ft
+        assert ft._protected_instruction_reason(f"/repo/{name}", enabled=True, extra_patterns=[]) == name
+
+    def test_extra_patterns_match_folded_and_nfd_names(self):
+        import tools.file_tools_write_guards as ft
+        reason = ft._protected_instruction_reason
+        assert reason("/repo/Gro\u00dfe.md", enabled=True, extra_patterns=["grosse.md"])
+        assert reason("/repo/fu\u0308r.md", enabled=True, extra_patterns=["f\u00fcr.md"])
+        assert reason("/repo/notes.md", enabled=True, extra_patterns=["grosse.md"]) is None
+
+    @pytest.mark.parametrize("pattern", ["?.md", "[\u00df].md"])
+    def test_folding_keeps_existing_pattern_matches(self, pattern):
+        """Folding only adds matches: ``?.md`` still gates ``ß.md`` although its folded key is ``ss.md``."""
+        import tools.file_tools_write_guards as ft
+        assert ft._protected_instruction_reason("/repo/\u00df.md", enabled=True, extra_patterns=[pattern])
+
     # ---- adversarial path shapes ----------------------------------------
 
     @pytest.mark.require_symlinks
@@ -961,9 +995,6 @@ class TestProfileHomeExemptsHermesRoot:
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
-        # The resolved-home slot is filled once per process; keep the fixture honest.
-        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
-        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
         yield
 
     @pytest.fixture
@@ -1108,3 +1139,25 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+def test_config_hard_block_follows_file_identity_not_spelling(tmp_path):
+    """A second name for config.yaml (a differently-cased spelling on a case-insensitive
+    filesystem, or here a hard link) is still the config file (#117815)."""
+    import tools.file_tools_write_guards as ft
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("approvals:\n  mode: manual\n", encoding="utf-8")
+    alias = tmp_path / "alias.yaml"
+    os.link(home / "config.yaml", alias)
+    (tmp_path / "other.yaml").write_text("x: 1\n", encoding="utf-8")
+    tok = set_hermes_home_override(str(home))
+    try:
+        err = ft._check_sensitive_path(str(alias), "default")
+        other = ft._check_sensitive_path(str(tmp_path / "other.yaml"), "default")
+    finally:
+        reset_hermes_home_override(tok)
+    assert err is not None and "Refusing to write to Hermes config file" in err
+    assert other is None

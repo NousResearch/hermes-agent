@@ -46,7 +46,9 @@ def _iter_provider_dirs() -> list[tuple[str, Path]]:
 
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory (bundled first, then user-installed)."""
-    bundled = _CRON_PLUGINS_DIR / name
+    bundled = _loader.plugin_child_dir(_CRON_PLUGINS_DIR, name)
+    if bundled is None:
+        return None
     if bundled.is_dir() and (bundled / "__init__.py").exists():
         return bundled
     user_dir = _loader.user_plugins_dir()
@@ -76,7 +78,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     """Import a provider module and extract its CronScheduler (register(ctx) or subclass)."""
     from cron.scheduler_provider import CronScheduler
     name = provider_dir.name
-    is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
+    is_bundled = _loader.is_direct_child(provider_dir, _CRON_PLUGINS_DIR)
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()

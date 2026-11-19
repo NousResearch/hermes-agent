@@ -646,13 +646,13 @@ def _call(call_id, name, arguments="{}"):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=arguments))
 
 
-def _run_turn_with_fork(monkeypatch, *, attempts=(["cw_offer"],), fork_replies=None, **fork_kwargs):
+def _run_turn_with_fork(monkeypatch, *, attempts=None, fork_replies=None, **fork_kwargs):
     """Live turn: calls cw_offer, answers. Its plugin forks the session from post_llm_call; the
     fork (by default) calls cw_other (not whitelisted) and cw_offer, then answers."""
     from run_agent import AIAgent
 
     probe = SimpleNamespace(calls=[], events=[], handles=[], prompt="Worth sharing with the team?",
-                            attempts=list(attempts), fork_kwargs=fork_kwargs)
+                            attempts=list(attempts or (["cw_offer"],)), fork_kwargs=fork_kwargs)
     monkeypatch.setitem(sys.modules, "_fork_probe", probe)
     _install_plugin(PLUGIN, declares=True, body=_E2E_PLUGIN)
     _load([PLUGIN], granted=[PLUGIN])

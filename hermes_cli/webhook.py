@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+import shlex
 import threading
 import time
 import urllib.request
@@ -189,10 +190,50 @@ def _route_signature(args, existing: dict, is_update: bool) -> dict:
     return {"signature": existing["signature"]} if "signature" in existing else {}
 
 
+def _is_known_delivery_target(target: object) -> bool:
+    """Whether the gateway can dispatch ``target``; plugin platforms register only after discovery."""
+    from gateway.webhook_targets import is_dispatchable_target
+
+    if not isinstance(target, str) or is_dispatchable_target(target):
+        return isinstance(target, str)
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()
+    return is_dispatchable_target(target)
+
+
+_REPAIR_FLAGS = (("prompt", "--prompt"), ("description", "--description"), ("script", "--script"),
+                 ("cron_job", "--cron-job"))
+
+
+def _repair_command(name: str, route: dict) -> str:
+    """A ``subscribe`` line that fixes the target AND resupplies the route's other saved options: subscribe
+    replaces the whole route (secret, signature and profile are kept on update by themselves)."""
+    parts = ["hermes", "webhook", "subscribe", name, "--deliver", "telegram", "--deliver-chat-id", "<CHAT_ID>"]
+    for key, flag in _REPAIR_FLAGS:
+        if isinstance(route.get(key), str) and route[key]:
+            parts += [flag, shlex.quote(route[key])]
+    for key, flag in (("events", "--events"), ("skills", "--skills")):
+        if isinstance(route.get(key), list) and route[key]:
+            parts += [flag, shlex.quote(",".join(map(str, route[key])))]
+    parts += [flag for key, flag in (("deliver_only", "--deliver-only"), ("mirror_to_session", "--mirror-to-session"))
+              if route.get(key) is True]
+    return " ".join(parts)
+
+
+def _subscribe_input_error(name: str, deliver: str) -> str | None:
+    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
+        return f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores."
+    if not _is_known_delivery_target(deliver):
+        return (f"Error: Unknown delivery target '{deliver}'. Use a platform name such as 'telegram'; "
+                "pass its chat ID separately with --deliver-chat-id.")
+    return None
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
-    if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
-        print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
+    if error := _subscribe_input_error(name, args.deliver or "log"):
+        print(error)
         return 1
 
     subs = _load_subscriptions()
@@ -324,6 +365,9 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        invalid_delivery = not _is_known_delivery_target(deliver)
+        if invalid_delivery:
+            deliver = f"{deliver} (INVALID)"
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
         if route.get("cron_job"):
@@ -337,6 +381,9 @@ def _cmd_list(args):
         print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if invalid_delivery:
+            print(f"    Fix:     {_repair_command(name, route)}")
+            print("             (subscribe replaces the whole route; adjust the platform and chat ID as needed)")
         if route.get("script"):
             print(f"    Script:  {route['script']}")
         print()

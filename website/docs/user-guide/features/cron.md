@@ -777,6 +777,20 @@ cron:
   wrap_response: false
 ```
 
+#### Per-job override
+
+A single job can override the global setting, for example to get one briefing delivered clean while every other job keeps its header. An override set on the job always wins; a job without one follows `cron.wrap_response`.
+
+From the CLI:
+
+```bash
+hermes cron create "0 8 * * *" "Morning briefing" --no-wrap-response   # deliver raw
+hermes cron edit <job_id> --wrap-response                               # force the wrapper on
+hermes cron edit <job_id> --inherit-wrap-response                       # follow the global setting again
+```
+
+Through the `cronjob` tool, set `wrap_response` to `on`, `off` or `inherit`. Leaving it out keeps the job's current setting, and a new job inherits. The dashboard API accepts `true`, `false` or `null` (inherit); any other value, including the string `"false"`, is rejected rather than stored.
+
 ### Push notifications (`cron.delivery.notify`)
 
 Cron output is a *final* delivery, not a progress message, so by default it is
@@ -838,6 +852,13 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
   thread's session, so a reply in-thread continues with full context. A
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
   delivery's follow-up discussion isolated.
+  A job created *inside* a Telegram topic (or another thread) keeps delivering to
+  that topic instead, since its origin pins it. To give such jobs a fresh thread
+  per run too, set `platforms.telegram.extra.cron_fresh_thread_per_run: true`
+  (Telegram forum topics; Discord cannot nest a thread inside the job's thread,
+  so a Discord job created in a thread keeps delivering there). It only affects
+  deliveries back to the job's own topic; an explicit `chat_id:thread_id` target
+  is never overridden.
 - **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
   is mirrored into the target DM session instead (the origin DM, or the home DM
   for fallback and bare-platform jobs) — the DM itself is the continuation surface.
@@ -1512,3 +1533,5 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+A `curl` that sends an `Authorization` header built from a secret variable is blocked for every host, `api.github.com` included. For GitHub API calls from a scheduled job, have the prompt use `gh api ...` (the `gh` CLI uses its own stored login; with a container or profile `HOME`, log in under that home), or put the request in a [script](#no-agent-mode-script-only-jobs) under `~/.hermes/scripts/` and give it a token through [`terminal.env_passthrough`](#giving-a-script-a-credential) under a name of your own (e.g. `MY_GITHUB_PAT`). `GITHUB_TOKEN` and `GH_TOKEN` are Hermes-managed credentials and are never passed through. Skill bodies attached with `--skill` get the looser assembled-prompt scan, so the bundled GitHub skills' authenticated `curl` examples still load.

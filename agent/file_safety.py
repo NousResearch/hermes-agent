@@ -16,8 +16,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_cli.home_data_layout import (
+    CREDENTIAL_STORE_DIRS, HERMES_PROTECTED_SUBPATHS, HOME_ENV_FILES, SECRET_CACHE_STORES)
 from hermes_platform.host.facts import os_family
+
+
+# The bundled google-workspace skill's OAuth stores at the HERMES_HOME root: the live refresh token,
+# the OAuth client secret and the in-flight PKCE exchange state. Only the skill's own scripts touch
+# them (direct file I/O, never through these guards); tools.credential_files still mounts the two
+# the skill declares in required_credential_files.
+GOOGLE_WORKSPACE_CREDENTIAL_FILES = ("google_token.json", "google_client_secret.json", "google_oauth_pending.json")
 
 
 def _constants_path(getter_name: str) -> Path:
@@ -261,10 +269,10 @@ def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
     # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (build_write_approval_paths).
+    # approval gate instead (_approval_paths_by_key).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
-        (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
+        *((name,) for name in HOME_CREDENTIAL_FILES),
     )
     # Secret material under HERMES_HOME, on the active profile, every sibling profile
     # and the global root: overwriting the root .env leaks credentials across every profile that
@@ -277,8 +285,8 @@ def build_write_denied_paths(home: str) -> set[str]:
     # ("true containment belongs in Docker/remote backends and OS permissions,
     # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
     hermes_files = (
-        ".env", ".anthropic_oauth.json",
-        os.path.join("auth", "google_oauth.json"),
+        *HOME_ENV_FILES, ".anthropic_oauth.json",
+        os.path.join("auth", "google_oauth.json"), *GOOGLE_WORKSPACE_CREDENTIAL_FILES,
         *SECRET_CACHE_STORES,
     )
     paths = [
@@ -289,8 +297,25 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
-# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+# Home-root single-file credential stores. Also hidden by the dashboard Files API (hermes_cli.web_routers.files);
+# agent/redact.py treats a read of one as secret-bearing output. ``_netrc`` is the name curl and git use on Windows.
+HOME_CREDENTIAL_FILES = (".netrc", "_netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials")
+
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles)
+# and hidden by the dashboard Files API.
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+
+
+def resolved_home_credential_stores() -> tuple[set[str], list[str]]:
+    """``(files, dirs)``: the home credential stores (HOME_CREDENTIAL_FILES / _DIRS) of every guard
+    home, realpath'd, so a caller can refuse a path whose resolved form lands in one even when a
+    symlink gave the store an innocuous name (``~/.ssh -> ~/keys``)."""
+    files: set[str] = set()
+    dirs: list[str] = []
+    for home in _guard_homes():
+        files.update(os.path.realpath(os.path.join(home, name)) for name in HOME_CREDENTIAL_FILES)
+        dirs.extend(os.path.realpath(os.path.join(home, *d.split("/"))) for d in HOME_CREDENTIAL_DIRS)
+    return files, dirs
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
@@ -311,27 +336,22 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def build_write_approval_paths(home: str) -> set[str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials.
-
-    ``~/.ssh/config`` is routine to edit and holds no key bytes, but can carry
-    ``ProxyCommand`` / ``Match exec``. Interactive file tools prompt
-    (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
-    non-interactive callers (ACP shims, background jobs) fail closed.
-    """
-    return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
+# Login shell startup files: approval-gated for the file tools and, via
+# tools.approval_detection._SHELL_RC_FILES, for terminal writes. One inventory so the two
+# gates cannot drift apart (#85321).
+SHELL_RC_FILES: tuple[str, ...] = (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile")
 
 
-# HERMES_HOME / root subpaths that the agent's generic file tools must not
-# rewrite. Session transcripts (state.db, sessions/) are application-owned
-# state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
-# browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
-# browser credential and its grants to native apps) hold credential material.
-# Control files (auth.json, config.yaml, webhook_subscriptions.json) are
-# deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = (
-    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
+def _approval_paths_by_key(home: str) -> dict[str, str]:
+    """Paths that need human APPROVAL to write but are not hard-denied credentials -> the approval key.
+
+    ``~/.ssh/config`` holds no key bytes but can carry ``ProxyCommand`` / ``Match exec``; shell rc
+    files run at login. Interactive file tools prompt; callers without a human channel fail closed.
+    Each class has its own key so an approve-always answer for ``~/.ssh/config`` never authorizes
+    ``~/.bashrc`` (or vice versa)."""
+    paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
+    paths.update({os.path.realpath(os.path.join(home, name)): "shell_rc_write" for name in SHELL_RC_FILES})
+    return paths
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -367,13 +387,13 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
 def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
-    # Approval-gated paths are allowed at this layer so interactive tools can
-    # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
+    # Only ``~/.ssh/config`` skips the credential deny (so the ``.ssh/`` prefix doesn't swallow it)
+    # and reaches the approval prompt. Shell rc files need no exemption, and granting one would let
+    # ``~/.bashrc`` -> ``~/.ssh/authorized_keys`` turn the credential deny into a shell_rc_write
+    # prompt. The protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
     key = deny_key(resolved)
-    if any(key in map(deny_key, build_write_approval_paths(home)) for home in homes):
-        return None
-
-    if any(
+    ssh_configs = {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
+    if key not in ssh_configs and any(
         key in map(deny_key, build_write_denied_paths(home))
         or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes
@@ -381,9 +401,9 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
         return "credential"
 
     for base in _credential_store_dirs():
-        for sub in _HERMES_PROTECTED_SUBPATHS:
+        for sub in HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                if deny_path_under(resolved, os.path.realpath(os.path.join(str(base), *sub.split("/")))):
                     return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -414,10 +434,23 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
 
 
 def is_write_approval_required(path: str) -> bool:
-    """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
-    prompt, callers without a channel treat it as a block (fail closed)."""
+    """Return True if ``path`` is an approval-gated write target.
+
+    These paths (``~/.ssh/config`` and login shell rc files) are not
+    credentials and are not hard-denied, but a write to them must be
+    confirmed by a human because they can influence process execution
+    (SSH ``ProxyCommand``, or commands in ``~/.bashrc``). Callers with
+    an interactive/gateway channel should prompt; callers without one
+    should treat this as a block (fail closed).
+    """
+    return write_approval_key(path) is not None
+
+
+def write_approval_key(path: str) -> Optional[str]:
+    """Approval key gating a write to ``path`` (``ssh_config_write`` / ``shell_rc_write``), or None."""
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
-    return any(deny_key(resolved) in map(deny_key, build_write_approval_paths(home)) for home in homes)
+    key = deny_key(resolved)
+    return next((k for home in homes for p, k in _approval_paths_by_key(home).items() if deny_key(p) == key), None)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -432,8 +465,10 @@ _DID_SUFFIX = (
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.json.corrupt", "auth.lock", ".anthropic_oauth.json", *HOME_ENV_FILES,
+    "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
+    *GOOGLE_WORKSPACE_CREDENTIAL_FILES,
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
@@ -456,6 +491,11 @@ _READ_DENIED_DIRS = (
      "is the Hermes Webapp sign-in directory and cannot be read directly.",
      "is a Hermes Webapp sign-in file (the browser credential or its sign-in records) and cannot be read directly."),
 )
+# The other credential trees (pairing, messaging-platform sessions) get a generic message.
+_READ_DENIED_DIRS += tuple(
+    (store, "is a Hermes credential store directory and cannot be read directly.",
+     "is inside a Hermes credential store and cannot be read directly.")
+    for store in CREDENTIAL_STORE_DIRS if store not in {entry[0] for entry in _READ_DENIED_DIRS})
 
 
 # Device/fd paths whose reads hang the process. Checked by path only — no I/O.
@@ -490,9 +530,10 @@ def is_project_env_basename(name: str) -> bool:
     Shared by the read guard (:func:`get_read_block_error`, which blocks reading
     these anywhere on disk) and the media-delivery denylist
     (``gateway/platforms/base.validate_media_delivery_path``) so the delivery /
-    exfil side can't drift from the read side. Case-insensitive basename match.
+    exfil side can't drift from the read side. Case-insensitive basename match, by full Unicode case folding:
+    ``.lower()`` keeps ``ſ``, which APFS folds to ``s``, so ``.env.ſtaging`` opens ``.env.staging``.
     """
-    return name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES
+    return name.casefold() in _BLOCKED_PROJECT_ENV_BASENAMES
 
 
 def get_read_block_error(path: str) -> Optional[str]:
@@ -546,7 +587,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                     break
             if reason:
                 break
-        if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:
+        if reason is None and is_project_env_basename(resolved.name):
             reason = (
                 "is a secret-bearing environment file and cannot be read to prevent credential "
                 "leakage. If you need to check the file structure, read .env.example instead." + _DID_SUFFIX

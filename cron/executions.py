@@ -356,6 +356,10 @@ def finish_execution(
     now = _hermes_now().isoformat()
     status = "cancelled" if cancelled else ("completed" if success else "failed")
     detail = None if success else (str(error) if error else "unknown failure")
+    if detail is not None:
+        # executions.db is durable like jobs.json: scrub raw error text before it lands on disk.
+        from cron.jobs_error_text import sanitize_persisted_error
+        detail = sanitize_persisted_error(detail)
     with _transaction() as conn:
         owner = (_PROCESS_ID, os.getpid())
         cur = conn.execute(
@@ -409,7 +413,10 @@ def recover_receipted_execution(execution_id, job_id, *, success, error=None, de
     Terminal verdicts stay immutable. A live firer still owns its bookkeeping
     (``execution_owner_live``).
     """
+    from cron.jobs_error_text import sanitize_persisted_error
+
     now = _hermes_now().isoformat()
+    detail = None if success else sanitize_persisted_error(str(error) if error else 'unknown failure')
     with _transaction() as conn:
         row = _recoverable_row(conn, execution_id, job_id)
         if row is None or _row_owner_live(row):
@@ -417,8 +424,7 @@ def recover_receipted_execution(execution_id, job_id, *, success, error=None, de
         conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
                handoff_started_at=NULL, delivery_outcome=? WHERE id=?""",
-            ('completed' if success else 'failed', now, None if success else (str(error) if error else 'unknown failure'),
-             delivery_outcome, execution_id))
+            ('completed' if success else 'failed', now, detail, delivery_outcome, execution_id))
         _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)

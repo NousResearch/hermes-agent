@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "uso do fornecedor + estimativa das novas mensagens"
     source_line: "Fonte: {source}; as contagens por categoria são estimativas locais."
     hint_all: "Use /context all para ver os custos por skill e por conjunto de ferramentas."
+    cache_warm: "Cache do prompt: ativo até {until} (faltam {remaining}; {ttl}, {confidence})."
+    cache_expired: "Cache do prompt: expirou há {ago} ({ttl}, {confidence}); a próxima mensagem reprocessa o prompt inteiro."
+    cache_maybe_warm: "Cache do prompt: pode ainda estar ativo até {until} (no máximo mais {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Cache do prompt: desconhecido (a rota, a sessão ou o contexto mudou desde a última requisição em cache)."
+    cache_unknown_route: "Cache do prompt: desconhecido (este provedor não publica a retenção do cache)."
+    cache_unknown_runtime: "Cache do prompt: desconhecido (este runtime define as próprias opções de cache, que o Hermes não consegue observar)."
+    cache_unknown_storage: "Cache do prompt: desconhecido (não foi possível ler o armazenamento da sessão)."
+    cache_warming_off: "Keep-alives: desligados (falharam duas vezes)."
+    cache_tier_pending: "Nível: 5m até a primeira pausa de mais de 5 minutos, depois 1h."
+    cache_learned: "Aprendido: {rule}."
+    cache_confidence:
+      proven: "comprovado"
+      declared: "declarado"
+      assumed: "presumido"
   status:
     header: "📊 **Estado do Hermes Gateway**"
     matrix_scope_header: "**Âmbito do Matrix:**"
@@ -985,6 +999,16 @@ platform:
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
   shared:
+    vault_code:
+      title: "🔐 Código de verificação para {site}"
+      body: "{site} está pedindo um código de uso único (SMS ou e-mail). Toque no botão e digite-o no formulário que abrir: ele vai direto para a página e nunca é publicado aqui."
+      button: "Inserir código"
+      modal_title: "Código para {site}"
+      input_label: "Código de uso único"
+      submitted: "Código enviado; inserindo na página."
+      ended: "Este pedido de código terminou; nada foi inserido."
+      not_author: "Só quem iniciou este pedido pode inserir o código."
+      submitted_footer: "✓ Código enviado"
     response_as_file: "📎 Resposta longa: o texto completo está em anexo."
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
@@ -1197,6 +1221,9 @@ platform:
       upload_too_large: "⚠️ Não foi possível anexar `{filename}` — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord para este canal. Comprima o arquivo ou compartilhe um link."
       image_skipped_too_large: "⚠️ `{filename}` ignorado — {size_mb} MB excede o limite de envio de {limit_mb} MB do Discord."
   telegram:
+    vault_code:
+      body: "Responda a esta mensagem com o código. O Hermes apaga sua resposta na hora e insere o código na página; o modelo nunca o vê."
+      delete_failed: "Não foi possível apagar sua resposta aqui. Apague-a você mesmo."
     approval:
       action_once: "✅ Permitir uma vez"
       action_session: "✅ Sessão"
@@ -3315,6 +3342,10 @@ cli:
     total: "📚 {count} skill(s) disponível(is)"
     added_header: "➕ Skills Adicionadas:"
     removed_header: "➖ Skills Removidas:"
+  gateway_restart:
+    waiting: "O Hermes está reiniciando para concluir uma atualização ou reinício; aguardando o retorno…"
+    timed_out: "O Hermes não voltou do reinício a tempo. Verifique `hermes gateway status` e inicie `hermes` novamente."
+    stopped: "Espera pelo reinício do Hermes interrompida; nada foi iniciado."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Armazenamento de sessões indisponível[/bold yellow] — esta conversa [bold]NÃO será salva[/bold] e não poderá ser retomada depois. A busca em sessões anteriores também está desativada.\n  Motivo: {reason}.\n  {action}\n  [dim]Detalhes: {details}[/dim]"
     unavailable_plain: "AVISO: Armazenamento de sessões indisponível — esta conversa NÃO será salva e não poderá ser retomada depois. Motivo: {reason}. {action}"
@@ -3993,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Modelo grande: o seu limite {name} foi atingido ({resets}), por isso não funcionará até lá."
   large_notice_percent: "Modelo grande: usa mais do uso do seu plano por mensagem. Limite mensal de modelos grandes: {percent} usado."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
     more: "+{count} mais"

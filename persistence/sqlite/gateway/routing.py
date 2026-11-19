@@ -21,16 +21,31 @@ from persistence.gateway.routing import (
 )
 
 from .._backend import SQLiteStore, register_repository, translated
+from .._state.lineage_fence import _require_local_write, guarded_discovered_write, session_lock_budget
 from ..conversation._store.core import _session_row_dict
 from ..conversation._store.local import owned_lineage_ids
 from ..conversation._store.sessions import _own_profile_name
 from ..conversation.sessions import session_record
-from ._local_lineage import hand_off_conversations, moved_receipts
+from ._local_lineage import hand_off_conversations, handoff_write_ids, moved_receipts
 from ._routes import (
     _COMPRESSION_LINEAGE_CTE, _ORPHAN_CONTIGUITY_DONORS_SQL, _ORPHAN_LINEAGE_DONOR_SQL, _ORPHANS_SQL,
     _PEER_BY_KEY_SQL, _PEER_BY_TUPLE_SQL, ROUTE_RETIRED_SQL, apply_telegram_topic_migration, fence_shared_routes,
     route_retired_params,
 )
+
+def _write_peer_row(holder, session_id, write):
+    # SQLite uses text affinity for integer identifiers, including bool.
+    sid = str(int(session_id)) if isinstance(session_id, int) else session_id
+    if not isinstance(sid, str):
+        return holder._execute_write(write)
+
+    def guarded(conn):
+        _require_local_write(conn, (sid,))
+        return write(conn)
+
+    with session_lock_budget(holder, (sid,)) as deadline:
+        return holder._execute_write(guarded, patience_s=max(0.0, deadline - time.monotonic()))
+
 
 __all__ = ["SQLiteRoutingRepository"]
 
@@ -154,6 +169,18 @@ class SQLiteRoutingRepository:
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
 
+        def ancestor_ids(conn):
+            return {row[0] for row in conn.execute(
+                _COMPRESSION_LINEAGE_CTE + " SELECT s.id FROM sessions s JOIN compression_lineage l ON l.id=s.id",
+                (session_id,),
+            )}
+
+        def discover(conn):
+            ids = ancestor_ids(conn)
+            if messaging_lane:
+                ids.update(handoff_write_ids(conn, moved_receipts(conn, ids, new_route=session_key)))
+            return ids
+
         def _do(conn):
             conn.execute(
                 f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
@@ -170,9 +197,7 @@ class SQLiteRoutingRepository:
                 # An explicit repoint to a messaging lane moved these rows: the local conversation whose receipt
                 # names one of them goes with it in the same write, or it would match neither lane.
                 if messaging_lane:
-                    moved = {row[0] for row in conn.execute(
-                        f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
-                    hand_off_conversations(conn, moved_receipts(conn, moved))
+                    hand_off_conversations(conn, moved_receipts(conn, ancestor_ids(conn)))
                 return
             # The UPDATE silently no-ops on a missing row: insert it with full identity.
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
@@ -199,7 +224,10 @@ class SQLiteRoutingRepository:
                 )
         with translated():
             holder = self._store.holder()
-            holder._execute_write(_do)
+            if ancestors:
+                guarded_discovered_write(holder, discover, _do, patience_s=holder._WRITE_PATIENCE_S)
+            else:
+                _write_peer_row(holder, session_id, _do)
 
     def adopt_orphan(self, orphan_id: str, donor_id: str) -> bool:
         if not orphan_id or not donor_id or orphan_id == donor_id:

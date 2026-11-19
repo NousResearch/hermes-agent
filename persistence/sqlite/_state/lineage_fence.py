@@ -1,8 +1,7 @@
-"""Cross-profile ownership checks for durable session ids.
+"""Fence session writes against durable cross-profile transfers.
 
-A session id is globally unique within a Hermes home even though each profile has its own
-SQLite database. The advisory lock serializes the inventory check with the write transaction
-performed by callers, so two profiles cannot both observe an unused id and claim it.
+Ordinary session IDs are scoped to their profile store. Transfer locks cover the
+participating stores and their resolved lineage so writers cannot race retirement.
 """
 
 from __future__ import annotations

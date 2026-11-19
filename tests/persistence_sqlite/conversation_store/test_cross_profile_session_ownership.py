@@ -88,3 +88,78 @@ def test_retained_legacy_accounting_marker_refuses_direct_and_queued_usage(backe
         holder.queue_token_counts("receipt-owner", input_tokens=7)
     assert marker.is_file()
     assert holder._read_one("SELECT input_tokens FROM sessions WHERE id='receipt-owner'")[0] == 0
+
+
+@pytest.fixture
+def archived_transfer_lineage(backend, scope_a):
+    from persistence.sqlite._state.lineage_fence import DONOR_TRANSFER_PREFIX
+    from tests.fixtures.storage_holder import raw_holder
+
+    store = backend.open(scope_a)
+    seed_session(store, "root", "cli", end_reason="compression")
+    seed_session(store, "middle", "cli", parent_session_id="root", end_reason="compression")
+    seed_session(store, "tip", "cli", parent_session_id="middle", end_reason="agent_close")
+    store.sessions.set_archived("root", True)
+    holder = raw_holder(store)
+    # A durable donor marker survives even when the row still carries its compression end.
+    holder._write_sql(
+        "INSERT INTO state_meta(key, value) VALUES (?, ?)",
+        (DONOR_TRANSFER_PREFIX + "middle", "previous-transfer"),
+    )
+    return store
+
+
+def test_peer_repoint_refuses_transferred_ancestor(archived_transfer_lineage):
+    store = archived_transfer_lineage
+    ids = ("root", "middle", "tip")
+    before = [store.sessions.get(sid) for sid in ids]
+
+    with pytest.raises(PersistenceError, match="middle.*transferred"):
+        store.routing.record_session_peer(
+            "tip", source="telegram", session_key="new-peer", include_compression_ancestors=True,
+            messaging_lane=True,
+        )
+
+    assert [store.sessions.get(sid) for sid in ids] == before
+
+
+@pytest.mark.parametrize("requested_id", ["root", "tip"])
+def test_recoverable_unarchive_refuses_transferred_member(archived_transfer_lineage, requested_id):
+    store = archived_transfer_lineage
+    ids = ("root", "middle", "tip")
+    before = [store.sessions.get(sid) for sid in ids]
+
+    with pytest.raises(PersistenceError, match="middle.*transferred"):
+        store.sessions.unarchive_recoverable(requested_id)
+
+    assert [store.sessions.get(sid) for sid in ids] == before
+
+
+def test_peer_repoint_refuses_transferred_receipt_segment(backend, scope_a):
+    from persistence.authority.bindings import local_session_id
+    from persistence.sqlite._state.lineage_fence import DONOR_TRANSFER_PREFIX
+    from tests.contracts.authority.test_bindings_contract import begin, make_binding
+    from tests.fixtures.storage_holder import raw_holder
+
+    store = backend.open(scope_a)
+    epoch = begin(store)
+    owner = local_session_id("default", "user-1", "handoff")
+    binding = make_binding(owner, route="local-peer", request_id="handoff")
+    store.bindings.reserve(epoch=epoch, binding=binding, owner=None)
+    store.bindings.reset_target(
+        epoch=epoch, parent_session_id=owner, entry={**dict(binding.entry), "session_id": "current"},
+    )
+    raw_holder(store)._write_sql(
+        "INSERT INTO state_meta(key, value) VALUES (?, ?)",
+        (DONOR_TRANSFER_PREFIX + owner, "previous-transfer"),
+    )
+    before = [store.sessions.get(sid) for sid in (owner, "current")]
+
+    with pytest.raises(PersistenceError, match="transferred"):
+        store.routing.record_session_peer(
+            "current", source="telegram", session_key="new-peer", include_compression_ancestors=True,
+            messaging_lane=True,
+        )
+
+    assert [store.sessions.get(sid) for sid in (owner, "current")] == before
+    assert store.bindings.receipt(owner).current_target == "current"

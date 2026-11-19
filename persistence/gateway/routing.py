@@ -237,9 +237,6 @@ def resume_route(
         config = parsed if isinstance(parsed, Mapping) else {}
     elif isinstance(model_config, Mapping):
         config = model_config
-    complete = complete_runtime_route(config)
-    if complete is not None:
-        return complete
     column = (model or "").strip()
     picked = str(config.get("model") or "").strip()
     nested, lock = config.get("gateway_runtime"), config.get("browser_model_lock")

@@ -636,15 +636,34 @@ def clear_session_activity_labels(holder: StoreHolder, session_id: str) -> None:
     )
 
 
+def _session_config_fence_matches(conn, fence) -> bool:
+    row = conn.execute(
+        "SELECT runtime_revision, runtime_generation, model_config FROM sessions WHERE id=?",
+        (fence.session_id,),
+    ).fetchone()
+    if row is None or tuple(row[:2]) != (fence.runtime_revision, fence.runtime_generation):
+        return False
+    return (json.dumps(_parse_model_config(row[2]), sort_keys=True)
+            == json.dumps(dict(fence.model_config), sort_keys=True))
+
+
 def update_session_meta(
-    holder: StoreHolder, session_id: str, model_config_json: str, model: Optional[str] = None,
+    holder: StoreHolder, session_id: str, model_config_json: str, model: Optional[str] = None, *, fences=(),
 ) -> None:
-    """Update model_config and (COALESCE) optionally model."""
-    holder.flush_token_counts()  # barrier against queued token deltas — see update_session_model
-    holder._write_sql(
-        "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-        (model_config_json, model, session_id),
-    )
+    """Publish a session's model metadata only while every supplied row still matches."""
+    from persistence.core.errors import StoreContention
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; model metadata was not updated")
+
+    def write(conn):
+        if all(_session_config_fence_matches(conn, fence) for fence in fences):
+            conn.execute("UPDATE sessions SET model_config=?, model=coalesce(?, model) WHERE id=?",
+                         (model_config_json, model, session_id))
+
+    with session_write_budget(holder, (session_id, *(fence.session_id for fence in fences))) as remaining:
+        holder._execute_write(write, patience_s=remaining)
 
 
 def update_system_prompt(holder: StoreHolder, session_id: str, system_prompt: Optional[str]) -> None:

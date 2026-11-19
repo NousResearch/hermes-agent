@@ -350,18 +350,38 @@ class GatewayTurnPrepareMixin:
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _capture_model_sync_fences(self, session_id: str):
+        """Capture the logical owner's revision and physical source before route resolution."""
+        from persistence.conversation.sessions import SessionConfigWriteFence
+
+        store = self.persistence
+        if store is None or not session_id:
+            return ()
+        from persistence.core.errors import PersistenceError
+
+        try:
+            lineage = store.lineage.lineage(session_id)
+            owner = lineage[0] if lineage else session_id
+            rows = [store.sessions.get(sid) for sid in dict.fromkeys((owner, session_id))]
+        except (OSError, PersistenceError):
+            logger.exception("Cannot capture model metadata ownership for %s", session_id)
+            return ()
+        if any(row is None or row.model_config_corrupt for row in rows):
+            return ()
+        return tuple(SessionConfigWriteFence.from_record(row) for row in rows)
+
+    def _sync_session_model_from_agent(self, session_id: str, agent: Any, *, turn_fences=None) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         calls the plain verbs, not their awaitable view."""
         store = self.persistence
-        if not session_id or agent is None or store is None:
+        if not session_id or agent is None or store is None or turn_fences == ():
             return
         model = getattr(agent, "model", None)
         if not model:
             return
         from hermes_cli.runtime_provider_custom import session_provider_identity
-        from persistence.conversation.sessions import ReplaceSessionConfig
+        from persistence.conversation.sessions import ReplaceSessionConfig, SessionConfigWriteFence
         runtime = {
             "provider": session_provider_identity(getattr(agent, "provider", None),
                                                   getattr(agent, "requested_provider", None),
@@ -374,7 +394,7 @@ class GatewayTurnPrepareMixin:
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
             row = store.sessions.get(session_id)
-            if not row:
+            if row is None or row.model_config_corrupt:
                 return
             # Legacy backfill: canonical Bot Chats created BEFORE the follow_profile_config contract existed
             # carry no marker, yet they are still the plugin-owned forever-DM. The plugin's own identity
@@ -384,10 +404,17 @@ class GatewayTurnPrepareMixin:
             # provider until the user deletes it — the exact live-report shape (#89497 / #94818).
             config = dict(row.model_config)
             gateway_runtime = dict(config.get("gateway_runtime") or {})
+            if turn_fences and turn_fences[-1].session_id != session_id and gateway_runtime:
+                source_route = turn_fences[-1].model_config.get("gateway_runtime")
+                if gateway_runtime != source_route:
+                    return  # rotation's target already carries a different saved route
             if row.model == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
                 return
             config["gateway_runtime"] = runtime
-            store.sessions.replace_session_config(session_id, ReplaceSessionConfig(model_config=config, model=model))
+            fences = (*turn_fences, SessionConfigWriteFence.from_record(row)) if turn_fences else (
+                SessionConfigWriteFence.from_record(row),)
+            store.sessions.replace_session_config(
+                session_id, ReplaceSessionConfig(model_config=config, model=model, fences=fences))
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 

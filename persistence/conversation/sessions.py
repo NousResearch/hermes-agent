@@ -65,6 +65,7 @@ __all__ = [
     "RecentBrowseTimeout",
     "RecentSessionEntry",
     "ReplaceSessionConfig",
+    "SessionConfigWriteFence",
     "RosterSession",
     "RosterSessions",
     "RosterWorker",
@@ -780,11 +781,26 @@ class RuntimeLock:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionConfigWriteFence:
+    """Exact session row observed before a conditional config publication."""
+
+    session_id: SessionId
+    runtime_revision: int
+    runtime_generation: int
+    model_config: Mapping[str, JsonValue]
+
+    @classmethod
+    def from_record(cls, row: SessionRecord) -> SessionConfigWriteFence:
+        return cls(row.session_id, row.runtime_revision, row.runtime_generation, dict(row.model_config))
+
+
+@dataclass(frozen=True, slots=True)
 class ReplaceSessionConfig:
     """``replace_session_config``'s command: the whole ``model_config`` and a model that, when given, overwrites the stored one."""
 
     model_config: Mapping[str, JsonValue]
     model: Optional[str] = None
+    fences: tuple[SessionConfigWriteFence, ...] = ()
 
     def __post_init__(self) -> None:
         if self.model is not None and not self.model:
@@ -938,7 +954,7 @@ class SessionRepository(Protocol):
         ...
 
     def replace_session_config(self, session_id: SessionId, command: ReplaceSessionConfig) -> None:
-        """Replace ``model_config`` whole and the model when given."""
+        """Replace ``model_config`` and the optional model. A changed or missing fenced row makes this a no-op."""
         ...
 
     def patch_model_config(self, session_id: SessionId, patch: Mapping[str, Optional[JsonValue]]) -> None:

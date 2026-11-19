@@ -1152,6 +1152,44 @@ class TestBrowserVaultTools:
         assert written == ({expected} if expected is not None else set()), (written, out)
         assert out["filled_fields"] == (1 if expected is None else 2)
 
+    @pytest.mark.parametrize("form", [0, None], ids=["in-a-form", "formless"])
+    def test_the_identifier_stays_in_the_password_form(self, store, form):
+        """An unlabelled username box beside the password and a newsletter email box elsewhere: the
+        newsletter box is classified (type=email) and the username box is not, but only a box in the
+        password's form (formless beside formless) is the identifier, so the fallback takes it."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": form, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+            {"autocomplete": "current-password", "formIndex": form, "index": 1, "label": "", "name": "pw",
+             "type": "password"},
+            {"autocomplete": "", "formIndex": 1, "index": 2, "label": "Get our newsletter", "name": "news",
+             "type": "email"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["filled_fields"] == 2, out
+        assert not any('"index": 2' in e for e in secret_exprs)
+        assert any('"index": 0' in e and "user@example.com" in e for e in secret_exprs)
+
     def test_an_unlabelled_identifier_box_is_typed_not_written_by_js(self, store):
         """The fallback's box is unclassified, but it is a text field: with a working supervisor it
         is typed (trusted input), not written by the JS path a controlled form re-renders empty."""

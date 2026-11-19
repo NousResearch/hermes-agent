@@ -687,31 +687,41 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
                      password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
     """The username/email/phone control for a user-chosen login.
 
-    Prefers a classified control in the password field's form; on an identifier-only step (no
-    password field yet) it is the whole fill. When nothing was classified, falls back to the single
-    other text box in the password's form that the classifier does not exclude outright — a phone entry on a framework form often carries no
-    autocomplete, name, id or placeholder at all, so there is nothing to score.
+    With a password field, only a control in the password's form is a candidate (a formless
+    password takes only formless controls): a newsletter or search box in another form is never
+    the identifier. The best classified candidate wins; when none was classified, the fallback
+    takes the single other text box in that form that the classifier does not exclude outright —
+    a phone entry on a framework form often carries no autocomplete, name, id or placeholder at
+    all, so there is nothing to score. On an identifier-only step (no password field yet) the
+    best classified control on the page is the whole fill (formless first, as before).
     """
     if not identifier:
         return []
-    from agent.vault_login_classifier import LoginControl, classify_otp_controls, is_excluded_login_control
+    from agent.vault_login_classifier import classify_otp_controls
 
     anchor = password_fill[0]["index"] if password_fill else None
     form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
-    if form is None:
-        raw_anchor = next((r for r in raw_controls if int(r.get("index", -1) or -1) == anchor), None)
-        form = raw_anchor.get("formIndex", raw_anchor.get("form_index")) if raw_anchor else None
 
     # A box enter_code would write the code into (one-time-code, or a code/OTP/2FA name or label) is not the
     # identifier unless the page declares a login token on it (score 100): a type=tel code box would otherwise
     # be classified as a phone and outscore a labelled username box.
     fields = [c for c in classified if c.token in ("username", "email", "tel")
+              and (anchor is None or c.control.form_index == form)
               and (c.score == 100 or not classify_otp_controls([c.control]))]
     if fields:
         best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
         return [{"index": best.control.index, "token": best.token, "value": identifier}]
+    if anchor is None:
+        return []
+    box = _single_unclassified_box(raw_controls, form, {f["index"] for f in password_fill})
+    return [] if box is None else [{"index": box, "token": "username", "value": identifier}]
 
-    taken = {f["index"] for f in password_fill}
+
+def _single_unclassified_box(raw_controls: list[dict[str, Any]], form: Optional[int], taken: set) -> Optional[int]:
+    """The index of the only text box in ``form`` outside ``taken`` that is neither excluded nor a code
+    box, or None when there is none or more than one (ambiguous: fill nothing rather than guess)."""
+    from agent.vault_login_classifier import LoginControl, classify_otp_controls, is_excluded_login_control
+
     candidates = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
@@ -725,10 +735,8 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
         # A one-time-code or new-password box is never the identifier, classified or not.
         if control.form_index != form or is_excluded_login_control(control) or classify_otp_controls([control]):
             continue
-        candidates.append(control)
-    if len(candidates) != 1:  # ambiguous: fill nothing rather than guess
-        return []
-    return [{"index": candidates[0].index, "token": "username", "value": identifier}]
+        candidates.append(control.index)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[str, Any]],

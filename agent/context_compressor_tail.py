@@ -47,7 +47,9 @@ def is_demoted_stub(content: str) -> bool:
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    # Search defaults to user/assistant rows, so demoted tool output needs an explicit tool filter.
+    hint = (f" Recover with session_search(query=..., session_id='{session_id}', role_filter='tool', detail='full')"
+            if session_id else "")
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"

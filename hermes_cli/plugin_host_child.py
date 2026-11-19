@@ -209,6 +209,10 @@ class HostRuntime:
 
     def ctx_call(self, plugin_key: str, method: str, *args: Any, **kwargs: Any) -> Any:
         from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+        if method == "register_skill_catalog":
+            from hermes_cli.skill_catalog.identity import describe
+            provider, = args
+            args = ({"catalog_descriptor": describe(provider).to_wire(), "object_ref": provider},)
         return self._send_call("ctx", plugin_key, {"method": method, "args": args, "kwargs": kwargs},
                                allow_objects=method in HOST_OBJECT_BASES)
 

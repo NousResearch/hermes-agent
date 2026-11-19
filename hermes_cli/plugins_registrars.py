@@ -25,6 +25,13 @@ from hermes_cli.plugins_loader import _plugin_home_scope, _serialized_replacemen
 logger = logging.getLogger(__name__)
 
 _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
+    ("register_skill_catalog", "skill_catalog", "hermes_cli.skill_catalog.registry",
+     "hermes_cli.skill_catalog:SkillCatalogProvider", "skill catalog",
+     "Experimental: register a consent-gated skill catalog with provider-owned effects. "
+     "Profile-scoped, removed on unload, supported in host isolation.",
+     {"normalize": None, "reject_message": "Plugin '%s' skill catalog rejected: %s",
+      "admit": "hermes_cli.skill_catalog.registry:admission_error",
+      "descriptor_key": "registration_key", "context_register": "register_catalog"}),
     ("register_login_backend", "login_backend", "agent.vault_backend_registry",
      "agent.vault_backends.base:LoginBackend", "login backend",
      "Register a trusted in-process browser-vault LoginBackend; explicit vault.<name>.enabled "
@@ -122,12 +129,28 @@ def _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, optio
         except ValueError as exc:
             logger.warning(options["reject_message"], ctx.manifest.name, exc)
             return None
-    return ctx._register_scoped_provider(
+    key_override = None
+    if options.get("descriptor_key"):
+        try:
+            key_override = getattr(registry, options["descriptor_key"])(ctx, provider)
+        except ValueError as exc:
+            logger.warning(options["reject_message"], ctx.manifest.name, exc)
+            return None
+    if options.get("context_register"):
+        register_name = options["context_register"]
+        register = lambda obj, **kw: getattr(registry, register_name)(ctx, obj, **kw)
+    else:
+        register = getattr(registry, register_name) if register_name else None
+    handle = ctx._register_scoped_provider(
         provider, kind=kind, base_class=_resolve(base_ref),
         registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
-        register=getattr(registry, register_name) if register_name else None,
+        register=register, key_override=key_override,
         reject_message=options.get("reject_message"),
     )
+    if handle is not None and key_override is not None:
+        handle.publish = lambda: registry.publish(key_override, scope=ctx._manager.scope_key)
+        ctx._staged.append(handle)
+    return handle
 
 
 def register_scoped_provider(ctx, method_name: str, provider: Any):

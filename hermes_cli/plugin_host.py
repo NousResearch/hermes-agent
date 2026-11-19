@@ -433,6 +433,17 @@ class PluginHost:
         resolve = functools.partial(self._resolve_ref, base=base)
         args = decode(params.get("args") or [], resolve)
         kwargs = decode(params.get("kwargs") or {}, resolve)
+        if method == "register_skill_catalog":
+            from hermes_cli.skill_catalog.identity import Descriptor
+            tagged, = args
+            if type(tagged) is not dict or set(tagged) != {"catalog_descriptor", "object_ref"}:
+                raise ValueError("Invalid catalog registration transport.")
+            descriptor = Descriptor.from_wire(tagged["catalog_descriptor"])
+            provider = tagged["object_ref"]
+            if base is None or not isinstance(provider, base):
+                raise ValueError("Invalid catalog object reference.")
+            object.__setattr__(provider, "_skill_catalog_descriptor", descriptor)
+            args = [provider]
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
 

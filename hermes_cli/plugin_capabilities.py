@@ -50,6 +50,10 @@ _CAPABILITY_ROWS = (
     ("llm.session_fork", (),
      "Run a background copy of your agent after a turn. It sees the whole session, including "
      "memory, can use the plugin's own tools, and spends your main model's tokens."),
+    ("skills.catalog", (),
+     "Show this plugin's skill catalog in Hermes. Catalog searches may contact its service. "
+     "When you confirm an install, update or uninstall, the plugin performs it in this profile "
+     "under its own policy. Disabling the plugin leaves its installed files as ordinary local skills."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

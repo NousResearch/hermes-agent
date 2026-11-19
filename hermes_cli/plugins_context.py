@@ -155,6 +155,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         self, provider: Any, *, kind: str, base_class: type, registry: Any, label: str,
         article: str = "a", normalize: Optional[Callable[[str], str]] = lambda n: n.strip(),
         register: Optional[Callable[..., Any]] = None, reject_message: Optional[str] = None,
+        key_override: Optional[str] = None,
     ) -> Optional[PluginRegistration]:
         """Shared body of the ``register_<category>_provider`` methods: type-check (warn + ignore),
         register in the scope-keyed ``registry``, lease the slot so unload restores the displaced entry.
@@ -162,7 +163,8 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         set, or a falsy ``register``)."""
         if self._wrong_type(provider, base_class, label, article):
             return None
-        registry_name = provider.name if normalize is None else normalize(provider.name)
+        registry_name = key_override if key_override is not None else (
+            provider.name if normalize is None else normalize(provider.name))
         scope = self._manager.scope_key
         previous = registry.snapshot_registration(registry_name, scope=scope)
         try:
@@ -841,6 +843,10 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
 
     # -- scoped provider registrars ----------------------------------------------------------------
     # One method per row of plugins_registrars.py's table, which also holds each method's docstring.
+
+    @scoped_provider_registrar
+    def register_skill_catalog(self, provider):
+        return register_scoped_provider(self, "register_skill_catalog", provider)
 
     @scoped_provider_registrar
     def register_login_backend(self, provider):

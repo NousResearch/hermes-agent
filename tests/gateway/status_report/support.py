@@ -7,6 +7,7 @@ import asyncio
 import email.message
 import io
 import json
+import logging
 import re
 import secrets
 import threading
@@ -16,9 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+import pytest
+
 from gateway.status_report.reporter import StatusReporter
 from gateway.status_report.target import ReportTarget
 from hermes_constants import get_process_hermes_home
+from tests.waiting import async_wait_until
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "status_report" / "v1"
 REPORT_URL = "https://status.example/v1/gateways/report"
@@ -187,3 +191,77 @@ def assert_matches_contract(body: dict, kind: str) -> None:
         assert all(isinstance(value, str) for value in entry.values())
     if "nous_session_valid" in status:
         assert status["nous_session_valid"] in {"valid", "terminal", "unknown"}
+
+
+QUICK_RETRY_S = RESPONSES["quick_retry_s"]
+# An interval a receiver sets, far enough from the normal one that their jitter bands do not touch.
+TOLD_S = 300
+# What the OS puts into an error's text: the path it failed on.
+FAULT_PATH = "/mnt/state/gateway-locks/status-report.lock"
+
+
+def cases(then: str) -> list:
+    return [pytest.param(case, id=case["name"]) for case in RESPONSES["cases"] if case["then"] == then]
+
+
+def reply_for(case: dict) -> Reply:
+    return Reply(case["status"], case["headers"], case.get("body"))
+
+
+def told(seconds: int) -> Reply:
+    """A stored reply that sets the report interval."""
+    return Reply(204, {INTERVAL_HEADER: str(seconds)})
+
+
+async def expect_next_report_at_the_interval(clock, reporter, receiver, interval_s: float = INTERVAL_S) -> None:
+    before, after = around(interval_s)
+    sent = len(receiver.requests)
+    clock.advance(before)
+    await reporter.poll()
+    assert len(receiver.requests) == sent, f"a report went out before the {interval_s}s interval"
+    clock.advance(after - before)
+    await reporter.poll()
+    assert len(receiver.requests) == sent + 1, f"no report at the {interval_s}s interval"
+
+
+def warnings_said(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records
+            if record.name.startswith("gateway.status_report") and record.levelno >= logging.WARNING]
+
+
+class Watcher:
+    """``run()`` on its own task, as the gateway's supervisor starts it. Cancelled when the test leaves."""
+
+    def __init__(self, reporter: StatusReporter) -> None:
+        self.polls = 0
+        self.task = asyncio.create_task(reporter.run(self._is_running, tick=0.01))
+
+    def _is_running(self) -> bool:
+        self.polls += 1
+        return True
+
+    async def __aenter__(self) -> Watcher:
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        self.task.cancel()
+        await settle()
+
+    async def polls_on(self) -> None:
+        """Let a few more polls pass; fail if the watcher has ended instead."""
+        wanted = self.polls + 3
+        await async_wait_until(lambda: self.task.done() or self.polls >= wanted, timeout=5, what="the next polls")
+        assert not self.task.done(), f"the watcher ended: {self.task.exception()!r}"
+
+    async def ends_when_cancelled_mid_beat(self, clock: Clock, receiver: Receiver) -> None:
+        """A gateway shutdown cancels the watcher, and a beat may be on the wire when it does."""
+        hang, sent = threading.Event(), len(receiver.requests)
+        receiver.reply_with(Reply(hang=hang))
+        clock.advance(AFTER_INTERVAL_S)
+        try:
+            await async_wait_until(lambda: len(receiver.requests) == sent + 1, timeout=5, what="a beat on the wire")
+            self.task.cancel()
+            await asyncio.wait({self.task}, timeout=5)
+            assert self.task.cancelled(), "cancellation did not end the watcher"
+        finally:
+            hang.set()

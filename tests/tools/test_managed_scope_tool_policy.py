@@ -122,3 +122,40 @@ def test_profile_credential_files_reject_master_stores(managed_profile):
     assert [m["container_path"] for m in credential_files.get_credential_file_mounts()] == [
         "/root/.hermes/google_token.json", "/root/.hermes/managed-creds.json",
     ]
+
+
+@pytest.mark.parametrize("guard", ["consulted", "unavailable", "raises"])
+def test_a_configured_list_and_a_skill_are_refused_and_allowed_the_same_files(managed_profile, monkeypatch, guard):
+    """One decision for both sources of a credential mount: a file a skill's registration is refused
+    is refused to a ``terminal.credential_files`` entry and the other way round, with the read guard
+    consulted, missing and raising (both sources fail closed)."""
+    names = ("auth.json", ".env", "mcp-tokens/srv.json", "google_token.json",
+             "google_client_secret.json", "managed-creds.json")
+    (managed_profile / "mcp-tokens").mkdir()
+    for name in names:
+        (managed_profile / name).write_text("{}\n", encoding="utf-8")
+    (managed_profile / "config.yaml").write_text(
+        "terminal:\n  credential_files:\n" + "".join(f"    - {name}\n" for name in names), encoding="utf-8")
+    managed_dir = managed_scope.get_managed_dir()
+    assert managed_dir is not None
+    (managed_dir / "config.yaml").write_text("security:\n  allow_private_urls: true\n", encoding="utf-8")
+    managed_scope.invalidate_managed_cache()
+    credential_files._config_files.clear()
+    if guard == "unavailable":
+        monkeypatch.setattr(credential_files, "get_read_block_error", None)
+    elif guard == "raises":
+        def _raises(path):
+            raise RuntimeError("guard exploded")
+        monkeypatch.setattr(credential_files, "get_read_block_error", _raises)
+
+    credential_files.clear_credential_files()
+    try:
+        configured = {m["container_path"].removeprefix("/root/.hermes/")
+                      for m in credential_files.get_credential_file_mounts()}
+        registered = {name for name in names if credential_files.register_credential_file(name)}
+    finally:
+        credential_files.clear_credential_files()
+
+    assert configured == registered
+    assert registered == ({"google_token.json", "google_client_secret.json", "managed-creds.json"}
+                          if guard == "consulted" else set())

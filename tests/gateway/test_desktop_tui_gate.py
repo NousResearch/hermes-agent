@@ -1,5 +1,4 @@
 """W1 cycle 1d-r2: the TUI-gateway turn gate (seam 4).
-
 Empirical trace proved the Desktop app's chats run through the serve's
 in-process ``tui_gateway`` (``tui turn finished`` log lines, agent
 turns via ``agent.conversation_loop``), with zero admission rows in any
@@ -260,6 +259,54 @@ class TestHoldTurnCleanup(unittest.TestCase):
         del session["inflight_turn"]
         pt._hold_turn_cleanup(session, "held notice")
         self.assertEqual(session["inflight_turn"]["status"], "error")
+
+    def test_hold_marks_the_submit_row(self):
+        # Cycle 1e: the staged submit row is stamped HELD_ROW_DISPLAY_KIND
+        # before the adoption slot is popped, so the held text cannot ride
+        # into a later turn's model context through the transcript.
+        import contextlib
+        import threading
+        from unittest import mock
+
+        from hermes_state_messages import HELD_ROW_DISPLAY_KIND
+        from tui_gateway import prompt_turn as pt
+        from tui_gateway import session_workdir
+
+        recorder = mock.Mock()
+        recorder.set_message_display_kind = mock.Mock(return_value=1)
+
+        @contextlib.contextmanager
+        def fake_db(session):
+            yield recorder
+
+        session = self.staged_session()
+        with mock.patch.object(session_workdir, "_session_db", fake_db):
+            pt._hold_turn_cleanup(session, "held notice")
+        recorder.set_message_display_kind.assert_called_once()
+        args = recorder.set_message_display_kind.call_args[0]
+        self.assertEqual(args[1], 7)
+        self.assertEqual(args[2], HELD_ROW_DISPLAY_KIND)
+        # the adoption slot was still popped by the failure path
+        self.assertIsNone(session.get("_submit_user_row"))
+
+    def test_hold_without_staged_row_touches_no_db(self):
+        import contextlib
+        from unittest import mock
+
+        from tui_gateway import prompt_turn as pt
+        from tui_gateway import session_workdir
+
+        recorder = mock.Mock()
+
+        @contextlib.contextmanager
+        def fake_db(session):
+            yield recorder
+
+        session = self.staged_session()
+        session.pop("_submit_user_row")
+        with mock.patch.object(session_workdir, "_session_db", fake_db):
+            pt._hold_turn_cleanup(session, "held notice")
+        recorder.set_message_display_kind.assert_not_called()
 
     def test_hold_never_raises(self):
         from tui_gateway import prompt_turn as pt

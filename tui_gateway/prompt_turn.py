@@ -1137,6 +1137,7 @@ def _hold_turn_cleanup(session, notice: str) -> None:
 
     logger = logging.getLogger("tui_gateway.prompt_turn")
     try:
+        from hermes_state_messages import HELD_ROW_DISPLAY_KIND
         from tui_gateway.session_history import _fail_inflight_turn
         from tui_gateway.session_lifecycle import _release_hosted_room_turn_slot
     except Exception:  # pragma: no cover - import breakage is fatal anyway
@@ -1146,6 +1147,20 @@ def _hold_turn_cleanup(session, notice: str) -> None:
     try:
         if not isinstance(session, dict):
             return
+        # The submit-time user row (persisted before dispatch) must be stamped
+        # BEFORE _fail_inflight_turn pops the adoption slot: held text must not
+        # ride into a later turn's context through the transcript (model-restore
+        # reads skip HELD_ROW_DISPLAY_KIND rows; display reads keep them).
+        staged_row = session.get("_submit_user_row")
+        if isinstance(staged_row, dict) and isinstance(staged_row.get("_row_id"), int):
+            with contextlib.suppress(Exception):
+                from tui_gateway.session_workdir import (
+                    _session_db, _submit_row_owner_key)
+                with _session_db(session) as db:
+                    if db is not None and hasattr(db, "set_message_display_kind"):
+                        db.set_message_display_kind(
+                            _submit_row_owner_key(staged_row, session),
+                            staged_row["_row_id"], HELD_ROW_DISPLAY_KIND)
 
         def _apply() -> None:
             session["running"] = False

@@ -115,6 +115,12 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
+# Display kind stamped on a user row whose turn was HELD by the desktop intake
+# screen (W1 cycle 1e): the turn never ran and the model never answered, so
+# model-restore reads skip the row while display reads keep it for the UI.
+HELD_ROW_DISPLAY_KIND = "desktop_screen_hold"
+
+
 def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
     from hermes_state import _compression_lock_holder_process_is_dead
@@ -1071,6 +1077,21 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
             (row_id, session_id))
 
+    def set_message_display_kind(self, session_id: str, row_id: int, display_kind: str) -> int:
+        """Stamp ONE known active row's ``display_kind`` (id-addressed, idempotent, returns the
+        affected row count). Used by the desktop intake screen: when a hold stops a turn AFTER
+        its submit-time user row was persisted, the row is marked ``HELD_ROW_DISPLAY_KIND`` so
+        model-restore reads skip it (the turn never ran; the text must not ride into a later
+        turn's context through the transcript) while display reads keep it for the UI. The
+        durable row itself is never modified beyond the kind stamp."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        if not isinstance(display_kind, str) or not display_kind.strip():
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET display_kind = ? WHERE id = ? AND session_id = ? AND active = 1",
+            (display_kind, row_id, session_id))
+
     def resolve_active_row_id(self, session_id: str, row_id: int) -> Optional[int]:
         """The active row that still carries *row_id*'s message: *row_id* itself while active, else the one
         row an in-place compaction re-sequenced it into (``_clone_message_rows`` copies role, content and
@@ -1527,11 +1548,20 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
-        cannot merge with an original user turn; the stored transcript is never mutated."""
+        cannot merge with an original user turn; the stored transcript is never mutated.
+        Rows marked ``HELD_ROW_DISPLAY_KIND`` (a desktop-intake-screen hold: the turn never ran, the
+        model never answered) are skipped by every MODEL-RESTORE read (``include_compacted`` unset) —
+        held text must not ride into a later turn's context through the transcript — but display reads
+        keep them so the UI still shows the user's send with its failed bubble."""
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
+        if not display:
+            # sqlite3.Row (key access, no .get): display_kind is in
+            # _CONVERSATION_ROW_COLUMNS, so the key always exists here.
+            rows = [row for row in rows
+                    if row["display_kind"] != HELD_ROW_DISPLAY_KIND]
         if include_compacted:
             rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,

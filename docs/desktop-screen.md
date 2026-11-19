@@ -63,6 +63,22 @@ prompt) and `cli_turn_v1.turn_author.name` reaches memory
 attribution providers, not the model prompt; neither is screened
 this cycle (same A6 deferral as attachments/voice_context).
 
+## Held-row transcript marking (cycle 1e, 19 Nov 2026)
+
+Caught live: a hold stops the turn AFTER its submit-time user row was
+persisted, and the next turn's model context ingested the held text
+through the transcript restore (two held rows rode into the following
+turn's context). Since cycle 1e the hold stamps that row
+``display_kind = desktop_screen_hold``
+(``hermes_state_messages.HELD_ROW_DISPLAY_KIND``): every
+model-restore read of ``get_messages_as_conversation`` skips such rows
+- the turn never ran, the model never answered - while display reads
+(``include_compacted=True``) keep them, so the UI still shows the send
+with its failed bubble. The durable row is preserved (kind stamp only,
+never modified or deleted). Queued envelopes held on drain are marked
+the same way: the dispatching envelope's row is staged as the
+``_submit_user_row`` the cleanup stamps.
+
 ## API-turn admission path (cycle 1d, 19 Nov 2026)
 
 The 19 Nov live test proved the Desktop app's turns take a THIRD

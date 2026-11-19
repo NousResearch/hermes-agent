@@ -713,9 +713,10 @@ export HERMES_HOME=$HOME/hermes-plugin-test
 ```
 
 Keep that directory out of `~/.hermes/cache/scratch` and other temp directories that are
-cleaned by age: a running Hermes imports your plugin from a copy under the home's
-`runtime/provider-plugins/`, and a cleaner that deletes it makes the plugin's later
-imports fail until the process restarts.
+cleaned by age: a running Hermes imports your plugin from a copy under the Hermes root's
+`runtime/provider-plugins/` (`$HERMES_HOME` itself, or the root above `profiles/` for a named
+profile), and a cleaner that deletes it makes the plugin's later imports fail until the
+process restarts.
 
 ```python
 from providers import register_provider

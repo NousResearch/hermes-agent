@@ -161,8 +161,8 @@ class GatewayTurnPersistenceMixin:
             response = t("gateway.shared.warn_passthrough", error=EMPTY_RESPONSE_EXPLANATION.format(model=_model))
         agent_messages = agent_result.get("messages", [])
         logger.info(
-            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown", session_key or "unknown",
+            "response ready: platform=%s chat=%s session=%s thread_id=%s time=%.1fs api_calls=%d response=%d chars",
+            _platform_name, source.chat_id or "unknown", session_key or "unknown", source.thread_id or "",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 

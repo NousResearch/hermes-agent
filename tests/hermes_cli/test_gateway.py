@@ -1145,6 +1145,7 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
     monkeypatch.setattr(gateway, "_is_service_installed", lambda: installed)
     monkeypatch.setattr(gateway_setup_service, "_recorded_choice", lambda: None)
+    monkeypatch.setattr(gateway_setup_service, "_messaging_configured", lambda: True)
     monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service",
                         lambda **kw: installs.append(kw) or True)
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)

@@ -21,8 +21,13 @@ from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
     spawn_profile_action)
 
-hub_router = APIRouter()
-router = APIRouter()
+from hermes_cli.skill_catalog.http import CatalogRoute, missing_extension
+
+hub_router = APIRouter(route_class=CatalogRoute)
+hub_router.add_api_route('/api/skills/hub/review', missing_extension, methods=['POST'])
+hub_router.add_api_route('/api/skills/hub/confirm', missing_extension, methods=['POST'])
+hub_router.add_api_route('/api/skills/hub/operation', missing_extension, methods=['GET'])
+router = APIRouter(route_class=CatalogRoute)
 
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")

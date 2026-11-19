@@ -57,6 +57,44 @@ def test_the_trial_is_never_claimed_outside_a_first_desktop_install(portal, monk
     assert not anon_auth.free_inference_active()
 
 
+def _person_at_terminal(mp):
+    """A person answering ``hermes setup``: both ends a TTY, no container, no CI, not spawned."""
+    import io
+    import sys
+
+    for stream in ("stdin", "stdout"):
+        tty = io.StringIO()
+        tty.isatty = lambda: True
+        mp.setattr(sys, stream, tty)
+    mp.setattr("hermes_constants.is_container", lambda: False)
+    mp.delenv("CI", raising=False)
+    mp.delenv("HERMES_NONINTERACTIVE", raising=False)
+
+
+CLI_BLOCKED = {
+    "a container": lambda mp: mp.setattr("hermes_constants.is_container", lambda: True),
+    "CI": lambda mp: mp.setenv("CI", "true"),
+    "piped stdin": lambda mp: mp.setattr("hermes_cli.setup.is_interactive_stdin", lambda: False),
+    "a dashboard-spawned run": lambda mp: mp.setenv("HERMES_NONINTERACTIVE", "1"),
+}
+
+
+@pytest.mark.parametrize("case", [None, *CLI_BLOCKED])
+def test_cli_setup_claims_only_for_a_person_at_a_terminal_once(portal, monkeypatch, case):
+    """First-run ``hermes setup`` may claim the trial when a person answers it in a real terminal;
+    scripted, CI and container runs cannot, and the once-per-user rule still holds."""
+    _person_at_terminal(monkeypatch)
+    if case:
+        CLI_BLOCKED[case](monkeypatch)
+        assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is None
+        assert portal.creates() == 0
+        return
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup")[anon_auth.WELCOME_CLAIM_FLAG] is True
+    assert anon_auth.free_inference_active()
+    assert welcome_trial.claim_blocker(surface="cli_setup") == "a Nous identity exists"
+    assert portal.creates() == 1
+
+
 def test_a_connector_guest_neither_claims_nor_carries_inference(portal, monkeypatch):
     as_local_desktop_backend(monkeypatch)
     anon_auth.ensure_portal_identity(explicit=True)  # the first hosted connector action

@@ -990,10 +990,15 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
 
     classify = classify_login_control if meta.kind == "login" else classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
+    # Every inspected control's type, classified or not: the identifier fallback picks an
+    # unclassified text box, and it is typed like any other text field.
+    type_by_index: dict[int, str] = {}
     for raw in raw_controls:
         if not isinstance(raw, dict):
             continue
-        result = classify(LoginControl.from_dict(raw))
+        control = LoginControl.from_dict(raw)
+        type_by_index[control.index] = control.type
+        result = classify(control)
         if result is not None:
             classified.append(result)
     if not classified:
@@ -1033,7 +1038,6 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # The trusted path types into the SUPERVISOR's page: only use it when that page is the page the
     # inspection stamped (no plugin page backend in front of it).
     trusted = bool(callable(insert_text)) and page_backend is None
-    type_by_index = {c.control.index: c.control.type for c in classified}
     type_fills = [f for f in fills
                   if f["index"] in type_by_index
                   and type_by_index[f["index"]] not in ("select", "checkbox", "radio")]

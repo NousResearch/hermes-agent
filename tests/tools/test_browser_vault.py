@@ -1064,6 +1064,31 @@ class TestBrowserVaultTools:
         assert '"index": 0' in secret_exprs[0]      # the unlabelled box was included
         assert "user@example.com" in secret_exprs[0]
 
+    def test_an_unlabelled_identifier_box_is_typed_like_the_password(self, store):
+        """The fallback's box is unclassified, but it is a text field: with a working supervisor it
+        is typed (trusted input), not written by the JS path a controlled form re-renders empty."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[lambda _s, e: {"focused": int(re.search(r'"index": (\d+)', e).group(1))}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}, {"landed": 1, "reverted": 0, "missing": []},
+                            {"landed": 2, "reverted": 0, "missing": []}])
+        controls = [{"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+                    {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
+                     "type": "password"}]
+
+        def fake_eval(_task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        with patches[0], patches[2], patches[3], patches[4], patches[5], \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True, out
+        assert sorted(t for t, _ in sup.typed) == sorted(["user@example.com", "s3cret-pw"])
+
     def test_fill_writes_the_identifier_by_default(self, store):
         """A login fill covers both fields of a login. The identifier goes through the same trusted
         path as the password: a normal input tool writes the value into the DOM without the

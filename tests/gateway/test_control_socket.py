@@ -157,6 +157,37 @@ def test_identify_answers_from_identity_resolved_before_accepting(home: Path, mo
     assert len(resolved) == 1
 
 
+def test_process_record_is_built_before_the_listener_opens(home: Path, monkeypatch):
+    """The first psutil process probe (``_build_pid_record``) is the other cold cost of a fresh
+    ``identify``: the listener builds it before it opens, so no client's deadline pays it."""
+    from gateway import control_socket, status
+
+    order = []
+    real_record = status._build_pid_record
+    real_open = control_socket.GatewayControlServer._start_windows if sys.platform == "win32" \
+        else control_socket.GatewayControlServer._start_posix
+
+    def _record():
+        order.append("pid_record")
+        return real_record()
+
+    async def _open(self):
+        order.append("listener")
+        return await real_open(self)
+
+    monkeypatch.setattr(status, "_build_pid_record", _record)
+    monkeypatch.setattr(control_socket.GatewayControlServer,
+                        "_start_windows" if sys.platform == "win32" else "_start_posix", _open)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        await server.stop()
+
+    _run(scenario())
+    assert order[:2] == ["pid_record", "listener"], order
+
+
 def test_unknown_verb_and_malformed_request(home: Path):
     async def scenario():
         server = GatewayControlServer(

@@ -72,7 +72,8 @@ class Service:
             raise CatalogError('review_expired', 'Review again before confirming.')
         entry.mutations.reconcile(target=plan['target_relative_path'])
         operation_id = authority['operation']['operation_id'] if authority['kind'] == 'pending' else None
-        admission = entry.mutations.projection.reserve(entry, plan, operation_id=operation_id)
+        admission = entry.mutations.projection.reserve(entry, plan, operation_id=operation_id,
+                                                       recovery=authority['kind'] == 'pending')
         payload['admission'] = admission
         result = call(entry, 'confirm', payload)
         if result['identifier'] != identifier or result['action'] != action:

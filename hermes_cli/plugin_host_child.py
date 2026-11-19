@@ -91,6 +91,12 @@ class RemoteFacade:
 class RemoteCatalogMutations(RemoteFacade):
     """Keep the context manager and writer-owned OS descriptors in this child."""
 
+    def recover(self, operation_id):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.skill_catalog.recovery import recover
+        acquired = self.recovery_acquire(dict(operation_id=operation_id))
+        return recover(self, get_hermes_home(), operation_id, acquired)
+
     def commit(self, admission, operation_id):
         from hermes_constants import get_hermes_home
         from hermes_cli.skill_catalog.writer import commit

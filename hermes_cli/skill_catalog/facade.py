@@ -56,7 +56,20 @@ class ContextMutations:
         if type(key) is not str:
             raise CatalogError('invalid_request', 'Invalid native receipt identity.')
         operation_id = hashlib.sha256((hermes_home_key(self.home) + '\0' + entry.source_id + '\0' + key).encode()).hexdigest()
-        admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id)
+        try:
+            admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id)
+        except CatalogError as exc:
+            if exc.code not in ('review_changed', 'review_expired'):
+                raise
+            from hermes_cli.skill_catalog.worker import call
+            try:
+                pending = call(entry, 'operation', dict(operation_id=operation_id))
+            except CatalogError:
+                raise exc from None
+            if (pending['operation_id'] != operation_id or pending['state'] not in ('pending', 'unknown')
+                    or pending['identifier'] != review['identifier'] or pending['action'] != review['action']):
+                raise CatalogError('review_changed', 'Native pending journal does not match this review.') from None
+            admission = entry.mutations.projection.reserve(entry, review, operation_id=operation_id, recovery=True)
         return dict(admission=admission, operation_id=operation_id)
 
     def _mutations(self, payload):
@@ -91,6 +104,25 @@ class ContextMutations:
 
     def release(self, payload):
         return self._mutations(payload).release(payload)
+
+    def _recovery_mutations(self, operation_id):
+        from hermes_cli.skill_catalog.projection import _valid_token
+        _valid_token(operation_id)
+        rows = [row for row in registry.snapshot(scope=hermes_home_key(self.home))
+                if row.plugin_key == self.ctx.plugin_id and row.authorized()]
+        doc = Projection(self.home).read()
+        owners = {row['registration_id'] for row in doc['reservations'].values()
+                  if row['operation_id'] == operation_id}
+        matches = [row.mutations for row in rows if row.registration_id in owners]
+        if len(matches) != 1:
+            raise CatalogError('review_changed', 'No pending operation is bound to this catalog.')
+        return matches[0]
+
+    def recovery_acquire(self, payload):
+        return self._recovery_mutations(payload['operation_id']).recovery_acquire(payload)
+
+    def recover(self, operation_id):
+        return self._recovery_mutations(operation_id).recover(operation_id)
 
     def commit(self, admission, operation_id):
         return self._mutations(admission).commit(admission, operation_id)

@@ -86,7 +86,8 @@ def _reservation(value):
         identifier=v._reference, target_relative_path=v._path, operation_id=v._nullable(v._token),
         expected_path_revision=v._integer, expected_installation_revision=v._nullable(v._revision), action=v._action,
         local_result=v._nullable(lambda x: v._operation(x, None)),
-        state=v._enum("reserved|bound|unknown")), strict=True)
+        state=v._enum("reserved|bound|unknown"), recovery=v._boolean), strict=True,
+        defaults={'recovery': False})
 
 
 def _map(value, key_check, row_check):
@@ -141,7 +142,7 @@ def _relationships(doc):
                                      else row["expected_installation_revision"])
                 v._require(current == path and claim["registration_id"] == row["registration_id"]
                            and claim["identifier"] == row["identifier"]
-                           and claim["installation_revision"] == expected_revision)
+                           and (row['recovery'] or claim["installation_revision"] == expected_revision))
     _disjoint(reserved_paths)
     if not doc["registrations"]:
         v._require(not any(doc[key] for key in ("targets", "reservations", "path_revisions")))
@@ -391,7 +392,7 @@ class Projection:
         if tuple(current[key] for key in ("registration_id", "identifier", "installation_revision")) != expected:
             raise CatalogError("review_changed", "Catalog installation changed.")
 
-    def reserve(self, entry, review, *, operation_id=None):
+    def reserve(self, entry, review, *, operation_id=None, recovery=False):
         review = v.validate_result("review", {"ok": True, "data": review}, entry)
         if not review["confirmable"]:
             raise CatalogError("review_required", "A confirmable review is required.")
@@ -404,17 +405,21 @@ class Projection:
             existing = self._existing(entry, doc, review, operation_id)
             if existing is not None:
                 return existing
-            if review['expires_at_ms'] <= int(time.time() * 1000):
+            if not recovery and review['expires_at_ms'] <= int(time.time() * 1000):
                 raise CatalogError('review_expired', 'Review expired. Review again.')
             self._overlaps(doc, review["target_relative_path"], own_target=entry.registration_id)
-            self._prestate(entry, doc, review)
+            if recovery:
+                if operation_id is None:
+                    raise _conflict()
+            else:
+                self._prestate(entry, doc, review)
             reservation_id = uuid.uuid4().hex
             row = dict(registration_id=entry.registration_id, generation=entry.generation,
                 review_id=review["review_id"], identifier=review["identifier"],
                 target_relative_path=review["target_relative_path"], operation_id=operation_id,
                 expected_path_revision=doc["path_revisions"].get(review["target_relative_path"], 0),
                 expected_installation_revision=review["installation_revision"], action=review["action"],
-                local_result=None, state="reserved" if operation_id is None else "bound")
+                local_result=None, recovery=recovery, state="reserved" if operation_id is None else "bound")
             doc["reservations"][reservation_id] = row
             return _admission(reservation_id, row)
 

@@ -100,6 +100,8 @@ class Mutations:
         doc = transaction.__enter__()
         try:
             row = self.projection.binding(self.entry, doc, admission, operation_id)
+            if row.get('recovery'):
+                raise CatalogError('review_changed', 'Pending recovery requires the journal recovery hold.')
             if row.get('local_result') is not None:
                 raise CatalogError('operation_in_progress', 'Local commit already completed. Reconcile only.')
             permit_id = uuid.uuid4().hex
@@ -264,6 +266,42 @@ class Mutations:
         elif result['managed_state'] in ('removed', 'not_installed'):
             doc['targets'].pop(path, None)
         doc['path_revisions'][path] = revision
+
+    def _do_recovery_acquire(self, payload):
+        from hermes_cli.skill_catalog.projection import _admission, _valid_token
+        operation_id = _valid_token(payload['operation_id'])
+        if self._permit is not None:
+            raise CatalogError('busy', 'Catalog commit is active.')
+        transaction = self.projection.transaction()
+        doc = transaction.__enter__()
+        try:
+            self.projection._owner(self.entry, doc)
+            rows = [(key, row) for key, row in doc['reservations'].items()
+                    if row['registration_id'] == self.entry.registration_id
+                    and row['operation_id'] == operation_id and row.get('local_result') is None]
+            if len(rows) != 1:
+                raise CatalogError('review_changed', 'No pending operation is bound to this catalog.')
+            key, row = rows[0]
+            admission = _admission(key, row)
+            self.projection.binding(self.entry, doc, admission, operation_id)
+            permit_id = uuid.uuid4().hex
+            self._permit = dict(id=permit_id, transaction=transaction, doc=doc,
+                                admission=admission, operation_id=operation_id, settled=False)
+            return dict(permit_id=permit_id, admission=admission,
+                        target_relative_path=row['target_relative_path'], identifier=row['identifier'],
+                        action=row['action'], expected_path_revision=row['expected_path_revision'],
+                        expected_installation_revision=row['expected_installation_revision'])
+        except BaseException as exc:
+            transaction.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+
+    def recovery_acquire(self, payload):
+        return self._send('recovery_acquire', payload)
+
+    def recover(self, operation_id):
+        from hermes_cli.skill_catalog.recovery import recover
+        acquired = self.recovery_acquire(dict(operation_id=operation_id))
+        return recover(self, self.projection.home, operation_id, acquired)
 
     def commit(self, admission, operation_id):
         from hermes_cli.skill_catalog.writer import commit

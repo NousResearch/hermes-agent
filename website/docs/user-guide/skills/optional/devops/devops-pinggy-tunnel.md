@@ -118,10 +118,7 @@ echo $! > ~/.hermes/cache/scratch/pinggy-8000.pid
 
 ### 3. Parse the URL out of the log
 
-```bash
-sleep 4
-grep -oE 'https://[a-z0-9-]+\.[a-z]+\.pinggy\.link' ~/.hermes/cache/scratch/pinggy-8000.log | head -1
-```
+Wait ~4 seconds, then `search_files` for `https://[a-z0-9-]+\.[a-z]+\.pinggy\.link` in `~/.hermes/cache/scratch/pinggy-8000.log`.
 
 Expected output looks like:
 
@@ -188,7 +185,7 @@ Then open `http://localhost:4300` in a browser to see live request/response pair
 - **Concurrent free tunnels are limited to one per source IP.** Starting a second tunnel from the same machine usually kills the first. Pro tier lifts this.
 - **`+` in usernames must be quoted.** Bare `ssh ... b:admin:secret+free@a.pinggy.io` works in bash but breaks under shells that treat `+` specially or when assembled programmatically. Always wrap in double quotes.
 - **Don't tunnel anything sensitive without an access-control flag.** A bare HTTP tunnel is reachable by anyone with the URL. Use `b:`, `k:`, or `w:` for non-public services.
-- **`process(action='log')` may miss SSH banner output.** Pinggy prints the URLs and then the SSH session goes interactive. Always redirect to a logfile and `grep` the file directly — same pattern as `cloudflared-quick-tunnel`.
+- **`process(action='log')` may miss SSH banner output.** Pinggy prints the URLs and then the SSH session goes interactive. Always redirect to a logfile and `search_files` the file directly — same pattern as `cloudflared-quick-tunnel`.
 - **Host-key prompt on first run.** Default OpenSSH config asks the user to accept Pinggy's host key. Always pass `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` for unattended runs.
 - **TCP and TLS tunnels return a `<subdomain>.a.pinggy.online:<port>` pair, not an https URL.** Parse with a different regex (`tcp://` and a port). Don't assume every Pinggy tunnel is HTTP.
 - **Pro mode requires the token as the username, not a flag.** Use `"$PINGGY_TOKEN+a.pinggy.io"` (no `free@`). With a token you can also add `:persistent` for a stable subdomain — see `pinggy.io/docs/`.
@@ -201,9 +198,9 @@ Composite patterns combining a local origin with a Pinggy tunnel. Each recipe is
 
 Use this when an external service (Stripe, GitHub, Discord, AgentMail, etc.) needs to POST to a publicly reachable URL during a local task.
 
-```bash
-# 1. Tiny capturing server: every request gets appended to ~/.hermes/cache/scratch/webhook-hits.log
-cat >~/.hermes/cache/scratch/webhook-server.py <<'PY'
+```python
+# 1. Tiny capturing server: write_file ~/.hermes/cache/scratch/webhook-server.py with this,
+#    so every request gets appended to ~/.hermes/cache/scratch/webhook-hits.log
 import http.server, json, datetime, pathlib
 LOG = pathlib.Path("~/.hermes/cache/scratch/webhook-hits.log").expanduser()
 class H(http.server.BaseHTTPRequestHandler):
@@ -219,7 +216,9 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self): self._capture()
     def log_message(self,*a,**k): pass
 http.server.HTTPServer(("127.0.0.1", 18080), H).serve_forever()
-PY
+```
+
+```bash
 nohup python ~/.hermes/cache/scratch/webhook-server.py >~/.hermes/cache/scratch/webhook-server.log 2>&1 &
 echo $! >~/.hermes/cache/scratch/webhook-server.pid
 

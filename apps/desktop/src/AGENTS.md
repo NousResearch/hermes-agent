@@ -58,7 +58,7 @@ as CLI, dropping launch options, or falling back to an independent local serve o
 **Rule:** palette curation hides noise (terminal-only / messaging-only built-ins), NEVER
 user-activated extensions. If you tighten `desktop-slash-commands.ts`, keep
 `isDesktopSlashExtensionCommand` flowing into both paths. Test: from `apps/desktop`,
-`npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
+`pnpm exec vitest run src/lib/desktop-slash-commands.test.ts` (workspace deps install at the repo root).
 
 ## Bot Mode (`src/plugins/hermes-bots/`) — one bot = ONE canonical forever-chat, identified by NAME
 
@@ -95,6 +95,12 @@ in `src/plugins/hermes-bots/`: `canonical-chat-registry.test.ts` (tripwire: the 
 reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-chat-adopt-on-conflict.test.ts`,
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
+
+### Group chats
+
+Follow [the group contract](../docs/canonical-groups.md): offer a control only when the gateway lists
+its method, send only what the generated contract declares, never fall back to classic execution,
+and give a Send's words back only on the gateway's `admitted: false` proof.
 
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 

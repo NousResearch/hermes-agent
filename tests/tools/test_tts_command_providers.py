@@ -325,6 +325,73 @@ class TestRenderCommandTtsTemplate:
         )
         assert '"bob\'s voice"' in rendered
 
+    def test_backslash_adjacent_placeholder_stays_literal(self):
+        """A placeholder directly preceded by a backslash is never substituted (#138361).
+
+        Substituting would splice the template's backslash into the emitted escape
+        sequence and un-escape the value, so the renderer must treat it as literal."""
+        placeholders = {
+            "input_path": "$(echo PWNED)", "text_path": "/tmp/in.txt",
+            "output_path": "/tmp/out.mp3", "format": "mp3",
+            "voice": "", "model": "", "speed": "1.0",
+        }
+        for template in (r'echo "\{input_path}"', r"echo \{input_path}"):
+            rendered = _render_command_tts_template(template, placeholders, os_name="posix")
+            assert "\\{input_path}" in rendered
+            assert "$(echo PWNED)" not in rendered
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    def test_backslash_adjacent_placeholder_cannot_resurrect_substitution(self):
+        """End-to-end on /bin/sh: the old renderer emitted "\\$(...)" — a double
+        backslash that un-escapes the value — so command substitution executed."""
+        rendered = _render_command_tts_template(
+            r'echo "\{input_path}"',
+            {"input_path": "$(echo PWNED)"},
+        )
+        proc = subprocess.run(
+            ["/bin/sh", "-c", rendered], capture_output=True, text=True, timeout=10,
+            check=False,
+        )
+        assert "PWNED" not in proc.stdout
+
+
+    @pytest.mark.parametrize("value", [
+        r"C:\tmp\a&b.mp3", r"C:\tmp\a|b.mp3", r"C:\tmp\a^b.mp3", r"C:\tmp\a>b.mp3",
+        r"C:\tmp\%TEMP%.mp3", r"C:\tmp\a!b.mp3", r'C:\tmp\a"b.mp3', "a\nb",
+        r"C:\tmp\a<b.mp3", "a\rb",
+    ])
+    @pytest.mark.parametrize("template", ["tts --out {output_path}", 'tts --out "{output_path}"'])
+    def test_windows_refuses_cmd_metacharacters_in_values(self, template, value):
+        """cmd.exe has no reliable escape for these under ``cmd /c`` (#138361): fail closed."""
+        with pytest.raises(ValueError, match="cmd.exe"):
+            _render_command_tts_template(template, {"output_path": value}, os_name="nt")
+
+    def test_windows_substitutes_a_placeholder_after_a_path_backslash(self):
+        rendered = _render_command_tts_template(
+            r"piper -m C:\voices\{voice}.onnx --out {output_path}",
+            {"voice": "en_US-amy", "output_path": r"C:\out.wav"}, os_name="nt")
+        assert r"C:\voices\en_US-amy.onnx" in rendered
+        assert "{voice}" not in rendered
+
+    def test_posix_keeps_a_placeholder_after_a_backslash_literal(self):
+        rendered = _render_command_tts_template(r"echo \{voice}", {"voice": "x"}, os_name="posix")
+        assert rendered == r"echo \{voice}"
+
+    def test_windows_still_quotes_plain_paths(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": r"C:\Users\Me\My Audio\out.mp3"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\Me\My Audio\out.mp3"'
+
+    def test_windows_double_quoted_value_is_not_posix_escaped(self):
+        rendered = _render_command_tts_template(
+            'tts --out "{output_path}" --dir "{voice}"',
+            {"output_path": r"C:\Users\a$b`c\out.mp3", "voice": "C:\\voices dir\\"}, os_name="nt")
+        assert rendered == r'tts --out "C:\Users\a$b`c\out.mp3" --dir "C:\voices dir\\"'
+
+    def test_posix_keeps_quoting_cmd_metacharacters(self):
+        rendered = _render_command_tts_template(
+            "tts --out {output_path}", {"output_path": "/tmp/a&b%c!.mp3"}, os_name="posix")
+        assert rendered == "tts --out '/tmp/a&b%c!.mp3'"
 
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior
@@ -376,6 +443,23 @@ class TestGenerateCommandTts:
         # BOM-less alike (repo policy: reads utf-8-sig).
         assert out.read_text(encoding="utf-8-sig") == "hello world"
 
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    @pytest.mark.parametrize("template", [
+        "sh -c 'cp {input_path} {output_path}'",
+        'sh -c "cp {input_path} {output_path}"',
+        "sh -c 'cp {input_path} `echo {output_path}`'",
+    ])
+    def test_model_chosen_output_path_never_reaches_the_shell(self, tmp_path, template):
+        """A template that re-parses its placeholders (``sh -c '...'``) cannot be protected by
+        quoting, so the caller's ``output_path`` is never put in the command: the command writes
+        a Hermes-named file that is moved to the requested path afterwards."""
+        marker = tmp_path / "pwned"
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        result = _generate_command_tts("hello world", str(out), "nested-sh", {"command": template}, {})
+        assert not marker.exists()
+        assert result == str(out)
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
+
 
     @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
@@ -424,6 +508,18 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    def test_tool_output_path_with_shell_syntax_does_not_execute(self, tmp_path):
+        marker = tmp_path / "pwned"
+        cfg = {"provider": "nested", "providers": {"nested": {
+            "type": "command", "command": "sh -c 'cp {input_path} {output_path}'", "output_format": "mp3"}}}
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            data = json.loads(text_to_speech_tool(text="hi", output_path=str(out)))
+        assert not marker.exists()
+        assert data["success"] is True, data
+        assert data["file_path"] == str(out) and out.exists()
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the
@@ -524,6 +620,15 @@ class TestCommandTtsEnvPassthrough:
         ) == ["A_KEY", "B_KEY"]
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
+
+    def test_allowlist_refuses_hermes_provider_credentials(self):
+        """Provider config cannot smuggle Hermes-managed credentials back into the
+        scrubbed command child env (#138361, GHSA-rhgp-j443-p4rf policy)."""
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["MY_TTS_API_KEY", "OPENAI_API_KEY", "anthropic_api_key"]}
+        ) == ["MY_TTS_API_KEY"]
 
 
 class TestCommandProviderSpawnGroupKwargs:

@@ -113,7 +113,8 @@ def _owner_secret_mapping(home: Path) -> dict[str, str]:
     interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
     from agent.secret_scope import _is_process_home, build_profile_secret_scope
     from hermes_cli import env_loader
-    key = str(home.resolve())
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
     if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
         env_loader.hydrate_profile_secret_sources(home)
         if key not in env_loader._APPLIED_HOMES:
@@ -160,6 +161,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
         config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
+        # A ref that resolves only now (unscoped portable load, late secret source) was validated
+        # as its literal placeholder: check the command actually about to be spawned.
+        if issues := _config._suspicious_mcp_issues(name, config):
+            raise ValueError(f"Refusing suspicious MCP server '{name}': {'; '.join(issues)}")
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -859,10 +864,14 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
         enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
+        # A server that connected and then parked (reconnects exhausted) records no connect error,
+        # but it is down all the same; never-tried servers stay "configured".
+        parked = server is not None and not live and server._park_reason is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
         # merely waiting to be spawned, and the error is the actionable part.
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
-                  else "failed" if name in connect_errors else "lazy" if name in lazy_tools else "configured")
+                  else "failed" if name in connect_errors or parked else "lazy" if name in lazy_tools
+                  else "configured")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
                  "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
@@ -871,10 +880,12 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
-        elif status == "failed":
+        elif status == "failed" and name in connect_errors:
             entry["error"] = connect_errors[name]
         elif status == "lazy":
             entry["tools"] = lazy_tools[name]
+        # Parked on a rejected OAuth credential: the one failure only the user can fix (sign in again).
+        entry["needs_auth"] = bool(server is not None and not live and server._auth_park is not None)
         result.append(entry)
     return result
 

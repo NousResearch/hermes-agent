@@ -43,14 +43,14 @@ dependencies = [
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on
   # it regardless; it is no longer OUR trust source.
-  # ssl_verify uses truststore's private original SSLContext for explicit CA overrides.
-  # Keep this exact until that path has a public-API replacement.
+  # ssl_verify uses truststore's private original SSLContext for explicit CA
+  # overrides, and memoizes the OpenSSL backend's per-connection CA reload.
+  # Keep this exact until those paths have a public-API replacement.
   "truststore==0.10.5; python_version >= '3.14'",
   "python-dotenv==1.2.4; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
   "rich==14.3.4; python_version >= '3.14'",
-  "tenacity==9.2.1; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
@@ -310,6 +310,11 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # faster-whisper 1.2.1 passes `metadata_errors` to av.open(), a kwarg PyAV 19
+  # removed, so every local transcription dies with a TypeError (#135245). The fix
+  # (SYSTRAN/faster-whisper#1495) is unreleased and faster-whisper declares only
+  # av>=11, so pin av until a faster-whisper release carries it.
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
   "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
@@ -343,6 +348,8 @@ discord = ["discord.py[voice]==2.7.1"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # Same av pin as [voice]: PyAV 19 breaks faster-whisper 1.2.1 (#135245).
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
 ]
 audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
@@ -382,7 +389,7 @@ documents = [
   "openpyxl==3.1.5",
   "python-pptx==1.0.2",
   "reportlab==5.1.0",
-  "pypdf==6.21.2",
+  "pypdf==6.21.4",
 ]
 # PDF text extraction and rasterization for skills/productivity/pdf. Only in
 # the skills' side environment (`hermes pm environment documents --extra
@@ -457,8 +464,8 @@ mistral = ["mistralai==2.10.1"]
 # PM on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = [
-  "opentelemetry-sdk==1.45.1",
-  "opentelemetry-exporter-otlp-proto-http==1.45.1",
+  "opentelemetry-sdk==1.45.2",
+  "opentelemetry-exporter-otlp-proto-http==1.45.2",
 ]
 bedrock = ["boto3==1.43.115"]
 vertex = ["google-auth==2.62.0"]
@@ -498,9 +505,9 @@ google = [
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
+  # pyasn1 0.6.5, google-auth 2.55.1.
   "httplib2==0.32.0",
-  "pyasn1==0.6.4",
+  "pyasn1==0.6.5",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -565,8 +572,8 @@ dev = [
   "starlette==1.9.0",
   "ty==0.0.89",
   "ruff==0.15.22",
-  "setuptools==83.0.0",
-] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+  "setuptools==84.1.0",
+] # starlette: CVE-2026-48710; setuptools: 84.1.0 (GHSA-xmj3-9gf7-h52w; torch >=2.13 requires setuptools 83+)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
 # reviewed version as the optional runtime extra above.
@@ -580,7 +587,7 @@ test = [
 # PEP 517 isolated builds. Without wheel in
 # requires, the isolation sandbox only gets setuptools and the build
 # fails with ModuleNotFoundError: wheel.cli (#96488).
-requires = ["setuptools==83.0.0", "wheel"]
+requires = ["setuptools==84.1.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -594,6 +601,20 @@ hermes-acp = "acp_adapter.entry:main"
 # closures never ship. KittenTTS pulls torch, transformers and spaCy through
 # misaki[en]: installed when the user picks it, not preinstalled.
 opt-in-extras = ["kittentts"]
+
+# What `hermes update` compiles before it moves the checkout to this tree, and again after: the
+# launcher and `hermes_bootstrap` import closure plus the CLI entry modules. Every file listed here
+# must exist; an update to a tree that lacks one is refused. A change that moves one of these
+# files updates its path here.
+update-startup-files = [
+  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
+  "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
+  "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
+  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
+  "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
+  "hermes_agent/compat/finder.py", "hermes_agent/compat/moves.py",
+]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
@@ -706,10 +727,18 @@ include = [
   "providers.*",
   "hermes_platform",
   "hermes_platform.*",
+  "hermes_agent",
+  "hermes_agent.*",
   "pm",
   "pm.*",
+  "persistence",
+  "persistence.*",
+  "session_rules",
+  "session_rules.*",
   "tools",
   "tools.*",
+  "utils",
+  "utils.*",
 ]
 
 [tool.setuptools.package-data]
@@ -761,75 +790,3 @@ python-version = "3.13"
 [tool.ty.rules]
 unknown-argument = "warn"
 redundant-cast = "ignore"
-
-[tool.ruff]
-preview = true # required for PLW1514 (unspecified-encoding) — preview rule
-
-[tool.ruff.lint]
-# All other lints are intentionally disabled (see comment history on this
-# file) while we wrangle typechecks — but PLW1514 is too load-bearing to
-# keep off.  Bare open()/read_text()/write_text() in text mode defaults to
-# the system locale encoding on Windows (cp1252 on US-locale installs),
-# which silently corrupts any non-ASCII file content.  We had three
-# separate Windows sandbox regressions in one debug session before
-# adding the explicit encoding.  This rule keeps new code honest.
-#
-# ASYNC210/220/221/251: blocking calls inside `async def` freeze the whole
-# gateway/uvicorn event loop — every adapter, timer, and health check stops
-# until the call returns.  Real incidents: a 17-minute getaddrinfo hang took
-# the backend down (#91912); `time.sleep` in start_gateway froze restarts
-# for 10s (#36163).  The fix pattern is `await asyncio.to_thread(...)` (or
-# `loop.run_in_executor`), `asyncio.create_subprocess_exec`, and
-# `await asyncio.sleep`.  These four are the direct freeze vectors:
-#   ASYNC210 — blocking HTTP call in async fn (urllib/requests/httpx-sync)
-#   ASYNC220 — subprocess.Popen in async fn
-#   ASYNC221 — subprocess.run / os.system in async fn
-#   ASYNC251 — time.sleep in async fn
-# ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
-# but ~180 legacy sites deep; they graduate to this list once the backlog
-# is burned down (see per-file-ignores below for the frozen baseline).
-select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
-
-[tool.ruff.lint.flake8-tidy-imports.banned-api]
-"pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."
-"pm.client.uv".msg = "Use PM's semantic Python operations."
-"pm.install.uv".msg = "The raw uv bridge was removed; use PM operations."
-"pm._uv".msg = "Tool acquisition is private to PM."
-"pm.environment".msg = "The environment engine is private; use PM operations."
-"pm.runtime_stage".msg = "PM stages its own worker runtime; consumers call pm operations."
-
-[tool.ruff.lint.per-file-ignores]
-"pm/**" = ["TID251"]
-# Desktop E2E fixtures stand in for PM's worker/runtime and reach into it like tests do.
-"apps/desktop/electron/fixtures/**" = ["TID251"]
-# Tests can intentionally exercise locale-encoding edge cases.
-"tests/**" = [
-  "PLW1514",
-  "ASYNC210",
-  "ASYNC220",
-  "ASYNC221",
-  "ASYNC251",
-  "TID251",
-]
-# Skills and plugins are partially user-authored — their own conventions.
-"skills/**" = ["PLW1514"]
-"optional-skills/**" = ["PLW1514"]
-# Plugin platform adapters run ON the gateway event loop — the ASYNC gate
-# applies to them with full force; only PLW1514 stays relaxed.
-"plugins/**" = ["PLW1514"]
-# ---------------------------------------------------------------------------
-# ASYNC ratchet baseline — legacy blocking sites that predate the gate.
-# Each entry is an EXISTING violation being fixed in its own PR; do NOT add
-# new files here.  Remove the entry when the file's sites are fixed.
-# ---------------------------------------------------------------------------
-# Detached restart watchers: Popen of a fully-detached, fire-and-forget
-# process (no wait), an accepted momentary spawn cost pending a dedicated
-# async-subprocess sweep.
-"gateway/run.py" = ["ASYNC220"]
-"gateway/run_shutdown.py" = ["ASYNC220"]
-"gateway/slash_commands.py" = ["ASYNC220"]
-# Off-loop sweep for these routers is in flight (PR #84376).
-"hermes_cli/web_routers/profiles.py" = ["ASYNC220", "ASYNC221"]
-# Legacy blocking spawn sites in platform adapters, pending their own fixes.
-"plugins/platforms/whatsapp/adapter.py" = ["ASYNC220", "ASYNC221"]
-"plugins/platforms/photon/adapter.py" = ["ASYNC220"]

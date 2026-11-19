@@ -9,6 +9,7 @@ a contract between one builder and three renderers, not a snapshot of any layout
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from datetime import datetime
 from types import SimpleNamespace
@@ -79,9 +80,8 @@ def _render_gateway() -> str:
 def _render_tui() -> str:
     from tui_gateway import server
 
-    class _DB:
-        def get_session(self, key):
-            return _meta() if key == SESSION_ID else {}
+    store = SimpleNamespace(sessions=SimpleNamespace(
+        get=lambda key: SimpleNamespace(as_session_row=_meta) if key == SESSION_ID else None))
 
     session = {
         "agent": _agent(), "session_key": SESSION_ID, "history": [], "history_lock": threading.Lock(),
@@ -90,7 +90,8 @@ def _render_tui() -> str:
     }
     server._sessions["status-contract-sid"] = session
     try:
-        with patch.object(server, "_get_db", lambda: _DB()):
+        with patch.object(server, "_get_db", lambda: store), \
+                patch.object(server, "_persistence_for", lambda db: contextlib.nullcontext(db)):
             resp = server.handle_request(
                 {"id": "1", "method": "session.status", "params": {"session_id": "status-contract-sid"}})
     finally:

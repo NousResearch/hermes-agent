@@ -9,7 +9,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+                     UndoRollbackHint, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -454,6 +454,8 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
+    # Present only when checkpoints are on and the undone turns changed files (``rollback.list``'s field).
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("session.undo", params=SessionUndoParams, result=SessionUndoResult,
@@ -507,6 +509,8 @@ class SessionUsageParams(SessionParams):
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
     credits_usage_window: bool | None = None
+    # The route is Nous inference: the /topup CTA applies (the balance shows whenever Nous is signed in).
+    nous_route: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
@@ -535,6 +539,28 @@ class ContextFileSource(Result):
     status: str
 
 
+class PromptCacheWindow(Result):
+    """``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm.
+    ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier);
+    ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage``
+    maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` |
+    ``unknown``; times are epoch seconds."""
+
+    guaranteed_until: float | None
+    estimated_until: float | None
+    tier: str | None
+    confidence: str
+    reason: str
+    refreshed_at: float | None = None
+    coverage: dict[str, float] = {}
+    #: Keep-alives missed on this route (two real misses in a row): nothing is warmed again this session.
+    warming_off: bool = False
+    #: ``cache_ttl: auto`` on a person's chat still on 5m: it moves to 1h at its first pause over 5 minutes.
+    tier_pending: bool = False
+    #: A rule learned from this route's own usage (``no-cache`` | ``write-on-hit`` | ``short-lived``).
+    learned: str | None = None
+
+
 class SessionContextBreakdownResult(Result):
     """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
@@ -548,6 +574,7 @@ class SessionContextBreakdownResult(Result):
     context_source: str
     model: str
     context_files: list[ContextFileSource] = []
+    prompt_cache: PromptCacheWindow | None = None
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

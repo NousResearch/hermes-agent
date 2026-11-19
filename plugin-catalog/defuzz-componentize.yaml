@@ -1,0 +1,18 @@
+name: defuzz-componentize
+repo: https://github.com/defuzzr/defuzz-componentize
+sha: 8162bf6551a6755f2e0fbd198b555134a5c10a7d
+description: "Optional Defuzz companion for turning Python scripts into reusable components checked against saved baseline output, with 14 declarative project kits, CLI and slash commands, bundled guidance, and a Desktop settings page. Requires Python 3.13 or newer. Disclosure — Runs the baseline and test commands named in a componentize spec (`golden.argv`, `tests.argv`), and imports and calls `register()` on any plugin trees the spec lists, with your user's permissions, without a sandbox and without a Hermes approval prompt, including when started from the `/componentize` slash command in chat; nested or detached commands can outlive a cancel. It reads the chosen projects, library, specs, inputs and job evidence; creates project folders, updates kit-owned AGENTS.md blocks and .gitignore/LFS rules; saves its two settings through Hermes; and writes job evidence and locks under `<library>/.componentize/<name>/` (or `--state-root`). Libc lookup may run system utilities (ldconfig, gcc, objdump). The plugin itself makes no network calls, but the commands and plugins it runs can reach your files and the internet. Linux only; needs Python 3.13 or newer."
+maintainer: defuzzr
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/defuzzr/defuzz-componentize
+version: "0.2.0"
+title: Defuzz Componentize
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

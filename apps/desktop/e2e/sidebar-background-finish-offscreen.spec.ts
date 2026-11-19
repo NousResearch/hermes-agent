@@ -8,7 +8,7 @@
  * poll stops once A's pane is hidden. Before the fix the row kept its
  * "Background task running" state until the user clicked back into A.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, test } from '@playwright/test'

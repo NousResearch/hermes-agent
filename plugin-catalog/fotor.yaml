@@ -1,0 +1,17 @@
+name: fotor
+title: Fotor
+repo: https://github.com/fotor-ai/fotor-agent-plugins
+sha: 76d119d50adcf54a9a81d9eca481e096c656e714
+image: https://raw.githubusercontent.com/fotor-ai/fotor-agent-plugins/76d119d50adcf54a9a81d9eca481e096c656e714/assets/hermes/fotor-cover.jpg
+subdir: plugins/hermes/fotor
+description: "Fotor image, video, and audio workflows through six portable skills and a separately configured native MCP/OAuth service. Disclosure — the skills use Fotor's hosted MCP service (mcp.fotor.com), which you add separately with OAuth; image, video and audio jobs spend credits on your Fotor account, and local files you ask it to use are uploaded to Fotor's storage."
+maintainer: Fotor
+tier: community
+category: tools
+version: "0.11.1"
+requires_hermes: ">=0.23.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

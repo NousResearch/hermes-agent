@@ -13,6 +13,7 @@ import { useHiddenAgentCopy } from '@/app/chat/sidebar/hidden-agent-copy'
 import { useNewSessionCopy } from '@/app/chat/sidebar/simplified-new-session-copy'
 import { discoveryCopy } from '@/app/discovery/discovery-copy'
 import { firstTimeCopy } from '@/app/discovery/first-time-copy'
+import { usageStatsCopy } from '@/app/discovery/usage-stats-copy'
 import { usePageFrameCopy } from '@/app/overlays/page-frame-copy'
 import { designSystemCopy } from '@/app/redesign/design-system/design-system-copy'
 import { routinesCopy } from '@/app/routines/routines-copy'
@@ -199,7 +200,8 @@ function redesignCopyModules(): Record<string, unknown> {
     redesignNavigation: redesignNavigationCopy('en'),
     routines: routinesCopy('en'),
     settingsPages: settingsPagesCopy('en'),
-    simplifiedAgents: TRANSLATIONS.en.simplifiedAgents
+    simplifiedAgents: TRANSLATIONS.en.simplifiedAgents,
+    usageStats: usageStatsCopy('en')
   }
 }
 

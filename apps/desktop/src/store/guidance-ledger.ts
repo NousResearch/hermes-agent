@@ -17,11 +17,15 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
  *  - a splash is `seen` (shown and acknowledged) or `not_applicable` (settled without showing: a new
  *    install never sees the rename splash), so a later visit does not reconsider it;
  *  - the starter ideas are `hidden` (by the person) or `wanted` (brought back with Show ideas); with
- *    no mark they follow the finished-chat count. */
+ *    no mark they follow the finished-chat count;
+ *  - the usage-stats offer's sidebar card is `deferred` (its × moved it to the tray) or `cleared`
+ *    (cleared from the tray too); with no mark an unanswered offer shows as the card. Answering
+ *    is the backend's, never a mark here. */
 const TOPIC_MARKS = {
   renameSplash: ['not_applicable', 'seen'],
   firstTimeSplash: ['not_applicable', 'seen'],
-  starterIdeas: ['hidden', 'wanted']
+  starterIdeas: ['hidden', 'wanted'],
+  usageStatsOffer: ['cleared', 'deferred']
 } as const
 
 export type GuidanceTopic = keyof typeof TOPIC_MARKS

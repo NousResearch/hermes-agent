@@ -481,17 +481,15 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     caller's write to fail. Default and custom homes keep ``parents=True``.
     """
     target = Path(path)
-    # Lexical, so ``home/missing/../x`` is classified and created as ``home/x``.
-    lexical = Path(os.path.normpath(target))
-    home = assert_named_profile_home_live(lexical)
+    home = assert_named_profile_home_live(target)
     # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
     # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
     # elevated grant (tests/pm/test_bootstrap_import_closure.py).
     from hermes_dir_acl import make_user_dir, repair_user_dir
     if home is None:
         make_user_dir(target, parents=True, exist_ok=True)
-    elif lexical != home:
-        _mkdir_below_home(home, lexical)
+    elif target != home:
+        _mkdir_below_home(home, target)
     else:
         try:
             is_dir = stat.S_ISDIR(home.stat().st_mode)
@@ -512,7 +510,8 @@ def _mkdir_below_home(home: Path, path: Path) -> None:
         if path.parent == home:
             raise
         _mkdir_below_home(home, path.parent)
-        make_user_dir(path, exist_ok=True)
+        if not path.exists():  # else an alias (``missing/..``) of a dir this walk already handled
+            make_user_dir(path, exist_ok=True)
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:

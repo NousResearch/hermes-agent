@@ -26,11 +26,13 @@ export function setToolsetEnabled(
   enabled: boolean,
   profile?: ProfileScope
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
+  const scope = capabilityScoped(profile)
+
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    ...capabilityScoped(profile),
+    ...scope,
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
-    body: { enabled }
+    body: { enabled, profile: scope.profile }
   })
 }
 

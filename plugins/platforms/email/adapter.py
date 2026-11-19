@@ -944,7 +944,8 @@ class EmailAdapter(BasePlatformAdapter):
         if subject_override:
             msg = self._verbatim_subject_msg(to_addr, body, subject_override)
             self._smtp_send(msg)
-            logger.info("[Email] Sent mail to %s (subject: %s)", to_addr, subject_override)
+            logger.info("[Email] Sent mail to %s (subject: %d chars)", hash_for_log(to_addr), len(subject_override))
+            logger.debug("[Email] Subject: %s", subject_override)
             return str(msg["Message-ID"])
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         self._smtp_send(msg)

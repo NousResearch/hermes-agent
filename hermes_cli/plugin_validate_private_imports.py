@@ -141,15 +141,19 @@ class ImportSite:
 
 
 @dataclass(frozen=True)
+class ImportBranch:
+    """One block of a ``try`` (its body or one handler): the Hermes imports it makes and the ``try`` blocks
+    nested in it. The block runs when every site resolves and no nested ``try`` fails as a whole."""
+
+    sites: tuple[ImportSite, ...]
+    choices: tuple[ImportChoice, ...] = ()
+
+
+@dataclass(frozen=True)
 class ImportChoice:
-    """A ``try`` that catches a failed import: the plugin works when every Hermes import of one branch (the
-    ``try`` body or one handler) resolves. A branch with no Hermes import is the plugin running without them."""
+    """A ``try`` that catches a failed import; Python runs the body, else a handler."""
 
-    branches: tuple[tuple[ImportSite, ...], ...]
-
-    @property
-    def degrades(self) -> bool:
-        return any(not branch for branch in self.branches)
+    branches: tuple[ImportBranch, ...]
 
 
 @dataclass(frozen=True)
@@ -164,45 +168,59 @@ def _catches_import_errors(node: ast.Try) -> bool:
         for handler in node.handlers)
 
 
-def _import_tries(tree: ast.AST) -> dict[int, tuple[ast.Try, int]]:
-    """``id(import node) -> (try, branch index)`` for imports in a ``try`` that catches import errors; branch 0
-    is the body, branch N the N-th handler. An import in nested such ``try`` blocks belongs to the innermost."""
-    owner: dict[int, tuple[ast.Try, int]] = {}
-    for node in ast.walk(tree):  # outer blocks are walked first, so inner ones overwrite them
-        if isinstance(node, ast.Try) and _catches_import_errors(node):
-            for index, block in enumerate([node.body, *(h.body for h in node.handlers)]):
-                owner.update({id(n): (node, index) for stmt in block for n in ast.walk(stmt) if _imported(n)})
-    return owner
+@dataclass
+class _Block:
+    sites: set
+    choices: list
+
+
+class _ImportCollector:
+    """Walks one file, filing each Hermes import under the innermost catching ``try`` block it sits in."""
+
+    def __init__(self, rel: str, skipped: set[int], is_hermes) -> None:
+        self.rel, self.skipped, self.is_hermes = rel, skipped, is_hermes
+
+    def block(self, nodes) -> _Block:
+        found = _Block(set(), [])
+        stack = list(reversed(list(nodes)))
+        while stack:
+            node = stack.pop()
+            if id(node) in self.skipped:
+                continue
+            if isinstance(node, ast.Try) and _catches_import_errors(node):
+                choice = self.choice(node)
+                if choice is not None:
+                    found.choices.append(choice)
+                stack += reversed([*node.orelse, *node.finalbody])
+                continue
+            found.sites |= {ImportSite(self.rel, getattr(node, "lineno", 0), module, name)
+                            for module, name in _imported(node) if self.is_hermes(module, name)}
+            stack += reversed(list(ast.iter_child_nodes(node)))
+        return found
+
+    def choice(self, node: ast.Try) -> ImportChoice | None:
+        blocks = [self.block(body) for body in [node.body, *(h.body for h in node.handlers)]]
+        if not any(b.sites or b.choices for b in blocks):
+            return None
+        return ImportChoice(tuple(ImportBranch(tuple(sorted(b.sites, key=lambda s: (s.line, s.module, s.name))),
+                                               tuple(b.choices)) for b in blocks))
 
 
 def hermes_import_sites(plugin_dir: Path) -> CoreImports:
     """Every import of a Hermes core module, public or not: unconditional ones in file/line order, and each
-    ``try`` that catches import errors as an :class:`ImportChoice`. ``TYPE_CHECKING`` imports never load,
-    so they are left out."""
+    outermost ``try`` that catches import errors as an :class:`ImportChoice` (nested ones stay inside the
+    branch that holds them). ``TYPE_CHECKING`` imports never load, so they are left out."""
     files = _parsed_files(Path(plugin_dir))
     local = _local_modules(rel for rel, _tree in files)
     core = _hermes_packages()
     plain: set[ImportSite] = set()
     choices: list[ImportChoice] = []
     for rel, tree in files:
-        skipped, owner = _type_checking_nodes(tree), _import_tries(tree)
-        branches: dict[int, tuple[ast.Try, list[set[ImportSite]]]] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Try) and _catches_import_errors(node) and id(node) not in skipped:
-                branches[id(node)] = (node, [set() for _ in range(1 + len(node.handlers))])
-        for node in ast.walk(tree):
-            if id(node) in skipped:
-                continue
-            sites = {ImportSite(rel.as_posix(), getattr(node, "lineno", 0), module, name)
-                     for module, name in _imported(node) if _is_hermes_import(module, name, core, local)}
-            if node_try := owner.get(id(node)):
-                branches[id(node_try[0])][1][node_try[1]] |= sites
-            else:
-                plain |= sites
-        for node, found in sorted(branches.values(), key=lambda item: item[0].lineno):
-            if any(found):
-                choices.append(ImportChoice(tuple(tuple(sorted(b, key=lambda s: (s.line, s.module, s.name)))
-                                                  for b in found)))
+        collector = _ImportCollector(rel.as_posix(), _type_checking_nodes(tree),
+                                     lambda module, name: _is_hermes_import(module, name, core, local))
+        found = collector.block(tree.body)
+        plain |= found.sites
+        choices += found.choices
     return CoreImports(tuple(sorted(plain, key=lambda s: (s.rel, s.line, s.module, s.name))), tuple(choices))
 
 

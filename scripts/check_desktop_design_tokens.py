@@ -21,7 +21,7 @@ is never judged.
 
 Ratchet: ``scripts/desktop_design_tokens_baseline.json`` holds each file's finding count from the
 day the guard landed; a file may only go down. A higher count fails; a lower one is an advisory
-to refresh the baseline (``--write-baseline``). Three findings always fail, baseline or not:
+to refresh the baseline (``--write-baseline``). Four findings always fail, baseline or not:
 
   undefined-token  ``var(--portal-…)`` naming a property defined nowhere (a CSS declaration, a TS
                    style key or ``setProperty``; a comment neither defines nor reads): a typo or a
@@ -29,6 +29,9 @@ to refresh the baseline (``--write-baseline``). Three findings always fail, base
   page-column      ``var(--portal-column-page)`` read outside tokens/ and the page stage contract
                    (``app/redesign/portal-pages.css``): a page sizing its own column instead of
                    marking its stage ``page-stage``, which is how pages drift apart
+  page-top         a negated ``--portal-page-top``/``--portal-settings-top`` on a block-start margin,
+                   inset or translate: a row pulled up into the page's top inset, onto the stage's
+                   edge (the routine detail's breadcrumb did this)
   stale-docs       the generated token tables in ``apps/desktop/DESIGN.md`` differ from tokens/
 
 Tokens defined in tokens/ that nothing reads are listed as an advisory.
@@ -245,6 +248,16 @@ _INK_MIX = re.compile(r"color-mix\([^;]*?var\(\s*--(?:ui-base|portal-brand-fill|
 _LENGTH = re.compile(r"(?<![\w.#-])(-?\d*\.?\d+)(px|rem|em)\b")
 _TIME = re.compile(r"(?<![\w.#-])(\d*\.?\d+)(ms|s)\b")
 _VAR_NAME = re.compile(r"--[\w-]+")
+# The page's top inset negated (``calc(-1 * var(--portal-page-top))``, ``calc(0px - …)``): a row pulled
+# up into the space above a page's first row, which leaves it on the stage's edge.
+_PAGE_TOP_TOKENS = r"--portal-(?:page|settings)-top\b"
+_PAGE_TOP_PULL = re.compile(
+    rf"-\s*(?:1\s*\*\s*)?var\(\s*{_PAGE_TOP_TOKENS}|var\(\s*{_PAGE_TOP_TOKENS}\s*\)\s*\*\s*-1"
+)
+_BLOCK_START_PROPS = frozenset({
+    "margin", "margin-top", "margin-block", "margin-block-start", "top", "inset", "inset-block", "inset-block-start",
+    "translate",
+})
 _STRINGS = re.compile(r"'[^']*'|\"[^\"]*\"|url\([^)]*\)")
 
 
@@ -278,6 +291,8 @@ def declaration_findings(decl: Decl) -> list[str]:
         kinds.append("duration")
     if prop == "z-index" and re.fullmatch(r"\d+", decl.value.strip()) and int(decl.value) > 1:
         kinds.append("z-index")
+    if prop in _BLOCK_START_PROPS and _PAGE_TOP_PULL.search(decl.value):
+        kinds.append("page-top")
     if prop.startswith("--portal-") and "var(" not in decl.value and (
         _LENGTH.search(bare) or _TIME.search(bare) or "raw-color" in kinds or re.fullmatch(r"-?\d*\.?\d+%?", decl.value.strip())
     ):
@@ -592,11 +607,12 @@ def main(argv: list[str] | None = None) -> int:
     unused = sorted(name for name in token_names if name not in refs)
     stale = docs_block(markdown) != docs
     own_column = page_column_findings(refs)
+    pulled = [f for f in found if f.kind == "page-top"]
 
     if args.list:
         for f in found:
             print(f)
-    failed = bool(over or undefined or stale or own_column)
+    failed = bool(over or undefined or stale or own_column or pulled)
     for rel in over:
         print(f"{rel}: {counts[rel]} design-token findings, baseline {baseline.get(rel, 0)} (it may only go down):")
         for f in found:
@@ -606,6 +622,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{f}  (defined nowhere: a typo or a deleted token)")
     for f in own_column:
         print(f"{f}  (mark the page's stage `page-stage`; only {PAGE_STAGE_CONTRACT} lays the column)")
+    for f in pulled:
+        print(f"{f}  (a page's first row starts at its top inset; put the row in the flow under it)")
     if stale:
         print("apps/desktop/DESIGN.md token tables are stale: run python scripts/check_desktop_design_tokens.py --write-docs")
     if under and not args.write_baseline:

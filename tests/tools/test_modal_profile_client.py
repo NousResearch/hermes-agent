@@ -235,6 +235,12 @@ def test_single_profile_host_login_still_selects_direct(tmp_path, monkeypatch):
     assert has_direct_modal_credentials() is True
 
 
+def test_unbound_multiplexed_modal_preflight_does_not_offer_launch_tokens(profiles):
+    from tools.terminal_tool_backends import _get_modal_backend_state
+
+    assert _get_modal_backend_state("direct")["selected_backend"] is None
+
+
 class _JoinRecorder(dict):
     """``_client_flights`` stand-in: notes when a sandbox found a client build already in progress."""
 

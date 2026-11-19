@@ -1028,6 +1028,21 @@ _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
     "man": {"--pager", "--html", "-P", "-H"},
 }
+# Auxiliary shell-word passes are needed only when the input could name one of these executables.
+# A plain command containing only unrelated words (e.g. thousands of `ssh -x` stages) can be
+# rejected with a linear literal scan. Any quoting/escape/expansion/grouping/glob syntax fails open
+# to the full parser because it could spell a candidate without containing its literal name.
+_COMPLEX_SHELL_SCAN_CHARS = frozenset("'\"\\$`(){}*?[]~<>!")
+_EXECUTION_FLAG_CANDIDATE_RE = re.compile(
+    r"(?i)(?<![\w.-])(?:"
+    + "|".join(
+        [name_re.pattern for _, name_re in _INTERPRETER_NAME_RES]
+        + [rf"{re.escape(name)}(?:\.exe)?" for name in (*_SHELL_NAMES, *_READ_TOOL_EXEC_FLAGS)]
+    )
+    + r")(?=$|[\s;&|<>()`])"
+)
+# This is only a literal candidate prefilter; it never evaluates or executes the command text.
+_EVAL_COMMAND_CANDIDATE_RE = re.compile(r"(?i)(?<![\w.-])eval(?=$|[\s;&|<>()`])")
 # Required-argument options are ownership boundaries: an option-looking next token is data, not another option. These
 # sets mirror the invocation grammar of the supported binaries (ripgrep 14, GNU sort, man-db, and ag 2.2).
 _READ_TOOL_LONG_OPTIONS_WITH_ARG = {
@@ -1258,6 +1273,14 @@ def _powershell_command_payload(args: list[str]) -> str | None:
 
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
+    # Most words cannot own interpreter/shell/read-tool execution flags. On plain text, skip the
+    # word-by-word shell pass unless a candidate executable is literally present; any syntax that
+    # could construct one indirectly falls through to the full parser.
+    if (
+        not any(char in command for char in _COMPLEX_SHELL_SCAN_CHARS)
+        and not _EXECUTION_FLAG_CANDIDATE_RE.search(command)
+    ):
+        return
     for segment in _iter_top_level_shell_segments(command):
         for start, _, word in _iter_shell_command_word_spans(segment):
             executable = _deobfuscate_shell_word_for_detection(word)
@@ -1299,6 +1322,13 @@ def _eval_payload(args: list[str]) -> str | None:
 def _eval_payloads(command: str):
     """Yield the code each ``eval`` in *command* hands back to the shell, like a ``-c`` payload.
     Kept out of _execution_flag_findings: eval is not itself a dangerous mechanism, only its code is."""
+    # `eval` is the only executable word this pass cares about. Keep indirect spellings on the
+    # full path; this literal prefilter never interprets command text.
+    if (
+        not any(char in command for char in _COMPLEX_SHELL_SCAN_CHARS)
+        and not _EVAL_COMMAND_CANDIDATE_RE.search(command)
+    ):
+        return
     for segment in _iter_top_level_shell_segments(command):
         for start, _, word in _iter_shell_command_word_spans(segment):
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "eval":

@@ -22,6 +22,9 @@ class SessionEvents:
         weakref.finalize(self, event_replay.release_key, self._key, blocking=False).atexit = False
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
+        # Changed only when the visible pending projection changes, for optimistic claim snapshots.
+        self.pending_revision = 0
+        self._pending_projection = None
         self._public_id = None
         self.execution = {}
         # Synchronous same-thread recipients (API run projections): unlike fanout peers they
@@ -76,9 +79,14 @@ class SessionEvents:
         # ``execution`` stamps this frame alone; the shared stamp is read without the lock elsewhere.
         with self.lock:
             self.watermark()
+            payload_copy = deepcopy(payload)
+            if event_type == 'session.info' and 'pending' in payload_copy:
+                if payload_copy != self._pending_projection:
+                    self._pending_projection = deepcopy(payload_copy)
+                    self.pending_revision += 1
             frame = {'jsonrpc': '2.0', 'method': 'event', 'params': {
                 **(self.execution if execution is None else execution), 'type': event_type, 'session_id': self._key,
-                'payload': deepcopy(payload), 'replay_epoch': self.epoch}}
+                'payload': payload_copy, 'replay_epoch': self.epoch}}
             event_replay._stamp_event(frame)
             if frame['params']['seq'] <= self.sequence:
                 # Another publisher may evict us after watermark's lookup.

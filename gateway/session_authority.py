@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from types import SimpleNamespace
 import uuid
+from typing import Any, cast
 
 from gateway.session_contract import (
     CANONICAL_GATEWAY_PROTOCOL, AdmissionReceipt, PendingAdmission, SessionActor, SessionHandle, SessionRef, Submission,
@@ -32,6 +33,8 @@ from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CorruptSto
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
 # Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
 _MARKER_RELEASE_WAIT_S = 60.0
+# Omitted only by legacy synchronous _handle/_publish_pending callers.
+_SESSION_ROW_UNSET = object()
 # True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
 # after that may still see the row commit, so it must not release the media the write commits.
 native_write_started = ContextVar('native_write_started', default=False)
@@ -107,6 +110,11 @@ class LiveSession:
     # Set while a plugin's turn waits for the session's background work (run_plugin_injection
     # ``admission_turn_scope``): a person's input queued behind it sets it and ends that wait.
     background_wait: threading.Event | None = None
+    # Serializes a claim's durable write+stamp and a cancellation's durable write+projection.
+    # It deliberately does not cover preflight; the active head is marked so its cancel can race
+    # the SQLite claim transaction, whose head/status check decides the winner.
+    pending_snapshot_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    claiming_admission_id: str | None = None
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -333,11 +341,13 @@ class SessionAuthority:
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(running_key(self.runner, live.route, ref.session_id))
 
-    def _pending_rows(self, ref):
+    def _pending_rows(self, ref, *, admission_rows=None):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
         published (``LiveSession.settling``) still reads as its started claim. Callers that pair the
         result with stream state hold ``event_stream.lock``, under which ``settling`` changes."""
-        rows = [admission_row(row) for row in authority_persistence(self).admissions.list(session_id=ref.session_id)]
+        if admission_rows is None:
+            admission_rows = authority_persistence(self).admissions.list(session_id=ref.session_id)
+        rows = [admission_row(row) for row in admission_rows]
         live = self.sessions.get(ref.session_id)
         masked = dict(live.settling) if live is not None else {}
         if not masked:
@@ -346,11 +356,12 @@ class SessionAuthority:
         rows.update(masked)
         return sorted(rows.values(), key=lambda row: row['seq'])
 
-    def _handle(self, ref):
-        row = authority_persistence(self).sessions.get(ref.session_id)
+    def _handle(self, ref, *, admission_rows=None, session_row=_SESSION_ROW_UNSET):
+        row = (authority_persistence(self).sessions.get(ref.session_id)
+               if session_row is _SESSION_ROW_UNSET else cast(Any, session_row))
         if row is None:  # deleted after ``authorize``: the commit lands before the retirement runs
             raise AuthorityRefusal('not_found')
-        pending = self._pending_rows(ref)
+        pending = self._pending_rows(ref, admission_rows=admission_rows)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')
         return SessionHandle(ref, self.instance_id, self.epoch, row.runtime_revision, row.runtime_generation, state)
@@ -465,7 +476,7 @@ class SessionAuthority:
         return AdmissionReceipt(row['admission_id'], SessionRef(self.profile_id, row['target_session_id']),
                                 row['seq'], status, outcome, row['owner_epoch'] or self.epoch, row['generation'])
 
-    def _pending_receipt(self, row):
+    def _pending_receipt(self, row, *, session_source=None):
         # Only public input text crosses the viewer boundary, never the
         # private native envelope's routing or authorization provenance.
         payload = row['payload']
@@ -474,16 +485,27 @@ class SessionAuthority:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
         from gateway.session_queued_controls import queued_controls
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
-                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
+                                controls=queued_controls(self, row, session_source=session_source),
+                                steering=row['outcome'] == STEERING)
 
-    def _publish_pending(self, ref):
-        from gateway.session_retirement import restore_retired
-        restore_retired(self, ref.session_id)  # input committed after its conversation retired
+    def _publish_pending(self, ref, *, admission_rows=None, transfer_rows=None, restore=True,
+                         session_row=_SESSION_ROW_UNSET):
+        if restore:
+            from gateway.session_retirement import restore_retired
+            restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
-            handle = self._handle(ref)
-            pending = [asdict(self._pending_receipt(row)) for row in pending_rows(self, ref)]
+            if admission_rows is None:
+                handle = self._handle(ref)
+                rows = pending_rows(self, ref)
+            else:
+                handle = self._handle(ref, admission_rows=admission_rows, session_row=session_row)
+                rows = pending_rows(self, ref, admission_rows=admission_rows,
+                                    transfer_rows=transfer_rows)
+            session_source = (cast(Any, session_row).source
+                             if session_row is not _SESSION_ROW_UNSET and session_row is not None else None)
+            pending = [asdict(self._pending_receipt(row, session_source=session_source)) for row in rows]
             # Turns bump runtime_revision without any session.updated event, so
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.
@@ -830,16 +852,30 @@ class SessionAuthority:
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):
-        before = await self.receipt(actor, ref, admission_id)
         from gateway.session_runtime_workers import track_mutation
-        # Write off the shared loop; commit and observer settlement are one tracked task the
-        # caller cannot cancel between (an exact retry still pays a left-over obligation).
-        row = await asyncio.shield(track_mutation(self, self._commit_cancel(ref, admission_id, before)))
+        # Track the whole read/commit/publication critical section. The per-session lock is owned
+        # by this tracked task, not the caller: shield lets the caller cancel while it completes.
+        row = await asyncio.shield(track_mutation(
+            self, self._cancel_queued_serialized(actor, ref, admission_id)))
         # Media collection is its own write txn after the committed, settled cancellation: its
         # failure surfaces to the caller, and an exact retry collects again without re-settling.
         from gateway.session_ingress_media import release_admission_media
         await asyncio.to_thread(release_admission_media, authority_persistence(self), admission_id)
         return self._receipt(row)
+
+    async def _cancel_queued_serialized(self, actor, ref, admission_id):
+        # Resolve or restore the live entry before indexing it. Receipt authorization uses this
+        # boundary to return not_found (or rebuild an evicted API/local/routed session) instead of KeyError.
+        self.authorize(actor, ref, 'session:submit')
+        live = self.sessions[ref.session_id]
+        if live.claiming_admission_id == admission_id:
+            # This is the head in the DB claim transaction. Let SQLite arbitrate the two writes:
+            # a cancel that wins leaves no claim to stamp; a claim that wins makes cancel stale.
+            before = await self.receipt(actor, ref, admission_id)
+            return await self._commit_cancel(ref, admission_id, before)
+        async with live.pending_snapshot_lock:
+            before = await self.receipt(actor, ref, admission_id)
+            return await self._commit_cancel(ref, admission_id, before)
 
     async def cancel_or_claimed(self, actor, ref, admission_id):
         """Cancel a row the caller read ``queued``: None once cancelled, else the started row the
@@ -1197,13 +1233,17 @@ class SessionAuthority:
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
             self._require_admission_open()
-            from gateway.session_runtime_workers import tracked_write
+            from gateway.session_runtime_workers import track_mutation
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
             head = first['admission_id'] if first is not None else None
 
             async def stamp(claimed):
+                # A no-op/conflicted claim has no new state to publish. Keep the None/False sentinel for
+                # _drain's rescan loop, but do not issue a duplicate idle session.info or read another snapshot.
+                if not claimed:
+                    return self._stamp_claim(ref, live, claimed)
                 # A claim that commits after a drain or retirement began goes back to the queue unstarted.
                 if claimed:
                     try:
@@ -1219,14 +1259,54 @@ class SessionAuthority:
                             except STORE_FAILURES:
                                 await asyncio.sleep(1.0)
                         raise
-                return self._stamp_claim(ref, live, admission_row(claimed) if claimed else claimed)
-            row = await tracked_write(self, lambda: store.admissions.claim(
-                epoch=self.epoch, session_id=ref.session_id, gate=self.gate_refusal(), head=head), then=stamp)
+                def read_pending_snapshot(transfer_ids):
+                    session_row = store.sessions.get(ref.session_id)
+                    admission_rows = store.admissions.list(session_id=ref.session_id)
+                    transfers = {admission_id: store.admissions.get(admission_id=admission_id)
+                                for admission_id in transfer_ids}
+                    return session_row, admission_rows, transfers
+
+                # Invalidate only on a changed pending projection; local-info-only and identical frames
+                # are irrelevant to this snapshot. New admissions are serialized by mutation_lock.
+                while True:
+                    with live.event_stream.lock:
+                        pending_revision = live.event_stream.pending_revision
+                        entry = self.steer_transfers.get(ref.session_id)
+                        transfer_ids = tuple(entry[1]) if entry is not None else ()
+                    session_row, admission_rows, transfer_rows = await asyncio.to_thread(
+                        read_pending_snapshot, transfer_ids)
+                    with live.event_stream.lock:
+                        current = self.steer_transfers.get(ref.session_id)
+                        current_ids = tuple(current[1]) if current is not None else ()
+                        if (live.event_stream.pending_revision != pending_revision or
+                                current_ids != transfer_ids):
+                            continue
+                        stamped = self._stamp_claim(
+                            ref, live, admission_row(claimed) if claimed else claimed, publish_pending=False)
+                        self._publish_pending(ref, admission_rows=admission_rows, transfer_rows=transfer_rows,
+                                              restore=False, session_row=session_row)
+                        return stamped
+            async def claim_and_stamp():
+                # Own the snapshot lock in this tracked task from the DB claim through its event stamp.
+                # A cancellation of the active head may bypass only this lock (see _cancel_queued_serialized).
+                async with live.pending_snapshot_lock:
+                    live.claiming_admission_id = head
+                    try:
+                        def claim_write():
+                            return store.admissions.claim(
+                                epoch=self.epoch, session_id=ref.session_id,
+                                gate=self.gate_refusal(), head=head)
+                        claimed = await asyncio.to_thread(claim_write)
+                        return await stamp(claimed)
+                    finally:
+                        live.claiming_admission_id = None
+
+            row = await asyncio.shield(track_mutation(self, claim_and_stamp()))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
             # instead of letting the drain exit idle over a committed admission.
             return (False if row is None and live.rescan else row), first
 
-    def _stamp_claim(self, ref, live, row):
+    def _stamp_claim(self, ref, live, row, *, publish_pending=True):
         """The claim's execution stamp, in the same tracked task as its commit: no observer (or
         retirement's join) ever sees a committed claim that no execution stamp names."""
         if row:  # None or False (the head changed under the write) claimed nothing
@@ -1238,7 +1318,8 @@ class SessionAuthority:
                 from gateway.session_automation import admission_display
                 live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
                                           event_type='message.start')
-                self._publish_pending(ref)
+                if publish_pending:
+                    self._publish_pending(ref)
         return row
 
     def _drain_stopping(self, ref, live):

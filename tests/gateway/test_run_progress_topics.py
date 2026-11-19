@@ -1761,6 +1761,8 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     """A stuck post-delivery callback must not keep the typing task alive."""
     monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
     adapter = ProgressCaptureAdapter()
+    # Keep durable outbox I/O out of this callback-order test; it has separate coverage.
+    monkeypatch.setattr(adapter, "_record_delivery_obligation", lambda *a, **k: asyncio.sleep(0))
     events = []
 
     async def _handler(event):
@@ -1798,9 +1800,7 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     )
 
     assert [call["content"] for call in adapter.sent] == ["done"]
-    # Invariant: typing must stop before the (hung) post-delivery callback
-    # starts.  Don't pin the exact stop_typing call count — the shared
-    # cleanup path may make more than one bounded stop attempt.
+    # Typing stops before the hung callback; cleanup may make multiple attempts.
     assert "typing-stopped" in events
     assert "callback-start" in events
     assert events.index("typing-stopped") < events.index("callback-start")

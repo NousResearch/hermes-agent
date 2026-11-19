@@ -3730,6 +3730,7 @@ export const deOverrides = {
       openInSplit: 'Im Split öffnen',
       copyIdFailed: 'Session-ID konnte nicht kopiert werden',
       sessionActions: 'Session-Aktionen',
+      settle: 'Erledigt — archivieren und weiter',
       sessionRunning: 'Session läuft',
       needsInput: 'Braucht Ihre Eingabe',
       waitingForAnswer: 'Wartet auf Ihre Antwort',

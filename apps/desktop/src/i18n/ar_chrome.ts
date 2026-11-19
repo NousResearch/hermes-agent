@@ -316,6 +316,7 @@ export const arChrome = {
       copyIdFailed: 'فشل نسخ المعرف',
 
       sessionActions: 'إجراءات الجلسة',
+      settle: 'تسوية — أرشفة والانتقال',
       sessionRunning: 'الجلسة تعمل',
       needsInput: 'تحتاج إدخالا',
       waitingForAnswer: 'بانتظار إجابة',

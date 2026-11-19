@@ -72,6 +72,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   /** Toggle the persisted read-state watermark. */
   onToggleUnread: () => void
   onResume: () => void
+  /** Archive and move on (T3-style "Settle"). Omitted where rows can't settle. */
+  onSettle?: () => void
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -137,6 +139,7 @@ function SidebarSessionRowImpl({
   onPin,
   onToggleUnread,
   onResume,
+  onSettle,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -315,6 +318,26 @@ function SidebarSessionRowImpl({
       onClick={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
     >
+      {/* Settle: one click to call a chat done. Only on finished, unarchived
+          rows — a working turn isn't done yet, and an archived row has
+          nothing left to settle. Hover/focus only, like the kebab. */}
+      {onSettle && !session.archived && !liveTurn && (
+        <Tip label={r.settle} side="top">
+          <Button
+            aria-label={r.settle}
+            className="hidden size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) transition-colors duration-100 group-focus-within:inline-flex group-hover:inline-flex hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring [&_svg]:size-3.5!"
+            data-session-settle
+            onClick={() => {
+              triggerHaptic('selection')
+              onSettle()
+            }}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="check" size="0.875rem" />
+          </Button>
+        </Tip>
+      )}
       {trailing.map(({ key, node }, index) => (
         <span
           className={

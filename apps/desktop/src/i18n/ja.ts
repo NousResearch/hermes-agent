@@ -2264,6 +2264,7 @@ export const jaOverrides = {
       copyIdFailed: 'セッション ID をコピーできませんでした',
 
       sessionActions: 'セッションアクション',
+      settle: '完了 — アーカイブして次へ',
       sessionRunning: 'セッション実行中',
       needsInput: '入力が必要です',
       waitingForAnswer: '回答を待っています',

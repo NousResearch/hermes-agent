@@ -29,6 +29,7 @@ interface SessionRowCommonProps {
   onPin: () => void
   onToggleUnread: () => void
   onResume: () => void
+  onSettle?: () => void
   reorderable?: boolean
   showProfile?: boolean
 }
@@ -51,6 +52,7 @@ export interface VirtualSessionListProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
+  onSettleSession?: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   pinned: boolean
@@ -76,6 +78,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onBranchSession,
   onDeleteSession,
   onResumeSession,
+  onSettleSession,
   onTogglePin,
   onToggleUnread,
   pinned,
@@ -170,6 +173,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onPin: () => onTogglePin(sessionPinId(session)),
       onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id, session),
+      onSettle: onSettleSession ? () => onSettleSession(session.id) : undefined,
       reorderable,
       showProfile: showProfileTags,
       unread: session.unread === true

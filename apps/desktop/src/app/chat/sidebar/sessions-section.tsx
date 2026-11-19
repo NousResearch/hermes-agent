@@ -117,6 +117,7 @@ interface SidebarSessionsSectionProps {
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
+  onSettleSession?: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
@@ -208,6 +209,7 @@ export function SidebarSessionsSection({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
+  onSettleSession,
   onBranchSession,
   onTogglePin,
   onToggleUnread,
@@ -293,6 +295,7 @@ export function SidebarSessionsSection({
         onPin: () => onTogglePin(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
         onResume: () => onResumeSession(session.id, session),
+        onSettle: onSettleSession ? () => onSettleSession(session.id) : undefined,
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
@@ -315,6 +318,7 @@ export function SidebarSessionsSection({
       onBranchSession,
       onDeleteSession,
       onResumeSession,
+      onSettleSession,
       onTogglePin,
       onToggleUnread,
       pinned,
@@ -596,6 +600,7 @@ export function SidebarSessionsSection({
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
+        onSettleSession={onSettleSession}
         onTogglePin={onTogglePin}
         onToggleUnread={onToggleUnread}
         pinned={pinned}
@@ -668,6 +673,7 @@ interface SortableSessionRowProps {
   onPin: () => void
   onToggleUnread: () => void
   onResume: () => void
+  onSettle?: () => void
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

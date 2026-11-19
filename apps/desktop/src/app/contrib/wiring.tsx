@@ -102,6 +102,7 @@ import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
+import { settleAdvanceTarget } from '../chat/sidebar/settle'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -1087,6 +1088,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
 
       void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+    },
+    // Settle = archive and move on. Settling the open chat lands on the next
+    // recent instead of an empty draft (see settleAdvanceTarget).
+    onSettleSession: sessionId => {
+      const next = settleAdvanceTarget($sessions.get(), sessionId)
+
+      void archiveSession(sessionId, next ? { leaveTo: () => openStoredSession(next.id, next) } : undefined)
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,

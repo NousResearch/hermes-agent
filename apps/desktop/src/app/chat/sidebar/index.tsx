@@ -384,6 +384,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
+  /** Archive and move on — the row's hover check (T3-style "Settle"). */
+  onSettleSession?: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
@@ -406,6 +408,7 @@ export function ChatSidebar({
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
+  onSettleSession,
   onBranchSession,
   onNewSessionInWorkspace,
   onNewSessionSplit,
@@ -1739,6 +1742,7 @@ export function ChatSidebar({
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onResumeSession={onResumeSession}
+                onSettleSession={onSettleSession}
                 onToggle={() => undefined}
                 onTogglePin={pinSession}
                 onToggleUnread={toggleUnread}
@@ -1767,6 +1771,7 @@ export function ChatSidebar({
                 onDeleteSession={onDeleteSession}
                 onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
+                onSettleSession={onSettleSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
                 onTogglePin={unpinSession}
                 onToggleUnread={toggleUnread}
@@ -1953,6 +1958,7 @@ export function ChatSidebar({
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}
+                onSettleSession={onSettleSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
                 onToggleUnread={toggleUnread}
@@ -2023,6 +2029,7 @@ export function ChatSidebar({
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
+                    onSettleSession={onSettleSession}
                     onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
                     onTogglePin={pinSession}
                     onToggleUnread={toggleUnread}

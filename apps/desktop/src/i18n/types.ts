@@ -2889,6 +2889,7 @@ export interface Translations extends NoticeTranslations {
       openInSplit: string
       copyIdFailed: string
       sessionActions: string
+      settle: string
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string

@@ -208,6 +208,7 @@ export const zhHantChrome = {
       copyIdFailed: '無法複製工作階段 ID',
 
       sessionActions: '工作階段動作',
+      settle: '了結 — 封存並繼續',
       sessionRunning: '工作階段執行中',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',

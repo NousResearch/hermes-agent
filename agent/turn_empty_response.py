@@ -82,6 +82,18 @@ class EmptyResponseVerdict:
     api_call_count: int
 
 
+# Sent on the outgoing tail of the guardrail wrap-up call (turn_tool_round) and of any
+# post-tool empty-response retry after it. For a ``block`` decision the only other
+# explanation is the synthetic tool result, which reaches the model inside the
+# untrusted-tool-result envelope, so models read past it and promise more searches.
+GUARDRAIL_WRAPUP_HINT = (
+    "[The tool-loop guardrail has ended tool use for this turn. No tools are available "
+    "and no further tool calls will run. Write your final answer now, using only the "
+    "results above; where something could not be retrieved, say so briefly. Do not "
+    "announce further searches or follow-up actions.]"
+)
+
+
 def add_empty_response_retry_hint(agent: Any, api_messages: list[dict[str, Any]]) -> str:
     """Decorate only the outgoing tail; retain the hint across preflight rebuilds.
 
@@ -329,7 +341,13 @@ def recover_empty_response(
         agent._last_content_tools_all_housekeeping = False
         logger.info("Empty response after tool calls — nudging model " "to continue processing")
         agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
-        agent._empty_response_retry_hint = _EMPTY_TOOL_RESPONSE_NUDGE
+        # After the guardrail wrap-up the generic nudge ("continue with the task") reads
+        # as permission to resume the halted loop; repeat the wrap-up hint instead.
+        agent._empty_response_retry_hint = (
+            GUARDRAIL_WRAPUP_HINT
+            if getattr(agent, "_toolguard_wrapup_used", False) is True
+            else _EMPTY_TOOL_RESPONSE_NUDGE
+        )
         final_response = None
         return _verdict("continue")
 

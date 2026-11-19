@@ -518,7 +518,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
 # A halt used to end the turn on a fixed "I stopped retrying X" string, which
 # discards everything the model actually observed. The wrap-up gives it one
 # tool-free call to write the real answer. Two invariants matter as much as
-# the behavior: the toolset narrows for exactly ONE call (and never by
+# the behavior: the toolset narrows only at the end of the turn (and never by
 # mutating agent.tools), and no synthetic user message is injected.
 
 
@@ -616,6 +616,75 @@ def test_wrapup_preserves_guardrail_metadata_on_the_turn_result():
     result = _run_halting_turn(agent)
 
     assert result.get("guardrail"), "guardrail metadata lost through the wrap-up"
+
+
+def _tail_text(call) -> str:
+    content = call[1]["messages"][-1].get("content")
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content)
+    return content or ""
+
+
+def test_wrapup_call_tells_the_model_plainly_that_tools_are_gone():
+    """The only other explanation is the synthetic tool result, inside the
+    untrusted-tool-result envelope, which models read past. The hint rides the
+    outgoing tail only, so the stored transcript (and the cached prefix of the
+    next turn) never carries it."""
+    from agent.turn_empty_response import GUARDRAIL_WRAPUP_HINT
+
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+
+    result = _run_halting_turn(agent)
+
+    calls = agent.client.chat.completions.create.call_args_list
+    assert GUARDRAIL_WRAPUP_HINT in _tail_text(calls[-1])
+    assert all(GUARDRAIL_WRAPUP_HINT not in _tail_text(c) for c in calls[:-1])
+    stored = json.dumps(result["messages"])
+    assert "tool-loop guardrail has ended tool use" not in stored
+
+
+def test_empty_wrapup_reply_keeps_tools_off_and_repeats_the_wrapup_hint():
+    """An empty wrap-up reply (e.g. a tool call written as text and stripped by
+    the server) used to re-arm the full toolset behind the generic "continue
+    with the task" nudge, so the model re-issued the blocked calls and the turn
+    ended on the second halt's canned string anyway."""
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+    from agent.turn_empty_response import GUARDRAIL_WRAPUP_HINT
+
+    summary = "Three topics covered; the other three could not be fetched."
+    looping = _model_that_loops_until_tools_are_withdrawn(summary)
+    toolless_calls = {"n": 0}
+
+    def _respond(*args, **kwargs):
+        if not kwargs.get("tools"):
+            toolless_calls["n"] += 1
+            if toolless_calls["n"] == 1:
+                return _mock_response(content="", finish_reason="stop")
+        return looping(*args, **kwargs)
+
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    agent.client.chat.completions.create.side_effect = _respond
+    agent._disable_streaming = True
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    calls = agent.client.chat.completions.create.call_args_list
+    sent_tools = [kw.get("tools") for _, kw in calls]
+    first_toolless = next(i for i, t in enumerate(sent_tools) if not t)
+    # Once the wrap-up starts, no later call in the turn offers tools.
+    assert not any(sent_tools[first_toolless:]), sent_tools
+    assert len(calls) - first_toolless == 2, "expected the wrap-up and one retry"
+    retry_tail = _tail_text(calls[-1])
+    assert GUARDRAIL_WRAPUP_HINT in retry_tail
+    assert _EMPTY_TOOL_RESPONSE_NUDGE not in retry_tail
+    assert result["final_response"] == summary
+    assert result["turn_exit_reason"] != "guardrail_halt"
+    assert result.get("guardrail"), "guardrail metadata lost through the retry"
 
 
 def _always_calls_tools():

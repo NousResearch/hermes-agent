@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
+from agent.turn_empty_response import GUARDRAIL_WRAPUP_HINT
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -248,10 +249,13 @@ def start_guardrail_wrapup(agent: Any, api_call_count: Any) -> bool:
     The canned response discards everything the model actually observed (partial results,
     the concrete blocker) and reads as a crash to the user, so the model gets one more call
     with no tools offered (turn_request_assembly) to write the real final answer. No
-    synthetic user message is injected: the guardrail explanation already reached the
-    model on the tool RESULT (append_toolguard_guidance), so the wrap-up continues the
-    normal assistant -> tool -> assistant alternation. The loop stays bounded: a second
-    halt after the wrap-up falls through to the canned response."""
+    synthetic user message is injected, so the wrap-up continues the normal
+    assistant -> tool -> assistant alternation. The model is told plainly that tools are
+    gone through GUARDRAIL_WRAPUP_HINT on the outgoing tail of the tool result: for a
+    ``block`` decision the only other explanation is the synthetic tool result, which sits
+    inside the untrusted-tool-result envelope. Tools stay off for the rest of the turn
+    (turn_request_assembly), so an empty wrap-up reply cannot re-arm them; a second halt
+    after the wrap-up still falls through to the canned response."""
     if getattr(agent, "_toolguard_wrapup_used", True) is not False:
         return False
     decision = agent._tool_guardrail_halt_decision
@@ -261,6 +265,9 @@ def start_guardrail_wrapup(agent: Any, api_call_count: Any) -> bool:
     agent._toolguard_last_halt_decision = decision
     agent._tool_guardrail_halt_decision = None
     agent._toolguard_suppress_tools_next_call = True
+    # Outgoing-tail only: cleared on response intake, so the canonical transcript and the
+    # cached prefix are untouched.
+    agent._empty_response_retry_hint = GUARDRAIL_WRAPUP_HINT
     # The wrap-up is an ordinary iteration, paid from the same iteration budget, so a
     # guardrailed turn costs one API call more than it used to. When the halt lands on the
     # LAST budgeted call the loop condition is already false and the turn would fall out of

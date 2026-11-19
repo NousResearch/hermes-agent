@@ -222,10 +222,13 @@ sys.stdin.read()
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.parametrize("recovery_ends", [True, False], ids=["recovery-ends", "recovery-stuck"])
 @pytest.mark.parametrize("side", ["legacy", "admin"])
-def test_a_wal_snapshot_waits_out_another_process_rebuilding_the_wal_index(tmp_path, monkeypatch, side):
+def test_a_wal_snapshot_waits_out_another_process_rebuilding_the_wal_index(tmp_path, monkeypatch, side,
+                                                                         recovery_ends):
     # The first connection to open a WAL file after the last one closed rebuilds its index; a reader arriving
     # meanwhile gets SQLITE_BUSY_RECOVERY, which sqlite3's backup loop ends on instead of retrying.
+    # A recovery that never ends still fails closed at the busy deadline.
     db = _rows_db(tmp_path / "state.db", 10, "WAL")
     Path(f"{db}-shm").write_bytes(bytes(32768))
     busy_statuses: list = []
@@ -245,8 +248,9 @@ def test_a_wal_snapshot_waits_out_another_process_rebuilding_the_wal_index(tmp_p
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     snapshot = tmp_path / "snapshot.db"
-    copy = ((lambda: _safe_copy_db(db, snapshot)) if side == "legacy"
-            else (lambda: SQLiteStoreAdmin(db).backup_to(snapshot)))
+    limit = 10.0 if recovery_ends else 1.0
+    copy = ((lambda: _safe_copy_db(db, snapshot, timeout_seconds=limit)) if side == "legacy"
+            else (lambda: SQLiteStoreAdmin(db).backup_to(snapshot, timeout_seconds=limit)))
     recovering = subprocess.Popen([sys.executable, "-c", _HOLD_WAL_RECOVERY, f"{db}-shm"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     result: list = []
@@ -255,9 +259,14 @@ def test_a_wal_snapshot_waits_out_another_process_rebuilding_the_wal_index(tmp_p
         thread = threading.Thread(target=lambda: result.append(copy()), daemon=True)
         thread.start()
         wait_until(lambda: sqlite3.SQLITE_BUSY_RECOVERY in busy_statuses, what="the copy meeting the recovery")
+        if not recovery_ends:
+            thread.join(20)  # the locks stay held until the copy has given up
     finally:
         recovering.communicate("")  # releases the locks: recovery has finished
     thread.join(20)
+    if not recovery_ends:
+        assert result == [False] and not snapshot.exists()
+        return
     assert result == [True]
     with closing(real_connect(snapshot)) as copied:
         assert copied.execute("SELECT count(*) FROM messages").fetchone() == (10,)

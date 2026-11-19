@@ -265,17 +265,9 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
             ),
         }
 
-    # Re-admit at the WRITE. The handler-level fence (_fenced_page_op) admitted before a possibly
-    # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
-    # refuse here, before the credential lands in a page the human is now typing into. The outer
-    # epoch check only discards the result, and a fill is a side effect, not a result.
-    from tools.browser_vault_preview import active_page
-    if active_page() is None and _bot_desktop_browser_session(task_id):
-        from tools.bot_desktop import lease as _bd_lease
-        try:
-            _bd_lease.assert_agent_may_act()
-        except _bd_lease.HumanHasControl as exc:
-            return {"success": False, "error_type": "human_has_control", "error": str(exc)}
+    taken = _human_lease_refusal(task_id)
+    if taken is not None:
+        return taken
 
     if page is not None:
         return _page_eval(page, task_id, expression, secret=True)
@@ -294,6 +286,25 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
         else "eval_failed",
         "error": str(sup.get("error") or "eval failed"),
     }
+
+
+def _human_lease_refusal(task_id: str) -> Optional[dict[str, Any]]:
+    """The refusal for a write while a human holds the Bot Desktop screen, else None.
+
+    Re-admit at every WRITE: the handler-level fence (_fenced_page_op) admitted before a possibly
+    human-length prompt (enter_code waits for the user's code) or a run of focus checks; a takeover
+    since must refuse before the credential lands in a page the human is now typing into. The outer
+    epoch check only discards the result, and a fill is a side effect, not a result.
+    """
+    from tools.browser_vault_preview import active_page
+    if active_page() is not None or not _bot_desktop_browser_session(task_id):
+        return None
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as exc:
+        return {"success": False, "error_type": "human_has_control", "error": str(exc)}
+    return None
 
 
 def _parse_json_result(raw: Any) -> Any:
@@ -760,6 +771,11 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
 
     def _insert(text: str, document: Any) -> Optional[dict[str, Any]]:
+        # The same write-time admission every secret script gets (_eval_js_secret): the focus check
+        # before this key can have taken long enough for a human to take the screen.
+        taken = _human_lease_refusal(task_id)
+        if taken is not None:
+            return _abort("human_has_control", taken["error"])
         # Typed only into the document the focus check ran on (``document``): a redirect that
         # committed since is refused by the supervisor.
         typed = supervisor.insert_text(text, session_id=pinned, document=document)

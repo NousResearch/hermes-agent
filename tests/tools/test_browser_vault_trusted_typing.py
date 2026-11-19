@@ -112,3 +112,13 @@ def test_without_a_redirect_the_password_is_typed(tmp_path):
     sup = _Supervisor([_PW])
     out = _fill(sup, tmp_path)
     assert out["success"] is True and sup.typed == [PASSWORD]
+
+
+def test_a_takeover_during_the_focus_check_stops_the_keystroke(tmp_path):
+    """A human can take the Bot Desktop screen while a focus check is in flight. The keystroke is a
+    write like any secret script: it is admitted again right before it is sent."""
+    sup = _Supervisor([_PW])
+    sup.on_focus = lambda: lease.acquire("human")
+    out = _fill(sup, tmp_path, bot_desktop=True)
+    assert out["success"] is False and out["error_type"] == "human_has_control"
+    assert sup.typed == []

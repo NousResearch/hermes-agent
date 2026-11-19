@@ -463,9 +463,9 @@ def _restore_session_credentials(cli, provider, base_url, api_mode, *, managed, 
         from hermes_cli.runtime_provider import resolve_runtime_provider
         resolved = resolve_runtime_provider(requested=provider, target_model=cli.model or None)
     except Exception:
+        logger.exception("Credential re-resolution for resumed session provider %s failed", provider)
         if managed and base_url:
             cli.base_url = base_url
-        logger.debug("Credential re-resolution for resumed session provider %s failed", provider, exc_info=True)
         return
     resolved_url = resolved.get("base_url")
     if resolved.get("api_key") and (managed or not base_url or resolved_url == base_url):

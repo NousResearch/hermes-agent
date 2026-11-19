@@ -16,13 +16,10 @@ import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, TypeVar
+from typing import Iterable, Iterator
 
-from hermes_constants import get_default_hermes_root
 from persistence.core.errors import PersistenceError
 from persistence.sqlite._state.keys import profile_from_session_key
-
-_WriteResult = TypeVar("_WriteResult")
 
 
 class SessionLineageError(PersistenceError):
@@ -415,8 +412,10 @@ def _lock_file(path: Path, timeout_s: float) -> Iterator[int]:
 
 def _managed_root_and_current(db_path: str | Path) -> tuple[Path, Path] | None:
     """Return the home root/current store, or None for standalone non-Hermes databases."""
+    from persistence.sqlite.conversation._store.sessions import _session_store_install_root
+
     try:
-        root = get_default_hermes_root().resolve(strict=False)
+        root = _session_store_install_root()
         raw = Path(db_path).expanduser().absolute()
         try:
             raw_stat = raw.lstat()
@@ -458,7 +457,6 @@ def physical_store_candidates(root: Path | None = None, current_path: Path | Non
     database is required, so read-only repair can scan an empty or profile-only home without
     one being created or demanded.
     """
-    from hermes_constants import get_default_hermes_root
     if current_path is not None:
         managed = _managed_root_and_current(current_path)
         if managed is None:
@@ -468,7 +466,9 @@ def physical_store_candidates(root: Path | None = None, current_path: Path | Non
             raise SessionLineageInventoryError(
                 f"Conflicting physical-store root {root} and current database {current_path}")
         return _store_candidates(managed_root, current)
-    managed_root = (root if root is not None else get_default_hermes_root()).expanduser().resolve(strict=False)
+    from persistence.sqlite.conversation._store.sessions import _session_store_install_root
+
+    managed_root = _session_store_install_root() if root is None else root.expanduser().resolve(strict=False)
     return _store_candidates(managed_root, None)
 
 

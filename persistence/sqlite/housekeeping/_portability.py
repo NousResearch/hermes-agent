@@ -488,19 +488,21 @@ class SessionPortability:
             return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(errors))
         holder = self._store.holder()
 
+        from persistence.sqlite._state.lineage_fence import SessionLineageError, session_write_budget
+
+        ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+
         def _do(conn):
             # A user-deleted id stays fenced for good: its row restored beside the fence would list
             # fine and refuse every turn, so the import is refused by name and writes nothing.
-            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
             if deleted := [sid for sid in ids if retired_in(conn, sid)]:
                 return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=tuple(
                     f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted))
             imported_ids: list[SessionId] = []
             skipped_ids: list[SessionId] = []
             parent_updates: list[tuple[str, str]] = []
-            for item in normalized:
+            for item, session_id in zip(normalized, ids, strict=True):
                 raw = item["session"]
-                session_id = str(raw.get("id") or "").strip()
                 if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
                     skipped_ids.append(SessionId(session_id))
                     continue
@@ -515,8 +517,11 @@ class SessionPortability:
                 imported_ids=tuple(imported_ids), skipped_ids=tuple(skipped_ids),
             )
 
-        with translated():
-            return holder._execute_write(_do)
+        try:
+            with translated(), session_write_budget(holder, ids) as remaining:
+                return holder._execute_write(_do, patience_s=remaining)
+        except SessionLineageError as exc:
+            return ImportResult(ok=False, imported=0, skipped=0, detached=0, errors=(exc.code,))
 
     def find_foreign_import(self, origin: ForeignOrigin) -> Optional[SessionId]:
         with translated():

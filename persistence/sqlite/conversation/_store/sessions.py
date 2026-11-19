@@ -322,13 +322,19 @@ _INHERIT_PARENT_ROUTING_SQL = (
 )
 
 
+def _session_store_install_root() -> Path:
+    """Canonical root used for this SQLite store's profile identity and ownership inventory."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root().resolve()
+
+
 def _own_profile_name(holder: StoreHolder) -> Optional[str]:
     """The profile owning THIS store, from ``db_path`` alone (``<root>/state.db`` → default,
     ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
     profile's store. None outside the profile tree — NULL beats a fabricated owner."""
     try:
-        from hermes_constants import get_default_hermes_root
-        root = get_default_hermes_root().resolve()
+        root = _session_store_install_root()
         parent = Path(holder.db_path).resolve().parent
         if parent == root:
             return "default"

@@ -1533,7 +1533,7 @@ class StoreHolder:
         while True:
             with self._token_queue_cond:
                 idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
-                while not self._token_queue and not self._token_writer_stop:
+                while not (self._token_queue or self._token_writer_stop or self._token_writer_uncertain):
                     remaining = idle_deadline - time.monotonic()
                     if remaining <= 0:
                         # Retire under the lock queue_token_counts() spawns under, so no
@@ -1549,7 +1549,11 @@ class StoreHolder:
                 self._token_writer_busy = True
                 batch = list(self._token_queue)
                 self._token_queue.clear()
-            self._apply_claimed_batch(batch)
+            if not self._apply_claimed_batch(batch):
+                # A known pre-BEGIN refusal may persist across many attempts.
+                with self._token_queue_cond:
+                    if not self._token_writer_uncertain:
+                        self._token_queue_cond.wait(0.05)
 
     def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> bool:
         """Apply queued deltas in order, coalescing where safe. Never raises. False when a delta was

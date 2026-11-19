@@ -12,6 +12,8 @@ worker argv must carry ``--provider`` and the child must hand it to ``HermesCLI`
 
 from types import SimpleNamespace
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -87,6 +89,66 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
     assert "error" not in resp, resp
     assert worker_args is not None
     assert worker_args[3:] == ("moa", "https://chatgpt.com/backend-api/codex")
+
+
+def test_model_slash_confirms_before_switching_the_live_route(monkeypatch):
+    """A mature Desktop chat cannot report success from the separate slash worker before its
+    large-context confirmation commits the live agent's provider, model and endpoint."""
+    agent = SimpleNamespace(model="qwen", provider="spark", base_url="http://spark/v1")
+    session = {"session_key": "established", "agent": agent, "running": False}
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_live_slash_command_output", lambda *a, **k: None)
+    calls = []
+
+    def _set_model(rid, params):
+        calls.append(params)
+        if not params.get("confirm_expensive_model"):
+            return {"jsonrpc": "2.0", "id": rid, "result": {
+                "key": "model", "value": "gpt-6.2-sol", "confirm_required": True,
+                "confirm_message": "Large cached context: confirm the model switch."}}
+        agent.model = "gpt-6.2-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        return {"jsonrpc": "2.0", "id": rid, "result": {
+            "key": "model", "value": agent.model, "confirm_required": False}}
+
+    monkeypatch.setitem(server._methods, "config.set", _set_model)
+    monkeypatch.setattr(server, "_slash_worker_for", lambda *_: (_ for _ in ()).throw(
+        AssertionError("/model must not execute in the separate slash worker")))
+    command = "/model gpt-6.2-sol --provider openai-codex --session"
+    first = server._methods["slash.exec"](1, {"session_id": "sid", "command": command})
+    assert first["result"]["confirm_required"] is True
+    assert first["result"]["target_model"] == "gpt-6.2-sol"
+    assert "switched" not in first["result"]["output"].lower()
+    assert (agent.model, agent.provider, agent.base_url) == ("qwen", "spark", "http://spark/v1")
+
+    confirmed = server._methods["slash.exec"](
+        2, {"session_id": "sid", "command": command, "confirm_expensive_model": True})
+    assert confirmed["result"]["confirm_required"] is False
+    assert "switched" in confirmed["result"]["output"].lower()
+    assert (agent.model, agent.provider, agent.base_url) == (
+        "gpt-6.2-sol", "openai-codex", "https://chatgpt.com/backend-api/codex")
+    assert [call["confirm_expensive_model"] for call in calls] == [False, True]
+    assert [call["value"] for call in calls] == [
+        "gpt-6.2-sol --provider openai-codex --session"] * 2
+
+
+@pytest.mark.parametrize("arg", ["reset", "gpt-6.2-sol --global", "gpt-6.2-sol --reasoning high"])
+def test_model_slash_passes_selection_flags_to_the_authoritative_setter(monkeypatch, arg):
+    session = {"session_key": "established", "agent": object(), "running": False}
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_live_slash_command_output", lambda *a, **k: None)
+    seen = []
+
+    def _set_model(rid, params):
+        seen.append(params)
+        return {"jsonrpc": "2.0", "id": rid, "result": {"value": "selected", "warning": ""}}
+
+    monkeypatch.setitem(server._methods, "config.set", _set_model)
+    result = server._methods["slash.exec"](1, {"session_id": "sid", "command": f"/model {arg}"})
+    assert "error" not in result, result
+    assert seen[0]["key"] == "model"
+    assert seen[0]["value"] == arg
 
 
 def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):

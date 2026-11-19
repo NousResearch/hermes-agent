@@ -3988,11 +3988,15 @@ export interface SlashExecParams {
   session_id: string
   command: string
   profile?: string | null
+  confirm_expensive_model?: boolean
 }
 /** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. */
 export interface SlashExecResult {
   output?: string | null
   warning?: string | null
+  confirm_required?: boolean | null
+  confirm_message?: string | null
+  target_model?: string | null
   type?: DispatchType | null
   target?: string | null
   message?: string | null

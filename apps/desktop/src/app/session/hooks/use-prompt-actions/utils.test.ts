@@ -29,6 +29,7 @@ import {
   renderRpcResult,
   SessionRecoveryAborted,
   shouldInterruptBeforeRewind,
+  slashExecText,
   slashStatusText,
   SUBMIT_IN_FLIGHT_TTL_MS,
   visibleUserIndexAtOrdinal,
@@ -409,6 +410,13 @@ describe('slashStatusText', () => {
 
   it('omits empty output', () => {
     expect(slashStatusText('/clear', '   ')).toBe('slash:/clear')
+  })
+})
+
+describe('slashExecText', () => {
+  it('shows a gateway warning alongside a claimed model switch', () => {
+    expect(slashExecText({ output: 'Model switched: Codex', warning: 'Live route stayed on Spark' }, '/model: no output'))
+      .toBe('warning: Live route stayed on Spark\nModel switched: Codex')
   })
 })
 

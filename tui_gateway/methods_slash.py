@@ -545,6 +545,33 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     return "ok", str(ack.get("output") or "")
 
 
+def _slash_model_switch(rid, params: dict, arg: str) -> dict:
+    """Use the live model-switch transaction instead of the separate slash worker.
+
+    The worker's /model success text can precede a live large-context guard,
+    leaving the chat on its old route. Report success only after config.set commits.
+    """
+    response = _methods["config.set"](rid, {
+        "key": "model", "value": arg, "session_id": params.get("session_id", ""),
+        "confirm_expensive_model": bool(params.get("confirm_expensive_model", False)),
+    })
+    if "error" in response:
+        return response
+    result = response.get("result") or {}
+    warning = result.get("warning") or ""
+    if result.get("confirm_required"):
+        message = result.get("confirm_message") or warning or "Confirm the model switch."
+        return _ok(rid, {"output": message, "warning": warning,
+                         "confirm_required": True, "confirm_message": message,
+                         "target_model": result.get("value") or arg})
+    model = result.get("value") or arg
+    output = (f"Model switch queued for the next turn: {model}" if result.get("deferred")
+              else f"Model switched: {model}")
+    if result.get("scope") in {"session", "global", "once"}:
+        output += f"\nScope: {result['scope']}"
+    return _ok(rid, {"output": output, "warning": warning, "confirm_required": False})
+
+
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)

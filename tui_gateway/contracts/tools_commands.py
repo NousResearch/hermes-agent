@@ -304,6 +304,7 @@ class SlashExecParams(Params):
     session_id: str
     command: str
     profile: str | None = None
+    confirm_expensive_model: bool = False
 
 
 class SlashExecResult(Result):
@@ -312,6 +313,9 @@ class SlashExecResult(Result):
 
     output: str | None = None
     warning: str | None = None
+    confirm_required: bool | None = None
+    confirm_message: str | None = None
+    target_model: str | None = None
     type: DispatchType | None = None
     target: str | None = None
     message: str | None = None

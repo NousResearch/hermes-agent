@@ -605,6 +605,12 @@ export function slashStatusText(command: string, output: string): string {
   return [`slash:${command}`, output.trim()].filter(Boolean).join('\n')
 }
 
+export function slashExecText(result: { output?: string; warning?: string } | null | undefined, fallback: string): string {
+  const body = result?.output || fallback
+
+  return result?.warning ? `warning: ${result.warning}\n${body}` : body
+}
+
 /**
  * Format the JSON reply from a gateway RPC surfaced as `kind: 'rpc'` in
  * desktop-slash-commands.ts. Kept here (instead of slash.ts) so it has no

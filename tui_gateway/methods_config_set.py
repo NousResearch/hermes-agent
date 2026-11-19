@@ -229,7 +229,8 @@ def _set_model(rid, params, key, value, session):
                         "Settings -> Models (Desktop)")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
-               confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))
+               confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"),
+               deferred=result.get("deferred", False))
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",

@@ -209,6 +209,21 @@ describe("BackendMigrationCard", () => {
     expect(done).not.toContain("hermes -p work gateway migrate --backends --restore to");
   });
 
+  it("shows a manual plan's own steps in order, as given, only when nothing blocks it", async () => {
+    const steps = ["hermes -p work config set webapp.port 9119", "move \"Hermes Dashboard.lnk\" %TEMP%\\"];
+    const manual = {
+      unsupported: [{ supervisor: "startup", unit: null, instructions: "Run the steps below.", steps }],
+    };
+    await render(planWith(manual));
+    const lines = [...container.querySelectorAll("ol li code")].map((c) => c.textContent);
+    expect(lines).toEqual(steps);
+    await act(async () => root.unmount());
+    container.remove();
+
+    await render(planWith({ ...manual, blockers: ["Something else blocks the move."] }));
+    expect(container.querySelectorAll("ol li code")).toHaveLength(0);
+  });
+
   it("never prints an unknown new address", async () => {
     await render(planWith({ new_address: null }));
     expect(container.textContent).toContain("Hermes itself takes over its address.");

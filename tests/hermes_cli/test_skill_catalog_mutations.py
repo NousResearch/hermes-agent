@@ -134,3 +134,36 @@ def test_context_facade_native_no_live_and_exact_binding(tmp_path):
     from hermes_cli.plugins_manifest import PluginManifest
     ctx = PluginContext(PluginManifest(name='missing', version='1'), manager=None)
     assert ctx.skill_catalog_mutations.admit_native({}, {}) is None
+
+
+@pytest.mark.parametrize('action', ['install', 'uninstall'])
+def test_terminal_journal_after_pending_save_failure_is_reconciled(tmp_path, monkeypatch, action):
+    from hermes_cli.skill_catalog import projection as storage
+    with admitted(tmp_path) as (p, owner, facade, admission, op):
+        if action == 'uninstall':
+            with p.transaction() as doc:
+                doc['reservations'][admission['reservation_id']]['action'] = 'uninstall'
+        pending = operation(owner, op, action=action, state='pending', outcome=None,
+                            managed_state='removed' if action == 'uninstall' else 'installed',
+                            installation_revision=None if action == 'uninstall' else 'revision-1')
+        result = dict(pending, state='completed', outcome='uninstalled' if action == 'uninstall' else 'installed')
+        owner.provider = type('Provider', (), {'operation': lambda self, request: {'ok': True, 'data': pending}})()
+        owner.ready = True
+        with facade.commit(admission, op) as commit:
+            if action == 'install':
+                (tmp_path / 'skills/new').mkdir(parents=True)
+            commit.settle(pending)
+        owner.provider.operation = lambda request: {'ok': True, 'data': result}
+        payload = dict(reservation_id=admission['reservation_id'], operation_id=op,
+                       expected_path_revision=0, result=result)
+        def failure(*args):
+            raise OSError('atomic replace failed')
+        with monkeypatch.context() as scoped:
+            scoped.setattr(storage, '_stage', failure)
+            with pytest.raises(CatalogError):
+                facade.settle(payload)
+        assert facade.settlement(op) == 'reconciling'
+        facade.reconcile(operation_id=op)
+        assert facade.settlement(op) == 'settled'
+        assert not p.read()['reservations']
+        assert ('new' in p.read()['targets']) == (action == 'install')

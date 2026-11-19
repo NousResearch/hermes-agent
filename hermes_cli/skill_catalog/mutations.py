@@ -151,7 +151,8 @@ class Mutations:
             raise CatalogError('operation_in_progress', 'A catalog writer is still active.')
         with self.projection.transaction() as doc:
             rows = [(key, copy.deepcopy(row)) for key, row in doc['reservations'].items()
-                    if row['registration_id'] == self.entry.registration_id and row['state'] == 'unknown'
+                    if row['registration_id'] == self.entry.registration_id
+                    and (row['state'] == 'unknown' or row.get('local_result') is not None)
                     and (payload['operation_id'] is None or row['operation_id'] == payload['operation_id'])
                     and (payload['target'] is None or _overlap(row['target_relative_path'], payload['target']))]
             for reservation_id, row in rows:

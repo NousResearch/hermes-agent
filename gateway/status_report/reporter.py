@@ -81,21 +81,24 @@ class StatusReporter:
         is noticed; whether one is due is decided on the wall clock."""
         try:
             while is_running():
+                goodbyes_said = self._goodbyes_said
                 try:
                     await self.poll()
                 except Exception as exc:  # health: allow BLE001 -- must outlive any failed poll; the type is logged
-                    self._poll_failed(exc)
+                    self._poll_failed(exc, goodbye_since=self._goodbyes_said != goodbyes_said)
                 await asyncio.sleep(tick)
         finally:
             if self._is_sender:
                 self._is_sender = False
                 release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
-    def _poll_failed(self, exc: Exception) -> None:
+    def _poll_failed(self, exc: Exception, *, goodbye_since: bool = False) -> None:
         """A poll that raised costs one interval, never the watcher: a supervised task that keeps
         dying is given up on, and the gateway would then never report again. Said once per type of
-        error, by the type alone: an error's text can quote a path or the report URL."""
-        self._due_at = time.time() + _jittered(self._interval_s)
+        error, by the type alone: an error's text can quote a path or the report URL.
+        *goodbye_since*: a goodbye went out during the poll and has set the next beat; it is kept."""
+        if not goodbye_since:
+            self._due_at = time.time() + _jittered(self._interval_s)
         kind = type(exc).__name__
         if kind not in self._poll_failures:
             self._poll_failures.add(kind)
@@ -112,7 +115,8 @@ class StatusReporter:
             return
         goodbyes_said = self._goodbyes_said
         if not await self._become_sender():
-            self._due_at = now + _jittered(self._interval_s)
+            if self._goodbyes_said == goodbyes_said:  # else the goodbye set the next beat
+                self._due_at = now + _jittered(self._interval_s)
             return
         retry, self._retry_body = self._retry_body, None
         body = retry or await self._next_report("beat")

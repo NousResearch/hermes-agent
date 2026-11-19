@@ -184,6 +184,10 @@ def _eval_channel(task_id: str) -> tuple[Any, Optional[str], Optional[dict[str, 
         return page, None, None
     if page is not pin.page:
         return None, None, dict(_MOVED)
+    if page is None and pin.session is None and _ensure_supervisor(task_id) is not None:
+        # Checked with no CDP session (no supervisor then, or one mid-reconnect): a script sent with no
+        # session would run on whatever tab a supervisor attached since holds.
+        return None, None, dict(_MOVED)
     return page, pin.session, None
 
 

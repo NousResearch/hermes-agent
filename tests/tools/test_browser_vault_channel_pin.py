@@ -186,3 +186,40 @@ def test_without_a_channel_change_the_secret_goes_to_the_checked_channel(action,
     on_cdp = [sid for e, sid in channels.on_cdp if _carries_secret(e)]
     assert (bool(on_plugin), bool(on_cdp)) == ((True, False) if checked_on == "plugin" else (False, True))
     assert set(on_cdp) <= {"S1"}
+
+
+class _Reconnecting(_Channels):
+    """A CDP supervisor with no session while it reconnects: it re-attaches to ``S2`` during the first
+    script it is sent, and is unreachable once (the attach failed) when the operation starts."""
+
+    def __init__(self, controls: list[dict]):
+        super().__init__(controls, current="cdp")
+        self.sid = None
+
+    def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+        if self.sid is None:
+            self.sid = "S2"
+        return super().evaluate_runtime(expression, session_id=session_id, **kwargs)
+
+
+def test_an_origin_read_while_the_supervisor_has_no_session_is_no_check(tmp_path):
+    """A CDP origin check that read no session cannot pin one: the code must not be sent with
+    ``session_id=None``, which means whatever tab the supervisor holds when it is sent."""
+    from tools import browser_vault_tool
+
+    channels = _Reconnecting(_CONTROLS["enter_code"])
+    reachable = iter([channels, channels, channels, None])
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(browser_vault_tool, "_page_backend", return_value=None))
+        stack.enter_context(patch.object(browser_vault_tool, "_ensure_supervisor",
+                                         side_effect=lambda t: next(reachable, channels)))
+        stack.enter_context(patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False))
+        stack.enter_context(patch("agent.vault_backends.unlock.get_code_prompt_callback",
+                                  return_value=lambda site, hint: CODE))
+        stack.enter_context(patch("agent.vault_backends.unlock.can_prompt_here", return_value=True))
+        out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+
+    assert out["success"] is False, out
+    assert channels.secret_scripts() == []
+    assert all(session is not None for _, session in channels.on_cdp[1:]), channels.on_cdp

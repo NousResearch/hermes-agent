@@ -543,3 +543,87 @@ it('a replacement owner never inherits the retired source pages', async () => {
   expect(searched.filter(id => id === source.id)).toHaveLength(1)
   expect(searched.at(-1)).toBe(replacement.id)
 })
+
+it('retry refreshes an unavailable source discovered only through the hub response', async () => {
+  let ready = false
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.endsWith('/official')) { return Promise.resolve(stock) }
+
+    if (request.path.endsWith('/sources')) { return Promise.resolve({ sources: [{ ...source, state: ready ? 'ready' : 'unavailable' }], installed: {}, featured: [] }) }
+
+    return original(request)
+  })
+  setup([{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await screen.findByText(/This source is unavailable/)
+  ready = true
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+  await waitFor(() => expect(api.mock.calls.filter(([request]) => request.path.endsWith('/sources'))).toHaveLength(2))
+  await teamCard()
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/official'))).toHaveLength(1)
+})
+
+it('retry refreshes an unavailable source published by the official response', async () => {
+  let ready = false
+  api.mockImplementation(async () => ({ skills: [], provider_sources: [{ ...source, state: ready ? 'ready' : 'unavailable' }] }))
+  setup()
+  await screen.findByText(/This source is unavailable/)
+  ready = true
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+  await waitFor(() => expect(api.mock.calls.filter(([request]) => request.path.endsWith('/official'))).toHaveLength(2))
+  expect(api.mock.calls.some(([request]) => request.path.endsWith('/sources'))).toBe(false)
+})
+
+it('lost response stays recoverable across source disappearance and re-registration', async () => {
+  confirmResponse = { ok: false, error: { code: 'outcome_unknown', message: 'Lost response' } }
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByRole('button', { name: 'Recover original operation' })
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], stock) })
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], official) })
+  confirmResponse = completed
+  fireEvent.click(screen.getByRole('button', { name: 'Recover original operation' }))
+  await screen.findByText('installed', { selector: '[role="status"]' })
+  const confirms = api.mock.calls.filter(([request]) => request.path.endsWith('/confirm'))
+  expect(confirms[0][0]).toEqual(confirms[1][0])
+})
+
+it('no-provider hub profile preserves the original local action and request payloads', async () => {
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.endsWith('/official')) { return Promise.resolve(stock) }
+
+    if (request.path.endsWith('/sources')) { return Promise.resolve({ sources: [], installed: { 'github:org/local': { name: 'Local hub' } }, featured: [] }) }
+
+    return original(request)
+  })
+  setup([{ name: 'Local hub', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await waitFor(() => expect(api.mock.calls).toHaveLength(3))
+  fireEvent.click(screen.getByRole('button', { name: 'Local hub' }))
+  expect(screen.getByText('Local delete Local hub')).toBeTruthy()
+  expect(api.mock.calls.map(([request]) => request.path).sort()).toEqual(['/api/skills/hub/official', '/api/skills/hub/sources', '/api/skills/hub/updates'])
+})
+
+it('closing a pending operation then reviewing another item does not use the prior status', async () => {
+  confirmResponse = { ...completed, state: 'pending', outcome: null }
+  let resolveStatus!: (value: unknown) => void
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => request.path.includes('/operation?') ? new Promise(done => { resolveStatus = done }) : original(request))
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await waitFor(() => expect(resolveStatus).toBeTruthy())
+  fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0])
+  fireEvent.click(screen.getByRole('button', { name: 'Load more Team skills' }))
+  const second = await screen.findByRole('button', { name: pageTwo.results[0].name })
+  const secondCard = second.closest('article')!
+  reviewResponse = { ...review, identifier: pageTwo.results[0].identifier }
+  fireEvent.click(within(secondCard).getByRole('button', { name: `Install ${pageTwo.results[0].name}` }))
+  await screen.findByRole('button', { name: 'Confirm install' })
+  await act(async () => resolveStatus(completed))
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Confirm install' })).toBeTruthy()
+})

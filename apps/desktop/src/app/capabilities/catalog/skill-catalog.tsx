@@ -128,6 +128,8 @@ function ScopedSkillCatalog({
   )
 
   const providerSources = published.sources
+  // A source retry goes back to the bootstrap that published its descriptor.
+  const refreshSources = published.origin === 'hub' ? refreshHub : refreshOfficial
   const providers = useProviderCatalog(providerSources, profile, query ?? '')
   const providerAction = useProviderAction(profile)
   const catalog = buildSkillCatalog(skills, hubData, officialData, updatesData, providerSources)
@@ -211,7 +213,7 @@ function ScopedSkillCatalog({
       notice={
         <>
           {notice}
-          <ProviderNotices catalog={providers} onRefresh={() => void refreshOfficial()} sources={providerSources} />
+          <ProviderNotices catalog={providers} onRefresh={() => void refreshSources()} sources={providerSources} />
           {(officialError || hubError) && (
             <CatalogAlert
               onRetry={() => {

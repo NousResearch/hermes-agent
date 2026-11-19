@@ -317,6 +317,13 @@ class WebhookAdapter(BasePlatformAdapter):
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Deliver the agent's response to the destination stored for its opaque ``chat_id`` —
         read with ``.get()``, never popped."""
+        return await self._send_response(chat_id, content)
+
+    async def send_or_update_status(self, chat_id: str, status_key: str, content: str,
+                                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        return await self._send_response(chat_id, content, status=True)
+
+    async def _send_response(self, chat_id: str, content: str, *, status: bool = False) -> SendResult:
         # Autonomous lane (no human reader): the loose marker matcher shared with cron (marker on its own
         # first/last line), because models add a sentence explaining why they stayed quiet, which the
         # interactive exact-match rule would deliver.
@@ -329,6 +336,13 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[webhook] Destination unavailable for %s", chat_id, exc_info=True)
             return SendResult(success=False, error="Webhook destination unavailable or unauthorized")
+        if status and _is_known_platform(delivery["deliver"]):
+            from gateway.run import _COMPRESSION_PROGRESS_STATUS_RE, _gateway_compression_progress_notices_enabled
+            # The ingress is programmatic, but an operator may have routed its reply to a human chat.
+            if _COMPRESSION_PROGRESS_STATUS_RE.search(content):
+                with self._profile_scope(delivery.get("profile")):
+                    if not _gateway_compression_progress_notices_enabled():
+                        return SendResult(success=True)
         return await self._deliver_to(delivery, chat_id, content)
 
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:

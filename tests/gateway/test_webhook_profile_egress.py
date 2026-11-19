@@ -219,3 +219,42 @@ async def test_shared_bot_satellite_cannot_escape_routed_chat_via_thread_id(prof
         assert (await deliver("discord", {"chat_id": "222", "thread_id": "333"})).success
         assert discord.send.await_args.kwargs["metadata"] == {"thread_id": "333"}
         assert (await deliver("telegram", {"chat_id": "-100", "message_thread_id": "42"})).success
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True], ids=["default", "opt-in"])
+async def test_webhook_status_reads_the_delivery_profiles_compression_setting(profile_homes, enabled):
+    from agent.conversation_compression import COMPACTION_STATUS
+    from gateway.run import _send_or_update_status_coro
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    (home / "config.yaml").write_text(f"compression:\n  progress_notices: {str(not enabled).lower()}\n")
+    (home / "profiles" / "sec" / "config.yaml").write_text(
+        f"compression:\n  progress_notices: {str(enabled).lower()}\n"
+    )
+    default, secondary = _target(), _target()
+    adapter = _webhook(_Runner({Platform.SLACK: default}, {"sec": {Platform.SLACK: secondary}}, profile_homes))
+    adapter._delivery_info["retained"] = {"deliver": "slack", "deliver_extra": {"chat_id": "SEC-HOME"},
+                                          "profile": "sec"}
+
+    assert (await _send_or_update_status_coro(adapter, "retained", "lifecycle", COMPACTION_STATUS, {})).success
+    default.send.assert_not_awaited()
+    if enabled:
+        secondary.send.assert_awaited_once_with("SEC-HOME", COMPACTION_STATUS, metadata=None)
+    else:
+        secondary.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_github_target_keeps_compaction_status(profile_homes):
+    from agent.conversation_compression import COMPACTION_STATUS
+    from gateway.run import _send_or_update_status_coro
+
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    adapter._delivery_info["retained"] = {"deliver": "github_comment",
+                                          "deliver_extra": {"repo": "test/example", "pr_number": 7}}
+    adapter._deliver_github_comment = AsyncMock(return_value=SendResult(success=True))
+
+    assert (await _send_or_update_status_coro(adapter, "retained", "lifecycle", COMPACTION_STATUS, {})).success
+    adapter._deliver_github_comment.assert_awaited_once_with(COMPACTION_STATUS, adapter._delivery_info["retained"])

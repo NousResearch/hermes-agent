@@ -458,7 +458,7 @@ _LINEAGE_LOCK_STRIPES = 32
 def _lineage_lock_paths(root, stores, ids):
     separator = chr(0)
     stripes = {
-        int.from_bytes(hashlib.sha256(f"{path}{separator}{sid}".encode("utf-8")).digest()[:4], "big") % _LINEAGE_LOCK_STRIPES
+        int.from_bytes(hashlib.sha256(f"{path}{separator}{sid}".encode()).digest()[:4], "big") % _LINEAGE_LOCK_STRIPES
         for path in stores for sid in ids
     }
     return [root / "profiles" / ".session-lineage-locks" / f"scoped-stripe-{i:02}.lock" for i in sorted(stripes)]

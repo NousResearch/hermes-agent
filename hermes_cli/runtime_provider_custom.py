@@ -100,17 +100,26 @@ def main_endpoint_key_for(model_cfg: Any, base_url: str) -> str:
     ``base_url``, pruning a dead manual row older than 24h, and re-persisting a row that carries a
     ``status_cleared_at`` reset marker (on every load, so not idempotent).
     """
+    return main_endpoint_probe_selection(model_cfg, base_url) or ""
+
+
+def main_endpoint_probe_selection(model_cfg: Any, base_url: str) -> Optional[str]:
+    """:func:`main_endpoint_key_for`, keeping "the runtime chose to send no bearer" apart from "no
+    credential found": a pool owning the route that selected a keyless row (a loopback row with a
+    legacy short key, sent as ``no-key-required``) is ``""``, while nothing selected is None. A caller
+    with further fallbacks (the catalog probe) stops at ``""``; the runtime never reaches them.
+    """
     if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
-        return ""
+        return None
     from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
         return _main_endpoint_probe_key(_rp(), model_cfg, base_url)
     except ConfigBackendUnavailable:  # a SystemExit on purpose; an optional probe goes keyless instead
         logger.debug("Config backend unavailable; probing %s without a key", base_url)
-        return ""
+        return None
 
 
-def _main_endpoint_probe_key(rp, model_cfg: dict[str, Any], base_url: str) -> str:
+def _main_endpoint_probe_key(rp, model_cfg: dict[str, Any], base_url: str) -> Optional[str]:
     provider = _clean(model_cfg.get("provider")).lower()
     implicit = provider in ("", "auto")
     entry = None if implicit else rp._get_named_custom_provider(provider)
@@ -120,24 +129,27 @@ def _main_endpoint_probe_key(rp, model_cfg: dict[str, Any], base_url: str) -> st
     return _model_block_probe_key(rp, model_cfg, base_url, custom=custom, env_keys=custom or implicit)
 
 
-def _named_entry_probe_key(rp, entry: dict[str, Any], base_url: str) -> str:
-    """:func:`_resolve_named_custom_runtime`'s credential for *entry*, as a probe sends it."""
+def _named_entry_probe_key(rp, entry: dict[str, Any], base_url: str) -> Optional[str]:
+    """:func:`_resolve_named_custom_runtime`'s credential for *entry*, as a probe sends it; a pool's
+    pick as :func:`_pool_probe_key` returns it, else the entry's own string key or None."""
     pooled = _pool_probe_key(rp, base_url, entry.get("provider_key") or entry.get("name"))
     if pooled is not None:
         return pooled
     key = _named_entry_key(rp, entry, base_url, str(entry.get("name") or "custom"))
-    return key if isinstance(key, str) else ""
+    return key if isinstance(key, str) and key else None
 
 
-def _model_block_probe_key(rp, model_cfg: dict[str, Any], base_url: str, *, custom: bool, env_keys: bool) -> str:
-    """``_resolve_openrouter_runtime``'s credential for the bare route at ``model.base_url``."""
+def _model_block_probe_key(rp, model_cfg: dict[str, Any], base_url: str, *, custom: bool,
+                           env_keys: bool) -> Optional[str]:
+    """``_resolve_openrouter_runtime``'s credential for the bare route at ``model.base_url``; a pool's
+    pick as :func:`_pool_probe_key` returns it, else the first usable string key or None."""
     if custom and (pooled := _pool_probe_key(rp, base_url, None)) is not None:
         return pooled
     declared, entry_key = _owning_entry_credential(rp, base_url) if custom else (False, "")
     implicit = rp._host_gated_env_key_candidates(base_url, ollama=True) if env_keys and not declared else []
     candidates = (_clean(model_cfg.get("api_key") or model_cfg.get("api")), _key_env_secret(model_cfg, "model"), *implicit)
     key = next((c for c in candidates if rp.has_usable_secret(c)), "") or entry_key
-    return key if isinstance(key, str) else ""
+    return key if isinstance(key, str) and key else None
 
 
 def _pool_probe_key(rp, base_url: str, provider_name: Any) -> Optional[str]:

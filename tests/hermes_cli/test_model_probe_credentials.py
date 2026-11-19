@@ -357,6 +357,26 @@ def test_the_vision_probe_sends_no_placeholder_inline_key(monkeypatch, provider)
     assert image_routing._resolve_inference_api_key(cfg, provider) == ""
 
 
+@pytest.mark.parametrize("backup", [{"api_key": "backup-key-9999"}, {"key_env": "LAB_BACKUP_KEY"}])
+def test_a_loopback_pool_row_with_a_legacy_short_key_keeps_the_catalog_probe_keyless(monkeypatch, backup):
+    """The pool selected that row, and the runtime sends ``no-key-required`` for it: a backup key the
+    owning entry declares for the same endpoint is a key inference never sends, so the catalog probe
+    does not send it either."""
+    from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+
+    monkeypatch.setenv("LAB_BACKUP_KEY", "backup-key-9999")
+    save_config({"model": {**MODEL_BLOCK, "key_env": ""}, "providers": {"lab": {"base_url": BASE, **backup}}})
+    _seed_rows([{"id": "a", "priority": 0, "access_token": "123"}])
+    cfg = load_config()
+    assert resolve_runtime_provider(requested="custom")["api_key"] == "no-key-required"
+    assert main_endpoint_key_for(cfg["model"], BASE) == ""
+    assert custom_catalog_probe_api_key(cfg["model"], BASE) == ""
+    assert custom_catalog_probe_api_key(cfg["model"], BASE, minted=False) == ""
+
+
 def test_model_info_probes_a_named_profile_with_that_profiles_key(tmp_path, monkeypatch):
     """The key lookup runs on the probe worker; it reads the requested profile's ``.env`` and config,
     not the dashboard process's."""

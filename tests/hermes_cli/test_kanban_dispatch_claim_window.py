@@ -38,10 +38,17 @@ def test_reassign_inside_claim_window_does_not_spawn_unvetted_profile(
 ):
     spawned_as: list[str] = []
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="card", assignee="worker-a")
         if lane == "review":
-            with kb.write_txn(conn):
-                conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+            # Handed off by a different implementer: without ``review_requested``
+            # provenance the review lane fails closed and the claim window is never reached.
+            tid = kb.create_task(conn, title="card", assignee="worker-a-impl")
+            kb.claim_task(conn, tid)
+            kb.request_review(
+                conn, tid, summary="ready for review", reviewer="worker-a",
+                expected_run_id=kb.get_task(conn, tid).current_run_id,
+            )
+        else:
+            tid = kb.create_task(conn, title="card", assignee="worker-a")
         real_guard = kbd.check_respawn_guard
 
         def guard_then_reassign(c, task_id, **kw):

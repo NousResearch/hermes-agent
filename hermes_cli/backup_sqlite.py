@@ -164,7 +164,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,
+        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,  # health: allow HX015 -- stdlib-only module (Desktop runs it without app imports), so connect_tracked is out of reach
                                check_same_thread=False)
         backup_conn = sqlite3.connect(str(dst), check_same_thread=False)
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -219,6 +219,18 @@ def _reclaim_abandoned_staging(home: Path, prefix: str) -> None:
                 staged.unlink()
 
 
+def _fsync_parent_dir(path: Path) -> None:
+    """Make a just-renamed file's directory entry durable; stdlib-only twin of ``utils.fsync_directory``."""
+    if os.name == "nt":
+        return
+    with suppress(OSError):
+        fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def preflight_state_db(home: Path) -> dict:
     """Publish an emergency snapshot; do not prune recovery files on failure."""
     source = home / "state.db"
@@ -234,7 +246,7 @@ def preflight_state_db(home: Path) -> dict:
     try:
         if not _safe_copy_db(source, staged):
             raise RuntimeError("SQLite safe copy failed; previous emergency snapshots were retained")
-        connection = sqlite3.connect(str(staged))
+        connection = sqlite3.connect(str(staged))  # health: allow HX015 -- staged copy written by this function
         try:
             result = connection.execute("PRAGMA quick_check").fetchall()
             if result != [("ok",)]:
@@ -243,6 +255,7 @@ def preflight_state_db(home: Path) -> dict:
             connection.close()
         size = staged.stat().st_size
         os.replace(staged, destination)
+        _fsync_parent_dir(destination)
     finally:
         staged.unlink(missing_ok=True)
         # A copy stopped mid-write leaves the staging copy's rollback journal behind too.

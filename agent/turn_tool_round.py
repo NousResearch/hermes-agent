@@ -13,7 +13,8 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import coalesce_tool_call_id, normalize_provider_tool_call_ids
+from agent.message_sanitization import normalize_provider_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -133,7 +134,7 @@ def run_tool_round(
         _tool_turn_persisted = agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception as exc:
         _tool_turn_persisted = False
-        from hermes_state import classify_persistence_error
+        from storage_errors import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning(
             "Incremental tool-call persistence failed before execution "
@@ -292,13 +293,13 @@ def stage_tool_call_message(
                 agent._vprint(f"  ┊ 💬 {clean}")
 
     # Pop thinking-only prefill message(s) before appending (same rationale as the
-    # final-response path). Tool calls after a prefill recovery reset the prefill
-    # counter, so each tool-call success is a fresh start, not a cumulative burn.
+    # final-response path). A landed tool call resets the thinking retry budget even
+    # when recovery used a request-local reminder instead of a legacy prefill row.
     _had_prefill = False
     while messages and isinstance(messages[-1], dict) and messages[-1].get("_thinking_prefill"):
         messages.pop()
         _had_prefill = True
-    if _had_prefill:
+    if _had_prefill or getattr(agent, "_thinking_prefill_retries", 0):
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
     # Re-arm the post-tool nudge so it can fire on a LATER tool round; a landed tool call

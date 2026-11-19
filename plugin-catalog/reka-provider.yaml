@@ -1,7 +1,7 @@
 name: reka-provider
 title: Reka
 repo: https://github.com/reka-ai/reka-hermes
-sha: df031f732c9eddf8b39a0fa240b898da4ca2d6ff
+sha: a194e1d47f4459f8edad906d60fe487a032c415e
 subdir: reka-provider
 description: >-
   Reka as a Hermes model provider: Reka's agent-capable models on Reka's OpenAI-compatible API,
@@ -17,7 +17,7 @@ tier: verified
 category: models
 requires_hermes: ">=0.21.6"
 docs_url: https://developer.reka.ai/integrations/agents#hermes
-version: "1.0.3"
+version: "1.0.4"
 readme: true
 platforms: []
 known_issues:

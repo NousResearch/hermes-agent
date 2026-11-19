@@ -1,0 +1,35 @@
+name: imprint
+repo: https://github.com/Frazzlesprite/hermes-imprint
+sha: "f9b4bf9235cf729e29d1e28184c1aa41fd8008a3"
+subdir: ""
+description: "Compile a week of Hermes activity into a cited, typeset book with an executive summary. Disclosure — records redacted one-line summaries (max 280 chars) of every tool call, model API call (model, tokens, cost), approval prompt and decision, and subagent goal/result into its own SQLite ledger under the profile's plugin-data; imprint_import reads up to 90 days of message content from the active profile's state.db read-only and stores redacted summaries; compiling sends ledger summaries to the user's configured model via ctx.llm and runs the user's own `typst` binary when it is on PATH; `/imprint burn`, `hermes imprint burn` and the dashboard Burn button permanently delete a week's ledger and compiled books."
+maintainer: Frazzlesprite
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/compile.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/cover.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/chapter.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/colophon.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/executive.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/appendix.png
+capabilities:
+  provides_tools:
+    - imprint_compile
+    - imprint_preview
+    - imprint_status
+    - imprint_import
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_api_request
+    - pre_approval_request
+    - post_approval_response
+    - subagent_start
+    - subagent_stop
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

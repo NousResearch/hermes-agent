@@ -27,7 +27,7 @@ def _git_env(name: str = "Main", email: str = "teknium@example.com") -> dict[str
 
 def git(repo: Path, *args: str, author: tuple[str, str] = ("Main", "teknium@example.com")) -> str:
     return subprocess.run(["git", *args], cwd=repo, env=_git_env(*author), capture_output=True,
-                          text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
+                          text=True, encoding="utf-8", check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
 
 
 def commit(repo: Path, files: dict[str, str | bytes], author=("Main", "teknium@example.com")) -> str:
@@ -109,6 +109,51 @@ def test_unrelated_history_fails_and_publishes_the_history_artifact(repo, step):
     assert step.artifact("history-check")[0]["source"] == "unrelated histories"
 
 
+
+def _merge_ref_checkout(repo: Path, branch: str) -> str:
+    """Check out what a pull_request run checks out: main merged with the PR head (refs/pull/N/merge)."""
+    head = git(repo, "rev-parse", branch).strip()
+    git(repo, "checkout", "-q", "--detach", "origin/main")
+    git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "merge", head)
+    return head
+
+
+def test_orphan_pr_fails_even_when_the_checkout_is_the_merge_ref(repo, step):
+    git(repo, "checkout", "-q", "--orphan", "orphan")
+    commit(repo, {"b": "2"})
+    head = _merge_ref_checkout(repo, "orphan")
+    failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert failed.returncode == 1, failed.stdout
+    assert "::error::This PR has no common ancestor with main." in failed.stdout
+
+
+def test_pr_that_merged_an_unrelated_root_fails(repo, step):
+    git(repo, "checkout", "-q", "--orphan", "orphan")
+    commit(repo, {"b": "2"})
+    git(repo, "checkout", "-q", "-b", "graft", "main")
+    git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "graft", "orphan")
+    orphan_root = git(repo, "rev-parse", "orphan").strip()
+    head = _merge_ref_checkout(repo, "graft")
+    failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert failed.returncode == 1, failed.stdout
+    [status] = step.artifact("history-check")
+    assert status["results"][0]["title"] == "Unrelated history merged into this PR"
+    assert status["results"][0]["detail"] == orphan_root
+
+
+def test_related_pr_passes_and_an_unresolvable_head_fails_closed(repo, step):
+    git(repo, "checkout", "-q", "-b", "feature")
+    commit(repo, {"a": "1"})
+    head = _merge_ref_checkout(repo, "feature")
+    passed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert passed.returncode == 0, passed.stdout
+    assert step.artifact("history-check") == []
+
+    for missing in ("", "0" * 40):
+        failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=missing)
+        assert failed.returncode == 1, failed.stdout
+        assert step.artifact("history-check")[0]["results"][0]["title"] == "PR head unavailable"
+
 def test_only_unmapped_human_emails_fail_the_contributor_check(repo, step):
     commit(repo, {"contributors/emails/mapped@x.org": "alice\n",
                   "scripts/releases/authors_legacy.py": 'AUTHOR_MAP = {"legacy@y.org": "bob"}\n'})
@@ -144,6 +189,64 @@ def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     report = (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
     assert "base64 decode + exec/eval combo" in report
     assert "subprocess with encoded/obfuscated command" in report
+
+
+def _scan_pr(repo: Path, step: Step, base: str, files: dict[str, str]) -> str:
+    """Commit ``files`` on a fresh branch off ``base`` and return the patterns scan's verdict."""
+    git(repo, "checkout", "-q", "--detach", base)
+    head = commit(repo, files)
+    step.output.unlink(missing_ok=True)
+    assert step.run(repo, "scan_supply_chain.py", "patterns", _HERMES_PR_BASE_SHA=base,
+                    _HERMES_PR_HEAD_SHA=head).returncode == 0
+    return step.outputs()["found"]
+
+
+def _module_with_payload() -> tuple[str, str]:
+    """A module that already holds a payload-shaped line, and a different payload line."""
+    decode = "base64." + "b64decode"
+    body = "".join(f"def f{i}():\n    return {i}\n\n" for i in range(20))
+    return body + f"code = exec({decode}(blob))\n", f"x = eval({decode}(other))\n"
+
+
+FORWARD = "from new.pkg.mod import *  # moved to new/pkg/mod.py\n"
+
+
+def test_supply_chain_scan_passes_a_moved_file_whose_old_path_keeps_a_forwarding_file(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    assert _scan_pr(repo, step, base, {"new/pkg/mod.py": module, "pkg/mod.py": FORWARD}) == "false"
+
+
+def test_supply_chain_scan_flags_a_payload_line_added_to_a_moved_or_new_file(repo, step):
+    module, new_payload = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    assert _scan_pr(repo, step, base, {"new/pkg/mod.py": module + new_payload,
+                                       "pkg/mod.py": FORWARD}) == "true"
+    assert "x = eval(" in (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
+    assert _scan_pr(repo, step, base, {"fresh.py": new_payload}) == "true"
+
+
+def test_supply_chain_scan_flags_a_payload_line_copied_from_a_file_that_keeps_it(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    copied = {"elsewhere/run.py": module, "pkg/mod.py": module + "# touched\n"}
+    assert _scan_pr(repo, step, base, copied) == "true"
+    assert "code = exec(" in (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
+
+
+def test_supply_chain_scan_flags_the_second_copy_of_a_moved_file(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    twice = {"new/a.py": module, "new/b.py": module, "pkg/mod.py": FORWARD}
+    assert _scan_pr(repo, step, base, twice) == "true"
+
+
+def test_supply_chain_scan_flags_a_payload_line_taken_from_a_file_of_another_name(repo, step):
+    module, _ = _module_with_payload()
+    payload = module.splitlines(keepends=True)[-1]
+    base = commit(repo, {"tests/fixture.py": module, "pkg/run.py": "x = 1\n"})
+    taken = {"tests/fixture.py": module.removesuffix(payload), "pkg/run.py": "x = 1\n" + payload}
+    assert _scan_pr(repo, step, base, taken) == "true"
 
 
 def test_dependency_bounds_report_lists_only_floor_only_specs(repo, step):
@@ -230,3 +333,30 @@ def test_uv_lock_retries_only_registry_failures(tmp_path, monkeypatch, capsys, p
     assert out.count("::warning::") == len(sleeps)
     if verdict == "timed-out":
         assert "Resolving dependencies" in out  # the stopped attempt's log is still shown
+
+
+def test_pr_head_counts_a_head_that_only_the_last_fetch_brings_in(repo, tmp_path, monkeypatch):
+    sys.path.insert(0, str(SCRIPTS.parents[1]))
+    from scripts.ci import check_common_ancestor as guard
+
+    remote = tmp_path / "remote"
+    git(tmp_path, "clone", "-q", str(repo), str(remote))
+    head = commit(remote, {"pr": "1"})
+    git(repo, "remote", "add", "origin", str(remote))
+    real_git, fetches = guard._git, []
+
+    def flaky_git(*args: str) -> subprocess.CompletedProcess:
+        if args[0] == "fetch":
+            fetches.append(args)
+            if len(fetches) < guard.FETCH_ATTEMPTS:
+                return subprocess.CompletedProcess(("git", *args), 128, "", "transient")
+        return real_git(*args)
+
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(guard, "_git", flaky_git)
+    monkeypatch.setattr(guard.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("_HERMES_PR_HEAD_SHA", head)
+    assert guard.pr_head() == head
+    assert len(fetches) == guard.FETCH_ATTEMPTS

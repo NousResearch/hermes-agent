@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable
 
 from agent.memory_provider import spawn_context_thread
-from gateway import hosted_room_driver as state
+from persistence.gateway.hosted_rooms import DriverLease, DriverStateError, RoomUnavailableError, StaleLeaseError
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,12 @@ class LeaseKeeper:
     """Renew ``lease`` every ``interval`` seconds on a daemon thread until the context exits."""
 
     def __init__(
-        self, lease: state.DriverLease, renew: Callable[[state.DriverLease], state.DriverLease], *,
+        self, lease: DriverLease, renew: Callable[[DriverLease], DriverLease], *,
         interval: float,
     ) -> None:
         self.lease, self._renew, self._interval = lease, renew, interval
         self._stop = threading.Event()
-        self._lost: state.DriverStateError | None = None
+        self._lost: DriverStateError | None = None
         self._thread = spawn_context_thread(self._run, name=f"hosted-room-lease-{lease.room_id[:24]}")
 
     def __enter__(self) -> LeaseKeeper:
@@ -50,7 +50,7 @@ class LeaseKeeper:
         while not self._stop.wait(self._interval):
             try:
                 self.lease = self._renew(self.lease)
-            except (state.StaleLeaseError, state.RoomUnavailableError) as exc:
+            except (StaleLeaseError, RoomUnavailableError) as exc:
                 self._lost = exc
                 return
             except Exception as exc:  # health: allow BLE001 -- transient (sqlite busy); next tick retries

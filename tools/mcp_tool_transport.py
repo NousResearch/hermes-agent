@@ -151,10 +151,20 @@ def _connect_inputs(server_name: str, config: dict) -> tuple[list, set]:
     return list(_stdio_launch(config)), set()
 
 
+def _sdk_unavailable_error(server_name: str) -> ImportError:
+    """The connect error when the core ``mcp`` SDK did not import: its own cause when the import
+    failed (a broken or mid-update install, retried on the next connect), else not installed."""
+    cause = _core._MCP_SDK_IMPORT_ERROR
+    if cause:
+        return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but importing it "
+                           f"failed ({cause}). It is retried on the next connect; if this persists, "
+                           "run `hermes pm repair`.")
+    return ImportError(f"MCP server '{server_name}' requires the 'mcp' Python SDK, but it is not "
+                       "installed. Run `hermes setup` to install MCP support, then retry.")
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
-
-    __slots__ = ()
 
     def _advertises_tools(self) -> bool:
         """False only when captured capabilities omit ``tools`` (prompt-/resource-only servers,
@@ -364,12 +374,13 @@ class MCPServerTransportMixin:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        from tools.hosted_tool_policy import require_host_feature
+        require_host_feature("mcp_stdio", f"MCP server '{self.name}' (stdio)")
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
             logger.warning("MCP server '%s': identity_header is only supported on "
                            "HTTP/SSE transports — ignored for stdio servers", self.name)
         if not _core._ensure_mcp_sdk():
-            raise ImportError(f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                              "it is not installed. Run `hermes setup` to install MCP support, then retry.")
+            raise _sdk_unavailable_error(self.name)
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
@@ -484,7 +495,9 @@ class MCPServerTransportMixin:
         if not _non_mcp_2xx(resp):
             return
         ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at {url} returned Content-Type '{ct_base}', not an MCP "
+        from agent.redact import redact_sensitive_text  # error text reaches the model: no ?token= credential
+        shown = redact_sensitive_text(str(url), redact_url_credentials=True)
+        raise NonMcpEndpointError(f"MCP server '{self.name}' at {shown} returned Content-Type '{ct_base}', not an MCP "
             f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
             "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
@@ -599,10 +612,13 @@ class MCPServerTransportMixin:
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
-        _core._ensure_mcp_sdk()
+        if not _core._ensure_mcp_sdk():
+            raise _sdk_unavailable_error(self.name)
         if not _core._MCP_HTTP_AVAILABLE:
+            cause = _core._MCP_HTTP_IMPORT_ERROR
             raise ImportError(f"MCP server '{self.name}' requires HTTP transport but "
-                              "mcp.client.streamable_http is not available. "
+                              "mcp.client.streamable_http is not available"
+                              + (f" ({cause})" if cause else "") + ". "
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.
@@ -697,10 +713,14 @@ class MCPServerTransportMixin:
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
+        if self._registered_tool_names:
+            # A reconnect keeps the registered tools, but the trust gate must judge the session that will
+            # run the call: refresh readOnlyHint from this listing (#144380).
+            for key in owned:
+                _registration._record_tool_trust_metadata(self.name, self._config, self._tools, key)
+            return
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)

@@ -35,7 +35,7 @@ function captureWrites(stream, fn) {
 }
 
 function withStampedConsole(fn) {
-  const saved = { log: console.log, warn: console.warn, error: console.error };
+  const saved = { log: console.log, info: console.info, warn: console.warn, error: console.error };
   installConsoleStamps();
   try {
     fn();
@@ -89,6 +89,28 @@ withStampedConsole(() => {
 // An empty console.log() stays a bare newline rather than a lone stamp.
 withStampedConsole(() => {
   assert.deepEqual(captureWrites(process.stdout, () => console.log()), ['\n']);
+});
+
+// libsignal's console.info("Closing session:", session) must not print the
+// session's key material into bridge.log (#149860); the message label stays.
+withStampedConsole(() => {
+  class SessionEntry {
+    constructor() {
+      this.currentRatchet = { rootKey: Buffer.from('root-key-material') };
+      this.indexInfo = { baseKey: Buffer.from('base-key-material'), closed: -1 };
+    }
+  }
+  const out = captureWrites(process.stdout, () => {
+    console.info('Closing session:', new SessionEntry());
+    console.log('Removing old closed session:', new SessionEntry());
+  });
+
+  assert.equal(out.length, 2);
+  for (const line of out) {
+    assert.match(line, LOCAL_STAMP_PREFIX_RE);
+    assert.ok(line.endsWith(' session: <SessionEntry>\n'), line);
+    assert.ok(!/rootKey|baseKey|key-material|Buffer/.test(line), line);
+  }
 });
 
 console.log('bridge_helpers.timestamp.test.mjs: all assertions passed');

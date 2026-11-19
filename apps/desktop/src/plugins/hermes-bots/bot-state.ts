@@ -11,7 +11,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $lastRoster, botRosterKey, botSelectionKey } from './data'
-import { getPluginCtx } from './shared'
+import { $pendingBotOpen, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
 // last_active watermark per source-qualified bot, seeded on first poll so a
@@ -198,9 +198,25 @@ export function focusedRosterOwner(
  *  fallback carries no source identity and fails closed (see
  *  $focusedBotOwner). A focused owner with no roster row (a plain session on
  *  an unlisted profile) leaves the selection alone. Callers gate on group
- *  rooms, which own no single row. */
+ *  rooms, which own no single row.
+ *
+ *  Defers while a cold open is in flight ($pendingBotOpen): the in-flight
+ *  click already re-pointed the selection at its bot and published its
+ *  target, so adopting the still-focused chat would overwrite the deliberate
+ *  pick before it lands. The flight bounds the defer itself — success
+ *  focuses the clicked chat, a failure leaves the click standing until the
+ *  next ambient event, and a bump (another click, a group, a pane hide)
+ *  drops the mark — so this reads pending to defer only, never to route or
+ *  highlight. */
 export function reconcileSelectionToFocusedChat(): void {
   if (!$botChatFocused.get() || !$selectedRosterHydrated.get()) {
+    return
+  }
+
+  // A cold open is in flight — its click already owns the selection and the
+  // "+" target; adopting the still-focused chat would overwrite the pick
+  // before the open lands. What bounds the defer is in the docstring.
+  if ($pendingBotOpen.get()) {
     return
   }
 

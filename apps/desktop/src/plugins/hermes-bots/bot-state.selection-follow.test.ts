@@ -5,6 +5,10 @@
  * by an earlier click re-owns the workspace on the next roster hydrate or pane
  * visibility flip: the stale row re-highlights and the tab-strip "+" creates
  * the next session under a bot nobody is reading.
+ *
+ * The follow defers while a cold open is in flight: the clicked bot's open has
+ * already re-pointed the selection, and adopting the still-focused chat would
+ * overwrite the deliberate pick before it lands.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -50,7 +54,17 @@ vi.mock('@hermes/plugin-sdk', async () => {
   }
 })
 
-vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
+// $pendingBotOpen must be a real atom: bot-state re-exports it from here and
+// the in-flight-defer cases drive it through that re-export.
+vi.mock('./shared', async () => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $pendingBotOpen: atom<null | { generation: number; key: string }>(null),
+    getPluginCtx: () => null,
+    ID: 'hermes-bots'
+  }
+})
 
 /** $focusedBotOwner binds to host.state at module load, so each topology needs
  *  a fresh graph. */
@@ -143,5 +157,54 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
     reconcileSelectionToFocusedChat()
 
     expect($selectedRosterKey.get()).toBe('source-a::alpha')
+  })
+
+  it('defers adoption while a cold open is in flight — the deliberate click wins', async () => {
+    state.focusedOwner = { connectionId: 'source-b', profile: 'worker' }
+
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $pendingBotOpen,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
+
+    $lastRoster.set(roster)
+    // A click on alpha is mid-flight: the selection and the "+" target already
+    // name alpha, the worker chat is still the one on screen.
+    $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
+    $botChatFocused.set(true)
+    $pendingBotOpen.set({ generation: 1, key: 'source-a::alpha' })
+
+    reconcileSelectionToFocusedChat()
+
+    expect($selectedRosterKey.get()).toBe('source-a::alpha')
+  })
+
+  it('adopts again once the open settles — the defer is scoped to the flight', async () => {
+    state.focusedOwner = { connectionId: 'source-b', profile: 'worker' }
+
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $pendingBotOpen,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
+
+    $lastRoster.set(roster)
+    $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
+    $botChatFocused.set(true)
+    // The flight settled (success, failure, or a bump) — ambient adoption resumes.
+    $pendingBotOpen.set(null)
+
+    reconcileSelectionToFocusedChat()
+
+    expect($selectedRosterKey.get()).toBe('source-b::worker')
   })
 })

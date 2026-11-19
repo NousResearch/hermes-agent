@@ -31,7 +31,10 @@ let botOpenGeneration = 0
 /** Cold open still in flight. Published after the fronted-tab miss and before
  *  source prep. Not chat ownership — never route or highlight from this key.
  *  The generation guards the clear: a superseded flight never releases its
- *  successor's mark. A bump (another open, a group, or Sessions) drops it. */
+ *  successor's mark. A bump (another open, a group, or Sessions) drops it.
+ *  The one consumer beyond the row's opening acknowledgement: selection
+ *  reconciliation defers while this is set, so an in-flight deliberate open
+ *  is not overwritten by the still-focused chat. */
 export const $pendingBotOpen = atom<null | { generation: number; key: string }>(null)
 
 export function getBotOpenGeneration() {

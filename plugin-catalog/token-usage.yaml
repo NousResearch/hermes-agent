@@ -1,15 +1,12 @@
 name: token-usage
 repo: https://github.com/priyankarpal/hermes-agent-token-usages
 sha: 5da4588b6f77d95222a236ed82df532f618f5e4f
-subdir: ""
-description: Token usage analytics from the local Hermes database (~/.hermes/state.db) — lifetime totals, per-model breakdown, per-session details, cache/reasoning tokens, API call counts and estimated cost. No network, no auth, no Hermes Desktop required. Fully config-driven.
-maintainer: Priyankar Pal
+description: "Token usage analytics from the local Hermes database (~/.hermes/state.db) — lifetime totals, per-model breakdown, per-session details, cache/reasoning tokens, API call counts and estimated cost. No network, no auth, no Hermes Desktop required. Fully config-driven. Disclosure — reads the Hermes session database (state.db) read-only for token counts and cost totals, and config.yaml for its own `token_plugin` settings; no network, no writes."
+maintainer: priyankarpal
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: ""
 version: "0.1.0"
-image: ""
 screenshots: []
 readme: true
 platforms: []

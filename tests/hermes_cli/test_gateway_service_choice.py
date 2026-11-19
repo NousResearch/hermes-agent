@@ -166,22 +166,31 @@ def test_explicit_install_records_only_completed_install(supervisor, monkeypatch
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("choice", ["decline", None])
-def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice):
+@pytest.mark.parametrize("choice, answer, fail", [("decline", True, False), (None, False, False), (None, True, True)])
+def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice, answer, fail):
     """Regression for #157677: ``install.sh``/``install.ps1`` run ``gateway install --if-missing``
     after setup. A decline recorded there installs nothing and stays recorded; an unanswered
-    question is asked once, and No still writes no unit."""
+    question is asked once, No still writes no unit, and a Yes whose install fails exits 1."""
     from argparse import Namespace
 
     _profile, calls = supervisor
     config_api.save_config({"gateway": {"service_install_choice": choice}})
+    if fail:
+        monkeypatch.setenv("CHOICE_FAIL", "1")
     prompts = []
-    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args: prompts.append(args) or False)
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args: prompts.append(args) or answer)
     stream = io.StringIO()
     stream.isatty = lambda: True
     monkeypatch.setattr(sys, "stdin", stream)
-    gateway._cmd_install(Namespace(if_missing=True, force=False, system=False, run_as_user=None,
-                                   start_now=None, start_on_login=None))
+    args = Namespace(if_missing=True, force=False, system=False, run_as_user=None,
+                     start_now=None, start_on_login=None)
+    if fail:
+        with pytest.raises(SystemExit) as exc:
+            gateway._cmd_install(args)
+        assert exc.value.code == 1
+        assert config_api.load_config()["gateway"]["service_install_choice"] is None
+        return
+    gateway._cmd_install(args)
     assert not gateway.get_systemd_unit_path().exists()
     assert not any(set(op) & {"enable", "start", "daemon-reload"} for op in _operations(calls))
     assert config_api.load_config()["gateway"]["service_install_choice"] == "decline"

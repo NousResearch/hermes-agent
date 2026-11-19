@@ -481,6 +481,42 @@ def effort_fields(config, tier, model, provider, base_url, api_mode=None):
     return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast}
 
 
+def _is_cold_messaging(agent, policy, live) -> bool:
+    return (agent is None and policy is None and live.source is not None
+            and live.source.platform != Platform.LOCAL)
+
+
+def service_tier_fast(authority, ref, tier: str) -> bool:
+    """Whether ``tier`` activates fast mode on ``ref``'s effective route, reusing
+    ``local_session_info``'s agent / policy / ``messaging_route_info`` lookup."""
+    from agent.fast_mode import STATIC_TIERS
+    if tier not in STATIC_TIERS:
+        return False
+    from gateway.session_policy import policy_for_source
+    live = authority.sessions[ref.session_id]
+    has_agent_lookup = (getattr(authority.runner, '_resident_agent_for', None) is not None
+                        or getattr(authority.runner, '_cached_agent_for', None) is not None)
+    agent = authority.agent(ref) if has_agent_lookup else None
+    policy = policy_for_source(authority.runner, live.source)
+    if _is_cold_messaging(agent, policy, live) and getattr(authority.runner, '_channel_override_for', None) is not None:
+        from gateway.session_messaging_picks import messaging_route_info
+        return bool(messaging_route_info(authority.runner, live).get('fast'))
+    if agent is not None and not (policy is not None and policy.follows_profile):
+        from agent.voice_turn_route import session_runtime_view
+        view = session_runtime_view(agent)
+        model = getattr(agent, 'model', None)
+        provider = getattr(view, 'provider', None)
+        base_url = getattr(view, 'base_url', None)
+        api_mode = getattr(view, 'api_mode', None)
+    elif policy is not None:
+        effective, model = policy.effective(authority, secrets=False)
+        route = effective.get('model') or {}
+        provider, base_url, api_mode = route.get('provider'), route.get('base_url'), route.get('api_mode')
+    else:
+        return False
+    return bool(model) and effort_fields(None, tier, model, provider, base_url, api_mode)['fast']
+
+
 def local_session_info(authority, ref):
     live = authority.sessions[ref.session_id]
     agent = authority.agent(ref)
@@ -504,7 +540,7 @@ def local_session_info(authority, ref):
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    if agent is None and policy is None and live.source is not None and live.source.platform != Platform.LOCAL:
+    if _is_cold_messaging(agent, policy, live):
         # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
         # included), so a viewer's model and reasoning pill never wait on a field that never comes.
         from gateway.session_messaging_picks import messaging_route_info

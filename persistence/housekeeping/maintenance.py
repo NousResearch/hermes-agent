@@ -379,6 +379,10 @@ class SessionMaintenance(Protocol):
         """The session imported from ``origin``: a row of source ``origin.tool`` whose ``origin_json.imported_from`` names the tool and the same foreign id, or, without one, the same path."""
         ...
 
+    def session_projection_revision(self, *, busy_timeout_s: float = 0.05) -> Optional[tuple[int, int]]:
+        """Opaque, comparable session-list revision and store generation stamp; None if the store keeps none (use ``session_projection_digest``)."""
+        ...
+
     def session_projection_digest(self, *, busy_timeout_s: float = 0.05) -> Optional[tuple[tuple[str, ...], bytes]]:
         """The ``SESSION_PROJECTION_FIELDS`` the store has and a 16-byte digest over those columns of every row ordered by id (tui_gateway/change_watcher.py:205-262); None when the store has no sessions table. Contention past ``busy_timeout_s`` raises ``StoreContention``."""
         ...

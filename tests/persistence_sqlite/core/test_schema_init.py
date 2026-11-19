@@ -8,6 +8,7 @@ from persistence.sqlite import _holder, _schema
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session
 from persistence_assembly import profile_scope
+from tests.fixtures.storage_holder import omit_session_list_revision
 
 
 @pytest.fixture()
@@ -244,6 +245,8 @@ class TestReconcileColumnsErrorHandling:
         seed.close()
         conn = sqlite3.connect(str(db_path))
         try:
+            omit_session_list_revision(conn)
+            conn.commit()
             conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
             conn.commit()
         finally:

@@ -419,6 +419,24 @@ def test_a_claimed_cli_trial_counts_as_a_configured_provider(portal, monkeypatch
     assert _has_any_provider_configured()
 
 
+def test_a_named_profile_never_looks_ready_on_the_default_profiles_trial(portal, monkeypatch, tmp_path):
+    """The Desktop asks per named profile (``strict_profile_scope``): the default profile's trial is
+    shared at runtime by the root ``auth.json`` fallback, but it is not that profile's setup."""
+    import os
+    from hermes_cli.main import _has_any_provider_configured
+
+    _person_at_terminal(monkeypatch)
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    root = os.environ["HERMES_HOME"]
+    named = tmp_path / "named"
+    (named / "profiles").mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **_kw: __import__("pathlib").Path(root))
+    monkeypatch.setenv("HERMES_HOME", str(named))
+
+    assert anon_auth.free_inference_active()  # runtime still shares the root trial
+    assert not _has_any_provider_configured(strict_profile_scope=True)
+
+
 def test_first_run_on_the_free_tier_says_which_model_actually_answers(portal, monkeypatch, capsys):
     """The free tier serves only ``nous/welcome``; the setup summary names it even when the seeded
     config.yaml still carries the template's ``model.default``."""

@@ -119,7 +119,10 @@ _STORE_ACTIONS = {
 
 
 def _batch_op_line(op: dict[str, Any]) -> str:
-    op = op or {}
+    # Harden against non-mapping elements: this helper runs inside the approval
+    # gate's display path, before the element-level validation rejects the call,
+    # so a malformed op must render (not raise AttributeError) — #157909.
+    op = op if isinstance(op, dict) else {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
@@ -173,7 +176,7 @@ _REPLACE_REMOVED = ("'replace' is not available; use 'patch'. old_text is the ex
 def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """The replace/remove ops of a staged memory payload, single-op or batch shape."""
     ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
-    return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
+    return [op for op in ops if isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS]
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
@@ -257,6 +260,8 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
         return "rejected", json.dumps(target_error)
     if operations:
         if not isinstance(operations, list):
+            return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        if not all(isinstance(op, dict) for op in operations):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
         if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
             return _invalid(_REPLACE_REMOVED)

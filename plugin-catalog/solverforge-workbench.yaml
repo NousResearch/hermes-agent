@@ -1,22 +1,22 @@
 name: solverforge-workbench
 repo: https://github.com/blackopsrepl/hermes-solverforge-workbench
-sha: b49002c64fe5c52d62bf094f63e62a1e282f9cd7
+sha: 3b0a79dadce2aa96b4a2a1acde34a2d62c732b67
 title: "SolverForge Workbench"
 description: "Optimization models you configure, solve and explain from Hermes, on your own machine. Four stock models (employee scheduling, field service routing, pick-up and delivery routing, task scheduling) with every constraint, plus your own models built from a solverforge-cli project. Load or edit a dataset, tune constraint weights and solve settings in profiles, solve in the background, read which rule cost what and why, find the best place for an open item, replan from a change and compare profiles in experiments. Desktop: a page per model, dataset, profile, run and experiment, rosters and route maps along the roads, a run card in the chat, a status-bar chip and palette commands. Disclosure — `hermes solverforge-workbench install` (or /solverforge-workbench install) downloads one engine binary for your platform from this repository's own engine-v0.2.1 GitHub release, built by its release workflow with a GitHub build attestation, and refuses it unless its SHA-256 matches the value pinned in engine_bin.py; the agent cannot start that download. Each solve runs the engine once as a subprocess (JSON on stdin and stdout) with a minimal environment. The routing models measure travel on OpenStreetMap roads: a stock demo's road network is downloaded once from the same release and checked against a pinned SHA-256; any other routing dataset sends its area's bounding box to the Overpass API once and keeps the roads locally. The route map loads OpenStreetMap tiles, which reveal the visible area and your IP to the tile servers. Registering a custom model runs `cargo build --release` on your machine, and cargo downloads the project's crates from crates.io. Deleting a dataset, profile or experiment, or removing a custom model, asks for approval through the plugin's pre_tool_call hook. Everything stays in <hermes home>/plugin-data/solverforge-workbench/. No credentials, no telemetry, no background process outside a running solve."
 maintainer: blackopsrepl
 tier: community
 category: tools
 requires_hermes: ">=0.22.2"
-version: "0.2.4"
+version: "0.2.5"
 docs_url: https://github.com/blackopsrepl/hermes-solverforge-workbench#readme
-image: https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/banner.png
+image: https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/screenshots/run.png
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/screenshots/routes.png
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/screenshots/fill.png
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/screenshots/data.png
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/screenshots/experiment.png
-  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/b49002c64fe5c52d62bf094f63e62a1e282f9cd7/docs/architecture.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/screenshots/run.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/screenshots/routes.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/screenshots/fill.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/screenshots/data.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/screenshots/experiment.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-workbench/3b0a79dadce2aa96b4a2a1acde34a2d62c732b67/docs/architecture.png
 readme: true
 platforms:
   - linux

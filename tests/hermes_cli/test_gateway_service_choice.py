@@ -168,7 +168,7 @@ def test_explicit_install_records_only_completed_install(supervisor, monkeypatch
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("choice, answer, fail, messaging", [
     ("decline", True, False, True), (None, False, False, True), (None, True, True, True),
-    ("install", True, True, False), (None, True, False, False)])
+    ("install", True, True, False), (None, True, False, False), (None, False, False, "yaml")])
 def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice, answer, fail,
                                                                  messaging):
     """Regression for #157677: ``install.sh``/``install.ps1`` run ``gateway install --if-missing``
@@ -179,7 +179,10 @@ def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monk
 
     _profile, calls = supervisor
     config_api.save_config({"gateway": {"service_install_choice": choice}})
-    if messaging:
+    if messaging == "yaml":  # a bot saved in config.yaml only, no env token
+        config_api.save_config({"gateway": {"service_install_choice": choice},
+                                "platforms": {"telegram": {"enabled": True, "token": "123:test-token"}}})
+    elif messaging:
         config_api.save_env_value("TELEGRAM_BOT_TOKEN", "123:test-token")
     if fail:
         monkeypatch.setenv("CHOICE_FAIL", "1")

@@ -121,10 +121,9 @@ def _requests_install_options(args) -> bool:
 
 
 def _messaging_configured() -> bool:
-    """A messaging platform (built-in or plugin) has its credentials set."""
-    from hermes_cli.gateway import _all_platforms, _platform_status
-    from hermes_cli.setup_platforms import _is_progress
-    return any(_is_progress(_platform_status(p)) for p in _all_platforms())
+    """A messaging platform is connected the way the gateway itself loads it (env or config.yaml)."""
+    from gateway.config import load_gateway_config
+    return bool(load_gateway_config().get_connected_platforms())
 
 
 def install_after_setup(args) -> bool:

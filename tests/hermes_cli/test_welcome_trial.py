@@ -408,6 +408,17 @@ def test_a_configured_model_beats_the_trial_for_cron_jobs_and_kanban_workers(por
     assert _kanban_worker_model(monkeypatch, tmp_path) == "anthropic/claude-sonnet-4"
 
 
+def test_a_claimed_cli_trial_counts_as_a_configured_provider(portal, monkeypatch):
+    """After "Free, start now", ``hermes`` chats instead of sending the user back to setup, even on a
+    home with no copied model template."""
+    from hermes_cli.main import _has_any_provider_configured
+
+    _person_at_terminal(monkeypatch)
+    assert not _has_any_provider_configured()
+    assert welcome_trial.claim_desktop_free_tier(surface="cli_setup") is not None
+    assert _has_any_provider_configured()
+
+
 def test_first_run_on_the_free_tier_says_which_model_actually_answers(portal, monkeypatch, capsys):
     """The free tier serves only ``nous/welcome``; the setup summary names it even when the seeded
     config.yaml still carries the template's ``model.default``."""

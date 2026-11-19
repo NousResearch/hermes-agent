@@ -46,6 +46,7 @@ if str(ROOT) not in sys.path:
 
 from hermes_agent.compat.finder import current_name
 from hermes_agent.compat.paths import moves_from_source
+from hermes_cli.plugin_validate_private_imports import CoreImports, ImportChoice, ImportSite, hermes_import_sites
 
 
 # ── index ────────────────────────────────────────────────────────────────────────────────────────────
@@ -56,43 +57,67 @@ def _shard(name: str) -> str:
     return first if first.isalnum() else "_"
 
 
-def _compact(row: dict) -> dict:
-    """The on-disk row: imports grouped by module, each (module, name, role, alternatives) kept once at its
-    first site. In memory a row's imports are ``[module, name, site, role, alternatives]`` lists."""
-    out: dict = {"sha": row["sha"]}
-    if "error" in row:
-        return {**out, "error": row["error"]}
-    by_module: dict[str, list] = {}
-    seen: set = set()
-    for module, name, site, role, alternatives in row.get("imports", []):
-        key = (module, name, role, tuple(map(tuple, alternatives)))
-        if key not in seen:
-            seen.add(key)
-            by_module.setdefault(module, []).append([name, site, *([role] if role or alternatives else []),
-                                                     *([alternatives] if alternatives else [])])
-    return {**out, "imports": by_module} if by_module else out
+@dataclass(frozen=True)
+class Row:
+    """One catalog entry in the index: the source it was read from and its core imports, or why it could not
+    be read. ``sha`` + ``subdir`` identify the code (a repo rename keeps the same commits)."""
+
+    sha: str
+    subdir: str
+    imports: CoreImports
+    error: str = ""
+
+    def is_current(self, entry) -> bool:
+        return not self.error and (self.sha, self.subdir) == (entry.sha, entry.subdir or "")
 
 
-def _expand(row: dict) -> dict:
-    imports = [[module, item[0], item[1], item[2] if len(item) > 2 else 0, item[3] if len(item) > 3 else []]
-               for module, items in row.get("imports", {}).items() for item in items]
-    return {**row, "imports": imports}
+def _site_json(site: ImportSite) -> list:
+    return [site.module, site.name, f"{site.rel}:{site.line}"]
 
 
-def read_index(path: Path = INDEX) -> dict[str, dict]:
+def _site(item: list) -> ImportSite:
+    module, name, where = item
+    rel, _, line = where.rpartition(":")
+    return ImportSite(rel, int(line), module, name)
+
+
+def _row_json(row: Row) -> dict:
+    """The on-disk row. A plain import is kept once per (module, name), at its first site."""
+    out: dict = {"sha": row.sha, **({"subdir": row.subdir} if row.subdir else {})}
+    if row.error:
+        return {**out, "error": row.error}
+    first: dict[tuple[str, str], ImportSite] = {}
+    for site in row.imports.plain:
+        first.setdefault((site.module, site.name), site)
+    if first:
+        out["imports"] = [_site_json(site) for site in first.values()]
+    if row.imports.choices:
+        out["choices"] = [[[_site_json(site) for site in branch] for branch in choice.branches]
+                          for choice in row.imports.choices]
+    return out
+
+
+def _row(data: dict) -> Row:
+    imports = CoreImports(tuple(_site(item) for item in data.get("imports", [])),
+                          tuple(ImportChoice(tuple(tuple(_site(item) for item in branch) for branch in choice))
+                                for choice in data.get("choices", [])))
+    return Row(data["sha"], data.get("subdir", ""), imports, data.get("error", ""))
+
+
+def read_index(path: Path = INDEX) -> dict[str, Row]:
     entries: dict[str, dict] = {}
     for shard in sorted(path.glob("*.json")):
         entries.update(json.loads(shard.read_text(encoding="utf-8-sig"))["entries"])
-    return {name: _expand(row) for name, row in entries.items()}
+    return {name: _row(data) for name, data in entries.items()}
 
 
-def write_index(entries: dict[str, dict], path: Path = INDEX) -> None:
+def write_index(entries: dict[str, Row], path: Path = INDEX) -> None:
     """One file per shard and one entry per line, sorted, so a repin's diff is that entry's line alone."""
     path.mkdir(parents=True, exist_ok=True)
     shards: dict[str, list[str]] = {}
     for name in sorted(entries):
         shards.setdefault(_shard(name), []).append(
-            f"  {json.dumps(name)}: {json.dumps(_compact(entries[name]), separators=(',', ':'))}")
+            f"  {json.dumps(name)}: {json.dumps(_row_json(entries[name]), separators=(',', ':'))}")
     for stale in set(p.stem for p in path.glob("*.json")) - shards.keys():
         (path / f"{stale}.json").unlink()
     for shard, lines in shards.items():
@@ -115,23 +140,20 @@ def _fetch_python_files(repo: str, sha: str, dest: Path) -> None:
     _git(["checkout", "-q", "--force", "FETCH_HEAD"], dest)
 
 
-def index_entry(entry, work: Path) -> dict:
-    """The index row for one catalog entry: its pin and its core imports, or why they could not be read."""
-    from hermes_cli.plugin_validate_private_imports import hermes_import_sites
-
-    row: dict = {"sha": entry.sha}
+def index_entry(entry, work: Path) -> Row:
+    """The index row for one catalog entry: its source and its core imports, or why they could not be read."""
+    subdir = entry.subdir or ""
     dest = Path(tempfile.mkdtemp(dir=work))
     try:
         _fetch_python_files(entry.repo, entry.sha, dest)
-        plugin_dir = dest / entry.subdir if entry.subdir else dest
-        sites = hermes_import_sites(plugin_dir) if plugin_dir.is_dir() else []
-        row["imports"] = [[module, name, f"{rel}:{line}", role, [list(a) for a in alts]]
-                          for rel, line, module, name, role, alts in sites]
+        plugin_dir = dest / subdir if subdir else dest
+        imports = hermes_import_sites(plugin_dir) if plugin_dir.is_dir() else CoreImports((), ())
+        return Row(entry.sha, subdir, imports)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        row["error"] = (getattr(exc, "stderr", b"") or str(exc).encode()).decode("utf-8", "replace").strip()[-200:]
+        error = (getattr(exc, "stderr", b"") or str(exc).encode()).decode("utf-8", "replace").strip()[-200:]
+        return Row(entry.sha, subdir, CoreImports((), ()), error or type(exc).__name__)
     finally:
         shutil.rmtree(dest, ignore_errors=True)
-    return row
 
 
 def build(names: list[str], rebuild_all: bool, jobs: int) -> int:
@@ -139,7 +161,9 @@ def build(names: list[str], rebuild_all: bool, jobs: int) -> int:
 
     catalog = {e.name: e for e in load_catalog(CATALOG)}
     old = read_index()
-    wanted = set(names) or {n for n, e in catalog.items() if rebuild_all or old.get(n, {}).get("sha") != e.sha}
+    # A row is re-read when its pin or subdir moved, or when the last read failed (an outage must not drop a
+    # plugin from coverage until its next repin).
+    wanted = set(names) or {n for n, e in catalog.items() if rebuild_all or n not in old or not old[n].is_current(e)}
     unknown = wanted - catalog.keys()
     if unknown:
         print(f"not in the catalog: {', '.join(sorted(unknown))}", file=sys.stderr)
@@ -150,9 +174,9 @@ def build(names: list[str], rebuild_all: bool, jobs: int) -> int:
             for name, row in zip(sorted(wanted), pool.map(lambda n: index_entry(catalog[n], Path(work)), sorted(wanted))):
                 entries[name] = row
     write_index(entries)
-    failed = sorted(n for n in wanted if "error" in entries[n])
-    print(f"indexed {len(wanted)} entr{'y' if len(wanted) == 1 else 'ies'} ({len(failed)} unreadable); "
-          f"{len(entries)} in the index")
+    failed = sorted(n for n in wanted if entries[n].error)
+    print(f"indexed {len(wanted)} entr{'y' if len(wanted) == 1 else 'ies'} ({len(failed)} unreadable"
+          f"{': ' + ', '.join(failed) if failed else ''}); {len(entries)} in the index")
     return 0
 
 
@@ -188,11 +212,22 @@ def _module_file(tree: Tree, module: str) -> str | None:
     return "" if base in tree.dirs else None
 
 
+def _is_globals_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "globals"
+
+
 def _binds_names_at_runtime(tree: ast.Module) -> bool:
-    """A module that hands ``globals()`` to code (``registry.export(globals())``, ``globals().update(...)``)
-    binds names no parse can list."""
-    return any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "globals"
-               for node in ast.walk(tree))
+    """A module that writes names through ``globals()`` binds names no parse can list: it hands the dict to a
+    call (``registry.export(globals())``), mutates it (``globals().update(...)``) or assigns into it. Reading
+    it (``globals().get(name)``, ``globals()[name]``) binds nothing."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and any(_is_globals_call(arg) for arg in [*node.args, *(k.value for k in node.keywords)]):
+            return True
+        if isinstance(node, ast.Attribute) and _is_globals_call(node.value) and node.attr in ("update", "setdefault", "__setitem__"):
+            return True
+        if isinstance(node, ast.Subscript) and _is_globals_call(node.value) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return True
+    return False
 
 
 def _top_level_names(source: str) -> tuple[set[str], bool]:
@@ -254,29 +289,30 @@ class Resolver:
 
 # ── check ────────────────────────────────────────────────────────────────────────────────────────────
 
-GUARDED, FALLBACK = 1, 2  # hermes_cli.plugin_validate_private_imports roles; 0 is a plain import
-
-
 @dataclass(frozen=True)
 class Break:
     plugin: str
-    site: str
-    module: str
-    name: str
+    site: ImportSite
     guarded: bool
 
     @property
     def target(self) -> str:
-        return f"{self.module}.{self.name}" if self.name else self.module
+        return f"{self.site.module}.{self.site.name}" if self.site.name else self.site.module
 
 
-def _lost(resolver: Resolver, module: str, name: str, role: int, alternatives: list) -> bool:
-    """True when the plugin loses this import on ``resolver``'s tree: it does not resolve, and no
-    alternative covers it (a fallback is never reached while the import it stands in for resolves)."""
-    covered = any(resolver.resolves(*alt) for alt in alternatives)
-    if role == FALLBACK and covered:
-        return False
-    return not resolver.resolves(module, name) and not (role == GUARDED and covered)
+def _usable(resolver: Resolver, branch: tuple[ImportSite, ...]) -> bool:
+    return all(resolver.resolves(site.module, site.name) for site in branch)
+
+
+def _lost_sites(choice: ImportChoice, before: Resolver, after: Resolver) -> list[ImportSite]:
+    """The sites to report when ``choice`` works on ``before`` and not on ``after``: what the branches that
+    worked on ``before`` no longer resolve. A ``try`` that can run without Hermes imports (an empty
+    branch) is judged on its import branches, so losing them is still reported, as a lost feature."""
+    branches = [branch for branch in choice.branches if branch]
+    if any(_usable(after, branch) for branch in branches):
+        return []
+    worked = [branch for branch in branches if _usable(before, branch)]
+    return [site for branch in worked for site in branch if not after.resolves(site.module, site.name)]
 
 
 def _changed_paths(base: Tree, head: Tree) -> list[str]:
@@ -289,22 +325,27 @@ def _touched(module: str, trees: tuple[Tree, Tree], changed: list[str]) -> bool:
     return any(path == f"{p}.py" or path.startswith(f"{p}/") for p in prefixes for path in changed)
 
 
-def breaks(index: dict[str, dict], base: Tree, head: Tree) -> list[Break]:
+def breaks(index: dict[str, Row], base: Tree, head: Tree) -> list[Break]:
     """Every indexed import the plugin has on ``base`` and loses on ``head``.
 
     Only imports whose module files the change touches are resolved (all of them when it edits the
     compat table): any other import resolves on both trees or on neither."""
     changed = _changed_paths(base, head)
     every = base.moves != head.moves
+
+    def relevant(sites) -> bool:
+        return every or any(_touched(site.module, (base, head), changed) for site in sites)
+
     before, after = Resolver(base), Resolver(head)
     found = []
     for plugin in sorted(index):
-        for module, name, site, role, alternatives in index[plugin].get("imports", []):
-            alternatives = [tuple(a) for a in alternatives]
-            if not every and not any(_touched(m, (base, head), changed) for m, _n in [(module, name), *alternatives]):
-                continue
-            if _lost(after, module, name, role, alternatives) and not _lost(before, module, name, role, alternatives):
-                found.append(Break(plugin, site, module, name, role == GUARDED))
+        imports = index[plugin].imports
+        for site in imports.plain:
+            if relevant([site]) and before.resolves(site.module, site.name) and not after.resolves(site.module, site.name):
+                found.append(Break(plugin, site, guarded=False))
+        for choice in imports.choices:
+            if relevant([site for branch in choice.branches for site in branch]):
+                found += [Break(plugin, site, choice.degrades) for site in _lost_sites(choice, before, after)]
     return found
 
 
@@ -315,7 +356,7 @@ def report(found: list[Break]) -> str:
              "this change removes or renames.", ""]
     for b in found:
         how = " (inside a try: the plugin loses that feature instead of failing to load)" if b.guarded else ""
-        lines.append(f"  {b.plugin} {b.site} imports {b.target}{how}")
+        lines.append(f"  {b.plugin} {b.site.rel}:{b.site.line} imports {b.target}{how}")
     lines += [
         "",
         "Plugins are only promised the published plugin API (hermes_cli/data/plugin_api.json, ctx), so",

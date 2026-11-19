@@ -7,6 +7,7 @@ sandbox was then created, billed and run on the launch profile's Modal account.
 """
 
 import asyncio
+import json
 import sys
 import threading
 import types
@@ -554,3 +555,161 @@ def test_startup_interrupted_before_its_build_registers_admits_no_late_build(
             gate.set_result(None)
         for worker in workers:
             worker.stop()
+
+
+def test_client_build_timeout_preserves_snapshot_and_does_not_retry(modal_sdk, profiles, monkeypatch):
+    """A client-build timeout on a persistent sandbox must not delete the saved snapshot or
+    re-enter _create on the same stuck flight for a second 300 s wait."""
+    from agent.runtime_scope import bind_profile_scope
+
+    modal_env, calls = modal_sdk
+    flights = _JoinRecorder()
+    monkeypatch.setattr(modal_env, "_client_flights", flights)
+    home = profiles("B")
+    snap_file = home / "modal_snapshots.json"
+    snap_file.write_text(json.dumps({"direct:task-1": "im-snap-1"}))
+
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+    creator_attempts: list[int] = []
+    creator_worker: list[object] = []
+
+    def timeout_first(self, coro, timeout=600):
+        if not creator_worker:
+            creator_worker.append(self)
+        if self is creator_worker[0]:
+            creator_attempts.append(timeout)
+            if len(creator_attempts) == 1:
+                asyncio.run_coroutine_threadsafe(coro, self._loop)
+                assert flights.joined.wait(10), "follower did not join the build in progress"
+                raise TimeoutError()
+        return run_coroutine(self, coro, timeout=min(timeout, 15))
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", timeout_first)
+    gate = _fake_from_credentials().gates["ak-B"] = Future()
+
+    def persistent_sandbox():
+        with bind_profile_scope(home, hydrate_secrets=False):
+            env = modal_env.ModalEnvironment(
+                image="python:3.11", persistent_filesystem=True, task_id="task-1")
+            env.cleanup()
+
+    try:
+        creator, creator_errors = _start(persistent_sandbox)
+        wait_until(lambda: calls["clients"] == ["ak-B"], timeout=15, what="the client build started")
+        follower, follower_errors = _start(_routed_sandbox, modal_env, home)
+        creator.join(10)
+        follower.join(10)
+        assert not creator.is_alive() and not follower.is_alive()
+        assert creator_attempts == [300]
+        assert len(creator_errors) == 1 and isinstance(creator_errors[0], TimeoutError)
+        assert len(follower_errors) == 1 and "abandoned" in str(follower_errors[0])
+        assert json.loads(snap_file.read_text()) == {"direct:task-1": "im-snap-1"}
+        assert flights == {}
+        gate.set_result(None)
+        persistent_sandbox()
+        assert calls["clients"] == ["ak-B", "ak-B"]
+        assert calls["creates"] == ["ak-B"]
+    finally:
+        if not gate.done():
+            gate.set_result(None)
+
+
+def test_client_build_error_preserves_snapshot_and_does_not_retry(modal_sdk, profiles):
+    """A routed client-build exception must preserve the saved snapshot and skip fallback retry."""
+    from agent.runtime_scope import bind_profile_scope
+
+    modal_env, calls = modal_sdk
+    home = profiles("B")
+    snap_file = home / "modal_snapshots.json"
+    snap_file.write_text(json.dumps({"direct:task-1": "im-snap-1"}))
+    _fake_from_credentials().failures["ak-B"] = [RuntimeError("auth boom")]
+
+    with bind_profile_scope(home, hydrate_secrets=False), pytest.raises(RuntimeError, match="auth boom"):
+        modal_env.ModalEnvironment(image="python:3.11", persistent_filesystem=True, task_id="task-1")
+
+    assert json.loads(snap_file.read_text()) == {"direct:task-1": "im-snap-1"}
+    assert calls["clients"] == ["ak-B"]
+    assert calls["creates"] == []
+
+
+def test_caller_timeout_after_late_client_finish_still_preserves_snapshot(modal_sdk, profiles, monkeypatch):
+    """Even if _profile_client finishes right as the caller's 300 s wait expires, the caller-side
+    TimeoutError must not delete the healthy snapshot or start a second 300 s attempt."""
+    from agent.runtime_scope import bind_profile_scope
+
+    modal_env, calls = modal_sdk
+    home = profiles("B")
+    snap_file = home / "modal_snapshots.json"
+    snap_file.write_text(json.dumps({"direct:task-1": "im-snap-1"}))
+
+    lookup_entered = threading.Event()
+    release_lookup = threading.Event()
+    orig_lookup = sys.modules["modal"].App.lookup.aio
+
+    async def slow_lookup(*args, **kwargs):
+        lookup_entered.set()
+        await asyncio.to_thread(release_lookup.wait, 10)
+        return await orig_lookup(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules["modal"].App.lookup, "aio", slow_lookup)
+    attempts: list[int] = []
+    run_coroutine = modal_env._AsyncWorker.run_coroutine
+
+    def expire_after_client(self, coro, timeout=600):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+            assert lookup_entered.wait(10)
+            raise TimeoutError()
+        return run_coroutine(self, coro, timeout=min(timeout, 15))
+
+    monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", expire_after_client)
+    try:
+        with bind_profile_scope(home, hydrate_secrets=False), pytest.raises(TimeoutError):
+            modal_env.ModalEnvironment(image="python:3.11", persistent_filesystem=True, task_id="task-1")
+        assert attempts == [300]
+        assert json.loads(snap_file.read_text()) == {"direct:task-1": "im-snap-1"}
+        assert calls["creates"] == []
+    finally:
+        release_lookup.set()
+
+
+@pytest.mark.parametrize("fail_at", ["from_id", "create"])
+def test_snapshot_restore_failure_after_client_build_still_falls_back(
+        modal_sdk, profiles, monkeypatch, fail_at):
+    """Genuine snapshot-restore failures (image lookup or Sandbox.create after client acquisition)
+    still clear the stale snapshot and fall back to the base image."""
+    from agent.runtime_scope import bind_profile_scope
+
+    modal_env, calls = modal_sdk
+    home = profiles("B")
+    snap_file = home / "modal_snapshots.json"
+    snap_file.write_text(json.dumps({"direct:task-1": "im-bad"}))
+
+    seen_images: list[object] = []
+    if fail_at == "from_id":
+        def bad_from_id(image_id):
+            raise RuntimeError(f"bad snapshot {image_id}")
+        monkeypatch.setattr(sys.modules["modal"].Image, "from_id", bad_from_id)
+    else:
+        orig_create = sys.modules["modal"].Sandbox.create.aio
+
+        async def create_reject_snapshot(*args, image=None, **kwargs):
+            seen_images.append(image)
+            if image == "im-bad":
+                raise RuntimeError("snapshot unavailable")
+            return await orig_create(*args, image=image, **kwargs)
+
+        monkeypatch.setattr(sys.modules["modal"].Sandbox.create, "aio", create_reject_snapshot)
+
+    with bind_profile_scope(home, hydrate_secrets=False):
+        env = modal_env.ModalEnvironment(
+            image="python:3.11", persistent_filesystem=True, task_id="task-1")
+        env._persistent = False
+        env.cleanup()
+
+    assert json.loads(snap_file.read_text()) == {}
+    assert calls["clients"] == ["ak-B"]
+    assert calls["creates"] == ["ak-B"]
+    if fail_at == "create":
+        assert seen_images == ["im-bad", "image"]

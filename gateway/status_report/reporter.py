@@ -151,8 +151,9 @@ class StatusReporter:
 
     def goodbye(self) -> None:
         """Start the last report before this machine suspends and return at once: the caller never
-        waits for the receiver. One attempt with a short timeout, on its own task. Skipped by a
-        gateway that is not the sender and while the receiver holds the sender off."""
+        waits for the receiver. One attempt with a short timeout, on its own task, which confirms
+        the sender lock first. Skipped by a gateway that is not the sender, or no longer is, and
+        while the receiver holds the sender off."""
         if not self._is_sender or self._receiver_holds_off:
             return
         self._retry_body = None
@@ -174,6 +175,11 @@ class StatusReporter:
             logger.debug("status report: goodbye not sent (%s)", type(task.exception()).__name__)
 
     async def _say_goodbye(self) -> None:
+        # The lock as of now, not as of the last beat: a sender stopped long enough for another
+        # gateway to take its lock would otherwise say goodbye for the machine that gateway reports.
+        if not await self._become_sender():
+            logger.debug("status report: goodbye not sent (not the sender)")
+            return
         body = await self._next_report("goodbye")
         outcome = await self._off_loop(
             post_report, self._target, body, timeout=_GOODBYE_TIMEOUT_S, opener=self._opener)
@@ -189,9 +195,11 @@ class StatusReporter:
         try:
             acquired, _holder = await asyncio.shield(asyncio.wrap_future(taking))
         except asyncio.CancelledError:
-            # The watcher was cancelled (a gateway shutdown) while the thread was still taking the
-            # lock: run()'s cleanup ran before it was ours, so give it back once the thread is done.
-            taking.add_done_callback(self._give_back_if_taken)
+            # Cancelled (a gateway shutdown) while the thread was still taking the lock: run()'s
+            # cleanup ran before it was ours, so give it back once the thread is done. A sender only
+            # confirmed a lock it holds (a goodbye cancelled here): the watcher still reports under it.
+            if not self._is_sender:
+                taking.add_done_callback(self._give_back_if_taken)
             raise
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or

@@ -144,6 +144,31 @@ async def test_a_sender_whose_lock_was_taken_over_stands_by(clock, tmp_path, mon
     await reporter.poll()
     assert receiver.kinds == ["beat", "beat"], "the sender never took its lock back"
 
+async def test_a_sender_whose_lock_was_taken_over_says_no_goodbye_before_its_next_beat(clock, tmp_path, monkeypatch):
+    """The suspend path can ask a stopped sender, resumed after another gateway took its lock, to say
+    goodbye before its next beat has checked the lock: the goodbye checks it first, and stays unsaid."""
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    monkeypatch.setenv(STATUS_REPORT_URL_ENV, stamped_url(new_credential()))
+    monkeypatch.setattr(gateway_status, "_looks_like_gateway_process", lambda pid: True)
+    receiver = Receiver()
+    reporter = StatusReporter(report_target_from_env(), launch_home=get_process_hermes_home(),
+                              read_source=a_status_source, opener=receiver)
+    await reporter.poll()
+    assert receiver.kinds == ["beat"]
+    for path in [path for path in lock_dir.rglob("*") if path.is_file()]:
+        path.unlink()
+    other = await asyncio.to_thread(_start_other_sender, tmp_path)
+    try:
+        reporter.goodbye()
+        await settle()
+
+        assert receiver.kinds == ["beat"], "a sender that lost its lock said goodbye for its replacement"
+    finally:
+        await asyncio.to_thread(_end, other)
+
+
 @pytest.fixture
 def unusable_lock_dir(tmp_path, monkeypatch):
     """A lock directory this user may not create a lock in, as an elevated install leaves it."""
@@ -291,6 +316,39 @@ async def test_a_watcher_cancelled_while_it_takes_the_lock_leaves_no_lock_held(c
     await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
                            what="a cancelled watcher to give back the lock it took")
     assert receiver.requests == []
+
+
+async def test_a_goodbye_cancelled_while_it_confirms_the_lock_leaves_the_sender_holding_it(clock, monkeypatch):
+    """The goodbye confirms the lock too. Cancelled there (the loop closing under it), it must not
+    give back a lock the watcher still reports under."""
+    confirming, release, confirmed = threading.Event(), threading.Event(), []
+
+    def take_the_lock(scope, identity):
+        if confirmed:  # the goodbye's confirmation: the first one was the beat's
+            confirming.set()
+            release.wait(timeout=5)
+        result = gateway_status.acquire_scoped_lock(scope, identity)
+        confirmed.append(result[0])
+        return result
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    before = {task for task in asyncio.all_tasks()}
+    reporter.goodbye()
+    (goodbye,) = asyncio.all_tasks() - before
+    await async_wait_until(confirming.is_set, timeout=5, what="the goodbye confirming the lock")
+
+    goodbye.cancel()
+    await asyncio.wait({goodbye}, timeout=5)
+    release.set()
+    # Every piece of the reporter's work, and whatever it ran on completion, is done once its threads end.
+    await asyncio.to_thread(reporter._pool.shutdown, True)
+
+    assert len(confirmed) == 2
+    assert list(gateway_status._get_lock_dir().glob("*.lock")), "a cancelled goodbye gave the sender's lock back"
+    assert receiver.kinds == ["beat"]
 
 
 async def test_the_lock_is_released_when_the_watcher_stops(clock):

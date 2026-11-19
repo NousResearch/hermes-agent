@@ -367,3 +367,57 @@ async def test_bind_turn_wiring_skips_commentary_pane_for_detached_route():
     )
     GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
     assert ctx.matrix_commentary_pane is None
+
+
+@pytest.mark.asyncio
+async def test_pane_re_resolves_adapter_and_edits_same_root_after_swap(caplog):
+    """A reconnect swaps the adapter mid-turn: the next commentary edits the SAME root via the
+    replacement (#138133), and a reconnect gap (resolver -> None) skips without losing state."""
+    first, second = _FakeAdapter(), _FakeAdapter()
+    live = {"adapter": first}
+    pane = MatrixCommentaryPane(resolve_adapter=lambda: live["adapter"], chat_id="!room:example")
+    await pane.append("first thought")
+    assert len(first.sends) == 1 and pane.root_event_id == "$commentary-root"
+
+    live["adapter"] = None
+    with caplog.at_level("DEBUG", logger="gateway.matrix_commentary_pane"):
+        assert await pane.append("gap thought") is None
+    assert "no live adapter" in caplog.text
+    assert pane.root_event_id == "$commentary-root"
+    assert pane.items == ["first thought", "gap thought"]
+    assert pane._pending is not None
+    assert len(first.sends) == 1 and not first.edits
+
+    live["adapter"] = second
+    await pane.append("second thought")
+    assert not second.sends and not first.edits
+    assert [e["message_id"] for e in second.edits] == ["$commentary-root"]
+    edit = second.edits[0]
+    assert "gap thought" in edit["metadata"]["matrix_formatted_body"]
+    assert edit["metadata"]["matrix_formatted_body_unprefixed"] is True
+    assert pane._pending is None
+    await pane.close()
+    assert not second.sends and len(first.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_bind_turn_wiring_commentary_pane_follows_adapter_swap():
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import SessionSource
+
+    first, second = SimpleNamespace(name="matrix"), SimpleNamespace(name="matrix")
+    live = {"adapter": first}
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org")
+    ctx = TurnContext(source=source, interim_assistant_messages_enabled=True)
+    host = SimpleNamespace(
+        _delivery_adapter_for=lambda _source: live["adapter"],
+        _run_agent_progress_threading=lambda *_a, **_k: ({"thread_id": "$t"}, "$reply", None),
+        hooks=object(),
+    )
+    turn_runner = SimpleNamespace(
+        _step_callback_sync=object(), _event_callback_sync=object(), _status_callback_sync=object(),
+    )
+    GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
+    assert ctx.matrix_commentary_pane.adapter is first
+    live["adapter"] = second
+    assert ctx.matrix_commentary_pane.adapter is second

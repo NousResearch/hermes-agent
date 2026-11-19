@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.matrix_commentary import matrix_commentary_bodies
 
@@ -22,12 +22,14 @@ class MatrixCommentaryPane:
     def __init__(
         self,
         *,
-        adapter: Any,
+        adapter: Any = None,
+        resolve_adapter: Optional[Callable[[], Any]] = None,
         chat_id: str,
         reply_to: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        self.adapter = adapter
+        # Zero-arg resolver re-asked at every send/edit, like TurnContext.bind_status_adapter (#138133).
+        self._resolve_adapter = resolve_adapter if resolve_adapter is not None else (lambda: adapter)
         self.chat_id = chat_id
         self.reply_to = reply_to
         self.metadata = dict(metadata or {})
@@ -36,6 +38,12 @@ class MatrixCommentaryPane:
         self.lock = asyncio.Lock()
         self.closed = False
         self._pending: Optional[tuple[str, str, dict]] = None
+
+    @property
+    def adapter(self) -> Any:
+        """The adapter answering the room NOW. A reconnect retires the turn-start instance; the root
+        event id survives the swap, so the next m.replace goes through the replacement."""
+        return self._resolve_adapter()
 
     def _snapshot_payload(self) -> Optional[tuple[str, str, dict]]:
         if not self.items:
@@ -89,8 +97,13 @@ class MatrixCommentaryPane:
             return None
         body, _html, metadata = payload
         try:
+            adapter = self.adapter
+            if adapter is None:
+                # Reconnect gap: skip this tick; the snapshot stays pending for the next one.
+                logger.debug("Matrix commentary pane: no live adapter; skipping this update")
+                return None
             if self.root_event_id is None:
-                result = await self.adapter.send(
+                result = await adapter.send(
                     chat_id=self.chat_id,
                     content=body,
                     reply_to=self.reply_to,
@@ -105,9 +118,9 @@ class MatrixCommentaryPane:
                 "content": body,
                 "metadata": metadata,
             }
-            if getattr(self.adapter, "REQUIRES_EDIT_FINALIZE", False):
+            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
                 kwargs["finalize"] = True
-            return await asyncio.wait_for(self.adapter.edit_message(**kwargs), self.TRANSPORT_TIMEOUT)
+            return await asyncio.wait_for(adapter.edit_message(**kwargs), self.TRANSPORT_TIMEOUT)
         except asyncio.CancelledError:
             raise
         except Exception:

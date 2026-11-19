@@ -78,8 +78,8 @@ class TerminalEnvironmentProvider(ProviderBase):
       sandbox. Suspending the sandbox once such a process is idle-stopped, and network isolation
       between sandboxes, are the backend's.
 
-    Credentials reach a hosted sandbox as broker references (``CredentialRef``), never values from
-    the secret store; no broker exists yet, so core passes none.
+    Credentials never reach a hosted sandbox as values from the secret store; no credential broker
+    exists yet, so core passes none.
     """
 
     is_remote: bool = True

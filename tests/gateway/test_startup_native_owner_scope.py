@@ -6,6 +6,8 @@ import threading
 import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
 
 
 @asynccontextmanager
@@ -59,8 +61,8 @@ async def _restarted(tmp_path, monkeypatch):
                             assert (await authority.admit_native(follower)).ref == receipt.ref
                 parent = saved[name]['allowed']
                 child = parent + '-compressed'
-                authority.db.publish_compression_child(parent_session_id=parent, child_session_id=child,
-                    source='telegram', messages=[{'role': 'user', 'content': 'summary'}],
+                authority.persistence.lineage.publish_compression_child(parent, CompressionChild(child, 'telegram'),
+                    [NewMessage(role='user', content='summary')],
                     require_compression_lease=False)
                 route = authority.sessions[parent].route
                 assert runner.session_store.advance_compression_session(route, parent, child)
@@ -79,7 +81,7 @@ async def _restarted(tmp_path, monkeypatch):
             tasks = [live.task for live in authority.sessions.values() if live.task is not None]
             if tasks:
                 await asyncio.wait_for(asyncio.gather(*tasks), 10)
-            authority.db.close()
+
         runner.session_store.close_all_db_handles()
         for _, home in homes:
             process_ownership.release(home)
@@ -92,7 +94,7 @@ async def test_two_profile_native_recovery_keeps_scope_routes_and_one_drain(tmp_
     from gateway.session_authorities import active_authority, owner_scope
     from gateway.session_authority import SessionAuthority
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+
 
     async with _restarted(tmp_path, monkeypatch) as (runner, homes, adapters, saved):
         executed, scheduled, boundaries = [], [], []
@@ -116,8 +118,9 @@ async def test_two_profile_native_recovery_keeps_scope_routes_and_one_drain(tmp_
         for authority in runner.session_authorities:
             monkeypatch.setattr(authority, 'logical_owner',
                                 record_read('lineage', authority.logical_owner, authority.profile_id))
-            monkeypatch.setattr(authority.db, '_read_all',
-                                record_read('admissions', authority.db._read_all, authority.profile_id))
+            monkeypatch.setattr(authority.persistence.admissions, 'pending_targets',
+                                record_read('admissions', authority.persistence.admissions.pending_targets,
+                                            authority.profile_id))
 
         def snapshot(authority, phase):
             boundaries.append((phase, authority.profile_id, str(get_hermes_home()), threading.get_ident()))
@@ -154,12 +157,12 @@ async def test_two_profile_native_recovery_keeps_scope_routes_and_one_drain(tmp_
             entered.clear()
             release.clear()
             denied = saved[name]['revoked']
-            before = list_session_admissions(authority.db, session_id=denied, pending_only=False)
+            before = authority.persistence.admissions.list(session_id=denied, pending_only=False)
             if name == 'beta':
                 runner._profile_adapters[name].pop(Platform.TELEGRAM)
                 absent = await recover_profile_native_sessions(runner, authority)
                 assert absent[sid] == 'not_found'
-                assert list_session_admissions(authority.db, session_id=sid)[0]['status'] == 'queued'
+                assert authority.persistence.admissions.list(session_id=sid)[0].status == 'queued'
                 assert not executed or all(row[0].startswith('default-') for row in executed)
                 runner._profile_adapters[name][Platform.TELEGRAM] = adapters[name]
             # Deliberately enter the OTHER profile, not the target: the coordinator must bind it.
@@ -181,9 +184,9 @@ async def test_two_profile_native_recovery_keeps_scope_routes_and_one_drain(tmp_
                 release.set()
             await asyncio.wait_for(task, 10)
             await recover_profile_native_sessions(runner, authority)
-            assert list_session_admissions(authority.db, session_id=denied, pending_only=False) == before
-            rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-            assert [(r['status'], r['outcome']) for r in rows] == [('terminal', 'completed')] * 2
+            assert authority.persistence.admissions.list(session_id=denied, pending_only=False) == before
+            rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+            assert [(r.status, r.outcome) for r in rows] == [('terminal', 'completed')] * 2
             assert authority.logical_owner(saved[name]['child']) == sid
             assert authority.physical_target(rows_to_ref(authority, sid)) == saved[name]['child']
         assert executed == [(f'{name}-{kind}', str(home), str(home), loop_thread)
@@ -216,16 +219,15 @@ async def test_native_scan_stall_leaves_loop_and_other_profile_responsive(tmp_pa
         entered, heartbeat = asyncio.Event(), asyncio.Event()
         release = threading.Event()
         observations = []
-        original = authority.db._read_all
+        original = authority.persistence.admissions.pending_targets
 
-        def read(sql, *args, **kwargs):
-            if 'SELECT DISTINCT target_session_id' in sql:
-                observations.append((threading.get_ident(), str(get_hermes_home())))
-                loop.call_soon_threadsafe(entered.set)
-                assert release.wait(5), 'store scan blocked the loop; heartbeat could not release it'
-            return original(sql, *args, **kwargs)
+        def read(*args, **kwargs):
+            observations.append((threading.get_ident(), str(get_hermes_home())))
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5), 'store scan blocked the loop; heartbeat could not release it'
+            return original(*args, **kwargs)
 
-        monkeypatch.setattr(authority.db, '_read_all', read)
+        monkeypatch.setattr(authority.persistence.admissions, 'pending_targets', read)
         task = asyncio.create_task(recover_profile_native_sessions(runner, authority))
         try:
             await asyncio.wait_for(entered.wait(), 10)

@@ -5,20 +5,22 @@ import threading
 import pytest
 
 from tests.gateway.test_local_session_orphan_end import _owner
+from tests.fixtures.storage_holder import raw_holder
+
 
 
 def _empty_cron_receipts(authority, monkeypatch, count=12):
     import time
     from gateway.session_cron import _actor, _create
-    from hermes_state_local import commit_local_session
+    from gateway.session_local import commit_local_session
     monkeypatch.setattr('cron.jobs.get_job', lambda jid: {'id': jid, 'name': jid, 'prompt': 'synthetic', 'model': 'fixture-model'})
     ids = []
     for i in range(count):
         receipt, _ = _create(authority, _actor(authority, None), {
             'job_id': 'synthetic', 'request_id': str(i), 'extra_prompt': None})
-        commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+        commit_local_session(authority.persistence, epoch=authority.epoch, receipt=receipt)
         ids.append(receipt['session_id'])
-    authority.db._execute_write(lambda conn: conn.executemany(
+    raw_holder(authority.persistence)._execute_write(lambda conn: conn.executemany(
         'UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?',
         [(time.time() - 8 * 3600, time.time() - 8 * 3600, sid) for sid in ids]))
     return ids
@@ -32,7 +34,7 @@ async def test_local_backlog_read_leaves_owner_loop_responsive(tmp_path, monkeyp
 
     first, _ = await _owner(tmp_path, monkeypatch)
     ids = _empty_cron_receipts(first, monkeypatch)
-    assert all(first.db.get_session(sid)['message_count'] == 0 for sid in ids)
+    assert all(first.persistence.sessions.get(sid).message_count == 0 for sid in ids)
     owner_thread = threading.get_ident()
     entered, release, control = threading.Event(), threading.Event(), threading.Event()
     observed = []
@@ -81,7 +83,7 @@ async def test_exhausted_reader_fallback_keeps_idle_reads_nonnested(tmp_path, mo
     from gateway.session_local_startup import recover_local_sessions_async
     authority, _ = await _owner(tmp_path, monkeypatch)
     ids = _empty_cron_receipts(authority, monkeypatch, count=3)
-    db, reads, local = authority.db, [], threading.local()
+    db, reads, local = raw_holder(authority.persistence), [], threading.local()
     monkeypatch.setattr(db, '_checkout_read_conn', lambda: None)
     original = db._read_ctx
 

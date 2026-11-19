@@ -8,7 +8,8 @@ import pytest
 
 
 def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row, transcript_rows
     from tui_gateway import server
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -23,7 +24,7 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
                                    ("assistant", "And its test."), ("user", "Continue")]]
     log.write_text("\n".join(map(json.dumps, lines)), encoding="utf-8")
     original = log.read_bytes()
-    db = SessionDB(tmp_path / ".hermes" / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_profile_home", lambda profile: None)
 
@@ -39,19 +40,20 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
         assert "path" not in page["sessions"][0]
         preview = rpc("preview", id=handle)
         assert preview["already_imported"] is None
-        assert db.session_count() == 0
+        assert db.sessions.count_sessions() == 0
         with ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: rpc("import", id=handle), range(2)))
         assert results[0]["session_id"] == results[1]["session_id"]
         sid = results[0]["session_id"]
-        stored = db.get_session(sid)
+        stored = session_row(db, sid)
         assert json.loads(stored["origin_json"])["imported_from"]["foreign_session_id"] == "foreign-one"
-        history = db.get_messages(sid)
+        history = transcript_rows(db, sid)
         assert [message["role"] for message in history] == ["user", "assistant", "user"]
         assert len(history) == preview["total"] == stored["message_count"]
         assert rpc("preview", id=handle)["already_imported"] == sid
         assert log.read_bytes() == original
-        with SessionDB(tmp_path / "other" / "state.db") as other:
+        (tmp_path / "other").mkdir()
+        with open_persistence(profile_scope(home=tmp_path / "other")) as other:
             monkeypatch.setattr(server, "_get_db", lambda: other)
             assert rpc("preview", id=handle)["already_imported"] is None
             assert rpc("import", id=handle)["session_id"] != sid
@@ -61,7 +63,6 @@ def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch)
 
 def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, monkeypatch):
     from hermes_cli import foreign_sessions_browser as browser
-    from hermes_state import SessionDB
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -83,15 +84,17 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
     # A fabricated well-shaped handle cannot become a file-read request.
     with pytest.raises(ValueError):
         browser.resolve_foreign_session("0" * 64)
-    db = SessionDB(tmp_path / ".hermes" / "state.db")
-    insert = db._insert_message_rows
+    from persistence.sqlite.housekeeping import _portability
+    from persistence_assembly import open_persistence, profile_scope
+    store = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+    insert = _portability._insert_message_rows
     def failing_insert(*args, **kwargs):
         insert(*args, **kwargs)
         raise RuntimeError("interrupted write")
-    monkeypatch.setattr(db, "_insert_message_rows", failing_insert)
+    monkeypatch.setattr(_portability, "_insert_message_rows", failing_insert)
     try:
         with pytest.raises(RuntimeError, match="interrupted write"):
-            browser.import_browser_session(page["sessions"][0]["id"], db, "default")
-        assert db.session_count() == 0
+            browser.import_browser_session(page["sessions"][0]["id"], store, "default", persistence=store)
+        assert store.sessions.count_sessions() == 0
     finally:
-        db.close()
+        store.close()

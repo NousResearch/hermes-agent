@@ -6,7 +6,8 @@ Endpoint-keyed ProviderProfile hooks (``client_headers``, ``request_headers``, `
 side is ``providers.profile_for_host`` (the profile's declared ``hostnames``), core's one
 endpoint->profile lookup. Only profiles that override the hook are consulted: the base
 implementations are no-ops, and hosted (``plugins.isolation: host``) proxies define only the hooks
-their plugin overrides.
+their plugin overrides. ``model_forces_max_completion_tokens`` is the model-name answer to
+``max_tokens_param`` for endpoints no profile claims.
 """
 
 from __future__ import annotations
@@ -164,3 +165,9 @@ def route_answer(hook: str, *, provider: str = "", scope: Any = None, **kwargs: 
         if answer:
             return answer
     return None
+
+
+def model_forces_max_completion_tokens(model: str) -> bool:
+    """True for OpenAI families that reject ``max_tokens`` (HTTP 400 ``unsupported_parameter``)."""
+    m = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return m.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"))

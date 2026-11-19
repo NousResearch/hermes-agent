@@ -59,7 +59,11 @@ async def recording_cron_delivery(send: Awaitable, record: Callable[..., Any]) -
 
 def reply_pointer(reply_text: str, *, own_message: bool = False, replied_to: Optional[tuple] = None) -> str:
     """The prefix line for a reply to *reply_text*; cron deliveries are framed as reference-only.
-    ``replied_to`` = ``(platform, chat_id, message_id)`` finds a later chunk of a split delivery."""
+    ``replied_to`` = ``(platform, chat_id, message_id)`` finds a later chunk of a split delivery.
+    A quoted bot message sent before its tool-call markup was stripped (#61217) has the markup
+    redacted, on every platform, so it never re-enters the model as reply context."""
+    from agent.message_sanitization import strip_internal_markup
+    reply_text = strip_internal_markup(reply_text)
     if not reply_text.lstrip().startswith(CRON_DELIVERY_PREFIX) and replied_to and replied_to[2]:
         from gateway import rich_sent_store
         platform, chat_id, message_id = replied_to

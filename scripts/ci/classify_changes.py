@@ -320,6 +320,8 @@ _UPDATE_PIPELINE = (
     "gateway/host_rendezvous.py",
     "gateway/shutdown_forensics.py",
     "gateway/restart.py",
+    "gateway/host_topology.py",  # update --force: the served homes of a host multiplexer
+    "tools/process_registry.py",  # update --force: sweeps a killed gateway's background processes
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
 )
 # Selectors are owned by the import graph, not remembered. The update
@@ -409,7 +411,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/core.py",
     "agent/curator.py",
     "plugins/memory/__init__.py",
-    "tools/checkpoint_maintenance.py",
+    "agent/checkpoints/maintenance.py",
     "tools/skills_sync.py",
     "tools/environments/local_env_policy.py",
     "pm/progress.py",
@@ -423,7 +425,7 @@ _UPDATE_DEPENDENCIES = (
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
 # unit lanes cover them on every PR and the update suites on every push to main;
-# routing each config.py / utils.py edit through the update suites would make
+# routing each config.py / utils edit through the update suites would make
 # them run on most PRs. Never an update-specific module: own those above.
 HUB_MIN_IMPORTERS = 25
 _SHARED_HUBS = frozenset({
@@ -431,8 +433,8 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/config.py",
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
-    "utils.py",
-    "hermes_state.py",
+    "utils/__init__.py",
+    "persistence_assembly.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
@@ -449,7 +451,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/e2e/",
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
-        "hermes_state",
+        "persistence/sqlite/",
+        # journal mode, WAL fallback and durability barriers; MOVES folds hermes_state_wal into it, so the
+        # guards see it under that oldest name
+        original_path("sqlite_support.py"),
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
         "tests/gateway/test_session_terminal_cwd_restart.py",
@@ -471,10 +476,14 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
-        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state_holders.py",
-        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
-        "hermes_state_fts.py",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) and the search-index notice
+        # (hermes_cli/update_cmd_maint.py) read state.db through the store admin: its contract, the
+        # ledger probes and read-only URI, and the stored FTS layout read.
+        "persistence/core/admin.py",
+        "persistence/sqlite/admin/_backup.py",
+        "persistence/sqlite/_state/holders.py",
+        "persistence/sqlite/admin/_maintenance.py",
+        "persistence/sqlite/_schema_ddl.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

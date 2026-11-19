@@ -57,7 +57,8 @@ async def test_startup_recovery_reads_the_store_off_the_event_loop(tmp_path, mon
             return bound(*args, **kwargs)
         return spy
 
-    monkeypatch.setattr(recovered.db, '_read_all', recorder('admissions', recovered.db._read_all))
+    monkeypatch.setattr(recovered.persistence.admissions, 'pending_targets',
+                        recorder('admissions', recovered.persistence.admissions.pending_targets))
     monkeypatch.setattr(runner.session_store, 'list_sessions',
                         recorder('routes', runner.session_store.list_sessions))
     monkeypatch.setattr(recovered, 'logical_owner', recorder('lineage', recovered.logical_owner))

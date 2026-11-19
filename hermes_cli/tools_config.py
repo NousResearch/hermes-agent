@@ -39,9 +39,9 @@ def _pip_install(
     args: list[str], *, timeout: int = 300, capture_output: bool = True
 ) -> NoReturn:
     # Shim to suppress old updater work until relaunch, not install or report success.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config._pip_install", ImportError)
 
 
 logger = logging.getLogger(__name__)
@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 def install_cua_driver(*args, **kwargs) -> NoReturn:
     # A running pre-PM updater can still import the vendor installer here.
     # Stop it before any old retry or completion branch can run.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config.install_cua_driver", ImportError)
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()
@@ -672,10 +672,10 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_na
 def _disabled_entry_tools(name: str) -> set[str]:
     """Tools one ``agent.disabled_toolsets`` entry removes at runtime: legacy names (``terminal_tools``)
     and the bundle/posture non-core delta included, which ``resolve_toolset`` alone gets wrong."""
-    from model_tools import _LEGACY_TOOLSET_MAP, _apply_toolset_selection
-    from toolsets import resolve_toolset
+    from model_tools import _apply_toolset_selection
 
-    universe = set(resolve_toolset(name)) | set(_LEGACY_TOOLSET_MAP.get(name, ()))
+    universe: set[str] = set()
+    _apply_toolset_selection(universe, [name], quiet_mode=True, disable=False)
     kept = set(universe)
     _apply_toolset_selection(kept, [name], quiet_mode=True, disable=True)
     return universe - kept

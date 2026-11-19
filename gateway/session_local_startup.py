@@ -4,7 +4,8 @@ import logging
 
 from gateway.config import Platform
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +33,15 @@ def _prepare(authority, schedule):
                 snapshot = _route_snapshot(store, route)
                 stray = snapshot is not None and _stray_route_target(authority, receipt, snapshot[0])
             prepared[sid] = item, (snapshot, stray)
-            pending[sid] = list_session_admissions(authority.db, session_id=sid)
+            pending[sid] = authority_persistence(authority).admissions.list(session_id=sid)
         except _CatchUpPending:
             retry.append(sid)
         except _ReceiptRefused:
             continue
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logger.warning('Local session %s paused: %s', sid, exc.reason)
     closes = persisted_closes(authority) if schedule else {}
-    orphans = [sid for sid, rows in pending.items() if not any(r['status'] == 'unknown' for r in rows)]
+    orphans = [sid for sid, rows in pending.items() if not any(r.status == 'unknown' for r in rows)]
     delays = startup_orphan_delays(authority, orphans) if schedule else {}
     return prepared, pending, closes, delays, retry
 
@@ -68,7 +69,7 @@ def _publish_sessions(authority, prepared, before):
         try:
             publish_local_session(authority, sid, item, route_proof=proof)
             published.add(sid)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logger.warning('Local session %s paused: %s', sid, exc.reason)
     return published
 
@@ -77,17 +78,17 @@ def _publish_closes(authority, published, pending, closes, delays, previous_clos
     from gateway.session_history_mount import is_history_mount
     from gateway.session_runtime_workers import track_mutation
     from gateway.session_viewer_close import (
-        CLOSE_PREFIX, _PendingClose, arm_orphan_close, forget_persisted_close, settle_viewer_close,
+        _PendingClose, arm_orphan_close, forget_persisted_close, settle_viewer_close,
     )
     for sid in published:
         rows = pending[sid]
-        unknown = any(row['status'] == 'unknown' for row in rows)
+        unknown = any(row.status == 'unknown' for row in rows)
         if rows and not unknown:
             authority._schedule(SessionRef(authority.profile_id, sid))
         live = authority.sessions[sid]
         if live.viewer_revision != viewers.get(sid, 0):
             continue  # attach cancelled this snapshot, including a subsequent plain detach
-        record = closes.get(CLOSE_PREFIX + sid)
+        record = closes.get(sid)
         if record is not None and not is_history_mount(live):
             if live.subscribers:
                 # Compare-and-delete is a tracked, epoch-fenced write, never a loop-side DB call.

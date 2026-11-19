@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "utilizzo del provider + stima dei nuovi messaggi"
     source_line: "Fonte: {source}; i conteggi per categoria sono stime locali."
     hint_all: "Usa /context all per i costi per skill e per toolset."
+    cache_warm: "Cache del prompt: attiva fino alle {until} (restano {remaining}; {ttl}, {confidence})."
+    cache_expired: "Cache del prompt: scaduta {ago} fa ({ttl}, {confidence}); il prossimo messaggio rielabora l'intero prompt."
+    cache_maybe_warm: "Cache del prompt: potrebbe essere ancora attiva fino alle {until} (al massimo altri {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Cache del prompt: sconosciuta (percorso, sessione o contesto sono cambiati dall'ultima richiesta in cache)."
+    cache_unknown_route: "Cache del prompt: sconosciuta (questo provider non pubblica la conservazione della cache)."
+    cache_unknown_runtime: "Cache del prompt: sconosciuta (questo runtime imposta le proprie opzioni di cache, che Hermes non può osservare)."
+    cache_unknown_storage: "Cache del prompt: sconosciuta (impossibile leggere l'archivio della sessione)."
+    cache_warming_off: "Keep-alive: disattivati (mancati due volte)."
+    cache_tier_pending: "Livello: 5m fino alla prima pausa oltre 5 minuti, poi 1h."
+    cache_learned: "Appreso: {rule}."
+    cache_confidence:
+      proven: "provato"
+      declared: "dichiarato"
+      assumed: "presunto"
   status:
     header: "📊 **Stato del Gateway Hermes**"
     matrix_scope_header: "**Ambito Matrix:**"
@@ -604,6 +618,7 @@ gateway:
     disabled: "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."
     enabled: "⚡ Modalità YOLO **ON** per questa sessione — tutti i comandi auto-approvati. Usa con cautela."
   shared:
+    fallback_model_suffix: " — fallback per `{primary}`"
     session_db_unavailable: "Database delle sessioni non disponibile."
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"
     session_not_found: "Sessione non trovata nel database."
@@ -808,6 +823,7 @@ gateway:
     ack_generate: "Generazione di AGENTS.md da una scansione del progetto…"
   moa:
     prepare_failed: "Impossibile preparare il turno MoA."
+    managed_session: "/moa non è disponibile in questa sessione: le sessioni in modalità provvisoria, senza configurazione, kanban e con worker gestito eseguono ogni turno sul proprio modello. Invia il prompt senza /moa."
   quick_command:
     no_output: "Il comando non ha restituito output."
     timed_out: "Comando rapido scaduto (30s)."
@@ -983,6 +999,16 @@ platform:
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
   shared:
+    vault_code:
+      title: "🔐 Codice di verifica per {site}"
+      body: "{site} chiede un codice monouso (SMS o email). Premi il pulsante e inseriscilo nel modulo che si apre: va direttamente nella pagina e non viene mai pubblicato qui."
+      button: "Inserisci codice"
+      modal_title: "Codice per {site}"
+      input_label: "Codice monouso"
+      submitted: "Codice inviato; lo sto inserendo nella pagina."
+      ended: "Questa richiesta di codice è terminata; non è stato inserito nulla."
+      not_author: "Solo chi ha avviato questa richiesta può inserire il codice."
+      submitted_footer: "✓ Codice inviato"
     response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"
@@ -1195,6 +1221,9 @@ platform:
       upload_too_large: "⚠️ Impossibile allegare `{filename}` — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB per questo canale. Comprimi il file o condividi un link."
       image_skipped_too_large: "⚠️ `{filename}` ignorato — {size_mb} MB supera il limite di caricamento di Discord di {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Rispondi a questo messaggio con il codice. Hermes elimina subito la tua risposta e inserisce il codice nella pagina; il modello non lo vede mai."
+      delete_failed: "Impossibile eliminare la tua risposta qui. Eliminala tu."
     approval:
       action_once: "✅ Consenti una volta"
       action_session: "✅ Sessione"
@@ -1252,6 +1281,11 @@ platform:
       affirm: "✓ Sì"
       negate: "✗ No"
       other: "✏️ Altro (digita)"
+      multi_hint: "Seleziona una o più opzioni, poi tocca Invia."
+      send: "✅ Invia"
+      selected_count: "Selezionate: {count}"
+      select_one: "Seleziona prima almeno un'opzione."
+      toggle_failed: "Impossibile aggiornare la selezione: tocca di nuovo."
       expired_toast: "⚠️ Questa richiesta è scaduta — usa /retry."
       expired_body: "⚠️ Questa domanda è scaduta o la sessione è stata reimpostata — usa /retry."
       type_answer: "✏️ Digita la tua risposta nella chat."
@@ -3308,6 +3342,10 @@ cli:
     total: "📚 {count} skill disponibili"
     added_header: "➕ Skill aggiunte:"
     removed_header: "➖ Skill rimosse:"
+  gateway_restart:
+    waiting: "Hermes si sta riavviando per completare un aggiornamento o un riavvio; in attesa che torni…"
+    timed_out: "Hermes non è tornato dal riavvio in tempo. Controlla `hermes gateway status`, poi riavvia `hermes`."
+    stopped: "Attesa del riavvio di Hermes interrotta; non è stato avviato nulla."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Archivio sessioni non disponibile[/bold yellow] — questa conversazione [bold]NON verrà salvata[/bold] e non potrà essere ripresa in seguito. Anche la ricerca nelle sessioni passate è disattivata.\n  Motivo: {reason}.\n  {action}\n  [dim]Dettagli: {details}[/dim]"
     unavailable_plain: "AVVISO: archivio sessioni non disponibile — questa conversazione NON verrà salvata e non potrà essere ripresa in seguito. Motivo: {reason}. {action}"
@@ -3823,7 +3861,7 @@ tips:
   t246: "La variabile d'ambiente HERMES_HOME_MODE (ottale, es. 0701) imposta permessi di directory personalizzati per l'attraversamento da parte del server web."
   t247: "Modalità container: metti .container-mode in HERMES_HOME e la CLI host passa automaticamente in esecuzione nel container."
   t248: "Ctrl+C ha 5 livelli di priorità: annulla registrazione → annulla prompt → annulla selettore → interrompi agente → esci."
-  t249: "Ogni interruzione durante l'esecuzione dell'agente viene registrata in ~/.hermes/interrupt_debug.log con timestamp."
+  t249: "Le interruzioni durante l'esecuzione dell'agente vengono registrate in agent.log (consultalo con `hermes logs`); imposta HERMES_DEBUG_INTERRUPT=1 per una traccia dettagliata."
   t250: "BROWSER_CDP_URL collega gli strumenti browser a qualsiasi browser della famiglia Chromium in esecuzione — accetta WebSocket, HTTP o host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true attiva l'anti-rilevamento avanzato con Chromium personalizzato (piano Scale)."
   t252: "La CLI passa automaticamente alla modalità compatta nei terminali più stretti di 80 colonne."
@@ -3986,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Modello grande: hai raggiunto il limite {name} ({resets}), quindi non funzionerà fino ad allora."
   large_notice_percent: "Modello grande: usa più utilizzo del tuo piano per messaggio. Limite mensile dei modelli grandi: {percent} usato."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ File modificati nei turni annullati: {files}. Esegui /rollback per elencare i checkpoint e ripristinarne uno."
     more: "+{count} altri"

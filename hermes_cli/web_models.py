@@ -260,9 +260,9 @@ class TTSLeaseRequest(BaseModel):
     active: bool = True
 
 class STTLeaseRequest(BaseModel):
-    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
-    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
-    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session
+    (``desktop:voice-input:<renderer>``); ``active`` True pre-loads the local STT model,
+    False is a no-op. Unlike TTS, nothing unloads (shared engine)."""
     lease: str
     active: bool = True
 
@@ -351,6 +351,8 @@ class CronJobCreate(BaseModel):
     grace_minutes: Optional[int | str] = None
     # Missed-run policy: true runs one catch-up, false skips; omitted follows the default.
     catch_up: Optional[StrictBool] = None
+    # Header/footer wrapping: None inherits cron.wrap_response; a bool overrides it per job.
+    wrap_response: Optional[StrictBool] = None
 
 class CronJobUpdate(BaseModel):
     updates: dict
@@ -432,6 +434,8 @@ class ImportRequest(BaseModel):
     # --force: the spawned `hermes import` has stdin=DEVNULL, so its "Continue? [y/N]" prompt would
     # hit EOF and abort; the dashboard confirms in its own modal.
     force: bool = False
+    # --keep-host: replace the agent but keep what its host provisioned (Hermes Cloud transfer/undo).
+    keep_host: bool = False
 
 class HookCreate(BaseModel):
     event: str

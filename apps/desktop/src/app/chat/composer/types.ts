@@ -31,6 +31,8 @@ export interface ChatBarState {
     /** False when the catalog says the active model has no reasoning control;
      *  undefined while unknown (loading) so the pill stays put. */
     supportsReasoning?: boolean
+    supportsFast?: boolean
+    supportsUltrafast?: boolean
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }

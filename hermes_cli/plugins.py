@@ -436,6 +436,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                     # Re-register so force-reload is symmetric (#60036; tracking #64178 — salvaged from PR
                     # #64188; outbound webhooks added per #92682 review).
                     self._re_register_config_hooks_after_force()
+                    # Model providers load through providers/ discovery, which this sweep skips: re-scan
+                    # this home's provider plugins too, so an updated one reloads now (#153300). A
+                    # process that never imported providers has nothing stale to reload.
+                    if (providers := sys.modules.get("providers")) is not None:
+                        providers.refresh_bound_home()
             except BaseException:
                 self._discovered = False
                 raise

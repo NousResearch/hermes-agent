@@ -14,7 +14,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_recovered_route_read_off_loop_and_egress_primed_on_loop(tmp_path, monkeypatch):
-    from gateway import session_native_recovery_routes as routes
+
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.base import SendResult
     from gateway.platforms.event import MessageEvent
@@ -56,13 +56,13 @@ async def test_recovered_route_read_off_loop_and_egress_primed_on_loop(tmp_path,
 
     recovered = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='new')
     recovered._schedule = lambda ref: events.append(('schedule', ref.session_id, threading.get_ident()))
-    real_latest = routes.latest_session_admission
+    real_latest = recovered.persistence.admissions.latest_admission
 
     def latest(*args, **kwargs):
         events.append(('route_read', kwargs.get('session_id'), threading.get_ident()))
         return real_latest(*args, **kwargs)
 
-    monkeypatch.setattr(routes, 'latest_session_admission', latest)
+    monkeypatch.setattr(recovered.persistence.admissions, 'latest_admission', latest)
     original_recover = SessionAuthority.recover_native_sessions
 
     async def recover(self, bindings):

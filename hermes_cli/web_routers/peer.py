@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from gateway.platforms.api_server_profile_prefix import DEFAULT_PROFILE_HANDLE, UNKNOWN_PROFILE_ERROR
+from gateway.platforms.api_server_profile_prefix import DEFAULT_PROFILE_HANDLE, unknown_profile_body
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.peer_pass import PEER_PREFIX
 from hermes_cli.dashboard_auth.request_utils import client_ip
@@ -307,7 +307,7 @@ async def peer_forward(request: Request, path: str):
 
     upstream_target = await asyncio.to_thread(_upstream, profile)
     if upstream_target is None:
-        return JSONResponse({"error": UNKNOWN_PROFILE_ERROR}, status_code=404)
+        return JSONResponse(unknown_profile_body(), status_code=404)
     base, key = upstream_target
     if not key:
         return _refusal("peer_gateway_unavailable", "This agent's API server has no key configured.", 503)

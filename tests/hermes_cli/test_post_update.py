@@ -366,3 +366,20 @@ def test_scope_cli_rejects_unrelated_flags_without_running_steps(monkeypatch):
             post_update.main(flags)
         assert exc.value.code == 2
         assert ran == []
+
+
+@pytest.mark.platforms("posix")
+def test_migration_backups_are_owner_only_even_from_a_world_readable_source(tmp_path, monkeypatch):
+    """copy2 keeps the source mode, and migration backups outlive a successful run (#148317)."""
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.config._container_or_chmod_skipped", lambda: False)
+    sources = []
+    for name in ("config.yaml", ".env"):
+        path = tmp_path / name
+        path.write_text("k: v\n")
+        path.chmod(0o644)
+        sources.append(path)
+    backups = post_update._backup_existing(sources)
+    assert len(backups) == 2
+    for dest in backups.values():
+        assert dest.stat().st_mode & 0o777 == 0o600, dest

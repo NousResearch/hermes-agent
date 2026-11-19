@@ -8,6 +8,8 @@ import pytest
 from tests.gateway.test_local_session_orphan_end import _attach, _create
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 from tests.waiting import async_wait_until
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
 
 
 def _observe(monkeypatch, records):
@@ -18,7 +20,7 @@ def _observe(monkeypatch, records):
         ('gateway.session_local_adoption', '_due'),
         ('gateway.session_local_recovery', 'local_receipt_ids'),
         ('gateway.session_local_startup', '_prepare'),
-        ('gateway.session_local_startup', 'list_session_admissions'),
+
         ('gateway.session_viewer_close', 'persisted_closes'),
         ('gateway.session_viewer_close', 'orphan_close_grace'),
         ('gateway.session_viewer_close', 'orphan_candidate'),
@@ -51,9 +53,7 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
     )
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authorities import owner_scope
-    from gateway.session_viewer_close import CLOSE_PREFIX, _PendingClose, _persist_close
-    from hermes_state_local import end_idle_local_session, local_receipt
-    from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
+    from gateway.session_viewer_close import _PendingClose, _persist_close
     from tests.gateway.test_local_startup_off_loop import _empty_cron_receipts
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('beta',))
@@ -90,18 +90,18 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
                 ids['orphans'] = _empty_cron_receipts(authority, monkeypatch, count=4)
                 for kind in ('queued', 'unknown', 'close'):
                     sid = ids[kind]
-                    row = admit_session_input(authority.db, epoch=authority.epoch,
+                    row, _ = authority.persistence.admissions.admit(epoch=authority.epoch,
                         principal_id=authority.sessions[sid].source.user_id,
                         session_id=sid, request_id=kind, payload={'text': kind})
-                    ids[kind + '_admission'] = row['admission_id']
+                    ids[kind + '_admission'] = row.admission_id
                     if kind != 'queued':
-                        claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+                        authority.persistence.admissions.claim(epoch=authority.epoch, session_id=sid)
                 _persist_close(authority, ids['close'], _PendingClose('cli_close').record)
-                assert end_idle_local_session(authority.db, epoch=authority.epoch,
+                assert authority.persistence.bindings.end_idle(epoch=authority.epoch,
                     session_id=ids['ended'], target_id=ids['ended'], reason='cli_close')
                 child = ids['compressed'] + '-child'
-                authority.db.publish_compression_child(parent_session_id=ids['compressed'], child_session_id=child,
-                    source='gui', messages=[{'role': 'user', 'content': 'summary'}], require_compression_lease=False)
+                authority.persistence.lineage.publish_compression_child(ids['compressed'], CompressionChild(child, 'gui'),
+                    [NewMessage(role='user', content='summary')], require_compression_lease=False)
                 assert runner.session_store.advance_compression_session(
                     authority.sessions[ids['compressed']].route, ids['compressed'], child)
                 ids['child'] = child
@@ -115,8 +115,8 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
             authority, ids = runner.session_authorities.for_home(home), saved[name]
             assert ids['ended'] not in authority.sessions
             assert set(ids['orphans']) <= authority.sessions.keys()
-            assert local_receipt(authority.db, ids['compressed'])['entry']['session_id'] == ids['child']
-            assert get_session_admission(authority.db, admission_id=ids['unknown_admission'])['status'] == 'unknown'
+            assert authority.persistence.bindings.receipt(ids['compressed']).current_target == ids['child']
+            assert authority.persistence.admissions.get(ids['unknown_admission']).status == 'unknown'
         await recover_gateway_native_sessions(runner)
         await asyncio.wait_for(entered.wait(), 10)
         await async_wait_until(lambda: len(executed) == 2)
@@ -130,17 +130,17 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
             assert authority.orphan_closes == timers[authority.profile_id]
             assert ids['unknown'] not in authority.orphan_closes
             assert authority.sessions[ids['unknown']].task is None
-            assert local_receipt(authority.db, ids['ended'])  # kept, not deleted or eagerly mounted
+            assert authority.persistence.bindings.receipt(ids['ended'])  # kept, not deleted or eagerly mounted
         release.set()
         await async_wait_until(lambda: all(
-            runner.session_authorities.for_home(home).db.get_session(saved[name]['close'])['end_reason'] == 'cli_close'
+            runner.session_authorities.for_home(home).persistence.sessions.get(saved[name]['close']).end_reason == 'cli_close'
             for name, home in homes))
         for name, home in homes:
             authority, ids = runner.session_authorities.for_home(home), saved[name]
-            assert authority.db.get_meta(CLOSE_PREFIX + ids['close']) is None
-            assert get_session_admission(authority.db, admission_id=ids['unknown_admission'])['status'] == 'unknown'
-            closed = get_session_admission(authority.db, admission_id=ids['close_admission'])
-            assert (closed['status'], closed['outcome']) == ('terminal', 'interrupted')
+            assert authority.persistence.runtime.viewer_close(ids['close']) is None
+            assert authority.persistence.admissions.get(ids['unknown_admission']).status == 'unknown'
+            closed = authority.persistence.admissions.get(ids['close_admission'])
+            assert (closed.status, closed.outcome) == ('terminal', 'interrupted')
             with owner_scope(authority):
                 viewer, resumed = await _attach(authority, ids['ended'])
                 viewers.append(viewer)
@@ -160,7 +160,7 @@ async def test_two_home_restart_and_hot_reserve_keep_recovery_contract(tmp_path,
         assert saved['beta']['unknown'] in replacement.sessions
         assert replacement.sessions[saved['beta']['unknown']].task is None
         assert sorted(text for _, _, text in executed) == ['queued', 'queued']
-        reads = {'_due', 'local_receipt_ids', '_prepare', 'list_session_admissions', 'persisted_closes',
+        reads = {'_due', 'local_receipt_ids', '_prepare', 'persisted_closes',
                  'orphan_close_grace', 'orphan_candidate', '_idle_s'}
         # Publication also happens for lazy resume on-loop; the recovery-only reads never do.
         assert reads <= {name for name, _, _ in records}

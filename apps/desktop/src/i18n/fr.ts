@@ -4778,6 +4778,7 @@ export const frOverrides = {
     unknownSize: 'taille inconnue',
     binaryTitle: 'Cela ressemble à un fichier binaire',
     binaryBody: label => `L'aperçu de ${label} peut afficher du texte illisible.`,
+    audioUnavailable: 'Impossible de charger ce fichier audio pour la lecture.',
     largeTitle: 'Ce fichier est volumineux',
     largeBody: (label, size) => `${label} fait ${size}. Hermes n'affichera que les 512 Ko premiers.`,
     previewAnyway: 'Aperçu quand même',

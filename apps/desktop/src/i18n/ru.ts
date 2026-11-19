@@ -3428,6 +3428,7 @@ export const ruOverrides = {
     unknownSize: 'размер неизвестен',
     binaryTitle: 'Похоже на бинарный файл',
     binaryBody: label => `Предпросмотр ${label} может показать нечитаемый текст.`,
+    audioUnavailable: 'Не удалось загрузить этот аудиофайл для воспроизведения.',
     largeTitle: 'Этот файл большой',
     largeBody: (label, size) => `${label} — ${size}. Hermes покажет только первые 512 КБ.`,
     previewAnyway: 'Предпросмотр всё равно',

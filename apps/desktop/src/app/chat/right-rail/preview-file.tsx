@@ -754,7 +754,17 @@ export type PreviewViewMode = 'diff' | 'rendered' | 'source'
  * in place the source is re-resolved and the <audio> element remounted, since an
  * unchanged `src` string would never make Chromium re-request the bytes.
  */
-function AudioPreviewPlayer({ filePath, label, reloadKey }: { filePath: string; label: string; reloadKey: number }) {
+function AudioPreviewPlayer({
+  filePath,
+  label,
+  reloadKey,
+  sessionId
+}: {
+  filePath: string
+  label: string
+  reloadKey: number
+  sessionId?: string
+}) {
   const { t } = useI18n()
 
   const [player, setPlayer] = useState<{ src: string; status: 'failed' | 'loading' | 'ready' }>({
@@ -764,13 +774,22 @@ function AudioPreviewPlayer({ filePath, label, reloadKey }: { filePath: string; 
 
   useEffect(() => {
     let active = true
+    let objectUrl = ''
 
     setPlayer({ src: '', status: 'loading' })
 
-    void resolveMediaPlaybackSrc(filePath)
+    // The tab's session goes with the stream: a Docker agent's /workspace clip lives in that
+    // session's sandbox, as the text reads below already route it.
+    void resolveMediaPlaybackSrc(filePath, undefined, sessionId)
       .then(src => {
+        if (src.startsWith('blob:')) {
+          objectUrl = src
+        }
+
         if (active) {
           setPlayer(src ? { src, status: 'ready' } : { src: '', status: 'failed' })
+        } else if (objectUrl) {
+          URL.revokeObjectURL(objectUrl)
         }
       })
       .catch(() => {
@@ -781,8 +800,12 @@ function AudioPreviewPlayer({ filePath, label, reloadKey }: { filePath: string; 
 
     return () => {
       active = false
+
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
     }
-  }, [filePath, reloadKey])
+  }, [filePath, reloadKey, sessionId])
 
   // Resolving the source is async, so the first commit is always `loading`;
   // only a rejected resolve or an <audio> error counts as a failure.
@@ -819,6 +842,32 @@ function AudioPreviewPlayer({ filePath, label, reloadKey }: { filePath: string; 
         onError={() => setPlayer({ src: '', status: 'failed' })}
         preload="metadata"
         src={player.src}
+      />
+    </div>
+  )
+}
+
+/**
+ * The rail body for an audio file (`previewKind === 'audio'`). Audio is played,
+ * never read: the text sniff is what used to refuse it as binary, so this kind is
+ * routed here by the pane before `LocalFilePreview` would read it.
+ */
+export function AudioFilePreview({
+  reloadKey,
+  sessionId,
+  target
+}: {
+  reloadKey: number
+  sessionId?: string
+  target: PreviewTarget
+}) {
+  return (
+    <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
+      <AudioPreviewPlayer
+        filePath={filePathForTarget(target)}
+        label={target.label}
+        reloadKey={reloadKey}
+        sessionId={sessionId}
       />
     </div>
   )
@@ -871,7 +920,6 @@ export function LocalFilePreview({
   const connection = useStore($connection)
   const fsCacheKey = desktopFsCacheKey(connection)
   const filePath = filePathForTarget(target)
-  const isAudio = target.previewKind === 'audio'
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
 
@@ -892,21 +940,13 @@ export function LocalFilePreview({
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isAudio && !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
 
     async function load() {
       if (blockedByTarget) {
-        setState({ loading: false })
-
-        return
-      }
-
-      // Audio is played, never read. Sniffing it as text is what produced the
-      // refusal screen; the player streams the bytes itself.
-      if (isAudio) {
         setState({ loading: false })
 
         return
@@ -993,7 +1033,6 @@ export function LocalFilePreview({
     filePath,
     forcePreview,
     fsCacheKey,
-    isAudio,
     isImage,
     isPdf,
     isText,
@@ -1255,7 +1294,6 @@ export function LocalFilePreview({
   }
 
   if (
-    !isAudio &&
     !isImage &&
     !isPdf &&
     !forcePreview &&
@@ -1271,14 +1309,6 @@ export function LocalFilePreview({
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
       />
-    )
-  }
-
-  if (isAudio) {
-    return (
-      <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
-        <AudioPreviewPlayer filePath={filePath} label={target.label} reloadKey={reloadKey} />
-      </div>
     )
   }
 

@@ -78,6 +78,7 @@ export const arArtifacts = {
     unknownSize: 'حجم غير معروف',
     binaryTitle: 'يبدو هذا ملفا ثنائيا',
     binaryBody: label => `قد تعرض معاينة ${label} نصا غير قابل للقراءة.`,
+    audioUnavailable: 'تعذّر تحميل ملف الصوت هذا لتشغيله.',
     largeTitle: 'هذا الملف كبير',
     largeBody: (label, size) => `حجم ${label} هو ${size}. سيعرض Hermes أول 512 KB فقط.`,
     previewAnyway: 'معاينة على أي حال',

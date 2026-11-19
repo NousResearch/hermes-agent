@@ -4768,6 +4768,7 @@ export const deOverrides = {
     unknownSize: 'unbekannte Größe',
     binaryTitle: 'Das sieht wie eine Binärdatei aus',
     binaryBody: label => `Die Vorschau von ${label} könnte unlesbaren Text zeigen.`,
+    audioUnavailable: 'Diese Audiodatei konnte nicht zur Wiedergabe geladen werden.',
     largeTitle: 'Diese Datei ist groß',
     largeBody: (label, size) => `${label} ist ${size}. Hermes zeigt nur die ersten 512 KB an.`,
     previewAnyway: 'Trotzdem anzeigen',

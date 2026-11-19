@@ -1057,18 +1057,26 @@ def test_an_enabled_secret_source_blocks_unless_webapp_public_url_is_set(home, c
 # --- review round 2: a backend older than v2026.7.30 has no /api/health
 
 
-def test_a_backend_without_api_health_is_reported_as_missing(home, monkeypatch):
+@pytest.mark.parametrize("code", [401, 403, 404])  # v2026.7.1-v2026.7.20 answer 401 before routing
+def test_a_backend_without_api_health_is_reported_as_missing(home, monkeypatch, code):
     import io
     import urllib.error
     import urllib.request
 
     class Opener:
         def open(self, request, timeout=None):
-            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"{}"))
+            raise urllib.error.HTTPError(request.full_url, code, "refused", {}, io.BytesIO(b"{}"))
 
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: Opener())
 
     assert SystemHost(home).http_status("127.0.0.1", 9119) == {"health": "missing"}
+
+
+def test_current_releases_serve_api_health_without_sign_in():
+    """401/403 can only mean an old release: /api/health is on the allowlist both auth gates read."""
+    from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+
+    assert "/api/health" in PUBLIC_API_PATHS
 
 
 @pytest.mark.parametrize(("supervisor", "hint"), [("systemd", "systemctl --user restart hermes-dashboard.service"),

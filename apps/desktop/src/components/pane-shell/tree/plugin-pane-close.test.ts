@@ -59,13 +59,22 @@ describe('closing plugin panes', () => {
     expect(allPaneIds($layoutTree.get()!)).not.toContain('bots:routines')
   })
 
-  it('keeps disabling a plugin whose only pane is closed', () => {
+  it('dismisses the pane of a single-pane plugin without switching the plugin off', () => {
     registerPluginPane('single', 'single:pane')
-    $layoutTree.set(group(['single:pane'], { active: 'single:pane', id: 'g-single' }))
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'g-main' }),
+        group(['single:pane'], { active: 'single:pane', id: 'g-single' })
+      ])
+    )
 
     closeTreePane('single:pane')
 
-    expect(setPluginEnabled).toHaveBeenCalledWith('single', false)
-    expect(allPaneIds($layoutTree.get()!)).toContain('single:pane')
+    // Close is a pane action, not a plugin toggle: the plugin stays loaded, so
+    // its sidebar nav row / routes / commands stay reachable.
+    expect(setPluginEnabled).not.toHaveBeenCalled()
+    expect(allPaneIds($layoutTree.get()!)).not.toContain('single:pane')
+    expect($dismissedPanes.get()).toContain('single:pane')
+    expect(registry.getArea('panes').some(c => c.id === 'single:pane')).toBe(true)
   })
 })

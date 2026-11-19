@@ -1,0 +1,23 @@
+name: iteration-budget
+repo: https://github.com/Naverene/hermes-iteration-budget
+sha: 614bc141954499f07a3d686acb443aa20a194e8c
+description: Surface the per-turn iteration budget to the model so it wraps up before the cap.
+maintainer: Naverene
+tier: community
+category: general
+requires_hermes: ">=0.23.2"
+version: "1.0.1"
+title: "Iteration Budget"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_api_request
+    - post_tool_call
+    - pre_tool_call
+    - subagent_start
+    - on_session_reset
+  provides_middleware:
+    - llm_request
+  requires_env: []

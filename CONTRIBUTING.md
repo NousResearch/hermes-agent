@@ -281,6 +281,14 @@ just test tests/agent/ -v
 Both recipes call `scripts/run_tests.sh`; `just test` refuses to start
 without a path, and `just test-all` runs the full suite.
 
+The opt-in ratatui client at `crates/tui/`:
+
+```bash
+cargo fmt --all -- --check --manifest-path crates/tui/Cargo.toml
+cargo clippy --all-targets --locked --manifest-path crates/tui/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path crates/tui/Cargo.toml
+```
+
 On Windows, run the script through Bash. When no local `.venv` or `venv`
 contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
 clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate

@@ -391,7 +391,9 @@ run while the host is off.
 Noninteractive setup and imports do not install a missing service, even when the imported
 config says `install`. Existing installed services remain authoritative and can be started
 regardless of the saved preference. To opt in explicitly later, run `hermes gateway install`;
-the choice is recorded only after successful installation. To be asked again during setup,
+the choice is recorded only after successful installation. The installers' step after setup,
+`hermes gateway install --if-missing`, is not a second opt-in: it installs nothing after a
+recorded decline and asks the same question when setup never did. To be asked again during setup,
 reset the choice with `hermes config set gateway.service_install_choice null`.
 
 Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its

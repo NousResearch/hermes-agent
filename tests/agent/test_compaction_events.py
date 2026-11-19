@@ -327,9 +327,13 @@ def _prune_after_tool_results(persist_disabled):
     from agent.turn_preflight import compress_after_tool_results
 
     compressor = _compressor(
-        proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, protect_first_n=2, protect_last_n=4,
+        proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000, proactive_prune_min_reclaim_tokens=4096,
+        protect_first_n=2, protect_last_n=4,
     )
     compressor.last_prompt_tokens = 120_000
+    # A bound store row that can archive the originals; the prune is skipped without one.
+    compressor._session_db = SimpleNamespace(archive_and_compact=lambda *_a, **_k: None)
+    compressor._session_id = "prune-session"
     agent = SimpleNamespace(
         context_compressor=compressor, compression_enabled=True, session_id="prune-session", tools=[],
         _persist_disabled=persist_disabled, _usage_anchor=None, _compression_feasibility_checked=True,
@@ -341,10 +345,12 @@ def _prune_after_tool_results(persist_disabled):
             {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
         ]})
         msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": (chr(65 + i) + SECRET) * 600 if i < 3 else "ok"})
+    # The running turn's user row: the prune skips a round whose turn index names no user row.
+    msgs.append({"role": "user", "content": "ask"})
     verdict = compress_after_tool_results(
         agent, messages=msgs, system_message="sys", user_message="ask", active_system_prompt="sys",
         conversation_history=None, compression_attempts=3, max_compression_attempts=3, effective_task_id="task",
-        final_response=None, turn_exit_reason=None, current_turn_user_idx=0,
+        final_response=None, turn_exit_reason=None, current_turn_user_idx=len(msgs) - 1,
     )
     return msgs, verdict.messages
 

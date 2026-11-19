@@ -16,7 +16,7 @@ from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import (
     _MERGE_DISPLAY_META, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _legacy_reset_child_sql, _sql_json_extract,
 )
-from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _placeholders
+from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _in_one_read, _placeholders
 from functools import partial
 from persistence.sqlite.conversation._store.compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from persistence.sqlite.conversation._store.core import REACTIONS_METADATA_KEY, _CONTENT_JSON_PREFIX, _CONVERSATION_ROW_COLUMNS
@@ -1499,15 +1499,8 @@ def _display_set(holder: StoreHolder, sql: str, session_ids: list[str]) -> list[
     a compaction committing between the two reads marks a row removed after it was read live, so the
     removed read would hide the message while the live read never saw its new copy."""
     def read(conn):
-        began = not conn.in_transaction  # inside a transcript_read_snapshot: its transaction
-        if began:
-            conn.execute("BEGIN")
-        try:
-            return _with_removed_identities(holder, conn.execute(sql, tuple(session_ids)).fetchall(), session_ids, conn)
-        finally:
-            if began and conn.in_transaction:
-                conn.execute("ROLLBACK")
-    return holder._read_retrying_ioerr(read)
+        return _with_removed_identities(holder, conn.execute(sql, tuple(session_ids)).fetchall(), session_ids, conn)
+    return _in_one_read(holder, read)
 
 
 def get_messages_as_conversation(holder: StoreHolder, session_id: str, include_ancestors: bool = False,

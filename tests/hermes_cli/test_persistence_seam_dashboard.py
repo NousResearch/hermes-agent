@@ -56,9 +56,11 @@ def test_workspace_picker_hands_the_repo_helper_a_reader(monkeypatch, connects, 
     from hermes_cli.web_routers import chat_workspaces
 
     path = _store()
+    before = len(connects)
     chat_workspaces._collect_workspaces(None, False)
     handle, opened = seen[-1]
-    assert opened == 1  # the reader's own connection
+    assert sum("state.db" in str(t) for t in connects[before:]) == 1  # the reader's own connection, for the whole call
+    assert opened == 0  # the helper reads on it and opens none of its own
     assert handle.read_only is True and handle.scope.profile_dir == path.parent.resolve()
     with pytest.raises(RuntimeError):
         handle.ready()  # released with the call
@@ -74,9 +76,11 @@ def test_profile_project_tree_hands_the_builder_a_reader(monkeypatch, connects, 
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
     path = _store()
+    before = len(connects)
     profiles_routes.get_profiles_projects_tree(profile="default")
     handle, opened = seen[-1]
-    assert opened == 1  # the reader's own connection
+    assert sum("state.db" in str(t) for t in connects[before:]) == 1  # the reader's own connection, for the whole call
+    assert opened == 0  # the helper reads on it and opens none of its own
     assert handle.read_only is True and handle.scope.profile_dir == path.parent.resolve()
     with pytest.raises(RuntimeError):
         handle.ready()

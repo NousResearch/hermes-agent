@@ -1,7 +1,9 @@
 import { expect, test } from 'vitest'
 import { planTracker } from '../tests/install/e2e-assets/red-tracker.mjs'
 
-const run = (conclusion) => ({ conclusion, html_url: 'https://example.test/runs/1', head_sha: 'abcdef0123456789', created_at: '2026-09-26T19:24:13Z' })
+const TESTED = '0123456789abcdef0123456789abcdef01234567'
+const MAIN_TIP = 'fedcba9876543210fedcba9876543210fedcba98'
+const run = (conclusion) => ({ display_title: `Canary E2E on ${TESTED}`, conclusion, html_url: 'https://example.test/runs/1', head_sha: MAIN_TIP, created_at: '2026-09-26T19:24:13Z' })
 const leg = (name, conclusion, step) => ({ name, conclusion, html_url: `https://example.test/job/${name.length}`, steps: step ? [{ name: 'checkout', conclusion: 'success' }, { name: step, conclusion }] : [] })
 
 test('one tracker: a red run opens it, the next red run rewrites it, a green run closes it', () => {
@@ -14,7 +16,7 @@ test('one tracker: a red run opens it, the next red run rewrites it, a green run
 
   const opened = planTracker(run('cancelled'), jobs, null)
   expect(opened.action).toBe('open')
-  expect(opened.title).toBe('Install & Update E2E matrix is red (2 legs)')
+  expect(opened.title).toBe(`Canary E2E on ${TESTED} is red (2 jobs)`)
   // Both Windows legs hung in the same driver step: one class, not two.
   expect(opened.body).toContain('**2 × cancelled in step `Install <ref>`**')
   expect(opened.body).not.toContain('linux:')
@@ -22,4 +24,19 @@ test('one tracker: a red run opens it, the next red run rewrites it, a green run
   expect(planTracker(run('failure'), jobs, { number: 7 }).action).toBe('update')
   expect(planTracker(run('success'), [jobs[2]], { number: 7 }).action).toBe('close')
   expect(planTracker(run('success'), [jobs[2]], null).action).toBe('none')
+})
+
+test('a run replaced while pending (cancelled, no jobs) leaves the tracker alone', () => {
+  expect(planTracker(run('cancelled'), [], null).action).toBe('none')
+  expect(planTracker(run('cancelled'), [], { number: 7 }).action).toBe('none')
+  // A run cancelled after its jobs started still reports them.
+  expect(planTracker(run('cancelled'), [leg('Full CI pipeline / e2e', 'cancelled', 'Run e2e tests')], null).action).toBe('open')
+})
+
+test('the tracker names the commit under test, never the workflow_run head', () => {
+  const failed = [leg('Full CI pipeline / Python tests / e2e', 'failure', 'Run e2e tests')]
+  for (const plan of [planTracker(run('failure'), failed, null), planTracker(run('success'), [], { number: 7 })]) {
+    expect(plan.body).toContain(TESTED)
+    expect(plan.body).not.toContain(MAIN_TIP.slice(0, 10))
+  }
 })

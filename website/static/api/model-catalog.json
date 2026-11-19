@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-09T21:03:18Z",
+  "updated_at": "2026-11-18T10:56:21Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -266,12 +266,12 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "thinkingmachines/inkling:free",
+          "id": "thinkingmachines/inkling-2-small:free",
           "description": "free"
         },
         {
-          "id": "thinkingmachines/inkling-small:free",
-          "description": "free"
+          "id": "thinkingmachines/inkling-small",
+          "description": "paid tier, ungated (not a :free SKU)"
         },
         {
           "id": "minimax/minimax-m3:free",
@@ -495,6 +495,9 @@
         },
         {
           "id": "upstage/solar-mini4"
+        },
+        {
+          "id": "thinkingmachines/inkling-small"
         },
         {
           "id": "stealth/space-bunny-alpha"

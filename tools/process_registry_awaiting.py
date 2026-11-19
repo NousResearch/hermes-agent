@@ -46,8 +46,11 @@ def _adjust(owners, delta: int) -> None:
 
 def take_ready(queue, timeout: float) -> list:
     """Dequeue everything queued (waiting up to ``timeout`` for the first event) and hold each event's owner in the
-    same critical section, so no reaper check can observe an event as neither queued nor held. The caller MUST pass
-    the result to ``release`` once routing returns."""
+    same critical section, so no reaper check can observe an event as neither queued nor held. Delegation result
+    copies are marked held there too (``async_delegation.mark_copy_held``), so another session's orphan sweep never
+    re-offers a copy this poller is still routing. The caller MUST pass the result to ``release`` once routing
+    returns."""
+    from tools.async_delegation import completion_copy_id, mark_copy_held
     with queue.not_empty:
         if not queue._qsize() and timeout > 0:
             queue.not_empty.wait(timeout)
@@ -56,13 +59,18 @@ def take_ready(queue, timeout: float) -> list:
         if events:
             queue.not_full.notify_all()
             _adjust((_owner(e) for e in events), +1)
+            for evt in events:
+                mark_copy_held(completion_copy_id(evt))
     return events
 
 
 def release(events) -> None:
     """End the in-flight hold ``take_ready`` took for ``events`` (after any requeue, so coverage is continuous)."""
     if events:
+        from tools.async_delegation import completion_copy_id, unmark_copy_held
         _adjust((_owner(e) for e in events), -1)
+        for evt in events:
+            unmark_copy_held(completion_copy_id(evt))
 
 
 @contextlib.contextmanager

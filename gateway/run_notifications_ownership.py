@@ -10,13 +10,11 @@ that owner is proven.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import sqlite3
 from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
-from hermes_state_errors import StateDbReplacedError
+from persistence import STORE_FAILURES
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -29,28 +27,50 @@ logger = logging.getLogger("gateway.run")
 _MAX_DELEGATE_PROVENANCE_HOPS = 16
 
 
+def _local_completion_card(evt: dict) -> dict[str, str]:
+    """The card of a local process notice: the async-result card the in-process TUI wrote for a
+    completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
+    one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
+    turn that has one. ``{}`` for a watch match."""
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    evt_type = evt.get("type", "completion")
+    if evt_type == "completion":
+        return {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
+                "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
+    if evt_type == "async_delegation":
+        return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
+    if evt_type == "heartbeat":
+        # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
+        # idle CLI open the turn with one line and show the agent's reply.
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from tools.process_registry_notifications import heartbeat_display_text
+        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
+    return {}
+
+
 class GatewayNotificationOwnershipMixin:
     """Ownership proof and route resolution for pinned async and process completions."""
 
     async def _resolve_compression_lineage_target(
-        self, session_db: Any, session_entry: Optional[SessionEntry], pinned_session_id: str,
+        self, store_aio: Any, session_entry: Optional[SessionEntry], pinned_session_id: str,
     ) -> tuple[str, Optional[str]]:
         """Distinguish uncertain compression ownership from a proven foreign route."""
         try:
-            target_session_id = await session_db.get_compression_tip(pinned_session_id)
+            target_session_id = await store_aio.lineage.tip(pinned_session_id)
             if not target_session_id or target_session_id == pinned_session_id:
                 return "retry", None  # Rotation may not have published its continuation yet.
-            tip_row = await session_db.get_session(target_session_id)
-            if tip_row is None or tip_row.get("ended_at"):
+            tip_row = await store_aio.sessions.get(target_session_id)
+            if tip_row is None or tip_row.ended_at:
                 return "retry", None
             if session_entry is None or session_entry.session_id in {pinned_session_id, target_session_id}:
                 return "deliver", target_session_id
             # Across several rotations, accept a stale route only when its own tip is the same live target.
-            route_row = await session_db.get_session(session_entry.session_id)
+            route_row = await store_aio.sessions.get(session_entry.session_id)
             if route_row is None:
                 return "retry", None
-            if route_row.get("ended_at") and route_row.get("end_reason") == "compression":
-                route_tip = await session_db.get_compression_tip(session_entry.session_id)
+            if route_row.ended_at and route_row.end_reason == "compression":
+                route_tip = await store_aio.lineage.tip(session_entry.session_id)
                 if not route_tip or route_tip == session_entry.session_id:
                     return "retry", None
                 if route_tip == target_session_id:
@@ -66,7 +86,7 @@ class GatewayNotificationOwnershipMixin:
         return "terminal", None
 
     async def _closed_local_target(
-        self, session_db: Any, entry: Optional[SessionEntry], pinned_session_id: str, pinned_row: Optional[dict],
+        self, store_aio: Any, entry: Optional[SessionEntry], pinned_session_id: str, pinned_row: Any,
     ) -> str:
         """The closed (/new, exit) physical session of a local conversation a completion is noted on
         (#134889 LC-7, ``session_completion_notes``), else ``""``. The pinned session, or the compression
@@ -78,15 +98,15 @@ class GatewayNotificationOwnershipMixin:
         if entry is None or entry.platform != Platform.LOCAL or pinned_row is None:
             return ""
         target, row = pinned_session_id, pinned_row
-        if row.get("end_reason") == "compression":
+        if row.end_reason == "compression":
             try:
-                target = await session_db.get_compression_tip(pinned_session_id)
-                row = await session_db.get_session(target) if target == entry.session_id else None
-            except (sqlite3.Error, StateDbReplacedError):
+                target = await store_aio.lineage.tip(pinned_session_id)
+                row = await store_aio.sessions.get(target) if target == entry.session_id else None
+            except STORE_FAILURES:
                 logger.debug("Closed local tip lookup failed for %s", pinned_session_id, exc_info=True)
                 return ""  # the compression path below defers it
-        if (target != entry.session_id or row is None or not row.get("ended_at")
-                or row.get("end_reason") == "compression"):
+        if (target != entry.session_id or row is None or not row.ended_at
+                or row.end_reason == "compression"):
             return ""
         return target
 
@@ -98,8 +118,8 @@ class GatewayNotificationOwnershipMixin:
         ``_delegate_from`` authorizes walking out of an execution transcript.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = cast(Any, self)._session_db
-        if session_db is None:
+        store = cast(Any, self).persistence
+        if store is None:
             return "retry", session_id, None
         seen = set()
         for hops in range(_MAX_DELEGATE_PROVENANCE_HOPS + 1):
@@ -107,7 +127,7 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             seen.add(session_id)
             try:
-                row = await session_db.get_session(session_id)
+                row = await store.aio.sessions.get(session_id)
             except Exception:
                 logger.debug("Completion ownership lookup failed for %s", session_id, exc_info=True)
                 return "retry", session_id, None
@@ -115,22 +135,22 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             # User closure is a boundary at EVERY hop, including execution rows.
             # Ordinary delegate completion may still follow provenance to its owner.
-            if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
+            if row.ended_at and row.end_reason in _USER_BOUNDARY_END_REASONS:
                 return "terminal", session_id, row
             if session_id == current_session_id:
                 return "deliver", session_id, row
-            config = row.get("model_config")
-            try:
-                if isinstance(config, str):
-                    config = json.loads(config)
-            except (TypeError, ValueError):
-                return "terminal", session_id, None
-            if config is None:
-                config = {}
-            if not isinstance(config, dict):
-                return "terminal", session_id, None
+            # A hop compressed into the current route is its conversation (a resumed delegate run), as
+            # admission rules: climbing past it would reach the parent the run was spawned from.
+            if current_session_id and row.end_reason == "compression":
+                try:
+                    if await store.aio.lineage.tip(session_id) == current_session_id:
+                        return "deliver", session_id, row
+                except Exception:
+                    logger.debug("Completion compression lookup failed for %s", session_id, exc_info=True)
+                    return "retry", session_id, None
+            config = row.model_config
             if "_delegate_from" not in config:
-                verdict = "terminal" if row.get("source") == "subagent" else "deliver"
+                verdict = "terminal" if row.source == "subagent" else "deliver"
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:
@@ -185,8 +205,8 @@ class GatewayNotificationOwnershipMixin:
         and the completion remains readable in the delegation records either way.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = cast(Any, self._session_db)
-        if session_db is None:
+        store = cast(Any, self).persistence
+        if store is None:
             logger.warning(
                 "Async-delegation completion has no session database; "
                 "dropping injection (#55578 fail-closed)."
@@ -204,8 +224,8 @@ class GatewayNotificationOwnershipMixin:
             return await self._requeue_uncertain_completion(verdict, completion_ids)
         target_session_id = pinned_session_id
         follows_compression = False
-        if pinned_row.get("ended_at"):
-            _end_reason = str(pinned_row.get("end_reason") or "")
+        if pinned_row.ended_at:
+            _end_reason = str(pinned_row.end_reason or "")
             if _end_reason in _USER_BOUNDARY_END_REASONS:
                 logger.warning(
                     "Async-delegation completion pinned to user-closed session %s "
@@ -224,7 +244,7 @@ class GatewayNotificationOwnershipMixin:
                 return session_entry
             follows_compression = True
             verdict, target_session_id = await self._resolve_compression_lineage_target(
-                session_db, session_entry, pinned_session_id,
+                store.aio, session_entry, pinned_session_id,
             )
             if verdict != "deliver" or target_session_id is None:
                 return await self._requeue_uncertain_completion(verdict, completion_ids)

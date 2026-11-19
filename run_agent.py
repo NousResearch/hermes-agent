@@ -10,7 +10,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
@@ -38,6 +38,7 @@ from pathlib import Path
 
 from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
+from hermes_cli._startup_fast import project_root_str
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -93,7 +94,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
 _hermes_home = get_hermes_home()  # read by agent_init via _ra()._hermes_home
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent / '.env')
+_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 for _env_path in _loaded_env_paths:
     logger.info("Loaded environment variables from %s", _env_path)
 if not _loaded_env_paths:
@@ -103,7 +104,7 @@ if not _loaded_env_paths:
 from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool_lifecycle import cleanup_browser
+from tools.browser_session_lifecycle import cleanup_browser
 from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
@@ -123,12 +124,12 @@ from agent.vision_message_prep import VisionMessagePrepMixin
 from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import implicit_non_stream_stale_timeout
 from agent.message_sanitization import (
-    coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
+from session_rules.turns import coalesce_tool_call_id as _sanitize_coalesce_tool_call_id
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _split_responses_tool_id as _codex_split_responses_tool_id,
@@ -136,7 +137,7 @@ from agent.codex_responses_adapter import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
+from utils import base_url_host_matches, base_url_hostname, env_float
 
 
 _MAX_TOOL_WORKERS = 8
@@ -269,18 +270,21 @@ class AIAgent(
         gateway_session_key: str | None = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
-        session_db=None, parent_session_id: str | None = None,
+        session_db=None, persistence=None, parent_session_id: str | None = None,
         iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
         fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str | None = None,
         capabilities: dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False, memory_manager=None,
+        side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+        if session_db is None and persistence is not None and not persistence.read_only:
+            # A writer's storage interface handle passed alone is the agent's store as well.
+            init_kwargs["session_db"] = persistence
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
@@ -288,23 +292,25 @@ class AIAgent(
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):
-        """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the
-        advertised ``session_search`` tool stays usable."""
+        """The agent's store for recall, opening the current home's store when no ``session_db`` was passed so the
+        advertised ``session_search`` tool stays usable. The store opened here is a storage interface handle, held
+        as both the store and its interface."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
-        if getattr(self, "_persist_disabled", False):
-            return None
+        from tools.hosted_tool_policy import host_feature_enabled
+        if getattr(self, "_persist_disabled", False) or not host_feature_enabled("session_recall"):
+            return None  # hosted: the profile's state.db is not the agent's recall store
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_state_registry import acquire
+            from persistence_assembly import open_persistence, profile_scope
 
-            self._session_db = acquire()
+            self._session_db = self.persistence = open_persistence(profile_scope(), eager=True)
             self._owns_session_db = True  # we opened it, so close() must release it
-            return self._session_db
         except Exception:
-            logger.debug("SessionDB unavailable for recall", exc_info=True)
+            logger.debug("Session store unavailable for recall", exc_info=True)
             return None
+        return self._session_db
 
     def _session_row_model_config(self) -> Any:
         """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
@@ -332,16 +338,33 @@ class AIAgent(
                 profile_for_session = None
             # Carry the gateway routing identity: when the gateway SessionStore degraded to JSONL (corrupt
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
-            self._session_db.create_session(
+            row = dict(
                 session_id=self.session_id, source=source, model=self.model,
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
                 thread_id=getattr(self, "_thread_id", None),
                 display_name=getattr(self, "_chat_name", None) or getattr(self, "_user_name", None),
-                origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
+                parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
+            origin_json = _gateway_origin_json(self)
+            from agent.agent_init_session import agent_interface
+            if (store := agent_interface(self)) is not None:
+                from persistence.conversation.sessions import NewSession
+                store.sessions.create(NewSession(**row, origin=json.loads(origin_json) if origin_json else None))
+            else:
+                self._session_db.create_session(**row, origin_json=origin_json)
+            if getattr(self, "_session_db_reserved", False) is True:
+                # A reserved child row already exists, and first-turn writers (prompt-refresh epoch,
+                # usage anchor) may have patched its model_config before this create, so the
+                # keep-existing upsert dropped the constructor config. Merge it beside them.
+                patch = {k: v for k, v in (self._session_row_model_config() or {}).items() if v is not None}
+                if patch:
+                    if store is not None:
+                        store.sessions.patch_model_config(self.session_id, patch)
+                    else:
+                        self._session_db.patch_session_model_config(self.session_id, patch)
             self._session_db_created = True
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
@@ -383,13 +406,20 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
-        for counter in (
-            "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
-            "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
-            "session_reasoning_tokens", "session_api_calls",
-        ):
-            setattr(self, counter, 0)
-        self.session_estimated_cost_usd = 0.0
+        from agent.prompt_cache_lifecycle import reset_prompt_cache_session, session_totals_lock
+
+        with session_totals_lock(self):  # a keep-alive in flight adds to these under the same lock
+            reset_prompt_cache_session(self)  # a fresh session: an old keep-alive miss no longer stops warming
+            for counter in (
+                "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
+                "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
+                "session_reasoning_tokens", "session_api_calls", "session_cache_warm_calls",
+            ):
+                setattr(self, counter, 0)
+            # Monotonic, unlike the counters it accompanies: a reply to a request sent before this
+            # reset (a cache keep-alive in flight) compares it to tell the old session from the new.
+            self._session_reset_epoch = getattr(self, "_session_reset_epoch", 0) + 1
+            self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
 
@@ -406,7 +436,9 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
-        # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
+        # Provider hooks that failed in the old session (agent.provider_route_hooks) are asked again.
+        self._provider_hook_failures = set()
+        # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
         self._is_user_initiated_turn = False
 
         self._transition_context_engine_session(
@@ -421,7 +453,10 @@ class AIAgent(
         if (engine is not None and hasattr(engine, "bind_session_state") and target_session_id
                 and target_session_id != getattr(engine, "_session_id", "")):
             try:
-                engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
+                from agent.conversation_compression import context_engine_persistence, context_engine_session_db
+                engine.bind_session_state(context_engine_session_db(self, getattr(self, "_session_db", None)),
+                                          target_session_id, **context_engine_persistence(
+                                              engine.bind_session_state, getattr(self, "persistence", None)))
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
@@ -528,11 +563,6 @@ class AIAgent(
         url = str(base_url).lower() if base_url is not None else (getattr(self, "_base_url_lower", "") or "")
         return base_url_host_matches(url, "openai.azure.com")
 
-    def _is_github_copilot_url(self, base_url: str | None = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        hostname = self._hostname_for(base_url)
-        return bool(hostname) and (hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com"))
-
     def _resolved_api_call_timeout(self) -> float:
         """Per-call request timeout: per-model ``timeout_seconds`` > provider ``request_timeout_seconds`` >
         ``HERMES_API_TIMEOUT`` > 1800s."""
@@ -564,15 +594,17 @@ class AIAgent(
         """Effective non-stream stale timeout for ``api_payload`` (an ``api_kwargs`` dict or legacy ``messages``
         list), scaled by estimated context size and capped by the run budget."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
-        base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
-            return float("inf")
+        implicit = implicit_non_stream_stale_timeout(self, uses_implicit_default)
+        if implicit is not None:
+            return implicit
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
         from agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
-        timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
+        # The context tiers raise only an implicit base: an explicit value can shorten patience (#115024).
+        timeout = stale_base if explicit else (
+            max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base)
         # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
         # cap below, so the floor can never outlive the run budget.
         if self.api_mode == "codex_responses" and not explicit:
@@ -619,15 +651,6 @@ class AIAgent(
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
-    def _is_copilot_url(self) -> bool:
-        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
-        return any(base_url_host_matches(self._base_url_lower, h) for h in ("api.githubcopilot.com", "models.github.ai"))
-
-    def _is_copilot_provider(self) -> bool:
-        """True when the active provider is GitHub Copilot under any alias (``copilot`` / ``github-copilot`` /
-        ``github``) or by base URL; a bare equality check would silently skip credential recovery."""
-        return (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"} or self._is_copilot_url()
-
     def _is_codex_backend(self) -> bool:
         """Return True for the ChatGPT OAuth Codex Responses backend."""
         return (getattr(self, "api_mode", None) == "codex_responses"
@@ -659,19 +682,26 @@ class AIAgent(
         from hermes_cli.runtime_provider_backends import _is_external_process_provider
         if _is_external_process_provider(normalized_provider):
             return False
-        if normalized_provider == "copilot":
-            try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
-            except Exception:
-                pass  # fall back to the generic GPT-5 rule
+        # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized_provider) if normalized_provider else None
+        from agent.provider_route_hooks import model_api_mode
+        derived = model_api_mode(profile, model) if profile is not None else None
+        if derived is not None:
+            return derived == "codex_responses"
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
-        """``max_completion_tokens`` for newer OpenAI families (and Azure / Copilot serving them), else
-        ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
-        if (self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url()
-                or model_forces_max_completion_tokens(self.model)):
+        """``max_completion_tokens`` for newer OpenAI families (and Azure / provider routes declaring it),
+        else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
+        if self._is_direct_openai_url() or self._is_azure_openai_url():
+            return {"max_completion_tokens": value}
+        from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
+        declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
+                                base_url=getattr(self, "base_url", "") or "", model=self.model or "")
+        if declared:
+            return {declared: value}
+        if model_forces_max_completion_tokens(self.model):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -760,13 +790,17 @@ class AIAgent(
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
-        (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+        (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
+        ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
-        # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("background_review"):
+            return  # hosted: the review fork writes the profile's memory and skills on this host
+        # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
+        if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        if not explicit and focus is None:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
@@ -836,7 +870,7 @@ class AIAgent(
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None or kwargs.get("explicit"):
                 return
             if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
@@ -927,6 +961,8 @@ class AIAgent(
         cache eviction: the session may resume on the same task_id, so processes, sandbox, browser and computer-use
         are kept). Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
+        from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
+        _quietly(cancel_prompt_cache_warming, self, "release_clients")
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
@@ -936,14 +972,20 @@ class AIAgent(
         _quietly(self._close_codex_session)
         if getattr(self, "_memory_manager", None) is not None:
             _quietly(self._memory_manager.release_soft)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
         blocks the rest."""
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
+        from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
+        _quietly(cancel_prompt_cache_warming, self, "agent_close")
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
@@ -962,6 +1004,8 @@ class AIAgent(
             _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
                                                  getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
+        from agent.conversation_compression import close_context_engine_session_db
+        _quietly(close_context_engine_session_db, self)
         _quietly(self._finalize_owned_session_row)
 
     # -- close()/release_clients() phases -------------------------------------------------------------
@@ -1010,9 +1054,10 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
-        from hermes_cli.mem_trim import trim_memory
-        trim_memory(force=True, reason="agent close")
+        """Return freed pages to the OS; no full GC here (it would freeze every other session), the idle one runs."""
+        from hermes_cli.mem_trim import note_agent_closed, trim_memory
+        note_agent_closed()
+        trim_memory(force=True, reason="agent close", collect=False)
 
     def _finalize_owned_session_row(self) -> None:
         """End the session row unless ownership was handed forward (compression helpers, review forks sharing
@@ -1022,13 +1067,21 @@ class AIAgent(
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "session_id", None)
         if getattr(self, "_end_session_on_close", True) and session_db and session_id:
-            _quietly(lambda: session_db.end_session(session_id, "agent_close"))
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(self)
+            _quietly(lambda: store.sessions.end(session_id, "agent_close") if store is not None
+                     else session_db.end_session(session_id, "agent_close"))
         if getattr(self, "_owns_session_db", False) and session_db is not None:
             self._owns_session_db = False
-            # Shared instances no-op on close(); release the refcount so the registry closes on the last caller.
+            # A registry-lent store's close() releases one reference, so the registry closes on the last caller.
             # See #90837.
-            from hermes_state_registry import release_or_close
-            release_or_close(session_db)
+            persistence, self.persistence = getattr(self, "persistence", None), None
+            try:
+                if session_db is not persistence:
+                    session_db.close()
+            finally:
+                if persistence is not None:
+                    _quietly(persistence.close)
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
@@ -1105,7 +1158,7 @@ class AIAgent(
 
     _build_system_prompt = _forward("agent.system_prompt", "build_system_prompt")
 
-    # Call ID of a tool_call entry (dict or object); policy owner: ``message_sanitization.coalesce_tool_call_id``.
+    # Call ID of a tool_call entry (dict or object); policy owner: ``session_rules.turns.coalesce_tool_call_id``.
     _get_tool_call_id_static = staticmethod(_sanitize_coalesce_tool_call_id)
 
     @staticmethod
@@ -1343,9 +1396,10 @@ class AIAgent(
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
-        # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
-        # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
-        # owns no gateway session. The schema-level `background` param is intentionally ignored.
+        # Top-level MODEL delegations run in the background (handle returned, results re-enter as messages),
+        # unless the session's delegate_task is the joined variant (one-shot, delegation.gateway_mode inline).
+        # An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and owns no gateway
+        # session. The schema-level `background` param is intentionally ignored.
         return _delegate_task(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
@@ -1391,7 +1445,9 @@ class AIAgent(
         if db is None:
             return start
         try:
-            return db.get_conversation_root(start) or start
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(self)
+            return (store.lineage.conversation_root(start) if store is not None else db.get_conversation_root(start)) or start
         except Exception:
             logger.debug("Conversation root lineage walk failed", exc_info=True)
             return start
@@ -1468,10 +1524,12 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
 def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
-    entry = {
+    from agent.trajectory import redact_trajectory_value
+
+    entry = redact_trajectory_value({
         "conversations": agent._convert_to_trajectory_format(result['messages'], user_query, result['completed']),
         "timestamp": datetime.now().isoformat(), "model": model, "completed": result['completed'], "query": user_query,
-    }
+    })
     try:
         with open(sample_filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, indent=2))

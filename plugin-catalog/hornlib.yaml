@@ -1,0 +1,22 @@
+name: hornlib
+title: HornLib
+repo: https://github.com/HornLib/mcp-server
+sha: 50d9ea46d30f57c4ce679e60e745fc04c185c419
+version: "1.0.3"
+description: "French Horn F/Bb double horn valve fingering charts (C1 to F6), multi-key pitch transposition (F, Bb, Eb, D, C, G, A, E), natural overtone harmonic series partials with cent deviations, mechanical vs lip trill fingerings, orchestral audition excerpt performance guides, stopped-horn intonation diagnostics, beginner horn and mouthpiece comparisons, and personalized daily brass warmup routines through HornLib's official MCP server (Streamable HTTP at https://hornlib.com/api/mcp, no sign-in, no keys in config). Bundles the hornlib and french-horn-fingering-chart workflow skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to hornlib.com/api/mcp with only the musical query arguments (note name, horn key, or excerpt). All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: HornLib
+tier: community
+category: tools
+docs_url: https://hornlib.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/HornLib/mcp-server/50d9ea46d30f57c4ce679e60e745fc04c185c419/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/HornLib/mcp-server/50d9ea46d30f57c4ce679e60e745fc04c185c419/assets/screenshot.png
+  - https://raw.githubusercontent.com/HornLib/mcp-server/50d9ea46d30f57c4ce679e60e745fc04c185c419/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +29,7 @@ test('desktop development composition restages native inputs only when their rec
   const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
   const { recordNativeInputs } = await import('../apps/desktop/scripts/prepared-native-deps.mjs')
   const input = fixture()
-  put(join(input.source, 'package-lock.json'), '{}')
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
   const nativeDeps = join(input.source, 'apps/desktop/build/native-deps')
   cpSync(input.nativeDeps, nativeDeps, { recursive: true })
   const staged = () => {
@@ -44,7 +45,7 @@ test('desktop development composition restages native inputs only when their rec
   recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch, degraded: true })
   expect(staged()).toBe(true) // a soft-failed component restages until the host can complete it
   recordNativeInputs({ source: input.source, out: nativeDeps, platform: process.platform, arch: process.arch })
-  put(join(input.source, 'package-lock.json'), '{"lockfileVersion":3}')
+  put(join(input.source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n\nimporters: {}\n")
   expect(staged()).toBe(true) // a dependency pin moved
 })
 function put(path, text) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) }
@@ -68,13 +69,19 @@ function fixture() {
   for (const helper of ['scripts/msix-shared.mjs', 'scripts/release-content-types.json']) {
     cpSync(join(repo, helper), join(source, helper))
   }
-  symlinkSync(join(repo, 'node_modules'), join(app, 'node_modules'), 'junction')
+  // Mirror both install trees so the fixture app resolves its dependencies
+  // exactly as the checkout's desktop does, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (existsSync(join(repo, dir, 'node_modules'))) {
+      symlinkSync(join(repo, dir, 'node_modules'), join(source, dir, 'node_modules'), 'junction')
+    }
+  }
   const icons = join(root, 'icons')
   put(join(icons, 'apps/desktop/public/apple-touch-icon.png'), 'fresh icon')
   put(join(app, 'public/apple-touch-icon.png'), 'stale icon')
   const nativeDeps = join(root, 'native')
   // The native input is the real host binding, not a fake compiler/dependency.
-  stageNodePtyInto(join(repo, 'node_modules/node-pty'), join(nativeDeps, 'node-pty'))
+  stageNodePtyInto(dirname(createRequire(join(repo, 'apps/desktop/package.json')).resolve('node-pty/package.json')), join(nativeDeps, 'node-pty'))
   stageGetWindows({ source: repo, out: nativeDeps })
   put(join(nativeDeps, 'native/helper-fixture'), 'prepared executable resource')
   const stamp = join(root, 'install-stamp.json')
@@ -134,6 +141,36 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   await expect(buildDesktop(input)).rejects.toThrow()
   expect(files(input.out)).toEqual(built)
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
+}, 60000)
+
+// validateNativeTree checks get-windows only for darwin; run that branch on every host by giving the
+// fixture's host node-pty bindings a Mach-O header.
+function asDarwin(input) {
+  const pty = join(input.nativeDeps, 'node-pty')
+  for (const name of readdirSync(pty, { recursive: true }).filter(name => String(name).endsWith('.node'))) {
+    writeFileSync(join(pty, name), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]))
+  }
+  return { ...input, platform: 'darwin' }
+}
+
+test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
+  // An interrupted install can leave get-windows absent (#90829), as pnpm's name-based skip of
+  // the optional declaration did (#149861); staging then leaves it out and the app ships
+  // without read_window_below instead of failing the build.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await buildDesktop(input)
+  expect(existsSync(join(input.out, 'electron-main.mjs'))).toBe(true)
+  expect(existsSync(join(input.out, 'node_modules/get-windows'))).toBe(false)
+}, 60000)
+
+test('desktop compiler refuses a staged get-windows without its macOS helper', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  put(join(input.nativeDeps, 'get-windows/package.json'), '{"name":"get-windows"}')
+  await expect(buildDesktop(input)).rejects.toThrow(/missing its macOS helper/)
 }, 60000)
 
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
@@ -379,7 +416,7 @@ test('a prepared input changing during desktop compilation cannot publish a curr
 test('native preparation stages the selected source into an explicit tree before compilation', async () => {
   const { prepareDesktopNativeDependencies } = await import('../apps/desktop/scripts/stage-native-deps.mjs')
   const input = fixture()
-  cpSync(join(repo, 'package-lock.json'), join(input.source, 'package-lock.json'))
+  cpSync(join(repo, 'pnpm-lock.yaml'), join(input.source, 'pnpm-lock.yaml'))
   const nativeOut = join(dirname(input.out), 'prepared-native')
   await prepareDesktopNativeDependencies({ source: input.source, out: nativeOut })
   expect(existsSync(join(nativeOut, 'node-pty/package.json'))).toBe(true)

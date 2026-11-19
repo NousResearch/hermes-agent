@@ -78,6 +78,7 @@ def _run_helper(command: str, secret_key: str, timeout_seconds: float, max_outpu
         proc = subprocess.Popen(
             ["/bin/sh", "-c", command], env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,  # stderr captured and DISCARDED — never inherited
+            # detached-spawn: ok — awaited; a hard timeout (default 3 s) kills the whole group
             start_new_session=True,  # so the hard timeout can kill the whole group
         )
     except OSError as exc:

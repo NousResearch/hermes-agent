@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
+import { mountFreeEnv } from './relaunch-target'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 // `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
@@ -14,12 +15,15 @@ const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
   backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
-  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
+  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure', execPath = process.execPath }: { timeoutMs?: number; label?: string; execPath?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // The gateway this starts outlives a dev session and Desktop reaches it without an Origin
+    // (main-process HTTP, Origin-stripped socket dials): it never trusts the dev renderer.
+    const { HERMES_DESKTOP_DEV_SERVER: _devServer, ...env } = mountFreeEnv({ ...parentEnv, HERMES_HOME: home, ...backend.env }, backend.command, execPath)
     // shell: true hands cmd.exe one command line it cuts at the first unquoted space,
     // so an install under `C:\Users\John Doe\...` must arrive quoted (#74064).
-    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
+    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
     let expired: Error | undefined
@@ -84,6 +88,20 @@ export function gatewayOwnerProfile(endpoint: GatewayEndpoint): string {
   const home = endpoint.control_home || endpoint.profile_id
 
   return path.basename(path.dirname(home)) === 'profiles' ? path.basename(home) : 'default'
+}
+
+/** `hermes --profile P gateway restart --detach`: without a service, the CLI would otherwise run the
+ *  replacement as this bounded client, a child its timeout kills. A runtime older than `--detach`
+ *  names the flag argparse rejects (exit 2); it gets its old restart, which still works wherever a
+ *  service owns the gateway, instead of no restart at all. */
+export async function runGatewayOwnerRestart(
+  run: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>,
+  ownerProfile: string
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const args = ['--profile', ownerProfile, 'gateway', 'restart']
+  const result = await run([...args, '--detach'])
+
+  return result.code === 2 && /unrecognized arguments:.*--detach/.test(result.stderr) ? run(args) : result
 }
 
 /** One restart per (owner process, stale gateway, client) per Desktop process. An owner a restart cannot move
@@ -308,6 +326,9 @@ function dialOf(url: string): { nonce: string; origin: string; pathname: string 
   }
 }
 
+// Voice sockets dial their own fresh `/api/ws` reservation on a sibling path (sibling-ws-url.ts).
+const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcribe-stream'])
+
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
 // A plugin socket's native-http grant never enters a URL at all: main attaches
@@ -341,7 +362,9 @@ export function createLocalGatewayDials() {
       const dial = dialOf(details.url)
       const grant = dial ? pending.get(dial.nonce) : undefined
 
-      if (!dial || !grant || grant.pathname !== dial.pathname || grant.webContentsId !== details.webContentsId
+      const voice = grant && !grant.header && grant.pathname === '/api/ws' && dial && VOICE_DIAL_PATHS.has(dial.pathname)
+
+      if (!dial || !grant || (grant.pathname !== dial.pathname && !voice) || grant.webContentsId !== details.webContentsId
           || details.resourceType !== 'webSocket' || (grant.header && grant.origin !== dial.origin)) {return null}
 
       pending.delete(dial.nonce)

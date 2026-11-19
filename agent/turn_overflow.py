@@ -23,12 +23,12 @@ from agent.conversation_compression import (
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
-    get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
+    get_context_length_from_provider_error, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
+from agent.process_transport import is_local_server
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
-from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -38,14 +38,6 @@ _RETRY_HINT = "   💡 Try /new to start a fresh conversation, or /compress to r
 # of the known window is not explained by the transcript; the rough estimator is ±30%, so a real
 # overflow (request ≈ window) never lands below half.
 _UNEXPLAINED_REJECTION_FRACTION = 0.5
-
-_GITHUB_MODELS_HINT = (
-    "   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
-    "      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
-    "      exceeds that floor, so this endpoint cannot run an agentic loop.",
-    "      Use the `copilot` provider with a Copilot subscription token (`hermes",
-    "      setup` → GitHub Copilot), or pick any other provider.",
-)
 
 _MINIMAX_ANTHROPIC_URLS = ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
 
@@ -236,7 +228,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     if exhausted is not None:
         return exhausted
     agent._buffer_diagnostic_status(
-        f"⚠️  Request payload too large (413) — compression attempt "
+        f"⚠️  Request payload too large — compression attempt "
         f"{st.compression_attempts}/{st.max_compression_attempts}..."
     )
 
@@ -410,7 +402,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     window = agent.context_compressor.context_length
     request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
     if (
-        is_local_endpoint(agent.base_url)
+        is_local_server(agent.base_url, agent.provider)
         and not re.search(r"\d{4,}", error_msg)
         and isinstance(window, int) and window > 0
         and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION
@@ -460,6 +452,14 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     )
 
 
+def _request_rejection_hint(status_code: Optional[int], base_url: str) -> tuple[str, ...]:
+    """Every registered profile's ``request_rejection_hint`` for this endpoint, whatever route reached
+    it (a free tier is commonly reached as ``custom``)."""
+    from providers import list_providers
+    return tuple(line for profile in list_providers()
+                 for line in profile.request_rejection_hint(status_code=status_code, base_url=base_url))
+
+
 def recover_from_overflow(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_msg: str, wrapped_output_cap_budget: Optional[int],
@@ -469,7 +469,7 @@ def recover_from_overflow(
     effective_task_id: Any,
 ) -> OverflowVerdict:
     """413 payload-too-large and context-length recovery (compress + retry, output-cap
-    clamp, provider-reported context limit, GitHub Models free-tier hint). Order is
+    clamp, provider-reported context limit, endpoint hard-cap hints). Order is
     load-bearing: 413 is checked BEFORE the generic 4xx handler, and context-length
     errors (incl. relay-wrapped output-cap 429s) BEFORE non-retryable client errors.
     Compression progress is scored in payload BYTES for 413 (never the byte-blind token
@@ -483,14 +483,10 @@ def recover_from_overflow(
         overflow_reason=getattr(classified.reason, "value", None),
     )
 
-    # GitHub Models free tier caps requests at 8K tokens, under the system prompt +
-    # tool schema floor; compression can't help, so say so.
-    if (
-        status_code == 413
-        and isinstance(agent.base_url, str)
-        and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
-    ):
-        for line in _GITHUB_MODELS_HINT:
+    # An endpoint whose hard cap no recovery can meet (a provider profile's
+    # ``request_rejection_hint``, whatever route reached it): say so.
+    if isinstance(agent.base_url, str):
+        for line in _request_rejection_hint(status_code, agent.base_url):
             agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
     if classified.reason == FailoverReason.payload_too_large:

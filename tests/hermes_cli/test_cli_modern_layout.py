@@ -38,7 +38,8 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert narrow == wide and not boxed, wide
     rows = "\n".join(wide).split("\n")
     thought = [line for line in rows if line.startswith("∴")]
-    assert len(thought) == 1 and "Planning the change" in thought[0], rows
+    # The summary never excerpts the reasoning (printed in full right above it): bare "∴ Thought for Ns".
+    assert len(thought) == 1 and "·" not in thought[0], rows
     # Reasoning streams in full like classic, under a fixed-width dim bar (never re-wraps on resize)
     # and closed by the ∴ summary; the answer opens under its own bar.
     start = rows.index("**Planning the change**")
@@ -50,8 +51,9 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
 
 @pytest.mark.parametrize("reasoning", [
     "scripted reasoning about gamma zeta-reason",
-    # Longer than the 72-char title cap: a shortened title would still repeat it.
-    "scripted reasoning about gamma zeta-reason that keeps going well past the title length cap here",
+    # Long and multi-sentence blocks must not add an excerpt to the summary either.
+    "scripted reasoning about gamma zeta-reason that keeps going well past any short title length here",
+    "I will check the failure first. Then I will compare it with main.",
 ])
 def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
     """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""
@@ -207,6 +209,23 @@ def test_tool_rows_keep_the_classic_tool_emoji():
         assert _plain(tool_row(name, args, 0.2)).startswith(classic_emoji + " "), (name, classic_emoji)
     failed = _plain(tool_row("terminal", {"command": "false"}, 0.2, result='{"exit_code": 1, "output": ""}'))
     assert failed.startswith("✗ ") and "[exit 1]" in failed, failed
+
+
+def test_refused_skill_write_reads_neutral_not_failed():
+    """A skill_manage write the agent will re-plan (size cap, stale old_string) keeps the tool's own
+    emoji and a dim reason: no red ✗ for the agent's routine retry loop."""
+    from agent.display import get_tool_emoji
+    from hermes_cli.cli_modern_layout import _RED, tool_row
+
+    refused = ('{"success": false, "error": "operations[0] (patch on \'hermes-agent-dev\') failed: '
+               'SKILL.md content is 100,193 characters (limit: 100,000).", '
+               '"file_preview": "Never ignore a ROLLBACK FAILED note."}')
+    row = tool_row("skill_manage", {"operations": [{"action": "patch", "name": "hermes-agent-dev"}]}, 1.1, refused)
+    assert _plain(row).startswith(get_tool_emoji("skill_manage") + " "), row
+    assert "[operations[0]" in _plain(row) and _RED not in row, row
+    # A failed rollback left partial changes on disk: that one stays a red failure.
+    broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
+    assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
 
 
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):

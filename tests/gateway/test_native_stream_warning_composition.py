@@ -25,7 +25,7 @@ async def test_warning_and_media_failure_do_not_seal_requested_final(tmp_path, m
     assert first.success
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=META["thread_id"])
     ctx = TurnContext(source=source, user_config=cfg, _run_still_current=lambda: True,
-        _status_adapter=adapter, _status_chat_id="D1", _status_thread_metadata=dict(META))
+        _status_adapter_pinned=adapter, _status_chat_id="D1", _status_thread_metadata=dict(META))
     turn = TurnRunner(SimpleNamespace(), ctx)
     loop = asyncio.get_running_loop()
     scheduled = []

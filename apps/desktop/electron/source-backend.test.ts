@@ -7,9 +7,10 @@ import path from 'node:path'
 import { test, vi } from 'vitest'
 import WebSocket from 'ws'
 
-import { serveBackendArgs } from './backend-command'
 import { waitForDashboardPort } from './backend-ready'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
+
+const SERVE_ARGS = ['serve', '--host', '127.0.0.1', '--port', '0']
 
 interface Fixture {
   root: string
@@ -133,7 +134,7 @@ test.skipIf(process.platform === 'win32')(
           }
         }
 
-        const backend: SourceBackend | null = await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), {
+        const backend: SourceBackend | null = await resolveSourceInstallationBackend(fixture.root, SERVE_ARGS, {
           hermesHome: env.HERMES_HOME,
           env
         })
@@ -198,7 +199,7 @@ test.skipIf(process.platform === 'win32')(
 
       fs.unlinkSync(fixture.launcher)
       assert.equal(
-        await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), { hermesHome: env.HERMES_HOME, env }),
+        await resolveSourceInstallationBackend(fixture.root, SERVE_ARGS, { hermesHome: env.HERMES_HOME, env }),
         null,
         'a missing PM command must not fall back to the stale venv'
       )

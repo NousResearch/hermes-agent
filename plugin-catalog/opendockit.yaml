@@ -1,18 +1,18 @@
 name: opendockit
 repo: https://github.com/hyeonsang010716/OpenDocKit
-sha: 5056bfea12f422bf967145d80b74f6daa2000081
+sha: 405418e593d15930b2fc49489c71fafb0d9d0f86
 subdir: hermes-plugin
-description: "Read local documents as Markdown: PDF, Word, PowerPoint, Excel, CSV, HWP/HWPX, OpenDocument, RTF, EPUB, HTML and email, whole or by page, slide or sheet, with a skill for reading long documents in parts. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — runs a local stdio MCP server through uvx (opendockit[mcp]==0.3.11 with dependencies resolved as of 2026-11-16, downloaded from PyPI on first start); read-only; reads any file the user can read unless OPENDOCKIT_MCP_ROOTS names the allowed folders; no network when converting, no telemetry, no credentials; no OCR."
+description: "Read local documents as Markdown: PDF, Word, PowerPoint, Excel, CSV, HWP/HWPX, OpenDocument, RTF, EPUB, HTML and email, whole or by page, slide or sheet, with a skill for reading long documents in parts. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — runs a local stdio MCP server through uvx (opendockit[mcp]==0.3.14 with dependencies resolved as of 2026-11-19, downloaded from PyPI on first start); read-only; reads any file the user can read unless OPENDOCKIT_MCP_ROOTS names the allowed folders; no network when converting, no telemetry, no credentials; no OCR."
 maintainer: hyeonsang010716
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/hyeonsang010716/OpenDocKit/tree/main/hermes-plugin
-version: "0.3.11"
-image: https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/5056bfea12f422bf967145d80b74f6daa2000081/docs/assets/social-preview.png
+version: "0.3.14"
+image: https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/405418e593d15930b2fc49489c71fafb0d9d0f86/docs/assets/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/5056bfea12f422bf967145d80b74f6daa2000081/docs/assets/hermes/demo-hwpx.gif
-  - https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/5056bfea12f422bf967145d80b74f6daa2000081/docs/assets/hermes/answer-hwpx.png
+  - https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/405418e593d15930b2fc49489c71fafb0d9d0f86/docs/assets/hermes/demo-hwpx.gif
+  - https://raw.githubusercontent.com/hyeonsang010716/OpenDocKit/405418e593d15930b2fc49489c71fafb0d9d0f86/docs/assets/hermes/answer-hwpx.png
 platforms: []
 capabilities:
   provides_tools: []

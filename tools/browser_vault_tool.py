@@ -403,7 +403,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
     socket and never enters the conversation. A saved login's code is only minted on its saved origin(s)."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback, invoke_code_prompt
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
@@ -459,7 +459,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
         return json.dumps({"success": False, "error_type": "prompt_unavailable",
                            "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
                                      "Save an authenticator key for this login so codes can be generated automatically.")})
-    code = (prompt(site, "") or "").strip().replace(" ", "").replace("-", "")
+    code = (invoke_code_prompt(prompt, site, "", origin=origin) or "").strip().replace(" ", "").replace("-", "")
     if not code:
         return json.dumps({"success": False, "error_type": "code_declined",
                            "error": "The user did not enter a code. Do not ask again this turn."})

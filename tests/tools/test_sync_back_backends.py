@@ -1,6 +1,7 @@
 """Tests for backend-specific bulk download implementations and cleanup() wiring."""
 
 import asyncio
+import base64
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,19 +44,24 @@ def _make_mock_modal_env():
     env._sync_manager = None
     return env
 
-def _wire_modal_download(env, *, tar_bytes=b"fake-tar-data", exit_code=0):
-    """Wire sandbox.exec.aio to return mock tar output for download tests.
+def _wire_modal_download(env, *, tar_bytes=b"fake-tar-data", exit_code=0, stderr_text=""):
+    """Wire sandbox.exec.aio to return mock base64 tar output for download tests.
 
-    Returns the exec_calls list for assertion.
+    Modal streams are UTF-8 text, so the sandbox ships `base64 <tar>`; simulating raw tar
+    bytes here would be lying about the transport. Returns the exec_calls list.
     """
     exec_calls = []
+    b64_text = base64.b64encode(tar_bytes).decode("ascii") + "\n"
 
     async def mock_exec_fn(*args, **kwargs):
         exec_calls.append(args)
         proc = MagicMock()
         proc.stdout = MagicMock()
         proc.stdout.read = MagicMock()
-        proc.stdout.read.aio = AsyncMock(return_value=tar_bytes)
+        proc.stdout.read.aio = AsyncMock(return_value=b64_text)
+        proc.stderr = MagicMock()
+        proc.stderr.read = MagicMock()
+        proc.stderr.read.aio = AsyncMock(return_value=stderr_text)
         proc.wait = MagicMock()
         proc.wait.aio = AsyncMock(return_value=exit_code)
         return proc
@@ -191,7 +197,7 @@ class TestModalBulkDownload:
     """Unit tests for _modal_bulk_download."""
 
     def test_modal_bulk_download_command(self, tmp_path):
-        """exec should be called with tar cf - -C /root/.hermes ."""
+        """exec ships base64(tar) out of the sandbox and the local side decodes it."""
         env = _make_mock_modal_env()
         exec_calls = _wire_modal_download(env, tar_bytes=b"tar-content")
         dest = tmp_path / "backup.tar"
@@ -202,10 +208,28 @@ class TestModalBulkDownload:
         args = exec_calls[0]
         assert args[0] == "bash"
         assert args[1] == "-c"
+        # Uncompressed: sync_back_max_bytes caps extracted size, like the ssh/daytona backends.
         assert "tar cf -" in args[2]
         assert "-C / root/.hermes" in args[2]
         # Live sockets cannot be archived; exclude them like the SSH backend.
         assert "--exclude='*.sock'" in args[2]
+        # Modal streams are UTF-8 text: the archive must be base64 on the wire, and a failing
+        # tar must not be masked by a successful base64 exit status.
+        assert args[2].rstrip().endswith("| base64")
+        assert args[2].startswith("set -o pipefail;")
+        assert dest.read_bytes() == b"tar-content"
+
+    def test_modal_bulk_download_failure_raises_with_stderr(self, tmp_path):
+        """pipefail makes a tar failure audible; the stderr text must reach the raised error."""
+        env = _make_mock_modal_env()
+        _wire_modal_download(env, exit_code=2, stderr_text="tar: /root/.hermes: Cannot open")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            env._modal_bulk_download(tmp_path / "backup.tar")
+
+        message = str(excinfo.value)
+        assert "exit 2" in message
+        assert "Cannot open" in message
 
 class TestModalCleanup:
     """Verify Modal cleanup() calls sync_back() before terminate."""

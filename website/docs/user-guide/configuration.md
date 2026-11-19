@@ -583,7 +583,7 @@ terminal:
   container_persistent: true       # Snapshot/restore filesystem
 ```
 
-**Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file. The `~/.modal.toml` login is used only by a single-profile Hermes: on a multiplexed gateway, each routed profile needs both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in its own `.env` (or secret source), and is refused without them.
+**Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file. These are for direct Modal; the managed Nous tool gateway needs neither. The `~/.modal.toml` login is used only by a single-profile Hermes: on a multiplexed gateway, direct Modal for a routed profile needs both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in that profile's own `.env` (or secret source), and is refused without them.
 
 **Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json` and are retained until you delete them (Hermes opts out of the Modal SDK's 30-day snapshot expiry). This preserves filesystem state, not live processes, PID space, or background jobs.
 
@@ -708,7 +708,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Local** — No special requirements. The safest default when getting started.
 - **Docker** — Run `docker version` to verify Docker is working. If it fails, fix Docker or `hermes config set terminal.backend local`.
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
-- **Modal** — Needs `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`, or `~/.modal.toml` for a single-profile Hermes. A routed profile on a multiplexed gateway needs both tokens in its own `.env`. Run `hermes doctor` to check.
+- **Modal** — Direct Modal needs `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`, or `~/.modal.toml` for a single-profile Hermes; a routed profile on a multiplexed gateway needs both tokens in its own `.env` (or secret source). Managed Modal uses the Nous tool gateway instead. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs the `singularity` plugin (`hermes plugins install singularity`) and `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 - **Sprites** — Needs the `sprites` plugin and `SPRITES_TOKEN`. `hermes doctor` shows the token, SDK and naming checks.

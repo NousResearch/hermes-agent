@@ -325,6 +325,44 @@ describe('useBackgroundQueueDrain', () => {
     }
   })
 
+  // A request another surface sends through the composer during the pause is held in this queue too. A
+  // preview widget's is hidden: an instruction for the model, never a message the user wrote. If the user
+  // opens another chat before the continuation has completed, this drainer sends it, still hidden.
+  it('sends a hidden request held for a paused reply as hidden once the pause ends', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn<(text: string, options?: SubmitTextOptions) => Promise<boolean>>(async () => true)
+
+    const entry = enqueueQueuedPrompt('stored-session-a', {
+      text: 'the widget choice',
+      attachments: [],
+      displayKind: 'hidden'
+    })!
+
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+      expect(submitText).toHaveBeenCalledWith('the widget choice', {
+        submission_id: entry.id,
+        attachments: [],
+        displayKind: 'hidden',
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    } finally {
+      endReplyPause('stored-session-a')
+    }
+  })
+
   it('passes a null runtime id so submitText can resume stale background sessions by stored id', async () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)

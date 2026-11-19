@@ -35,7 +35,9 @@ framework-controlled forms keep it, and the password is written straight into
 its field, never as keystrokes another frame on the page could catch. A fill counts only once the page has held every value for a
 moment; a page that reverts it, moves focus while it is being typed, or leaves
 the login's site before the fill is checked gets a refusal instead. The tool result it sees is
-`{filled_fields: 2, origin: "https://github.com"}`; the password is also
+`{filled_fields: 2, identifier_filled: true, origin: "https://github.com"}`
+(when the form has no single box for the identifier, the fill skips it and
+tells the agent to type it before submitting); the password is also
 registered with the redactor so a later page read cannot echo it back.
 
 ### Desktop preview or managed browser

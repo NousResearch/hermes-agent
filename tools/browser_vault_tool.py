@@ -15,7 +15,8 @@ paid per request) and available wherever a browser is. Its actions:
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv) — or, for a plugin browser with no CDP
   endpoint, through its registered ``BrowserPageBackend`` (Camofox's REST evaluate) — and the tool
-  result reports only ``{filled_fields, kind, origin, success}`` — the
+  result reports only ``{filled_fields, kind, origin, success}`` (a login also says whether its
+  identifier was filled, ``identifier_filled``) — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
   no later browser tool call can echo them back to the model.
@@ -1094,13 +1095,15 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
+    identifier_fill: list[dict[str, Any]] = []
     try:
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
             if with_identifier:
-                fills += _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""),
-                                          meta.identifier_type)
+                identifier_fill = _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""),
+                                                   meta.identifier_type)
+                fills += identifier_fill
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -1158,11 +1161,22 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     out = {"success": True, "filled_fields": landed, "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
-                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
+        # The read-back passed, so every targeted field holds its value: the identifier was filled
+        # exactly when one was targeted.
+        out["identifier_filled"] = bool(identifier_fill)
+        out["next"] = _login_next(meta, identifier_filled=bool(identifier_fill))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)
+
+
+def _login_next(meta: Any, *, identifier_filled: bool) -> str:
+    """The next step after a login fill landed: submit, after typing the identifier when the fill
+    found no single box for it (the password field is filled; the username box may still be empty)."""
+    first = ("Type the identifier into the username field if the form has one, then submit."
+             if meta.identifier and not identifier_filled else "Submit.")
+    return (first + " If the site then asks for a verification code, call browser_vault action=enter_code with "
+            "this handle" + (" (a code will be generated automatically)." if meta.has_otp else "."))
 
 
 def _confirm_payment_fill(label: str, origin: str) -> bool:

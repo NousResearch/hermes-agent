@@ -452,6 +452,7 @@ class TestBrowserVaultTools:
             "backend": "local",
             "kind": "login",
             "origin": "https://example.com",
+            "identifier_filled": False,
         }
         assert "s3cret-pw" not in raw
         # The secret expression only ever goes through the secret eval path,
@@ -1229,6 +1230,42 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is True and out["filled_fields"] == 2, out
 
+    @pytest.mark.parametrize("boxes, filled", [
+        ([{"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"}], True),
+        ([{"autocomplete": "", "formIndex": 0, "index": i, "label": "", "name": "", "type": "text"} for i in (0, 2)],
+         False),
+    ], ids=["identifier-filled", "identifier-skipped"])
+    def test_the_result_says_whether_the_identifier_was_filled(self, store, boxes, filled):
+        """Two unlabelled boxes beside the password are ambiguous, so the fill skips the identifier.
+        The model must then type it itself: the result says so, and ``next`` asks for it instead of
+        telling the model to submit a form with an empty username."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = boxes + [{"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "",
+                             "name": "pw", "type": "password"}]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["identifier_filled"] is filled, out
+        assert out["filled_fields"] == (2 if filled else 1)
+        asks = "type the identifier" in out["next"].lower()
+        assert asks is not filled, out["next"]
+        assert "user@example.com" not in out["next"]
+
     def test_an_unlabelled_identifier_box_is_typed_not_written_by_js(self, store):
         """The fallback's box is unclassified, but it is a text field: with a working supervisor it
         is typed (trusted input), not written by the JS path a controlled form re-renders empty."""
@@ -1627,12 +1664,15 @@ class TestSaveLoginPrompt:
         assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
 
     @pytest.mark.parametrize("fill", [
-        {"success": True, "filled_fields": 2, "next": "Submit."},
+        {"success": True, "filled_fields": 2, "identifier_filled": True, "next": "Submit."},
+        {"success": True, "filled_fields": 1, "identifier_filled": False,
+         "next": "Type the identifier into the username field if the form has one, then submit."},
         {"success": False, "error_type": "focus_lost", "filled_fields": 0, "error": "focus moved"},
-    ], ids=["filled", "not-filled"])
-    def test_next_follows_the_fill_and_never_asks_to_type_the_identifier(self, store, monkeypatch, fill):
-        """The fill already types the identifier: a model told to type it again would write it a second
-        time into a field the vault just filled. A failed fill says the login is saved and how to retry."""
+    ], ids=["filled", "identifier-skipped", "not-filled"])
+    def test_next_follows_the_fill(self, store, monkeypatch, fill):
+        """The fill knows whether it typed the identifier: a model told to type it again would write it a
+        second time into a field the vault just filled, and one told only to submit would leave a skipped
+        username empty. A failed fill says the login is saved and how to retry."""
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool
 
@@ -1647,10 +1687,10 @@ class TestSaveLoginPrompt:
             unlock_mod.set_save_login_prompt_callback(None)
         assert out["success"] is True and out["fill"] == fill
         if fill["success"]:
-            assert out["next"] == "Submit."
+            assert out["next"] == fill["next"]
         else:
             assert "saved" in out["next"] and "handle" in out["next"] and "action=fill" in out["next"]
-        assert "Type the identifier" not in out["next"]
+            assert "Type the identifier" not in out["next"]
 
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod

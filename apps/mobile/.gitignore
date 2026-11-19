@@ -1,0 +1,21 @@
+node_modules/
+ios/App/Pods/
+ios/App/App/public/
+ios/App/output/
+ios/DerivedData/
+.DS_Store
+desktop-port/vendor/
+desktop-port/dist/
+
+# Scratch/Reviews
+.playwright-mcp/
+*-boot.png
+*-chat.png
+v3-connect-browser.png
+.claude/
+
+# Design debug screenshots (repo root)
+/*.png
+
+# Internal session artifacts
+.superpowers/

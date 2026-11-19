@@ -2821,11 +2821,25 @@ def _set_chat_arg_defaults(args) -> None:
             setattr(args, attr, default)
 
 
+def _preflight_direct_oneshot(args) -> None:
+    """Direct/auto pre-route before plugin/MCP discovery or gateway agent startup."""
+    if not getattr(args, "oneshot", None) or getattr(args, "execution_mode", "agent") not in ("direct", "auto"):
+        return
+    from hermes_cli.execution_gate import run_pre_agent_oneshot
+    result = run_pre_agent_oneshot(args)
+    if result is not None:
+        sys.exit(result)
+
+
 def _run_oneshot_from_args(args) -> None:
     """Top-level --oneshot / -z: single-shot mode, stdout = final response only.
 
     Bypasses cli.py entirely; the transport launcher never returns.
     """
+    from hermes_cli.execution_gate import run_pre_agent_oneshot
+    result = run_pre_agent_oneshot(args)
+    if result is not None:
+        sys.exit(result)
     from hermes_cli.gateway_chat_startup import launch_gateway_chat
     sys.exit(launch_gateway_chat(args))
 
@@ -2933,6 +2947,7 @@ def _try_fast_chat_launch() -> bool:
     _enable_cpu_profile(args)
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    _preflight_direct_oneshot(args)
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
@@ -2978,6 +2993,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
+        _preflight_direct_oneshot(args)
         _prepare_agent_startup(args)
         _run_oneshot_from_args(args)
 
@@ -3347,6 +3363,7 @@ def main():
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and
     # trigger no consent prompts for hooks the user is still inspecting.
+    _preflight_direct_oneshot(args)
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):

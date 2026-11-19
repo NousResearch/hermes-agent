@@ -169,7 +169,9 @@ class StatusReporter:
         # froze beats on waking, and one that woke soon after (or never froze) says so within a
         # minute, however long an interval the receiver set.
         self._due_at = self._no_beat_before
-        task = asyncio.get_running_loop().create_task(self._say_goodbye())
+        # Its seq is taken now, below any beat after it: a goodbye held up past a wake must not
+        # outrank the wake beat at the receiver.
+        task = asyncio.get_running_loop().create_task(self._say_goodbye(next(self._seqs), self._no_beat_before))
         self._goodbyes.add(task)  # the loop keeps only a weak reference to a running task
         task.add_done_callback(self._goodbye_done)
 
@@ -180,13 +182,16 @@ class StatusReporter:
         if not task.cancelled() and task.exception() is not None:
             logger.debug("status report: goodbye not sent (%s)", type(task.exception()).__name__)
 
-    async def _say_goodbye(self) -> None:
+    async def _say_goodbye(self, seq: int, quiet_until: float) -> None:
         # The lock as of now, not as of the last beat: a sender stopped long enough for another
         # gateway to take its lock would otherwise say goodbye for the machine that gateway reports.
         if not await self._become_sender():
             logger.debug("status report: goodbye not sent (not the sender)")
             return
-        body = await self._next_report("goodbye")
+        body = await self._next_report("goodbye", seq=seq)
+        if time.time() >= quiet_until:  # held up past its quiet minute: the machine is awake again
+            logger.debug("status report: goodbye not sent (held up past its quiet minute)")
+            return
         outcome = await self._off_loop(
             post_report, self._target, body, timeout=_GOODBYE_TIMEOUT_S, opener=self._opener)
         logger.info("status report: goodbye %s (%s)", outcome.kind, outcome.status or "no reply")
@@ -237,8 +242,8 @@ class StatusReporter:
             self._standing_by_for = why
             logger.log(level, "status report: %s; standing by", why)
 
-    async def _next_report(self, kind: ReportKind) -> bytes:
-        seq = next(self._seqs)
+    async def _next_report(self, kind: ReportKind, *, seq: Optional[int] = None) -> bytes:
+        seq = next(self._seqs) if seq is None else seq
         source = await self._off_loop(self._read_scoped_source)
         return build_report(kind, seq=seq, boot_id=self.boot_id, source=source)
 

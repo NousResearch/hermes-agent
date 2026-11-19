@@ -6,6 +6,7 @@ import asyncio
 import errno
 import gc
 import logging
+import threading
 
 import pytest
 
@@ -284,6 +285,35 @@ async def test_a_beat_that_could_not_confirm_the_lock_after_the_goodbye_keeps_th
     await reporter.poll()
 
     assert receiver.kinds == ["beat", "goodbye", "beat"]
+
+
+async def test_a_goodbye_held_up_past_its_quiet_minute_is_not_sent(clock, monkeypatch):
+    """The machine can freeze before the goodbye has confirmed the lock, and wake after its quiet
+    minute. The wake beat then says the gateway is awake, and a goodbye sent after it would say it
+    sleeps: it is dropped."""
+    confirming, release, tries = threading.Event(), threading.Event(), []
+
+    def take_the_lock(scope, identity):
+        tries.append(scope)
+        if len(tries) == 2:  # the goodbye's confirmation: the machine freezes in the middle of it
+            confirming.set()
+            release.wait(timeout=5)
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    reporter.goodbye()
+    await async_wait_until(confirming.is_set, timeout=5, what="the goodbye confirming the lock")
+    clock.advance(3 * 60)  # frozen, then woken after the quiet minute
+    await reporter.poll()
+    assert receiver.kinds == ["beat", "beat"], "no beat on waking"
+
+    release.set()
+    await settle()
+
+    assert receiver.kinds == ["beat", "beat"], "a goodbye went out after the machine woke"
 
 
 async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clock):

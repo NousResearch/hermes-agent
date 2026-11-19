@@ -54,6 +54,7 @@ export const DISABLED_CLERK_SNAPSHOT: ClerkSessionSnapshot = {
 export const $clerkSession = atom<ClerkSessionSnapshot>({ ...DISABLED_CLERK_SNAPSHOT })
 
 let currentActions: ClerkSessionActions | null = null
+let currentSignInAction: (() => void) | null = null
 
 export function registerClerkSessionActions(actions: ClerkSessionActions | null): () => void {
   currentActions = actions
@@ -61,6 +62,19 @@ export function registerClerkSessionActions(actions: ClerkSessionActions | null)
   return () => {
     if (currentActions === actions) {
       currentActions = null
+    }
+  }
+}
+
+/** Register the sign-in opener separately from the signed-in organization actions:
+ *  a browser-hosted Desktop keeps the app usable while signed out and still needs
+ *  the account panel's Login to open Clerk's modal. */
+export function registerClerkSignInAction(action: (() => void) | null): () => void {
+  currentSignInAction = action
+
+  return () => {
+    if (currentSignInAction === action) {
+      currentSignInAction = null
     }
   }
 }
@@ -83,6 +97,13 @@ export function patchClerkSession(patch: Partial<ClerkSessionSnapshot>): void {
 
 export const clerkSessionHost = {
   snapshot: $clerkSession as ReadableAtom<ClerkSessionSnapshot>,
+  signIn: async (): Promise<void> => {
+    if (!currentSignInAction) {
+      throw new Error('Clerk sign-in is not available')
+    }
+
+    currentSignInAction()
+  },
   setActiveOrganization: async (organizationId: null | string): Promise<void> =>
     requireClerkSessionActions().setActiveOrganization(organizationId),
   createOrganization: async (input: ClerkOrganizationInput): Promise<ClerkOrganizationSummary> =>
@@ -91,6 +112,7 @@ export const clerkSessionHost = {
   signOut: async (): Promise<void> => requireClerkSessionActions().signOut()
 } satisfies {
   snapshot: ReadableAtom<ClerkSessionSnapshot>
+  signIn: () => Promise<void>
   setActiveOrganization: (organizationId: null | string) => Promise<void>
   createOrganization: (input: ClerkOrganizationInput) => Promise<ClerkOrganizationSummary>
   refresh: () => Promise<void>

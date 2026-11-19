@@ -19,17 +19,21 @@ const mocks = vi.hoisted(() => {
   }))
 
   const signOut = vi.fn(async () => undefined)
+  const openSignIn = vi.fn(() => undefined)
 
   return {
     clerk: {
       createOrganization,
       loaded: true,
+      openSignIn,
       session: { clearCache: vi.fn(), getToken },
       setActive,
       signOut
     },
     createOrganization,
     getToken,
+    openSignIn,
+    state: { signedIn: true },
     organization: {
       id: 'org_1',
       imageUrl: null,
@@ -69,8 +73,8 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@clerk/electron/react', () => ({
-  useAuth: () => ({ getToken: mocks.getToken, isLoaded: true, isSignedIn: true }),
+vi.mock('@clerk/react', () => ({
+  useAuth: () => ({ getToken: mocks.getToken, isLoaded: true, isSignedIn: mocks.state.signedIn }),
   useClerk: () => mocks.clerk,
   useOrganization: () => ({ organization: mocks.organization }),
   useUser: () => ({ user: mocks.user })
@@ -109,6 +113,8 @@ describe('ClerkSessionBridge', () => {
     mocks.setActive.mockClear()
     mocks.createOrganization.mockClear()
     mocks.signOut.mockClear()
+    mocks.openSignIn.mockClear()
+    mocks.state.signedIn = true
     $clerkSession.set({ ...DISABLED_CLERK_SNAPSHOT })
   })
 
@@ -165,6 +171,20 @@ describe('ClerkSessionBridge', () => {
 
     expect(mocks.signOut).toHaveBeenCalled()
     expect($clerkSession.get().status).toBe('signed-out')
+  })
+
+  it('opens Clerk sign-in from the account panel while signed out', async () => {
+    mocks.state.signedIn = false
+
+    render(<ClerkSessionBridge />)
+
+    await waitFor(() => expect($clerkSession.get().status).toBe('signed-out'))
+
+    await act(async () => {
+      await clerkSessionHost.signIn()
+    })
+
+    expect(mocks.openSignIn).toHaveBeenCalledWith({})
   })
 
   it('applies an organization switch relayed from another window', async () => {

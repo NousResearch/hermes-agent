@@ -24,7 +24,6 @@ import contextvars
 import importlib
 import os
 import re
-import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -379,14 +378,14 @@ def _backend_for(kind: str) -> ConfigBackend:
     if not _KIND_RE.fullmatch(kind):
         raise ConfigBackendUnavailable(unknown)
     name = f"{_BACKENDS_PACKAGE}.{kind}"
-    module = sys.modules.get(name)
-    if module is None:
-        try:
-            module = importlib.import_module(name)
-        except ImportError as exc:
-            if exc.name != name and not name.startswith(f"{exc.name}."):
-                raise  # the backend exists but is broken: show that, not "unknown"
-            raise ConfigBackendUnavailable(unknown) from exc
+    try:
+        # Not a sys.modules lookup: another thread's first config read may still be running the
+        # backend's body, which defines get_backend; import_module waits for that import.
+        module = importlib.import_module(name)
+    except ImportError as exc:
+        if exc.name != name and not name.startswith(f"{exc.name}."):
+            raise  # the backend exists but is broken: show that, not "unknown"
+        raise ConfigBackendUnavailable(unknown) from exc
     get_backend = getattr(module, "get_backend", None)
     if not callable(get_backend):
         raise ConfigBackendUnavailable(unknown)

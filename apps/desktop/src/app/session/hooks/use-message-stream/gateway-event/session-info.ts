@@ -41,6 +41,7 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
+import { payTurnEndReport, runningEdge } from './turn-end-report'
 import type { GatewayEventContext } from './types'
 
 /**
@@ -187,13 +188,6 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
 
-    // Reconnect can miss the structured `compacted` edge. A gateway-authored
-    // running=false is a terminal fact; a running heartbeat is intentionally
-    // not used as a timeout-like guess, so genuine compaction stays visible.
-    if (sessionId && payload?.running === false) {
-      reconcileSessionCompacting(sessionId, 'terminal')
-    }
-
     // The backend stamps model/provider (as strings) on EVERY session.info,
     // so the presence flags above are true on every heartbeat/turn edge —
     // fine for the cheap atom writes below (nanostores skips identical
@@ -330,7 +324,18 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // its dot without the user opening it. updateSessionState only
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
-    if (runningChanged && sessionId) {
+    // A completed turn's end-of-turn report, delivered after the next turn's
+    // message.start (ClientSessionState.turnEndReportsOwed): it says nothing about
+    // the turn now live, so it neither ends that turn's compaction phase, nor
+    // clears its prompts, nor settles it.
+    if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
+      // Reconnect can miss the structured `compacted` edge. A gateway-authored
+      // running=false is a terminal fact; a running heartbeat is intentionally
+      // not used as a timeout-like guess, so genuine compaction stays visible.
+      if (!payload!.running) {
+        reconcileSessionCompacting(sessionId, 'terminal')
+      }
+
       // The agent loop's finally block emits running=false even when a
       // reconnect gap or provider crash swallowed message.complete — and
       // message.complete is where the turn-end prompt clear lives. An
@@ -359,8 +364,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
 
       const nextState = updateSessionState(
         sessionId,
-        state => {
+        prior => {
           const busy = Boolean(payload!.running)
+          const state = payTurnEndReport(prior, busy)
 
           if (state.busy === busy && (busy || !state.awaitingResponse)) {
             return state

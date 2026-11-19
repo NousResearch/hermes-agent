@@ -20,7 +20,6 @@ from agent.reasoning_effort import (
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 from agent.codex_headers import is_official_codex_base_url
-from agent.codex_responses_adapter import apply_developer_instructions_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -758,7 +757,7 @@ class ResponsesApiTransport(ProviderTransport):
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
 
-        from agent.codex_responses_adapter import responses_endpoint_quirks
+        from agent.codex_responses_adapter import apply_developer_instructions_if_needed, responses_endpoint_quirks
 
         endpoint = responses_endpoint_quirks(params.get("base_url"))
         is_codex_backend = params.get("is_codex_backend") is True

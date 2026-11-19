@@ -1,0 +1,30 @@
+name: ai-executive
+title: AI Executive
+repo: https://github.com/jghaygood/ai-executive-hermes-plugin
+sha: 92692ec374a1673140815f426f652cc6104bc82f
+description: >-
+  Ask your AI Executive assistant a question and see today's calendar, open tasks and the calls that
+  need you, through AI Executive's hosted MCP server (Streamable HTTP, OAuth 2.1), with a daily-brief
+  skill bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure —
+  hosted-only connector with no local code: every tool call goes to connect.aiexec.me, signed in as the
+  user with the Google account on their AI Executive membership (a paid AI Executive or After Hours AI
+  plan is required; sign-in does not create an account). Calendar, task and conversation summaries from
+  the user's account are pulled into the session context, and so reach the user's model provider; phone
+  numbers arrive masked. Both tools are read-only; nothing is booked, sent, purchased or published.
+  AI Executive logs each call's metadata. The tool list comes from the server at run time, so the
+  pinned commit doesn't cover it. Hermes stores and refreshes the OAuth tokens. OAuth must be enabled with
+  `hermes mcp add ai-executive --url https://connect.aiexec.me/mcp --auth oauth`;
+  the bundled mcp.json alone yields 401.
+maintainer: jghaygood
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/jghaygood/ai-executive-hermes-plugin/blob/92692ec374a1673140815f426f652cc6104bc82f/README.md
+version: "1.0.0"
+image: https://raw.githubusercontent.com/jghaygood/ai-executive-hermes-plugin/92692ec374a1673140815f426f652cc6104bc82f/assets/catalog-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

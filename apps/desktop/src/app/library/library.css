@@ -20,18 +20,18 @@
   }
 }
 
-/* Its column is the page stage contract's (portal-pages.css). */
+/* Its column is the page stage contract's (portal-pages.css). The header keeps the page rhythm under
+   it, as on every page; what follows it stacks 20 apart. */
 .library-stage {
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 1.25rem;
   padding-block: var(--portal-page-top) var(--portal-page-end-space);
 }
 
-.library-stage > .portal-page-header {
-  margin-bottom: 0;
+.library-stage > :not(.portal-page-header) + * {
+  margin-top: 1.25rem;
 }
 
 .library-search {
@@ -350,15 +350,6 @@
 }
 
 /* ── States ── */
-
-.library-empty,
-.library-error {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-  padding-block: 4rem;
-}
 
 .library-skeleton {
   display: flex;

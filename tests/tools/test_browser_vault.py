@@ -190,6 +190,12 @@ class TestClassifier:
         for label in ("New password", "Confirm Password", "create-password", "Repeat  password"):
             assert classify_login_control(_ctrl(type="password", label=label)) is None, label
 
+    def test_a_declared_login_token_outranks_the_label_exclusion(self):
+        # The label regex excludes controls that declare nothing; a page's own autocomplete token wins.
+        for label in ("Confirm password", "Password  Forgot it? Set a new password"):
+            res = classify_login_control(_ctrl(type="password", autocomplete="current-password", label=label))
+            assert res is not None and (res.token, res.score) == ("current-password", 100), label
+
     def test_password_type_maps_current_password(self):
         res = classify_login_control(_ctrl(type="password"))
         assert res.token == "current-password"

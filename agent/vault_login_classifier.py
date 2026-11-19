@@ -11,8 +11,9 @@ Scoring:
 - type=password (not new/confirm/create/repeat) .. 90
 - type=email / type=tel .......................... 85
 - label/name regex heuristics .................. 70-75
-Hard exclusions: autocomplete ``new-password`` / ``one-time-code``, and
-label/name text matching ``(new|confirm|create|repeat)\\s*password``.
+Hard exclusions: autocomplete ``new-password`` / ``one-time-code`` (checked
+first), and label/name text matching ``(new|confirm|create|repeat)\\s*password``
+(checked after a declared login token, which outranks the label).
 """
 
 from __future__ import annotations
@@ -111,12 +112,15 @@ def _searchable(control: LoginControl) -> str:
 
 def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control, or return None if it is not a login fill target."""
-    if is_excluded_login_control(control):
-        return None
     autocomplete_tokens = control.autocomplete.lower().split()
+    if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
+        return None
+    # A login token the page declares outranks the label text, as before the shared helper existed.
     for token in LOGIN_AUTOFILL_TOKENS:
         if token in autocomplete_tokens:
             return ClassifiedLoginControl(control, 100, token)
+    if is_excluded_login_control(control):
+        return None
 
     searchable = _searchable(control)
     if control.type == "password":

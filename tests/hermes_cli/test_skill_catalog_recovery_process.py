@@ -1,5 +1,4 @@
 """Recovery after real writer exit retains one exact phase and admission."""
-import json
 import multiprocessing
 import os
 import uuid

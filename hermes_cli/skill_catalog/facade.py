@@ -1,6 +1,5 @@
 """Owning-context mutation facade, including legacy native receipt admission."""
 import hashlib
-import time
 import threading
 from pathlib import Path
 

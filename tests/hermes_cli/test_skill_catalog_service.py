@@ -1,5 +1,4 @@
 """Common service routes exact authority before filesystem prerequisites."""
-import uuid
 import time
 
 import pytest

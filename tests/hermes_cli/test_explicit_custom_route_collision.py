@@ -6,7 +6,9 @@ import json
 def test_complete_custom_snapshot_survives_unrelated_entry_with_same_model(tmp_path, monkeypatch):
     import cli
     from hermes_cli import runtime_provider
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
 
     home = tmp_path / "profile"
     home.mkdir()
@@ -34,11 +36,11 @@ def test_complete_custom_snapshot_survives_unrelated_entry_with_same_model(tmp_p
                 "api_mode": "anthropic_messages"}
 
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", resolve)
-    with SessionDB(home / "state.db") as db:
-        db.create_session("saved", "cli", model="shared-model")
-        db.update_session_model("saved", "shared-model", provider="custom",
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, "saved", "cli", model="shared-model")
+        db.sessions.update_model("saved", "shared-model", provider="custom",
                                 base_url=saved_url, api_mode="anthropic_messages")
-        row = db.get_session("saved")
+        row = session_row(db, "saved")
         assert json.loads(row["model_config"])["gateway_runtime"]["base_url"] == saved_url
 
         resumed = object.__new__(cli.HermesCLI)

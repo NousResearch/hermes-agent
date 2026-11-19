@@ -176,18 +176,18 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, LocalRuntimeUnavailableError):
         # The chosen model is configured; its local server is down. Not a credential verdict, so
         # the client must not offer "Update API key" or sign-in: the sentence names the fix.
         return f"⚠️ {exc}", exc.error_code, exc.retryable
-    if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
+    if isinstance(exc, AuthorityRefusal) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
         from agent.turn_failure_copy import launch_credentials_copy
         return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
-    if isinstance(exc, RuntimeStoreError):
+    if isinstance(exc, AuthorityRefusal):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
         # /login — the profile's own credentials were never in play.
@@ -249,7 +249,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             owner_id = (source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL
                         else authority.logical_owner(ctx.session_id))
             if owner_id in authority.sessions:
-                generation = authority.db.get_session(owner_id)["runtime_generation"]
+                from gateway.session_persistence import authority_persistence
+                from persistence.core.errors import StoreUnavailable
+                if (store := authority_persistence(authority)) is None:
+                    raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+                # A live session without its row fails the turn with the error reading the absent row raises.
+                if (row := store.sessions.get(owner_id)) is None:
+                    raise TypeError("'NoneType' object is not subscriptable")
+                generation = row.runtime_generation
                 self._approval_owner = (authority, owner_id, generation)
 
 
@@ -1189,69 +1196,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         try:
             # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
+            binding = self._runner.persistence.routing.get_topic_binding_for_session(session_id=agent_session_id)
+            if binding and binding.thread_id:
+                ctx.source.thread_id = str(binding.thread_id)
                 logger.debug(
                     "Restored source.thread_id=%s from binding after session split %s → %s",
                     ctx.source.thread_id, ctx.session_id, agent_session_id,
                 )
         except Exception:
             logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
-
-    async def capture_route_sync_fence(self):
-        """Capture only after any in-progress model publication has completed."""
-        from contextlib import nullcontext
-        from gateway.session_authorities import active_authority
-        from gateway.model_publication import publication_lock
-        authority = active_authority(self._runner)
-        try:
-            for _ in range(3):
-                owner = await asyncio.to_thread(authority.logical_owner, self._ctx.session_id) if authority else None
-                live = authority.sessions.get(owner) if authority else None
-                # Wait for this route before taking the global gate, so a pending session
-                # pick cannot make independent routes queue behind this capture.
-                async with live.mutation_lock if live else nullcontext():
-                    route_gate = (publication_lock(self._runner, self._ctx.session_key)
-                                  if self._ctx.session_key is not None else nullcontext())
-                    async with route_gate, publication_lock(self._runner):
-                        current_owner = (await asyncio.to_thread(authority.logical_owner, self._ctx.session_id)
-                                         if authority else None)
-                        current_live = authority.sessions.get(current_owner) if authority else None
-                        if current_owner != owner or current_live is not live:
-                            continue  # mount changed while the gates were being acquired
-                        fence = await asyncio.to_thread(self._capture_route_sync_fence)
-                        if live and fence and fence[0] != owner:
-                            continue
-                        self._route_sync_fence = fence
-                        return
-            self._route_sync_fence = (None, None, None, None, None)
-        except Exception:
-            logger.warning("Cannot capture session route fence", exc_info=True)
-            self._route_sync_fence = (None, None, None, None, None)
-
-    def _capture_route_sync_fence(self):
-        """Capture the messaging mount's revision before resolving this turn's agent."""
-        from gateway.session_authorities import active_authority
-        authority = active_authority(self._runner)
-        try:
-            session_db = self._runner._session_db
-            if session_db is None:
-                return None
-            db = session_db._db
-            if authority and db.db_path.resolve() != authority.db.db_path.resolve():
-                return (None, None, None, None, None)
-            source_id = self._ctx.session_id
-            lineage = db.get_compression_lineage(source_id) if authority is None else None
-            owner = authority.logical_owner(source_id) if authority else (lineage[0] if lineage else source_id)
-            row = db._read_one(
-                "SELECT owner.runtime_revision, owner.runtime_generation, source.model_config "
-                "FROM sessions owner JOIN sessions source ON source.id=? WHERE owner.id=?",
-                (source_id, owner))
-            return (owner, row[0], row[1], source_id, row[2]) if row else (None, None, None, None, None)
-        except Exception:
-            logger.warning("Cannot capture session route fence", exc_info=True)
-            return (None, None, None, None, None)
 
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
@@ -1297,7 +1250,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 src = ctx.source
                 if (
                     getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
+                    and getattr(src, "thread_id", None) is None and runner.persistence is not None
                 ):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
@@ -1305,11 +1258,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if not cli_turn(ctx.inbound_message_id).get("model_override"):
             # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
             # the session's model, or a /resume would come back on the one-turn model.
-            fence = getattr(self, "_route_sync_fence", None)
-            if fence is None:
-                runner._sync_session_model_from_agent(agent_session_id, agent)
+            if hasattr(self, "_model_sync_fences"):
+                runner._sync_session_model_from_agent(agent_session_id, agent, turn_fences=self._model_sync_fences)
             else:
-                runner._sync_session_model_from_agent(agent_session_id, agent, expected_fence=fence)
+                runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.
@@ -1370,12 +1322,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         policy = policy_for_source(self._runner, self._ctx.source)
         with ExitStack() as scope:
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:
                     raise
@@ -1448,6 +1400,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
         try:
+            capture = getattr(runner, "_capture_model_sync_fences", None)
+            if capture is not None:
+                self._model_sync_fences = capture(ctx.session_id)
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )

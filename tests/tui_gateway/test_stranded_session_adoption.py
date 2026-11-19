@@ -4,48 +4,55 @@ Pre-#93296 misrouting accumulated profile-bot sessions in the DEFAULT
 profile's state.db. Post-fix, profile-scoped resumes correctly target the
 profile's own store — which never saw the session — so the same chat 4001'd
 for the opposite reason. These tests pin the heal: the unit-level adoption
-primitive (SessionDB.adopt_session_lineage_from) and its invariants.
+primitive (lineage_adoption.adopt_session_lineage) and its invariants.
 """
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from hermes_state import SessionDB
+from lineage_adoption import adopt_session_lineage
+from persistence.conversation.messages import TranscriptRead, TranscriptView
+from persistence.conversation.sessions import RECOVERABLE_END_REASONS
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 STRANDED_ID = "20260823_043331_c93770"
 
 
 @pytest.fixture()
 def stores(tmp_path):
-    default_db = SessionDB(db_path=tmp_path / "state.db")
+    default_db = open_persistence(profile_scope(home=tmp_path))
     profile_home = tmp_path / "profiles" / "developer"
     profile_home.mkdir(parents=True)
-    profile_db = SessionDB(db_path=profile_home / "state.db")
+    profile_db = open_persistence(profile_scope(home=profile_home))
     yield default_db, profile_db
     default_db.close()
     profile_db.close()
 
 
 def _seed_stranded(db, session_id=STRANDED_ID, turns=3, title="Bot Chat", **kwargs):
-    db.create_session(session_id, source="tui", **kwargs)
-    db.set_session_title(session_id, title)
+    seed_session(db, session_id, "tui", title=title, **kwargs)
     for i in range(1, turns + 1):
-        db.append_message(session_id, "user", f"question {i}")
-        db.append_message(session_id, "assistant", f"answer {i}")
+        seed_messages(db, session_id, {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}"})
 
 
 def test_adoption_moves_session_and_messages(stores):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     assert result["adopted"] is True
     assert result["imported"] == 1
-    row = profile_db.get_session(STRANDED_ID)
+    row = session_row(profile_db, STRANDED_ID)
     assert row is not None
-    msgs = profile_db.get_messages(STRANDED_ID)
+    msgs = transcript_rows(profile_db, STRANDED_ID)
     assert len(msgs) == 6
     assert msgs[0]["content"] == "question 1"
     assert msgs[-1]["content"] == "answer 3"
@@ -55,42 +62,42 @@ def test_donor_is_archived_not_deleted(stores):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
-    donor = default_db.get_session(STRANDED_ID)
+    donor = session_row(default_db, STRANDED_ID)
     assert donor is not None, "donor row must survive (archived, never deleted)"
     assert donor["archived"]
     assert donor["end_reason"] == "adopted_by_profile"
     # bytes stay recoverable
-    assert len(default_db.get_messages(STRANDED_ID)) == 6
+    assert len(transcript_rows(default_db, STRANDED_ID)) == 6
 
 
 def test_adoption_archive_is_not_recoverable_resurrectable(stores):
     """Canonical-lookup resurrection must NOT undo an adoption."""
     default_db, profile_db = stores
     _seed_stranded(default_db)
-    profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
-    assert "adopted_by_profile" not in SessionDB.RECOVERABLE_END_REASONS
-    assert default_db.unarchive_recoverable_session(STRANDED_ID) is False
-    assert default_db.get_session(STRANDED_ID)["archived"]
+    assert "adopted_by_profile" not in RECOVERABLE_END_REASONS
+    assert default_db.sessions.unarchive_recoverable(STRANDED_ID) is False
+    assert session_row(default_db, STRANDED_ID)["archived"]
 
 
 def test_adoption_is_idempotent(stores):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    first = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
-    second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    first = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
+    second = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     assert first["adopted"] and second["adopted"]
     assert second["imported"] == 0 and second["skipped"] == 1
-    assert len(profile_db.get_messages(STRANDED_ID)) == 6
+    assert len(transcript_rows(profile_db, STRANDED_ID)) == 6
 
 
 def test_missing_donor_session_is_reported_not_raised(stores):
     default_db, profile_db = stores
-    result = profile_db.adopt_session_lineage_from(default_db, "nope")
+    result = adopt_session_lineage(profile_db, default_db, "nope")
     assert result["adopted"] is False
     assert "not found" in result["error"]
 
@@ -104,21 +111,20 @@ def test_compression_lineage_adopts_as_a_unit(stores):
     default_db, profile_db = stores
     parent, child = "sess-parent", "sess-child"
     _seed_stranded(default_db, session_id=parent, turns=2)
-    default_db.end_session(parent, "compression")
-    default_db.create_session(child, source="tui", parent_session_id=parent)
-    default_db.set_session_title(child, "Bot Chat")
-    default_db.append_message(child, "user", "post-compaction question")
-    default_db.append_message(child, "assistant", "post-compaction answer")
+    default_db.sessions.end(parent, "compression")
+    seed_session(default_db, child, "tui", title="Bot Chat", parent_session_id=parent)
+    seed_messages(default_db, child, {"role": "user", "content": "post-compaction question"},
+                  {"role": "assistant", "content": "post-compaction answer"})
 
-    result = profile_db.adopt_session_lineage_from(default_db, parent)
+    result = adopt_session_lineage(profile_db, default_db, parent)
 
     assert result["adopted"] is True
     assert result["imported"] == 2
-    assert profile_db.get_session(parent) is not None
-    assert profile_db.get_session(child) is not None
-    assert profile_db.get_session(child)["parent_session_id"] == parent
+    assert session_row(profile_db, parent) is not None
+    assert session_row(profile_db, child) is not None
+    assert session_row(profile_db, child)["parent_session_id"] == parent
     for sid in (parent, child):
-        donor = default_db.get_session(sid)
+        donor = session_row(default_db, sid)
         assert donor["archived"], f"{sid} must be retired in donor store"
 
 
@@ -127,11 +133,11 @@ def test_adoption_does_not_touch_unrelated_sessions(stores):
     _seed_stranded(default_db)
     _seed_stranded(default_db, session_id="other-session", title="Other Chat")
 
-    profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
-    other = default_db.get_session("other-session")
+    other = session_row(default_db, "other-session")
     assert not other["archived"]
-    assert profile_db.get_session("other-session") is None
+    assert session_row(profile_db, "other-session") is None
 
 
 # -------------------------------------------------------------------------
@@ -167,7 +173,7 @@ def gateway(tmp_path, monkeypatch):
 
     methods = dict(mod._methods)
 
-    default_db = SessionDB(db_path=home / "state.db")
+    default_db = open_persistence(profile_scope(home=home))
     mod._db = default_db
 
     profile_home = home / "profiles" / "developer"
@@ -213,14 +219,11 @@ def test_profile_resume_adopts_stranded_default_store_session(gateway):
     assert result.get("message_count") == 6
 
     # Durably adopted into the profile's own store...
-    pdb = SessionDB(db_path=profile_home / "state.db")
-    try:
-        assert pdb.get_session(STRANDED_ID) is not None
-        assert len(pdb.get_messages(STRANDED_ID)) == 6
-    finally:
-        pdb.close()
+    with open_persistence(profile_scope(home=profile_home)) as pdb:
+        assert session_row(pdb, STRANDED_ID) is not None
+        assert len(transcript_rows(pdb, STRANDED_ID)) == 6
     # ...and retired (archived, never deleted) in the default store.
-    donor = default_db.get_session(STRANDED_ID)
+    donor = session_row(default_db, STRANDED_ID)
     assert donor["archived"]
     assert donor["end_reason"] == "adopted_by_profile"
 
@@ -292,13 +295,10 @@ def test_title_lookup_is_never_used_for_adoption(gateway):
     )
 
     assert resp.get("error") and resp["error"]["code"] == 4007
-    innocent = default_db.get_session("innocent-default")
+    innocent = session_row(default_db, "innocent-default")
     assert not innocent["archived"], "unrelated session must never be retired"
-    pdb = SessionDB(db_path=profile_home / "state.db")
-    try:
-        assert pdb.get_session("innocent-default") is None
-    finally:
-        pdb.close()
+    with open_persistence(profile_scope(home=profile_home)) as pdb:
+        assert session_row(pdb, "innocent-default") is None
 
 
 def test_archived_donor_is_not_readopted(gateway):
@@ -307,9 +307,9 @@ def test_archived_donor_is_not_readopted(gateway):
     mod, default_db, profile_home = gateway
     _seed_stranded(default_db)
     # Simulate a prior completed adoption's retirement stamp.
-    default_db.reopen_session(STRANDED_ID)
-    default_db.end_session(STRANDED_ID, "adopted_by_profile")
-    default_db.set_session_archived(STRANDED_ID, True)
+    default_db.sessions.reopen(STRANDED_ID)
+    default_db.sessions.end(STRANDED_ID, "adopted_by_profile")
+    default_db.sessions.set_archived(STRANDED_ID, True)
 
     resp = mod.handle_request(
         {
@@ -324,11 +324,8 @@ def test_archived_donor_is_not_readopted(gateway):
     )
 
     assert resp.get("error") and resp["error"]["code"] == 4007
-    pdb = SessionDB(db_path=profile_home / "state.db")
-    try:
-        assert pdb.get_session(STRANDED_ID) is None
-    finally:
-        pdb.close()
+    with open_persistence(profile_scope(home=profile_home)) as pdb:
+        assert session_row(pdb, STRANDED_ID) is None
 
 
 def test_launch_profile_resume_never_adopts_even_when_donor_exists(gateway):
@@ -347,7 +344,7 @@ def test_launch_profile_resume_never_adopts_even_when_donor_exists(gateway):
     )
 
     assert resp.get("error") and resp["error"]["code"] == 4007
-    donor = default_db.get_session(STRANDED_ID)
+    donor = session_row(default_db, STRANDED_ID)
     assert not donor["archived"]
     assert donor["end_reason"] is None
 
@@ -357,25 +354,26 @@ def test_divergent_donor_is_not_retired(stores):
     NOT retire it (the newer messages would become unreachable)."""
     default_db, profile_db = stores
     _seed_stranded(default_db)
-    first = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    first = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
     assert first["adopted"] and first["donor_retired"]
 
-    # Donor keeps living (e.g. user kept chatting there) — un-retire + append.
-    default_db.set_session_archived(STRANDED_ID, False)
-    default_db.append_message(STRANDED_ID, "user", "late question")
-    default_db.append_message(STRANDED_ID, "assistant", "late answer")
+    # Simulate a legacy writer that did not honor the retired-donor fence.
+    def diverge(conn):
+        conn.execute("UPDATE sessions SET archived=0 WHERE id=?", (STRANDED_ID,))
+        conn.executemany("INSERT INTO messages(session_id,role,content,timestamp) VALUES (?,?,?,?)", [
+            (STRANDED_ID, "user", "late question", time.time()),
+            (STRANDED_ID, "assistant", "late answer", time.time()),
+        ])
 
-    donor_before = default_db.get_session(STRANDED_ID), default_db.get_messages(STRANDED_ID, include_inactive=True)
-    target_before = profile_db.get_session(STRANDED_ID), profile_db.get_messages(STRANDED_ID, include_inactive=True)
-    second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    raw_holder(default_db)._execute_write(diverge)
 
-    assert second["adopted"] is False and second["conflict"] is True
+    second = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
+
+    assert second["adopted"] is True  # profile copy still serves
     assert second["donor_retired"] is False
-    assert (default_db.get_session(STRANDED_ID), default_db.get_messages(STRANDED_ID, include_inactive=True)) == donor_before
-    assert (profile_db.get_session(STRANDED_ID), profile_db.get_messages(STRANDED_ID, include_inactive=True)) == target_before
-    donor = default_db.get_session(STRANDED_ID)
+    donor = session_row(default_db, STRANDED_ID)
     assert not donor["archived"], "diverged donor must stay reachable"
-    assert len(default_db.get_messages(STRANDED_ID)) == 8
+    assert len(transcript_rows(default_db, STRANDED_ID)) == 8
 
 
 def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
@@ -383,55 +381,101 @@ def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    def _boom(_conn, _sid):
-        raise RuntimeError("locked")
-
-    monkeypatch.setattr(default_db, "_end_session_as_adopted_conn", _boom)
-    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    # An archive refusal must roll back the end stamp in the same transaction.
+    holder = raw_holder(default_db)
+    holder._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER refuse_archive BEFORE UPDATE OF archived ON sessions "
+        "WHEN NEW.archived=1 BEGIN SELECT RAISE(ABORT, 'locked'); END"
+    ))
+    result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     assert result["adopted"] is True
     assert result["donor_retired"] is False
-    assert not default_db.get_session(STRANDED_ID)["archived"]
+    assert not session_row(default_db, STRANDED_ID)["archived"]
 
 
-def test_donor_growth_between_initial_export_and_lock_is_included(stores, monkeypatch):
-    """A donor append after the optimistic export but before locking is re-exported and copied."""
+def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkeypatch):
+    """TOCTOU close-out (review on #93369): messages appended to the donor
+    AFTER export but BEFORE retirement must block the non-recoverable
+    stamp — the retire loop re-reads live counts, not export-time ones."""
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    real_export = default_db.export_session_lineage
+    holder = raw_holder(default_db)
+    write = holder._execute_write
     appended = False
 
-    def _export_then_append(session_id, **kwargs):
+    def _grow_before_retirement(callback, *args, **kwargs):
         nonlocal appended
-        payload = real_export(session_id, **kwargs)
-        # The first optimistic snapshot is outside the transfer lock. The locked refresh
-        # must include the intervening complete turn before the source can be retired.
-        if not appended:
-            default_db.append_message(STRANDED_ID, "user", "raced question")
-            default_db.append_message(STRANDED_ID, "assistant", "raced answer")
-            assert default_db.message_count(STRANDED_ID) == 8
+        if not appended and profile_db.maintenance.pending_adoption_source(STRANDED_ID):
+            # Simulate a legacy writer that does not participate in the fence.
+            write(lambda conn: conn.executemany(
+                "INSERT INTO messages(session_id,role,content,timestamp) VALUES (?,?,?,?)",
+                [(STRANDED_ID, "user", "raced question", time.time()),
+                 (STRANDED_ID, "assistant", "raced answer", time.time())],
+            ))
             appended = True
-        return payload
+        return write(callback, *args, **kwargs)
 
-    monkeypatch.setattr(default_db, "export_session_lineage", _export_then_append)
-    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    monkeypatch.setattr(holder, "_execute_write", _grow_before_retirement)
+    result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
+    # Adoption itself still serves (profile copy has the snapshot)...
     assert result["adopted"] is True
-    assert result["donor_retired"] is True
-    donor = default_db.get_session(STRANDED_ID)
-    assert donor["archived"]
-    assert default_db.message_count(STRANDED_ID) == 8
-    assert profile_db.message_count(STRANDED_ID) == 8
-    assert len(default_db.get_messages(STRANDED_ID, include_inactive=True)) == 8
-    adopted_messages = profile_db.get_messages(STRANDED_ID, include_inactive=True)
-    assert len(adopted_messages) == 8
-    assert [message["content"] for message in adopted_messages[-2:]] == ["raced question", "raced answer"]
+    # ...but the grown donor is NOT stamped behind a non-recoverable archive.
+    assert result["donor_retired"] is False
+    donor = session_row(default_db, STRANDED_ID)
+    assert not donor["archived"], "raced donor growth must stay reachable"
+    assert len(transcript_rows(default_db, STRANDED_ID)) == 8
+    # The next resume retries: donor now ahead → export-time guard catches it.
+    second = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
+    assert second["donor_retired"] is False
+    assert not session_row(default_db, STRANDED_ID)["archived"]
+
+
+def test_pending_transfer_recovers_full_membership_after_one_segment_retires(stores):
+    default_db, profile_db = stores
+    root, tip = "pending-root", "pending-tip"
+    _seed_stranded(default_db, session_id=root, turns=1, title="Root")
+    default_db.sessions.end(root, "compression")
+    _seed_stranded(default_db, session_id=tip, turns=1, title="Tip", parent_session_id=root)
+    holder = raw_holder(default_db)
+    holder._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER fail_tip_retirement BEFORE UPDATE OF archived ON sessions "
+        "WHEN NEW.archived=1 AND NEW.id='pending-tip' BEGIN SELECT RAISE(ABORT, 'held'); END"
+    ))
+    first = adopt_session_lineage(profile_db, default_db, root)
+    assert first["adopted"] and not first["donor_retired"]
+    assert session_row(default_db, root)["end_reason"] == "adopted_by_profile"
+    assert session_row(default_db, tip)["ended_at"] is None
+    from persistence import PersistenceError
+
+    with pytest.raises(PersistenceError, match="Donor retirement is unsettled"):
+        profile_db.sessions.update_model(tip, "new-pick")
+
+    holder._execute_write(lambda conn: conn.execute("DROP TRIGGER fail_tip_retirement"))
+    # The donor no longer traverses the retired root. New handles must recover
+    # both IDs from the target journal and complete the outstanding retirement.
+    donor_scope, target_scope = default_db.scope, profile_db.scope
+    default_db.close()
+    profile_db.close()
+    with open_persistence(donor_scope) as donor_again, open_persistence(target_scope) as target_again:
+        source = target_again.maintenance.pending_adoption_source(tip)
+        assert source == donor_again.maintenance.adoption_store_location()
+        result = target_again.maintenance.adopt_lineage_from(donor_again.maintenance, tip, pending_only=True)
+        assert result["skipped_ids"] == [root, tip]
+        assert result["donor_retired"]
+        assert target_again.maintenance.pending_adoption_source(tip) is None
+
+        for sid in (root, tip):
+            assert session_row(donor_again, sid)["end_reason"] == "adopted_by_profile"
+            assert session_row(donor_again, sid)["archived"]
+            assert len(transcript_rows(target_again, sid)) == 2
 
 
 def _every_row(db, session_id):
     return [(m["role"], m["content"], m["active"], m["compacted"], m.get("codex_reasoning_items"))
-            for m in db.get_messages(session_id, include_inactive=True)]
+            for m in transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.ALL))]
 
 
 def test_adoption_keeps_every_row_checkpoint_sidecar(stores):
@@ -441,11 +485,11 @@ def test_adoption_keeps_every_row_checkpoint_sidecar(stores):
     default_db, profile_db = stores
     _seed_stranded(default_db, turns=0)
     for i in range(1, 4):
-        default_db.append_message(STRANDED_ID, "user", f"question {i}")
-        default_db.append_message(STRANDED_ID, "assistant", f"answer {i}", codex_reasoning_items=[
-            {"type": "compaction", "encrypted_content": f"checkpoint {i}"}])
-    rows = default_db.get_messages(STRANDED_ID)
-    default_db._execute_write(lambda conn: (
+        seed_messages(default_db, STRANDED_ID, {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}", "codex_reasoning_items": [
+                          {"type": "compaction", "encrypted_content": f"checkpoint {i}"}]})
+    rows = transcript_rows(default_db, STRANDED_ID)
+    raw_holder(default_db)._execute_write(lambda conn: (
         conn.executemany("UPDATE messages SET codex_reasoning_items = ? WHERE id = ?", [
             (f'[{{"type": "compaction", "encrypted_content": "checkpoint {i}"}}]', rows[2 * i - 1]["id"])
             for i in range(1, 4)]),
@@ -454,7 +498,7 @@ def test_adoption_keeps_every_row_checkpoint_sidecar(stores):
     donor_rows = _every_row(default_db, STRANDED_ID)
     assert [row[4] is not None for row in donor_rows] == [False, True] * 3
 
-    result = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
+    result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     assert result["donor_retired"] is True
     assert _every_row(profile_db, STRANDED_ID) == donor_rows

@@ -277,11 +277,10 @@ def _session_compression_in_flight(session: dict) -> bool:
     if not sid:
         return False
     try:
-        with _session_db(session) as db:
-            get_holder = getattr(db, "get_compression_lock_holder", None)
-            if not callable(get_holder):
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return False
-            holder = get_holder(sid)
+            holder = persistence.coordination.get_compression_lock_holder(session_id=sid)
     except Exception:
         logger.debug("compression in-flight check failed for session %s", sid, exc_info=True)
         return False
@@ -312,8 +311,8 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):
         # Merge sync: the envelope text grew; the already-written row must not lag it.
         if staged.get("content") != envelope.get("text"):
-            with _session_db(session) as db:
-                if db is None:
+            with _session_db(session) as db, _persistence_for(db) as persistence:
+                if persistence is None:
                     return
                 try:
                     # The staged dict records the session its row was written under; a rotated-away
@@ -322,9 +321,9 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                     # new id (the original was deactivated and cloned): follow it or the update
                     # no-ops against the dead original (#123675).
                     key = _submit_row_owner_key(staged, session)
-                    live_id = db.resolve_active_row_id(key, staged["_row_id"])
+                    live_id = persistence.messages.resolve_active_row_id(key, staged["_row_id"])
                     updated = live_id is not None and bool(
-                        db.set_user_message_content(key, live_id, envelope["text"]))
+                        persistence.messages.set_user_message_content(key, live_id, envelope["text"]))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
@@ -338,7 +337,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
-    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
         accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
@@ -370,15 +369,15 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     if is_dispatching:
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
     else:
-        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        from persistence.conversation.messages import QUEUED_PROMPT_METADATA_KEY
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
                                  accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
     queued["_submit_user_row"] = fresh  # the envelope follows the live row (a retry drains cleanly)
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return
         try:
             # The accept-time dict records the session its row was written under; a rotated-away
@@ -388,19 +387,14 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
             # the row that is live NOW, or the clone stays active beside its replacement and the
             # queued prompt is active twice after the drain (#123675).
             key = _submit_row_owner_key(early, session)
-            live_id = db.resolve_active_row_id(key, early["_row_id"])
+            live_id = persistence.messages.resolve_active_row_id(key, early["_row_id"])
             if live_id is not None:
-                db.deactivate_message(key, live_id)
+                persistence.messages.deactivate_message(key, live_id)
         except Exception:
             # Both rows briefly active merges in projection but never loses the message; deleting or
             # losing text would be worse.
             logger.debug("queued-prompt row re-placement deactivate failed", exc_info=True)
     return fresh
-
-
-def _submit_admission_lock(session: dict):
-    """Serialize one live session's idle claim and durable acceptance, before history_lock."""
-    return session.setdefault("_submit_admission_lock", threading.Lock())
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
@@ -416,7 +410,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # follow-up drains when compression finishes — the Discord-gateway contract.
     if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
         mode = "queue"
-    with _submit_admission_lock(session), session["history_lock"]:
+    with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
         # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
@@ -437,7 +431,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
-    with _submit_admission_lock(session), session["history_lock"]:
+    with session["history_lock"]:
         if not session.get("running"):
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))

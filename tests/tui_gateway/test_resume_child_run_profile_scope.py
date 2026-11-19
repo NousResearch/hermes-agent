@@ -23,6 +23,37 @@ import pytest
 from tui_gateway import server
 
 
+class _EmptyDB:
+    """Stand-in for the session store: the caller's own store, which
+    holds no row for the foreign child id."""
+
+    def __init__(self, db_path=None, **_kwargs):
+        self.db_path = db_path
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+    def get_session(self, _target):
+        return None
+
+    def get_session_by_title(self, _target):
+        return None
+
+    def resolve_resume_session_id(self, target):
+        return target
+
+    def reopen_session(self, _target):
+        return None
+
+    def get_resume_conversations(self, _target):
+        return ([], [])
+
+    def get_ancestor_display_prefix(self, _target):
+        return []
+
+    def get_messages_as_conversation(self, _target, **_kwargs):
+        return []
 
 
 @pytest.fixture()

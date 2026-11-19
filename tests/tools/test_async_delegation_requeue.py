@@ -1,11 +1,14 @@
 """An acknowledged completion goes back to the delivery queue when its turn could not confirm the owner."""
 
 import queue
+import sqlite3
+from contextlib import closing
 
 import pytest
 
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools import async_delegation as ad
+from persistence_assembly import store_location
 
 
 @pytest.fixture(autouse=True)
@@ -28,12 +31,12 @@ def _persisted(delegation_id: str, *, delivered: bool = True) -> None:
 
 
 def _column(delegation_id: str, column: str):
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(store_location(ad._scope()))) as conn:
         return conn.execute(f"SELECT {column} FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()[0]
 
 
 def _set(delegation_id: str, column: str, value) -> None:
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(store_location(ad._scope()))) as conn, conn:
         conn.execute(f"UPDATE async_delegations SET {column}=? WHERE delegation_id=?", (value, delegation_id))
 
 

@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from gateway.model_publication import publication_lock
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
@@ -211,8 +210,7 @@ class GatewayModelCommandsMixin:
         return None
 
     async def _record_model_switch(
-        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool,
-        persist_db: bool = True,
+        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
     ) -> Optional[str]:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
@@ -222,8 +220,8 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch import format_model_for_display
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
-        _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None and persist_db and not one_turn:  # receipt picks use their own transaction
+        _store = getattr(self, "persistence", None)
+        if _store is not None:  # so the dashboard shows the updated model
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not
@@ -231,9 +229,9 @@ class GatewayModelCommandsMixin:
                 if not picker and getattr(_sess_entry, "was_auto_reset", False):
                     # See #48031.
                     _sess_entry.was_auto_reset = False
-                await _sess_db.update_session_model(
+                await _store.aio.sessions.update_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider,
-                    base_url=result.base_url, api_mode=result.api_mode, resolve_tip=True,
+                    base_url=result.base_url, api_mode=result.api_mode,
                 )
             except Exception as exc:
                 logger.debug("Failed to persist model switch to DB: %s", exc)
@@ -374,8 +372,7 @@ class GatewayModelCommandsMixin:
         Entry for the picker / cost-confirm callbacks, which fire outside ``_handle_model_command``
         and take the switch lock themselves; the typed path already holds it."""
         async with self._model_switch_lock():
-            async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
-                return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
 
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
@@ -541,12 +538,10 @@ class GatewayModelCommandsMixin:
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
-                async with self._model_switch_lock():
-                    async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
-                        result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
-                        if error is not None:
-                            return error
-                        return await self._commit_model_switch_locked(result, ctx, source=event.source, picker=True)
+                result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
+                if error is not None:
+                    return error
+                return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
 
             async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
                 if profile_home is None:
@@ -655,24 +650,19 @@ class GatewayModelCommandsMixin:
             reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
-        # Opening a picker publishes nothing; its selection callback takes the gate.
-        if not request.is_reset and not request.target and not request.explicit_provider:
-            ctx.read_config()
-            await self._apply_effective_model_route(ctx, source)
+        ctx.read_config()
+        if request.is_reset:
+            return await self._handle_model_reset(event, ctx)
+        await self._apply_effective_model_route(ctx, source)
+        if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
-        # Reset only clears this route, even when ordinary picks persist by default.
-        async with publication_lock(self, None if ctx.persist_global and not request.is_reset else session_key):
-            ctx.read_config()
-            if request.is_reset:
-                return await self._handle_model_reset(event, ctx)
-            await self._apply_effective_model_route(ctx, source)
-            result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
-            if error is not None:
-                return error
-            guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
-            if guard_fired:
-                return guard_reply
-            return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
+        if error is not None:
+            return error
+        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
+        if guard_fired:
+            return guard_reply
+        return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
 
     async def _apply_effective_model_route(self, ctx: _ModelSwitchContext, source) -> None:
         """Apply the turn's route precedence after config: channel, then session."""
@@ -700,8 +690,7 @@ class GatewayModelCommandsMixin:
             return channel.model, channel.provider or ""
         return _resolve_gateway_model(cfg), "" if provider.lower() == "auto" else provider
 
-    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext,
-                                  *, picker: bool = False, persist_db: bool = True) -> Optional[str]:
+    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext) -> Optional[str]:
         """``/model reset``: drop this session's /model override (memory, store and any armed
         ``--once`` restore) so the next turn resolves channel_overrides > config.yaml again. The
         transcript is kept; before this the only way off a persisted override was ``/new``."""
@@ -731,12 +720,11 @@ class GatewayModelCommandsMixin:
         if previous is None:
             return t("gateway.model.reset_none", model=shown)
         from hermes_cli.model_switch import format_model_for_display
-        _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None and persist_db:  # receipt-backed resets publish in their transaction
+        _store = getattr(self, "persistence", None)
+        if _store is not None:  # the dashboard's session-model column (#34850)
             try:
                 entry = await self.async_session_store.get_or_create_session(source)
-                await _sess_db.update_session_model(
-                    entry.session_id, default_model, provider=default_provider or "auto", resolve_tip=True)
+                await _store.aio.sessions.update_model(entry.session_id, default_model, provider=default_provider or None)
             except Exception:
                 logger.debug("Failed to persist model reset to DB", exc_info=True)
         if not hasattr(self, "_pending_model_notes"):

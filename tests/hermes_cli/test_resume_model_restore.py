@@ -191,30 +191,23 @@ class _Result:
     api_mode = ""
 
 
-def test_persist_model_switch_writes_model_and_both_route_shapes():
-    written = {}
+def test_persist_model_switch_writes_model_and_both_route_shapes(tmp_path):
+    store = storage_handle(tmp_path)
+    seed_session(store, "s1", "cli", model="m0")
+    stub = _make_stub(_session_db=_session_store(store), session_id="s1")
 
-    class _DB:
-        def update_session_model(self, sid, model):
-            written["model"] = (sid, model)
-
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = (sid, patch)
-
-    stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
-    assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    _sid, patch = written["patch"]
-    # Nested shape for the CLI reader...
-    assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
-    # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
+
+    row = session_row(store, "s1")
+    patch = json.loads(row["model_config"])
+    assert row["model"] == "deepseek-v4-flash-free"
     assert patch["provider"] == "custom:opencode-zen"
     assert patch["base_url"] == "https://oz/v1"
-    # Both shapes use or-None so stale keys are deleted (not merely omitted)
-    # in BOTH gateway_runtime and top-level — the asymmetry that caused the
-    # original stale-key bug.
-    assert patch["gateway_runtime"]["api_mode"] is None
-    assert patch["api_mode"] is None
+    assert "api_mode" not in patch
+    assert patch["gateway_runtime"] == {
+        "model": "deepseek-v4-flash-free", "provider": "custom:opencode-zen",
+        "base_url": "https://oz/v1", "api_mode": None,
+    }
 
 
 def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
@@ -273,38 +266,23 @@ def test_persist_model_switch_swallows_db_errors():
     stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
-def test_persist_model_switch_heals_bare_custom(monkeypatch):
-    """Bare 'custom' is not routable — heal to custom:<name> or drop (C1)."""
-    written = {}
+def test_persist_model_switch_keeps_unmatched_custom_endpoint(tmp_path, monkeypatch):
+    from hermes_cli import runtime_provider_custom
 
-    class _DB:
-        def update_session_model(self, sid, model):
-            written["model"] = model
+    store = storage_handle(tmp_path)
+    seed_session(store, "s1", "cli", model="old")
+    stub = _make_stub(_session_db=_session_store(store), session_id="s1")
+    switch = SimpleNamespace(new_model="qwen3.6-plus", target_provider="custom",
+                             base_url="https://my-endpoint/v1", api_mode="")
+    monkeypatch.setattr(runtime_provider_custom, "_endpoint_identity", lambda base_url: "custom:myendpoint")
+    stub._persist_model_switch_to_session(switch)
+    assert _stored_runtime(session_row(store, "s1")).provider == "custom:myendpoint"
 
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = patch
-
-    class _BareResult:
-        new_model = "qwen3.6-plus"
-        target_provider = "custom"
-        base_url = "https://my-endpoint/v1"
-        api_mode = ""
-
-    import hermes_cli.runtime_provider as rp
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: "custom:myendpoint")
-    stub = _make_stub(_session_db=_DB(), session_id="s1")
-    stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] == "custom:myendpoint"
-
-    # Healing fails -> provider dropped (explicit None deletes any stale
-    # persisted provider), never persisted bare.
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: None)
-    written.clear()
-    stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] is None
-    assert written["patch"]["gateway_runtime"]["provider"] is None
+    monkeypatch.setattr(runtime_provider_custom, "_endpoint_identity", lambda base_url: None)
+    stub._persist_model_switch_to_session(switch)
+    saved = _stored_runtime(session_row(store, "s1"))
+    assert saved.provider == "custom"
+    assert saved.base_url == switch.base_url
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):

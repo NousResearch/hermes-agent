@@ -689,7 +689,10 @@ def update_session_model(
     """
     # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
     # first_accounted_route overwrite and resurrect the old route.
-    holder.flush_token_counts()
+    from persistence.core.errors import StoreContention
+
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; model metadata was not updated")
     patch: dict[str, Any] = {"browser_model_lock": None}
     if model:
         patch["model"] = model
@@ -716,7 +719,10 @@ def _write_model_config_patch(
         if merged is _MODEL_CONFIG_ROW_MISSING:
             return
         conn.execute(sql, params(merged) if params else (merged, session_id))
-    holder._execute_write(_do)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def _merge_model_config_json(

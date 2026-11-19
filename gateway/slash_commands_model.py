@@ -653,14 +653,7 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
-        # Turn precedence: session /model > channel_overrides > config.yaml.
-        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
-        from gateway.session_info_route import channel_override_route
-        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(lambda: channel_override_route(
-            self._serving_channel_config(source) if source is not None else None, source))
-        if _ch_model:
-            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
-        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        await self._apply_effective_model_route(ctx, source)
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
@@ -670,6 +663,19 @@ class GatewayModelCommandsMixin:
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    async def _apply_effective_model_route(self, ctx: _ModelSwitchContext, source) -> None:
+        """Apply the turn's route precedence after config: channel, then session."""
+        from gateway.session_info_route import channel_override_route
+
+        model, route, forced_provider = await asyncio.to_thread(lambda: channel_override_route(
+            self._serving_channel_config(source) if source is not None else None, source))
+        if model or route or forced_provider:
+            ctx.apply_override({
+                "model": model or ctx.current_model,
+                **(route or ({"provider": forced_provider} if forced_provider else {})),
+            })
+        ctx.apply_override(self._session_model_overrides.get(ctx.session_key, {}))
 
     def _channel_default_route(self, source, config_path) -> tuple[str, str]:
         """``(model, provider)`` this chat runs with no session override: channel_overrides, else the

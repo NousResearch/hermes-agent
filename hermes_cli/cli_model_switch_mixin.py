@@ -575,39 +575,25 @@ class CLIModelSwitchMixin:
         return changed
 
     def _persist_model_switch_to_session(self, result) -> None:
-        """Persist a session-scoped /model switch to the session DB row.
-
-        Writes the model column plus the route in both shapes readers use — nested
-        ``gateway_runtime`` (CLI --resume) and top-level keys (TUI session.resume) — from one
-        or-None dict so stale keys are DELETED (``_merge_model_config_json`` only deletes on
-        explicit None) and the shapes never diverge.
-
-        Writes the model column plus the runtime route so ``--resume`` (CLI, reads ``gateway_runtime``) and
-        ``session.resume`` (TUI/desktop, reads top-level ``model_config`` keys via
-        ``_stored_session_runtime_overrides``) both restore the switched provider instead of recombining the
-        model with the ambient default (#79536). Mirrors the gateway's ``update_session_model()`` call.
-        getattr: tests drive the switch paths with ``object.__new__`` stubs.
-        """
+        """Persist the model and both saved route shapes in one store transaction."""
         from cli import logger
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
         if not db or not sid:
             return
-        route = {
-            "provider": _heal_bare_custom_provider(
-                result.target_provider, base_url=result.base_url, model=result.new_model,
-            ) or None,
-            # Both shapes use the same or-None discipline so stale keys from a previous switch are deleted
-            # (not merely omitted) in BOTH the nested gateway_runtime dict (CLI reader) and the top-level
-            # keys (TUI gateway reader). _merge_model_config_json only deletes on explicit None, so falsy
-            # values must be converted, not filtered. Deriving the top-level from **route guarantees the two
-            # shapes can never diverge — the asymmetry that caused the original stale-key bug (#85261
-            # simplify-code review).
-            "base_url": result.base_url or None,
-            "api_mode": result.api_mode or None}
+        provider = result.target_provider
+        if str(provider or "").strip().lower() == "custom" and result.base_url:
+            from hermes_cli.runtime_provider_custom import session_provider_identity
+
+            provider = session_provider_identity("custom", None, result.base_url)
+        else:
+            provider = _heal_bare_custom_provider(provider, base_url=result.base_url, model=result.new_model)
         try:
-            db.update_session_model(sid, result.new_model)
-            db.patch_session_model_config(sid, {"gateway_runtime": {**route, "model": result.new_model or None}, **route})
+            if provider is None:
+                db.update_session_model(sid, result.new_model)
+            else:
+                db.update_session_model(sid, result.new_model, provider=provider,
+                                        base_url=result.base_url or None, api_mode=result.api_mode or None)
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 

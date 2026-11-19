@@ -144,6 +144,12 @@ def test_queued_tokens_keep_lost_commit_ack_unsettled(db, monkeypatch):
     assert db._read_one("SELECT input_tokens FROM sessions WHERE id='owned'")[0] == 7
     assert db.flush_token_counts(timeout=2) is False
     assert db._read_one("SELECT input_tokens FROM sessions WHERE id='owned'")[0] == 7
+    from persistence.core.errors import StoreContention
+    from persistence.sqlite.conversation._store.sessions import update_session_model
+
+    with pytest.raises(StoreContention, match="accounting is unsettled"):
+        update_session_model(db, "owned", "new-model", provider="openrouter")
+    assert db._read_one("SELECT model FROM sessions WHERE id='owned'")[0] == "saved"
 
 
 def test_queued_tokens_retry_after_begin_proves_no_write(db, monkeypatch):

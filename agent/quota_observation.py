@@ -24,6 +24,7 @@ consumer. Raw credentials and authorization headers never appear.
 from __future__ import annotations
 
 import email.utils
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
@@ -78,7 +79,8 @@ def _retry_after_seconds(lowered: Optional[Mapping[str, str]], now: float) -> Op
                 value = parsed.timestamp() - now
         except (TypeError, ValueError, OverflowError):
             return None
-    if value is None or not (value >= 0.0):  # NaN and negatives are unusable
+    if value is None or not math.isfinite(value) or value < 0.0:
+        # A non-finite Retry-After is unknown, not an invented seven-day wait.
         return None
     return min(value, MAX_RETRY_AFTER_SECONDS)
 
@@ -88,14 +90,20 @@ def _rate_limit_windows(lowered: Optional[Mapping[str, str]]) -> Optional[dict]:
     if not lowered or not has_rate_limit_headers(lowered):
         return None
 
-    def number(name: str) -> Any:
+    def number(name: str, *, count: bool = False) -> Any:
         raw = lowered.get(name)
         if raw is None:
             return None
         try:
             value = float(raw)
-        except ValueError:
+        except (TypeError, ValueError, OverflowError):
             return None
+        # Provider headers are untrusted: NaN/Infinity must not raise when
+        # converted to int, and negative/fractional counts are not evidence.
+        if not math.isfinite(value) or value < 0.0:
+            return None
+        if count:
+            return int(value) if value.is_integer() else None
         return value
 
     windows: dict[str, dict] = {}
@@ -108,12 +116,12 @@ def _rate_limit_windows(lowered: Optional[Mapping[str, str]]) -> Optional[dict]:
         present = {key: names[key] in lowered for key in names}
         if not any(present.values()):
             continue
-        limit = number(names["limit"])
-        remaining = number(names["remaining"])
+        limit = number(names["limit"], count=True)
+        remaining = number(names["remaining"], count=True)
         reset = number(names["reset_seconds"])
         windows[attr] = {
-            "limit": int(limit) if present["limit"] and limit is not None else None,
-            "remaining": int(remaining) if present["remaining"] and remaining is not None else None,
+            "limit": limit if present["limit"] else None,
+            "remaining": remaining if present["remaining"] else None,
             "reset_seconds": reset if present["reset_seconds"] else None,
         }
     return windows or None

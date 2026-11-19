@@ -258,8 +258,11 @@ def test_release_during_warm_still_releases_after_the_warm(monkeypatch, timers):
 def test_unload_never_enters_an_owner_context_another_thread_is_in(monkeypatch, timers):
     """``Context.run`` refuses a context already entered elsewhere; the owner context must only
     ever be run through a copy (keep-warm read and release hook alike)."""
+    seen: list = []
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None: {"action": "noop"})
-    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge", "keep_warm_seconds": 0})
+    monkeypatch.setattr(tts_tool_lifecycle, "_signal_user_tts_provider",
+                        lambda name, cfg, hook: seen.append((hook, name)))
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "srv", "keep_warm_seconds": 0})
     tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
     owner = tts_tool_lifecycle._tts_owners[hermes_home_key()]
     inside, leave = threading.Event(), threading.Event()
@@ -271,6 +274,7 @@ def test_unload_never_enters_an_owner_context_another_thread_is_in(monkeypatch, 
     finally:
         leave.set()
         holder.join(5)
+    assert seen == [("release", "srv")]
     assert tts_tool_lifecycle._tts_owners == {}
 
 
@@ -423,3 +427,171 @@ def test_unload_signals_each_owner_once_in_its_profile_and_counts_models_once(ho
         assert tts_tool_lifecycle.release_tts_lease("lease-a") == {"leases": 0, "released": 2}
     assert sorted(s for s in signals if s[0] == "release") == [("release", "srv", "a"), ("release", "srv", "b")]
     assert not caches["piper"] and tts_tool_lifecycle._tts_owners == {}
+
+
+def test_reentrant_reacquire_during_release_keeps_freshly_warmed_local_model(monkeypatch, timers):
+    from tools import tts_tool_local
+    reacquired = False
+
+    class Provider:
+        def warm(self):
+            pass
+
+        def release(self):
+            nonlocal reacquired
+            if not reacquired:
+                reacquired = True
+                tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", {"provider": "piper"})
+
+    def load_piper(_cfg):
+        tts_tool_local._piper_voice_cache["reacquired"] = object()
+        return tts_tool_local._piper_voice_cache["reacquired"]
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: Provider())
+    monkeypatch.setattr(tts_tool_lifecycle, "_local_tts_warmers",
+                        lambda: {"piper": load_piper, "kittentts": lambda _c: None})
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "custom", "keep_warm_seconds": 0})
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    assert tts_tool_lifecycle.release_tts_lease("tui:voice-tts") == {"leases": 0, "released": 0}
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:read-aloud"]
+    assert "reacquired" in tts_tool_local._piper_voice_cache
+
+
+def test_reentrant_reacquire_then_release_keeps_model_for_new_window(monkeypatch, timers):
+    from tools import tts_tool_local
+    reacquired = False
+
+    class Provider:
+        def warm(self):
+            pass
+
+        def release(self):
+            nonlocal reacquired
+            if not reacquired:
+                reacquired = True
+                tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", {"provider": "piper"})
+                tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+
+    def load_piper(_cfg):
+        tts_tool_local._piper_voice_cache["kept-warm"] = object()
+        return tts_tool_local._piper_voice_cache["kept-warm"]
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: Provider())
+    monkeypatch.setattr(tts_tool_lifecycle, "_local_tts_warmers",
+                        lambda: {"piper": load_piper, "kittentts": lambda _c: None})
+    monkeypatch.setattr(
+        tts_tool, "_load_tts_config",
+        lambda: {"provider": "piper", "keep_warm_seconds": 30} if reacquired
+        else {"provider": "custom", "keep_warm_seconds": 0},
+    )
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    assert tts_tool_lifecycle.release_tts_lease("tui:voice-tts") == {"leases": 0, "released": 0}
+    assert tts_tool_lifecycle.tts_lease_holders() == []
+    assert "kept-warm" in tts_tool_local._piper_voice_cache
+    assert timers() == [30.0]
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+@pytest.mark.parametrize(
+    ("reacquire_as", "expected_events", "expected_owners"),
+    [
+        ("b", ["A:warm", "B:warm", "A:release", "B:warm"], ["b"]),
+        ("a", ["A:warm", "B:warm", "A:release", "A:warm", "B:release"], ["a"]),
+    ],
+    ids=["reacquire-other-skips-its-stale-release", "reacquire-self-still-releases-other"],
+)
+def test_reentrant_reacquire_skips_only_superseded_owner(
+        homes, monkeypatch, timers, reacquire_as, expected_events, expected_owners):
+    dirs, as_profile = homes
+    events: list = []
+    reacquired = False
+
+    class PluginA:
+        def warm(self):
+            events.append("A:warm")
+
+        def release(self):
+            nonlocal reacquired
+            events.append("A:release")
+            if not reacquired:
+                reacquired = True
+                with as_profile(reacquire_as):
+                    tts_tool_lifecycle.acquire_tts_lease(f"lease-{reacquire_as}-new")
+
+    class PluginB:
+        def warm(self):
+            events.append("B:warm")
+
+        def release(self):
+            events.append("B:release")
+
+    plugins = {"pa": PluginA(), "pb": PluginB()}
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: plugins[name])
+    monkeypatch.setattr(
+        tts_tool, "_load_tts_config",
+        lambda: {"provider": "pa" if get_hermes_home().name == "a" else "pb", "keep_warm_seconds": 0},
+    )
+    with as_profile("a"):
+        tts_tool_lifecycle.acquire_tts_lease("lease-a")
+    with as_profile("b"):
+        tts_tool_lifecycle.acquire_tts_lease("lease-b")
+    with as_profile("a"):
+        tts_tool_lifecycle.release_tts_lease("lease-a")
+        tts_tool_lifecycle.release_tts_lease("lease-b")
+    assert events == expected_events
+    assert sorted(k for k in tts_tool_lifecycle._tts_owners) == [hermes_home_key(dirs[n]) for n in expected_owners]
+
+
+def test_reentrant_reacquire_and_zero_window_release_does_not_resignal_stale_owner(homes, monkeypatch, timers):
+    """If A's release hook reacquires B and immediately releases B with keep_warm_seconds=0, the
+    nested teardown already signalled B under its new context; the outer loop must not signal B a
+    second time under the stale acquisition context."""
+    from agent import secret_scope as ss
+
+    _dirs, as_profile = homes
+    events: list = []
+    reacquired = False
+
+    class PluginA:
+        def warm(self):
+            events.append("A:warm")
+
+        def release(self):
+            nonlocal reacquired
+            events.append("A:release")
+            if not reacquired:
+                reacquired = True
+                with as_profile("b"):
+                    tok = ss.set_secret_scope({"B_VER": "new"})
+                    try:
+                        tts_tool_lifecycle.acquire_tts_lease("lease-b-new")
+                        tts_tool_lifecycle.release_tts_lease("lease-b-new")
+                    finally:
+                        ss.reset_secret_scope(tok)
+
+    class PluginB:
+        def warm(self):
+            events.append(("B:warm", ss.get_secret("B_VER")))
+
+        def release(self):
+            events.append(("B:release", ss.get_secret("B_VER")))
+
+    plugins = {"pa": PluginA(), "pb": PluginB()}
+    monkeypatch.setattr(tts_tool_lifecycle, "_lookup_plugin_provider", lambda name: plugins[name])
+    monkeypatch.setattr(
+        tts_tool, "_load_tts_config",
+        lambda: {"provider": "pa" if get_hermes_home().name == "a" else "pb", "keep_warm_seconds": 0},
+    )
+    with as_profile("a"):
+        tts_tool_lifecycle.acquire_tts_lease("lease-a")
+    with as_profile("b"):
+        tok = ss.set_secret_scope({"B_VER": "old"})
+        try:
+            tts_tool_lifecycle.acquire_tts_lease("lease-b")
+        finally:
+            ss.reset_secret_scope(tok)
+    with as_profile("a"):
+        tts_tool_lifecycle.release_tts_lease("lease-a")
+        tts_tool_lifecycle.release_tts_lease("lease-b")
+    assert events == ["A:warm", ("B:warm", "old"), "A:release", ("B:warm", "new"), ("B:release", "new")]
+    assert tts_tool_lifecycle._tts_owners == {}

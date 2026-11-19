@@ -39,6 +39,9 @@ _tts_lease_lock = threading.Lock()
 _tts_leases: set = set()
 # Profile home key -> its latest acquisition context; claimed (cleared) by the unload that releases it.
 _tts_owners: dict[str, Context] = {}
+# Monotonic generation per profile home, kept past claim so an outer unload skips a home superseded
+# even by a nested acquire+zero-window release that already cleared its new ``_tts_owners`` entry.
+_tts_owner_generations: dict[str, int] = {}
 # Held across an unload's release hooks instead of the lease lock, so an acquire that registers after
 # the unload claimed its owners warms only once those hooks are done. Taken before the lease lock;
 # re-entrant so a plugin's release() may itself acquire or release a lease.
@@ -236,12 +239,20 @@ def _release_after_keep_warm(generation: int) -> int:
             if generation != _keep_warm_generation or _tts_leases:
                 return 0
             _keep_warm_timer = None
-            owners = list(_tts_owners.values())
+            owners = [(home, owner, _tts_owner_generations.get(home)) for home, owner in _tts_owners.items()]
             _tts_owners.clear()
-        for owner in owners:
+        for home, owner, owner_gen in owners:
+            with _tts_lease_lock:
+                if _tts_owner_generations.get(home) != owner_gen:
+                    continue
             _run_as_owner(owner, _signal_release, None, "release")
         # Context-free, once: also covers the models an owner whose release failed left resident.
-        return _drop_local_models()
+        # Recheck under the lease lock so a reentrant or concurrent acquire (or a newly scheduled
+        # keep-warm window) never has its freshly warmed local cache wiped by this stale unload.
+        with _tts_lease_lock:
+            if generation != _keep_warm_generation or _tts_leases:
+                return 0
+            return _drop_local_models()
 
 
 def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -254,13 +265,16 @@ def acquire_tts_lease(lease: str, tts_config: Optional[dict[str, Any]] = None) -
         _cancel_keep_warm_locked()
         _tts_leases.add(lease)
         _tts_owners[home] = owner
+        _tts_owner_generations[home] = _keep_warm_generation
         holders = len(_tts_leases)
     with _tts_teardown_lock:  # an unload that already claimed its owners finishes before this warm
         pass
     result = warm_tts_provider(tts_config)
     with _tts_lease_lock:
         # An unload during the load claimed this owner, but the load left the resource up again.
-        _tts_owners.setdefault(home, owner)
+        if home not in _tts_owners:
+            _tts_owners[home] = owner
+            _tts_owner_generations[home] = _keep_warm_generation
         # Every holder released while the load ran: the window starts now that the model is resident.
         inline = _schedule_release_locked() if not _tts_leases else None
     if inline is not None:
@@ -293,3 +307,4 @@ def _reset_tts_leases_for_tests() -> None:
         _cancel_keep_warm_locked()
         _tts_leases.clear()
         _tts_owners.clear()
+        _tts_owner_generations.clear()

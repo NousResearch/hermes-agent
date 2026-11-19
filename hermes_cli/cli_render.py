@@ -454,13 +454,21 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:
-    """Text still to display after a streamed response transform: the suffix, or the whole response when replaced."""
+    """Text still to display after a streamed response transform: the suffix, or the whole response when replaced.
+
+    A rewrite flagged ``transform_is_inline`` (an in-place substitution of the already-streamed
+    copy, e.g. Privacy-Shield's TOKEN_* restore) suppresses the reprint: the streamed text on
+    screen stands, nothing is painted again (hermes-security-suite issue #6). A genuine prefix
+    relationship still wins, so an appended tail is never lost."""
     if not result or not result.get("response_transformed"):
         return ""
 
     original = result.get("pre_transform_response") or ""
     if original and response.startswith(original):
         return response[len(original):]
+
+    if result.get("transform_is_inline"):
+        return ""
 
     return f"\n{t('cli.render.response_transformed')}\n{response}"
 

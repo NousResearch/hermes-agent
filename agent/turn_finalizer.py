@@ -536,6 +536,7 @@ def apply_llm_output_transform(
         _, transformed, pre_transform = recorded
         return final_response, transformed, pre_transform
     if not final_response:
+        agent._llm_output_transform_inline = False
         return final_response, False, None
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
@@ -549,6 +550,13 @@ def apply_llm_output_transform(
         # First hook to return a string wins; None/empty leaves the text unchanged.
         rewrite = next((r for r in _invoke_hook_safely("transform_llm_output", logger, **payload)
                         if isinstance(r, str) and r), None)
+    # A transform that replaced text IN the streamed copy (not a prefix extension)
+    # may set ``transform_is_inline`` on its (str-subclass) rewrite so the render
+    # layer suppresses the duplicate reprint instead of re-painting everything
+    # (hermes-security-suite issue #6). The subclass keeps the plain-string
+    # contract; cores that ignore the attribute behave exactly as before.
+    inline = bool(getattr(rewrite, "transform_is_inline", False)) if rewrite else False
+    agent._llm_output_transform_inline = inline
     if rewrite:
         pre_transform, final_response, transformed = final_response, rewrite, True
     agent._llm_output_transform = (turn_id, transformed, pre_transform)
@@ -783,11 +791,18 @@ def finalize_turn(
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
+    _transform_is_inline = False
     if final_response and not interrupted:
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
             memory_review_due=_should_review_memory, skill_review_due=_should_review_skills,
+        )
+        # transform_llm_output rewrites may substitute text in the already-streamed
+        # copy (hermes-security-suite issue #6): flagged rewrites suppress the CLI
+        # post-stream reprint instead of re-painting the whole response.
+        _transform_is_inline = _response_transformed and bool(
+            getattr(agent, "_llm_output_transform_inline", False)
         )
 
     # Context engine observation hook: the turn finished with the finalized transcript.
@@ -825,6 +840,7 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
+        "transform_is_inline": _transform_is_inline,
         "pre_transform_response": public_pre_transform(agent, _pre_transform_response),
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         # The final is byte-for-byte a response this turn already delivered (no footer or

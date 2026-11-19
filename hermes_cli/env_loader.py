@@ -30,7 +30,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 _WARNED_KEYS: set[str] = set()          # credential names already given the non-ASCII warning
 _WARNED_UTF32_PATHS: set[str] = set()   # .env paths already given the UTF-32 refuse-to-mangle warning
 _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex dotenv skip was logged
-_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env paths already given the warning
+_WARNED_UNREADABLE_PATHS: set[str] = set()  # unreadable profile .env / .op.env paths already given the warning
 
 # env-var name → source label ("bitwarden", …) for externally injected credentials; setup / `hermes
 # model` tell users WHERE a key came from when .env lacks it.
@@ -726,13 +726,14 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
-def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
-    """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
-    ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as
-    environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
-    be the only place the backend is set, and skipping it would run terminal commands on the host."""
+def _load_user_dotenv(path: Path, *, load_pass: int, override: bool = True) -> bool:
+    """Load a profile env file (``.env``, or ``.op.env`` with ``override=False``); False when it exists
+    but cannot be read and managed scope pins ``terminal.backend``. A sandbox launcher withholds the
+    file, passes the keys it allows in as environment and pins the backend. Without that pin the
+    ``PermissionError`` propagates: the file may be the only place the backend is set, and skipping it
+    would run terminal commands on the host."""
     try:
-        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        _load_dotenv_with_fallback(path, override=override, load_pass=load_pass)
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -818,7 +819,7 @@ def load_hermes_dotenv(
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
+        _load_user_dotenv(op_env, load_pass=load_pass, override=False)
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)

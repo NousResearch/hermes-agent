@@ -50,12 +50,7 @@ function BrowserPermissionRow() {
     <ListRow
       action={
         permission === 'default' ? (
-          <Button
-            onClick={() => void askBrowserNotificationPermission()}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
+          <Button onClick={() => void askBrowserNotificationPermission()} size="sm" type="button" variant="outline">
             {copy.allow}
           </Button>
         ) : undefined

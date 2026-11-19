@@ -16,7 +16,7 @@ vi.mock('@clerk/react', () => ({
   ClerkProvider: ({ children }: { children: ReactNode }) => children
 }))
 
-vi.mock('./clerk-session-bridge', () => ({ ClerkSessionBridge: () => null }))
+vi.mock('./clerk-session-bridge', () => ({ ClerkSessionBridge: () => <div>clerk session bridge</div> }))
 
 vi.mock('@/lib/clerk-config', () => ({
   clerkBrowserEnabled: true,
@@ -35,5 +35,15 @@ describe('AuthGate in the browser host', () => {
     )
 
     expect(screen.getByText('app content')).toBeTruthy()
+  })
+
+  it('mounts the session bridge so the account panel can open Clerk sign-in', () => {
+    render(
+      <AuthGate>
+        <div>app content</div>
+      </AuthGate>
+    )
+
+    expect(screen.getByText('clerk session bridge')).toBeTruthy()
   })
 })

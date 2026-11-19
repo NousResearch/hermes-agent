@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/air3Network/air-agent-hermes#readme
-version: "0.1.2"
+version: "0.1.3"
 readme: true
 platforms: []
 known_issues:

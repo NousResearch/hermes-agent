@@ -830,11 +830,20 @@ class GatewayBusySessionMixin:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn
 
-    async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
+    async def _interrupt_running_agent_for_busy_event(
+        self,
+        event: MessageEvent,
+        adapter,
+        running_agent,
+        interrupt_text: str | None = None,
+    ) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point.
-        The event is already queued: a voice note is transcribed by its follow-up turn, not here."""
+        The event is already queued: a voice note is transcribed by its follow-up turn, not here.
+        ``interrupt_text``, when set, is the inbound fragment snapshotted before pending-queue merge."""
         try:
-            running_agent.interrupt(self._busy_interrupt_text(event))
+            running_agent.interrupt(
+                interrupt_text if interrupt_text is not None else self._busy_interrupt_text(event)
+            )
         except Exception:
             pass  # don't let interrupt failure block the ack
 
@@ -948,11 +957,51 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        # Plugin hooks normally run on the idle path inside _handle_message.
+        # The busy path bypasses that, so handover / listen-only / ambient-buffer
+        # plugins never get a chance to silence an inbound that arrives while
+        # an agent is mid-run (the user types during a customer handover,
+        # owner sends an aside, etc.).  Consult pre_gateway_dispatch BEFORE
+        # the authorization gate — same contract as the idle path — so plugins
+        # can skip unauthorized senders without falling into pairing/drop.
+        # Other return shapes (rewrite/allow) are intentionally NOT honored on
+        # the busy path: rewriting an event we're about to interrupt with is
+        # racy, and the only consumer that emits skip today is gateway-policy
+        # (handover / listen-only).  allow / no-action fall through to auth.
+        is_internal = bool(getattr(event, "internal", False))
+        if not is_internal:
+            try:
+                from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
+                _hook_results = await _ainvoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc, exc_info=True)
+                _hook_results = []
+
+            for _result in _hook_results or []:
+                if not isinstance(_result, dict):
+                    continue
+                if _result.get("action") == "skip":
+                    _platform_str = getattr(event.source.platform, "value", None) or "unknown"
+                    logger.info(
+                        "pre_gateway_dispatch skip (busy path): reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        _platform_str,
+                        getattr(event.source, "chat_id", None) or "unknown",
+                    )
+                    return True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
+        # Runs after pre_gateway_dispatch so a plugin `skip` can still handle
+        # unauthorized senders (e.g. customer handover ingest) without auth drop.
         if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
@@ -997,6 +1046,8 @@ class GatewayBusySessionMixin:
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
+        # Snapshot inbound text before queueing: pending merge may alias the same MessageEvent object.
+        interrupt_text = event.text
         if not _steer.steered and not _steer.redirected:
             self._queue_or_replace_pending_event(session_key, event)
         # Store the message so it's processed as the next turn after the current run finishes (or is
@@ -1008,10 +1059,14 @@ class GatewayBusySessionMixin:
         # messages sent while the agent was busy (interrupt mode, or a steer that fell back to queue)
         # arrived as one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own turn
         # in arrival order while still preserving photo-burst / album merge semantics for media.
-        await self._busy_interrupt_and_ack(event, session_key, adapter, _busy_state, running_agent, _steer)
+        await self._busy_interrupt_and_ack(
+            event, session_key, adapter, _busy_state, running_agent, _steer, interrupt_text=interrupt_text,
+        )
         return True
 
-    async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
+    async def _busy_interrupt_and_ack(
+        self, event, session_key, adapter, _busy_state, running_agent, _steer, interrupt_text: str | None = None,
+    ) -> None:
         """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
         Shared by the in-process busy handler and the session authority's busy preempt."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1023,7 +1078,9 @@ class GatewayBusySessionMixin:
             effective_mode == "interrupt" and not redirected
             and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
         ):
-            await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
+            await self._interrupt_running_agent_for_busy_event(
+                event, adapter, running_agent, interrupt_text=interrupt_text,
+            )
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.

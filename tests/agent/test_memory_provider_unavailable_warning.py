@@ -94,3 +94,21 @@ def test_provider_that_still_fails_after_recovery_is_reported(monkeypatch):
     assert agent_init.resolve_memory_provider("brokenmem", say=said.append) is None
     assert len(said) == 2 and "failed to load" in said[1]
 
+
+def test_an_installed_provider_that_fails_to_import_logs_the_import_error(caplog):
+    """The startup log names why an installed provider did not load (a plugin importing a module core
+    removed), in one WARNING line per provider, not a bare 'no provider instance found'."""
+    from hermes_constants import get_hermes_home
+
+    plugin = get_hermes_home() / "plugins" / "importfailmem"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text(
+        "from agent.memory_provider import MemoryProvider\nimport hermes_removed_module_for_test\n", encoding="utf-8")
+    agent_init._warned_unavailable_providers.clear()
+
+    with caplog.at_level(logging.WARNING):
+        assert agent_init.resolve_memory_provider("importfailmem") is None
+
+    named = [r.getMessage() for r in caplog.records
+             if r.levelno == logging.WARNING and "No module named 'hermes_removed_module_for_test'" in r.getMessage()]
+    assert len(named) == 1 and "importfailmem" in named[0] and "\n" not in named[0]

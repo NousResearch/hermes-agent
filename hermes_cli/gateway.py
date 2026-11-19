@@ -5099,8 +5099,8 @@ def _cmd_install(args):
     if is_managed():
         managed_error("install gateway service")
         return
-    if getattr(args, "if_missing", False) and _is_service_installed():
-        print("✓ Gateway service already installed")
+    from hermes_cli.gateway_setup_service import install_after_setup
+    if getattr(args, "if_missing", False) and not install_after_setup(args):
         return
     force = getattr(args, "force", False)
     # `--force` doubles as the reinstall flag here; a served profile's unit would only ever exit 78.

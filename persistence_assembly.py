@@ -170,12 +170,12 @@ def _provider_for_home(home: Path) -> str:
 
 
 def _assemble(provider: str, stores: Mapping[str, Path], *, read_only: bool = False,
-              read_patience_s: Optional[float] = None) -> Any:
+              read_patience_s: Optional[float] = None, check_drift: bool = False) -> Any:
     """The one provider branch."""
     if provider == "sqlite":
         from persistence.sqlite import SQLiteBackend
 
-        return SQLiteBackend(stores, read_only=read_only, read_patience_s=read_patience_s)
+        return SQLiteBackend(stores, read_only=read_only, read_patience_s=read_patience_s, check_drift=check_drift)
     raise ValueError(f"unknown persistence provider {provider!r}")
 
 
@@ -224,14 +224,19 @@ def open_persistence(scope: ProfileScope, *, eager: bool = False) -> Persistence
 
 
 @contextmanager
-def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] = None) -> Iterator[Persistence]:
+def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] = None,
+                            check_drift: bool = False) -> Iterator[Persistence]:
     """An owned, read-only handle over one target, closed on exit or by its ``close``.
 
     ``target`` is a profile name, a Hermes home directory, or a database file (a ``state.db`` path or any existing
     file). The store must exist: a reader never creates, migrates or repairs it. The handle's first use reads the
     configured provider and assembles its backend; closing the handle closes that backend. ``patience_s`` is how
     long the handle's open and its reads wait for a store another connection holds before raising
-    ``StoreContention`` (a verb that sets its own wait reads with that one); None keeps the backend's read wait."""
+    ``StoreContention`` (a verb that sets its own wait reads with that one); None keeps the backend's read wait.
+    With ``check_drift`` the handle's connection, when it opens (``ready()`` or the first repository read; fetching a
+    repository such as ``reader.sessions`` opens nothing), also runs ``StoreAdmin.schema_drift_reason``'s probe and
+    raises ``DeclarativeDrift`` with that reason, so a browse needs no second connection for it. Such a handle also
+    reports every open failure to its caller only and leaves the process's last session-store init error alone."""
     path = target if isinstance(target, Path) and (target.name == "state.db" or target.is_file()) else None
     if isinstance(target, Path):
         scope = profile_scope(home=path.parent if path is not None else target)
@@ -242,7 +247,7 @@ def open_persistence_reader(target: str | Path, *, patience_s: Optional[float] =
 
     def bind() -> Any:
         backend = _assemble(_provider_for_home(scope.profile_dir), {scope.hermes_home_key: store}, read_only=True,
-                            read_patience_s=patience_s)
+                            read_patience_s=patience_s, check_drift=check_drift)
         backends.append(backend)
         return backend.open(scope)
 

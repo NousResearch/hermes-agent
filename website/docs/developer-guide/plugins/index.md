@@ -377,6 +377,18 @@ with open_persistence_reader(profile_scope().profile_dir) as store:
 
 [Session Storage](../session-storage.md#common-operations) shows the repositories in use.
 
+#### Turn helpers kept for pinned catalog plugins
+
+The same refactor moved a few turn helpers into `session_rules.turns`. The catalog's pinned OpenViking (2.1.2) and Honcho (1.2.0) memory plugins import them from their old place at load time, and a catalog repin does not change an installed plugin's source, so these exact names stay importable as an exception to the rule above:
+
+| Old import | Defined now in |
+|---|---|
+| `agent.message_content.flatten_message_text`, `_text_from_part` | `session_rules.turns` |
+| `agent.skill_commands.extract_user_instruction_from_skill_message` | `session_rules.turns` |
+| `hermes_state_common.TITLE_SOURCE_DERIVED`, `TITLE_SOURCE_LLM` | the values stored in `sessions.title_source` |
+
+They follow the `hermes_state` window: supported through v0.26 and removed no earlier than v0.27.0. No other moved name is carried. A plugin should import from `session_rules.turns` now.
+
 ## What you're building
 
 A **calculator** plugin with two tools:

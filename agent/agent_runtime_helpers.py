@@ -1176,7 +1176,7 @@ def _raw_cache_ttl_from_config(default: Any) -> Any:
     """Raw ``prompt_caching.cache_ttl`` config value, or ``default`` when config cannot be read."""
     try:
         from hermes_cli.config import load_config_readonly
-        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "5m")
+        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "auto")
     except Exception:
         return default
 
@@ -1211,7 +1211,7 @@ def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
 def plan_cache_sections_for_destination(
     messages: list, tools: Optional[list], *, provider: str, base_url: str, api_mode: str,
     model: str, cache_disabled: Optional[bool] = None, cache_ttl: Optional[str] = None,
-    static_system_prefix: Optional[str] = None,
+    cache_ttl_auto: bool = False, static_system_prefix: Optional[str] = None,
 ) -> tuple[list, list]:
     """Plan request-local cache sections for one resolved destination (MoA / auxiliary senders):
     stripped copies (non-caching route) or a ``build_prompt_cache_plan`` layout; never mutates
@@ -1238,7 +1238,7 @@ def plan_cache_sections_for_destination(
     plan = build_prompt_cache_plan(
         messages, tools,
         # effective_cache_ttl resolves None → "5m"; cache-disabled agents never reach here.
-        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
+        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url, auto=cache_ttl_auto),
         native_anthropic=native_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
         direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),
@@ -1348,12 +1348,9 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
-    # Kimi/Moonshot via OpenRouter uses the same envelope cache_control as Claude; without this it
-    # serves ~1% cache hits. Family matcher covers bare k1./k2. slugs.
-    # Without this branch moonshotai/kimi-k2.6 falls through to (False, False), serving ~1% cache hits on
-    # 64K-token prompts and re-billing the full prompt on every turn. Observed within-turn progression with
-    # cache enabled: 1% → 67% → 84% → 97% (#25970). Reuses the canonical family matcher (covers bare
-    # k1./k2./k25 release slugs the substring check missed).
+    # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control; without it moonshotai/kimi-k2.6
+    # served ~1% hits on 64K prompts (1% → 67% → 84% → 97% with it, #25970). The family matcher covers
+    # bare k1./k2./k25 slugs.
     from agent.anthropic_endpoints import _model_name_is_kimi_family
     is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
@@ -1399,12 +1396,15 @@ def anthropic_prompt_cache_policy(
             return False, False
     if is_native_anthropic:
         return True, True
+    from agent.prompt_caching import learned_or_catalog_markers  # learned use, then a catalog route's rates
+    if eff_api_mode == "chat_completions" and (catalog := learned_or_catalog_markers(
+            eff_provider, eff_base_url, eff_model, getattr(agent, "api_key", "") or "")) is not None:
+        return catalog, False
     # Envelope layout is OpenAI-wire only; Portal Claude on native Messages must fall through to the
     # anthropic_messages branch (inner-block markers) or it serves 0% cache hits.
     if (is_openrouter or is_nous_portal) and (is_claude or is_kimi) and not is_anthropic_wire:
         return True, False
-    # Nous Portal Qwen takes the envelope path too; the alibaba-family check below only matches
-    # provider=opencode/alibaba and would leave Portal traffic uncached.
+    # Nous Portal Qwen (catalog unreachable) takes the envelope path; the alibaba check below misses it.
     if is_nous_portal and "qwen" in model_lower:
         return True, False
     if is_anthropic_wire and is_claude:

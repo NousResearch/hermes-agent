@@ -97,6 +97,8 @@ The `anthropic/` prefix stays in your config and session (`/model anthropic/clau
 3. The Anthropic SDK's own transport mints and refreshes access tokens on demand via `google-auth`, and constructs the correct `publishers/anthropic/models/<model>:rawPredict` URL for every request.
 4. Because the Anthropic SDK handles auth internally, mid-session token expiry is transparent — no separate refresh logic on the Hermes side.
 
+In multiplex gateways, credential paths are profile-scoped. If a profile defines neither credential path but the process has `GOOGLE_APPLICATION_CREDENTIALS` set, Hermes refuses ADC rather than using another profile's service account. Set the intended `VERTEX_CREDENTIALS_PATH` or `GOOGLE_APPLICATION_CREDENTIALS` in the served profile's `.env`. Changing `vertex.project_id` changes the destination project, not the authenticated identity.
+
 ## Available Models
 
 Vertex uses Anthropic's own model IDs, with or without a `@YYYYMMDD` version suffix. Prefix with `anthropic/` in your Hermes config so the dispatcher routes through the AnthropicVertex SDK.

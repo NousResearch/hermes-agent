@@ -55,10 +55,42 @@ class TestBuildAnthropicVertexBaseUrl:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def multiplex_vertex_profile(tmp_path, monkeypatch):
+    """A served profile must not inherit the launch profile's SA file."""
+    foreign_file = tmp_path / "launch-account.json"
+    foreign_file.write_text('{"project_id": "launch-project"}')
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(foreign_file))
+    home = tmp_path / "profiles" / "served"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("VERTEX_PROJECT_ID=served-project\n")
+    return home
+
+
+def _under_vertex_profile(home, fn):
+    from agent import secret_scope
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    home_token = set_hermes_home_override(str(home))
+    multiplex_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope(
+        secret_scope.build_profile_secret_scope(home), profile_home=str(home),
+    )
+    try:
+        return fn()
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(multiplex_token)
+        reset_hermes_home_override(home_token)
+
+
 class TestResolveGoogleCredentials:
     def test_missing_google_auth_returns_none(self):
         """When google-auth is not installed, resolver returns (None, None)."""
-        with patch("agent.anthropic_vertex_adapter.google", None):
+        with patch("agent.vertex_adapter._ensure_google_auth", return_value=False):
             from agent.anthropic_vertex_adapter import _resolve_google_credentials
 
             creds, project_id = _resolve_google_credentials()
@@ -77,7 +109,7 @@ class TestResolveGoogleCredentials:
                 "agent.anthropic_vertex_adapter._resolve_project_override",
                 return_value=None,
             ),
-            patch("agent.anthropic_vertex_adapter.google") as mock_google,
+            patch("agent.vertex_adapter.google") as mock_google,
         ):
             mock_google.auth.default.return_value = (mock_creds, "my-gcp-project")
 
@@ -99,7 +131,7 @@ class TestResolveGoogleCredentials:
                 "agent.anthropic_vertex_adapter._resolve_project_override",
                 return_value="override-project",
             ),
-            patch("agent.anthropic_vertex_adapter.google") as mock_google,
+            patch("agent.vertex_adapter.google") as mock_google,
         ):
             mock_google.auth.default.return_value = (mock_creds, "embedded-project")
 
@@ -107,6 +139,49 @@ class TestResolveGoogleCredentials:
 
             _creds, project_id = _resolve_google_credentials()
             assert project_id == "override-project"
+
+    def test_adc_refuses_foreign_profile_credentials(self, multiplex_vertex_profile):
+        from agent.anthropic_vertex_adapter import _resolve_google_credentials
+
+        with patch("agent.vertex_adapter.google") as mock_google:
+            mock_google.auth.default.return_value = (MagicMock(), "launch-project")
+
+            assert _under_vertex_profile(
+                multiplex_vertex_profile, _resolve_google_credentials,
+            ) == (None, None)
+            mock_google.auth.default.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "credential_env", ["VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"],
+    )
+    def test_scoped_service_account_wins_over_foreign_adc(
+        self, multiplex_vertex_profile, credential_env,
+    ):
+        from agent import vertex_adapter
+        from agent.anthropic_vertex_adapter import _resolve_google_credentials
+
+        home = multiplex_vertex_profile
+        own_file = home / "served-account.json"
+        own_file.write_text('{"project_id": "served-account-project"}')
+        (home / ".env").write_text(
+            f"VERTEX_PROJECT_ID=served-project\n{credential_env}={own_file}\n",
+        )
+        own_credentials = MagicMock(project_id="served-account-project")
+        with (
+            patch("agent.vertex_adapter.google") as mock_google,
+            patch.object(vertex_adapter, "service_account", create=True) as mock_sa,
+        ):
+            mock_sa.Credentials.from_service_account_file.return_value = own_credentials
+
+            assert _under_vertex_profile(home, _resolve_google_credentials) == (
+                own_credentials,
+                "served-project",
+            )
+            mock_sa.Credentials.from_service_account_file.assert_called_once_with(
+                str(own_file),
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            mock_google.auth.default.assert_not_called()
 
 
 class TestGetAnthropicVertexConfig:

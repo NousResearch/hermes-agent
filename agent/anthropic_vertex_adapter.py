@@ -36,12 +36,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional, Tuple
 
+from agent import vertex_adapter
 from agent.vertex_adapter import (
     DEFAULT_REGION,
     _resolve_credentials_path,
     _resolve_project_override,
     _resolve_region,
-    google,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,27 +74,19 @@ def _resolve_google_credentials():
 
     Returns ``(creds, project_id)`` or ``(None, None)`` on failure.
     """
-    if google is None:
+    if not vertex_adapter._ensure_google_auth():
         logger.warning(
             "google-auth package not installed. Cannot use Anthropic on Vertex."
         )
         return None, None
 
-    from google.oauth2 import service_account
-
     resolved_path = _resolve_credentials_path(None)
 
     try:
-        if resolved_path:
-            creds = service_account.Credentials.from_service_account_file(
-                resolved_path,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
-            project_id = creds.project_id
-        else:
-            creds, project_id = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
+        resolved = vertex_adapter._load_credentials(resolved_path, None)
+        if resolved is None:
+            return None, None
+        creds, project_id = resolved
 
         override_project = _resolve_project_override()
         if override_project:

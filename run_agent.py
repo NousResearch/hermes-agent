@@ -23,6 +23,7 @@ if "hermes_cli.main" not in sys.modules:
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
 
+import copy
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -223,6 +224,27 @@ class AIAgent(
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+
+    @property
+    def reasoning_config(self):
+        return self.__dict__.get("reasoning_config")
+
+    @reasoning_config.setter
+    def reasoning_config(self, value):
+        # Reassignment is the supported session edit, including equal values and
+        # None. Equal-value in-place mutations cannot identify the author's intent.
+        # Record a SNAPSHOT, never the caller's object: a caller that keeps mutating
+        # the dict it assigned would otherwise rewrite the recorded edit in place.
+        if not self.__dict__.get("_internal_reasoning_assignment", False):
+            if "_fallback_reasoning_at_bind" in self.__dict__:
+                self._fallback_reasoning_session_edit = (copy.deepcopy(value),)
+            voice = self.__dict__.get("_voice_route_state")
+            if voice is not None:
+                # The voice route compares this live value against its own bind marker
+                # (an in-place edit is still the session's value), and deep-copies it
+                # when it installs it back, so it keeps the reference on purpose.
+                voice["reasoning_session_edit"] = (value,)
+        self.__dict__["reasoning_config"] = value
 
     @property
     def base_url(self) -> str:

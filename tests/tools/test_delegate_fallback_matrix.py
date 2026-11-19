@@ -8,6 +8,17 @@ from tools.delegate_tool import _build_child_agent
 from tools.delegate_tool_config import _resolve_child_fallback_chain
 from tests.tools.test_delegate import _make_mock_parent
 
+
+@pytest.fixture(autouse=True)
+def _import_agent_without_checkout_recovery(monkeypatch):
+    # This file tests delegation, not launch recovery of the real checkout.
+    from hermes_cli import _early_recovery
+
+    with monkeypatch.context() as bootstrap_patch:
+        bootstrap_patch.setattr(_early_recovery, "restore_interrupted_pull", lambda *args, **kwargs: False)
+        import run_agent
+
+
 PARENT_CHAIN = [
     {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-parent"}
 ]

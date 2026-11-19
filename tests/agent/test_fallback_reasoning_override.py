@@ -92,10 +92,14 @@ class TestFallbackReasoningOverride:
         agent._transport_cache = {}
         agent._config_context_length = None
         agent._rate_limited_until = 0
-        # During fallback, reasoning was changed to xhigh (fallback model's override)
+        # During fallback, reasoning was changed to xhigh (fallback model's override).
+        # ``bind_route_entry`` records both halves of that provenance: the value the
+        # fallback installed, and the primary value it replaced.
         agent.model = "claude-opus-4.5"
         agent.provider = "anthropic"
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        agent._fallback_reasoning_at_bind = {"enabled": True, "effort": "xhigh"}
+        agent._fallback_reasoning_primary = {"enabled": True, "effort": "medium"}
         agent.runtime_capabilities = {"native_compaction": False}
         agent.context_compressor = MagicMock()
         agent.base_url = ""

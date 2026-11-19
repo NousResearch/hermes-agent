@@ -561,6 +561,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
+        # A cached fallback can coincidentally have the same value as this freshly
+        # resolved turn setting. The reasoning_config setter records the assignment's
+        # provenance (a deep-copied snapshot) itself, so restoring primary cannot
+        # resurrect its old snapshot — do not pre-write the marker here: the setter
+        # runs on the very next line and would replace it with the caller's live object.
         agent.reasoning_config, agent.service_tier = reasoning_config, turn_route.get("service_tier")
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
@@ -1436,7 +1441,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
-        reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
+        reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key, model=model) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`

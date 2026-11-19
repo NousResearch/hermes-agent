@@ -5,6 +5,18 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_bootstrap_recovery(monkeypatch):
+    # Importing gateway.run bootstraps the checkout and may repair an interrupted
+    # update. These policy tests must never inspect or change the real install,
+    # including a linked worktree's git metadata under the real Hermes home.
+    from hermes_cli import _early_recovery
+
+    with monkeypatch.context() as bootstrap_patch:
+        bootstrap_patch.setattr(_early_recovery, 'restore_interrupted_pull', lambda root: False)
+        import hermes_bootstrap
+
+
 def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from gateway.session_policy import build_policy, policy_scope
     from agent.runtime_cwd import resolve_agent_cwd

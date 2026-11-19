@@ -80,7 +80,11 @@ class TestSwitchModelReasoningOverride:
         agent._rate_limited_until = 0
         agent.model = "fallback-model"
         agent.provider = "openai"
+        # The fallback installed its own value over the session's (``bind_route_entry``
+        # records that pair; without it the restore cannot tell which value is whose).
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        agent._fallback_reasoning_at_bind = {"enabled": True, "effort": "medium"}
+        agent._fallback_reasoning_primary = {"enabled": True, "effort": "xhigh"}
         agent.context_compressor = MagicMock()
         agent.base_url = ""
         # Mock the methods restore_primary_runtime calls

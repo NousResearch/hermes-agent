@@ -1285,6 +1285,16 @@ def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
     return {}
 
 
+class ProfileReasoningConfig(dict):
+    """Profile baseline; copies stripped of provenance safely become explicit."""
+    def __init__(self, value):
+        super().__init__(value)
+        self._baseline = dict(self)
+
+    def is_baseline(self):
+        return dict(self) == self._baseline
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 
@@ -1300,7 +1310,7 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         model = model_cfg.strip() if isinstance(model_cfg, str) else ""
     per_model = resolve_per_model_reasoning_effort(model, agent_cfg.get("reasoning_overrides") or {})
     if per_model is not None:
-        return per_model
+        return ProfileReasoningConfig(per_model)
 
     # Keep the raw value: ``or ""`` would turn a YAML False into "" and silently re-enable thinking.
     effort = agent_cfg.get("reasoning_effort", "")
@@ -1308,7 +1318,7 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     if effort and str(effort).strip() and result is None:
         import logging
         logging.getLogger(__name__).warning("Unknown reasoning_effort '%s', using default (medium)", effort)
-    return result
+    return ProfileReasoningConfig(result) if result is not None else None
 
 
 def is_termux() -> bool:

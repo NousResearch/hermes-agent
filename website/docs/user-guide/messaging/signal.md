@@ -152,7 +152,7 @@ The adapter supports sending and receiving media in both directions.
 **Incoming** (user → agent):
 
 - **Images** — PNG, JPEG, GIF, WebP (auto-detected via magic bytes)
-- **Audio** — MP3, OGG, WAV, M4A (voice messages transcribed if Whisper is configured)
+- **Voice notes** are transcribed when speech-to-text is enabled. Audio sent as a file stays available as an attachment. With older signal-cli versions that omit the voice-note flag, Hermes treats incoming audio as voice notes.
 - **Documents** — PDF, ZIP, and other file types
 
 **Outgoing** (agent → user):
@@ -164,7 +164,7 @@ The agent can send media files via `MEDIA:` tags in responses. The following del
 - **Video** — `send_video` sends MP4 video files
 - **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
 
-All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
+All outgoing media goes through Signal's standard attachment API.
 
 Attachment size limit: **100 MB** (both directions).
 :::warning

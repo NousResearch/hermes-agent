@@ -1636,6 +1636,24 @@ class TestSearchWithinSession:
         assert result["count"] == 0
         assert "messages" not in result
 
+    @pytest.mark.parametrize("sort,expected", [("newest", ["tool", "assistant", "user"]),
+                                               ("oldest", ["user", "assistant", "tool"])])
+    def test_mixed_role_date_sorts_merge_by_timestamp(self, db, persistence, sort, expected):
+        seed_session(db, "s_mixed", "cli")
+        seed_messages(db, "s_mixed",
+                      {"role": "user", "content": "ORDERMARK first", "timestamp": 1_000.0},
+                      {"role": "assistant", "content": "ORDERMARK second", "timestamp": 2_000.0},
+                      {"role": "tool", "content": "ORDERMARK third", "tool_call_id": "c1", "tool_name": "terminal",
+                       "timestamp": 3_000.0})
+        for limit in (1, 3):
+            result = json.loads(session_search(query="ORDERMARK", session_id="s_mixed", sort=sort, limit=limit,
+                                               role_filter="user,assistant,tool", persistence=persistence))
+            assert [r["matched_role"] for r in result["results"]] == expected[:limit], result
+        # Discovery across sessions keeps one hit per session: the date-first one.
+        found = json.loads(session_search(query="ORDERMARK", sort=sort, limit=1, role_filter="user,assistant,tool",
+                                          persistence=persistence))
+        assert [r["matched_role"] for r in found["results"]] == expected[:1], found
+
     def test_unknown_session_id_is_an_error(self, db, persistence):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="modpack", session_id="s_missing", persistence=persistence))

@@ -1003,7 +1003,7 @@ VISION_ANALYZE_SCHEMA = {
                 "maxItems": 4,
                 "description": (
                     "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
-                    "coordinates (upright, as you see the image), applied before any downscaling — the crop "
+                    "coordinates, applied before any downscaling — the crop "
                     "keeps full resolution. Load the full image first, then "
                     "re-call with a region to zoom into small text or fine "
                     "detail."

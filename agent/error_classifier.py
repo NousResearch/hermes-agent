@@ -1405,6 +1405,12 @@ def _classify_400(c: _Ctx) -> Verdict:
     ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
+    ) or (
+        # Meta muse (api.meta.ai) expires its sealed reasoning blobs on a TTL, so a long session
+        # replays stale ones: 400 "reasoning `encrypted_content` has expired". Same recovery as the
+        # other replay rejections (strip the blobs, keep the provider); without this it falls to
+        # format_error and the whole turn is punted to the fallback provider every ~5 minutes.
+        "encrypted_content" in msg and "expired" in msg
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /

@@ -49,5 +49,8 @@ async def bot_delivery_list(connection, _ref, params):
     home = await asyncio.to_thread(lambda: Path(authority.profile_id).resolve())
     sender = served_profile_name(home)
     live_state = partial(_target_live_state, getattr(authority, 'runner', None))
-    rows = await asyncio.to_thread(list_sender_deliveries, _hermes_root(home), sender, live_state=live_state)
+    try:
+        rows = await asyncio.to_thread(list_sender_deliveries, _hermes_root(home), sender, live_state=live_state)
+    except OSError as exc:  # a receipt that exists but cannot be read: the client keeps its last rows
+        raise RuntimeStoreError('storage_unavailable', detail=type(exc).__name__) from exc
     return {'sender': sender, 'deliveries': rows}

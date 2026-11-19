@@ -131,20 +131,25 @@ def _container_identity(shared_key: str = "") -> str:
 
 def _is_volatile_mount_spec(spec: str) -> bool:
     """True when *spec* is a ``host:container[:mode]`` mount whose host source is a
-    per-process tempdir (a ``mkdtemp`` under the system temp), so its path is random
-    per process and must not be hashed into the reuse label.
+    per-process staging dir (random path, so it must not be hashed into the reuse label).
 
     The known source is the symlink-safe skills copy from
     ``credential_files._safe_skills_path``: any symlink under ``skills/`` makes it a
-    fresh ``mkdtemp`` per process. Stable host paths — including a symlink-free
-    skills dir, which mounts directly — never sit under the process tempdir.
+    fresh ``mkdtemp`` per process. Staged under HERMES_HOME (the process tempdir would be
+    invisible to a containerized gateway's host mapping), it is recognized by the staging
+    basename — intact under both gateway and mapped-host views. Legacy sources under the
+    process tempdir (pre-relocation gateways) keep matching the tempdir rule. Stable host
+    paths — including a symlink-free skills dir, which mounts directly — match neither.
     """
     if spec in ("-v", "--mount") or ":" not in spec:
         return False  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
     parsed = _split_volume_spec(spec)
     source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
     if _is_windows_drive_path(source):
-        return False  # drive-letter hosts can never be the POSIX process tempdir
+        return False  # drive-letter hosts can never be a POSIX staging dir
+    from tools import credential_files as _cf  # constant only, lazy like the mount getters
+    if os.path.basename(source).startswith(_cf.SAFE_SKILLS_PREFIX):
+        return True
     try:
         temp_root = os.path.realpath(tempfile.gettempdir())
         source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))

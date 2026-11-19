@@ -176,9 +176,13 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
   return { base, variant, quant }
 }
 
+interface ModelDisplayOptions {
+  provider?: string
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function modelDisplayParts(model: string, options?: ModelDisplayOptions): { name: string; tag: string } {
   let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
 
   const tags = [variant, quant].filter(Boolean)
@@ -196,14 +200,23 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  const name = prettifyBase(base) || model.trim() || 'No model'
+  const id = model.trim()
+  const slash = id.lastIndexOf('/')
+  // Custom endpoints can route the same model through arbitrary nested sources.
+  // Keep that path verbatim and first, ahead of the potentially truncated name.
+  // Ordinary catalogs retain their compact vendor-free labels.
+  const isCustom = options?.provider === 'custom' || options?.provider?.startsWith('custom:')
+  const source = isCustom && slash > 0 ? id.slice(0, slash) : ''
+
+  return { name: source ? `${source} / ${name}` : name, tag: tags.join(' ') }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant
  *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
  *  to the same label on any surface (#88597). */
-export function displayModelName(model: string): string {
-  const { name, tag } = modelDisplayParts(model)
+export function displayModelName(model: string, options?: ModelDisplayOptions): string {
+  const { name, tag } = modelDisplayParts(model, options)
 
   return tag ? `${name} ${tag}` : name
 }
@@ -225,8 +238,11 @@ export function modelVariantTag(model: string): string {
  *  own pill (`ReasoningPill`), so a long model name can no longer push the
  *  effort out of the truncating span. Fast shows when the speed=fast param is
  *  on OR the active model is a `…-fast` variant — never both. */
-export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; serviceTier?: string }): string {
-  const name = modelDisplayParts(model).name
+export function formatModelPillLabel(
+  model: string,
+  options?: ModelDisplayOptions & { fastMode?: boolean; serviceTier?: string }
+): string {
+  const name = modelDisplayParts(model, options).name
 
   const tag = model.trim()
     ? options?.serviceTier === 'ultrafast'

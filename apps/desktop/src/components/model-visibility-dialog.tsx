@@ -127,7 +127,11 @@ export function ModelVisibilityDialog({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
+    !q ||
+    foldIncludes(
+      `${model} ${provider.name} ${provider.slug} ${displayModelName(model, { provider: provider.slug })}`,
+      q
+    )
 
   // Typing an id no provider lists offers to add it — same gesture as the
   // pickers, minus the switch — and the new row lands visible. Only once the
@@ -204,7 +208,7 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      const { name, tag } = modelDisplayParts(family.id, { provider: provider.slug })
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

@@ -1046,7 +1046,7 @@ function ModelFamilyRow({
       : null
 
   const isCurrent = activeId !== null
-  const { name, tag } = modelDisplayParts(family.id)
+  const { name, tag } = modelDisplayParts(family.id, { provider: provider.slug })
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
   const limit = familyLimit(provider, family, isCurrent)
@@ -1385,7 +1385,7 @@ function groupModels(
 
     const matches = (family: ModelFamily) =>
       foldIncludes(
-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
+        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id, { provider: provider.slug })}`,
         q
       )
 

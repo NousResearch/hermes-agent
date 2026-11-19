@@ -9,6 +9,35 @@ import {
 } from './model-status-label'
 
 describe('model-status-label', () => {
+  it.each(['custom', 'custom:relay'])(
+    'keeps arbitrary nested source paths distinct for %s across display surfaces',
+    provider => {
+      const ids = ['codex/gpt-6-astra', 'nas/codex/gpt-6-astra', 'auto/gpt-6-astra']
+
+      for (const id of ids) {
+        const source = id.slice(0, id.lastIndexOf('/'))
+        const name = `${source} / GPT-6-astra`
+
+        expect(modelDisplayParts(id, { provider })).toEqual({ name, tag: '' })
+        expect(displayModelName(id, { provider })).toBe(name)
+        expect(formatModelPillLabel(id, { provider })).toBe(name)
+      }
+
+      expect(modelDisplayParts('lab/edge/Qwen3.6-27B-flash-Q4_K_XL', { provider })).toEqual({
+        name: 'lab/edge / Qwen3.6 27B',
+        tag: 'Flash Q4'
+      })
+      expect(formatModelPillLabel('lab/edge/Qwen3.6-27B-flash-Q4_K_XL', { provider })).toBe(
+        'lab/edge / Qwen3.6 27B · Flash'
+      )
+      expect(formatModelPillLabel(ids[1], { provider, serviceTier: 'ultrafast' })).toBe(
+        'nas/codex / GPT-6-astra · Ultrafast'
+      )
+      expect(displayModelName('anthropic/claude-sonnet-5', { provider: 'openrouter' })).toBe('Sonnet 5')
+      expect(displayModelName('gpt-6-astra', { provider })).toBe('GPT-6-astra')
+    }
+  )
+
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')

@@ -103,8 +103,9 @@ class _FakeDb:
 
 
 class _FakeChat:
-    def __init__(self, session_id: str | None):
+    def __init__(self, session_id: str | None, db=None):
         self.session_id: str | None = session_id
+        self._session_db = db  # the CLI chat object holds the store too
 
 
 class _FakeAgent:
@@ -176,6 +177,21 @@ class ChatGateTestCase(unittest.TestCase):
         chat, agent = self.fake_chat(**kwargs)
         return desktop_screen.chat_gate(chat, agent, message)
 
+    def make_db(self, rows, with_created=True):
+        path = os.path.join(self.tmp, f"state-{len(rows)}-{with_created}.db")
+        conn = sqlite3.connect(path)
+        if with_created:
+            conn.execute("CREATE TABLE sessions "
+                         "(id TEXT, source TEXT, created_source TEXT)")
+            conn.executemany("INSERT INTO sessions VALUES (?, ?, ?)", rows)
+        else:
+            conn.execute("CREATE TABLE sessions (id TEXT, source TEXT)")
+            conn.executemany("INSERT INTO sessions VALUES (?, ?)",
+                             [(r[0], r[1]) for r in rows])
+        conn.commit()
+        conn.close()
+        return path
+
 
 class TestChatGate(ChatGateTestCase):
     def test_allow_returns_none_and_calls_engine_once(self):
@@ -213,7 +229,8 @@ class TestChatGate(ChatGateTestCase):
     def test_no_session_db_skips(self):
         chat, agent = self.fake_chat()
         agent._session_db = None
-        self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
     def test_unknown_session_row_skips(self):
@@ -390,19 +407,7 @@ class TestScopeResolution(ChatGateTestCase):
     the Desktop backend must screen when neither can tell."""
 
     def make_db(self, rows, with_created=True):
-        path = os.path.join(self.tmp, f"state-{len(rows)}-{with_created}.db")
-        conn = sqlite3.connect(path)
-        if with_created:
-            conn.execute("CREATE TABLE sessions "
-                         "(id TEXT, source TEXT, created_source TEXT)")
-            conn.executemany("INSERT INTO sessions VALUES (?, ?, ?)", rows)
-        else:
-            conn.execute("CREATE TABLE sessions (id TEXT, source TEXT)")
-            conn.executemany("INSERT INTO sessions VALUES (?, ?)",
-                             [(r[0], r[1]) for r in rows])
-        conn.commit()
-        conn.close()
-        return path
+        return super().make_db(rows, with_created=with_created)
 
     def gate_with(self, store, session_id="s-1", db_path=None):
         if db_path is not None:
@@ -541,6 +546,123 @@ class TestScopeResolution(ChatGateTestCase):
         self.assertEqual(r("subagent", "desktop"), "subagent")
         self.assertEqual(r(None, "desktop"), "desktop")
         self.assertIsNone(r(None, None))
+
+
+class TestSkipLogging(ChatGateTestCase):
+    """Review 1c-r8: every early return writes skipped_<reason> to the
+    screen log, so a silent gate miss is impossible to mistake for a
+    clean pass again."""
+
+    def setUp(self):
+        super().setUp()
+        desktop_screen._DISABLED_LOGGED = False
+
+    def last_record(self):
+        with open(self.env["HERMES_DESKTOP_SCREEN_LOG"],
+                  encoding="utf-8") as handle:
+            lines = handle.read().strip().splitlines()
+        return json.loads(lines[-1]) if lines else {}
+
+    def last_tier(self):
+        return self.last_record().get("tier")
+
+    def test_disabled_logs_once_without_text(self):
+        # Review 1c-r9-F1: a default install must stay inert - one
+        # record per process, and NEVER the message text.
+        os.environ["HERMES_DESKTOP_SCREEN"] = ""
+        chat, agent = self.fake_chat()
+        self.assertIsNone(desktop_screen.chat_gate(
+            chat, agent, "my api key is sk-live-SECRET"))
+        self.assertIsNone(desktop_screen.chat_gate(
+            chat, agent, "second turn text"))
+        with open(self.env["HERMES_DESKTOP_SCREEN_LOG"],
+                  encoding="utf-8") as handle:
+            lines = [json.loads(x) for x in handle.read().strip().splitlines()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["tier"], "skipped_disabled")
+        self.assertNotIn("preview", lines[0])
+        self.assertNotIn("SECRET", json.dumps(lines))
+
+    def test_no_store_skips_outside_desktop_backend(self):
+        chat, agent = self.fake_chat()
+        agent._session_db = None
+        chat._session_db = None
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+            self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
+        self.assertEqual(self.last_tier(), "skipped_no_store")
+
+    def test_no_store_in_desktop_backend_screens(self):
+        # Review 1c-r9-F6: no store at all in the Desktop backend still
+        # screens under process scope (secure direction).
+        EngineStubHandler.block_pattern = "ATTACK"
+        chat, agent = self.fake_chat()
+        agent._session_db = None
+        chat._session_db = None
+        with mock.patch.dict(os.environ, {"HERMES_DESKTOP": "1"}):
+            notice = desktop_screen.chat_gate(chat, agent, "ATTACK now")
+        self.assertIsInstance(notice, str)
+        self.assertEqual(self.last_tier(), "skipped_process_scope_no_store")
+
+    def test_out_of_scope_logs_skip_without_text(self):
+        path = self.make_db([("s-1", "cli", "cli")])
+        with mock.patch.object(desktop_screen, "_state_db_path",
+                               lambda: Path(path)):
+            chat, agent = self.fake_chat()
+            agent._session_db = _ClientProxy({})  # resolve via the DB row
+            with mock.patch.dict(os.environ, {"HERMES_DESKTOP": ""}):
+                self.assertIsNone(desktop_screen.chat_gate(
+                    chat, agent, "my token is sk-live-SECRET"))
+        record = self.last_record()
+        self.assertEqual(record.get("tier"), "skipped_out_of_scope")
+        self.assertNotIn("preview", record)
+
+    def test_notification_no_text_never_logs_content(self):
+        # Review 1c-r9-F2: machine notification bodies must never be
+        # persisted, on any skip path.
+        from tools.process_registry_notifications import TimelineNotification
+        chat, agent = self.fake_chat()
+        tn = TimelineNotification("[Process completed: SECRET token]",
+                                  display_text="done",
+                                  display_kind="delegation")
+        self.assertIsNone(desktop_screen.chat_gate(chat, agent, tn))
+        record = self.last_record()
+        self.assertEqual(record.get("tier"), "skipped_no_text")
+        self.assertNotIn("SECRET", json.dumps(record))
+
+    def test_store_preference_uses_whichever_can_answer(self):
+        # Review 1c-r9-F3: a truthy-but-useless agent store must not
+        # shadow the chat store that can answer.
+        chat = _FakeChat("s-norow",
+                         db=_ClientProxy({"s-norow": {"source": "desktop"}}))
+        agent = _FakeAgent("s-norow", object())
+        self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_unexpected_error_is_logged(self):
+        class ExplodingChat:
+            @property
+            def session_id(self):
+                raise RuntimeError("boom")
+
+        agent = _FakeAgent("s-1", _FakeDb([("s-1", "desktop")]))
+        self.assertIsNone(desktop_screen.chat_gate(
+            ExplodingChat(), agent, "hello"))
+        self.assertEqual(self.last_tier(), "skipped_error")
+
+    def test_chat_object_store_is_used_when_agent_has_none(self):
+        # The CLI chat object holds the store itself; the agent's copy
+        # is None in the serve flow (review 1c-r8 - the live miss).
+        chat = _FakeChat("s-1", db=_FakeDb([("s-1", "desktop")]))
+        agent = _FakeAgent("s-1", None)
+        self.assertIsNone(desktop_screen.chat_gate(chat, agent, "hello"))
+        self.assertEqual(EngineStubHandler.screen_calls, 1)
+
+    def test_chat_object_store_holds_attack_too(self):
+        EngineStubHandler.block_pattern = "ATTACK"
+        chat = _FakeChat("s-1", db=_FakeDb([("s-1", "desktop")]))
+        agent = _FakeAgent("s-1", None)
+        notice = desktop_screen.chat_gate(chat, agent, "ATTACK now")
+        self.assertIsInstance(notice, str)
 
 
 class TestMessageTexts(unittest.TestCase):

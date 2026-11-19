@@ -118,6 +118,10 @@ _INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "acp"})
 # them mid-run; discarded on completion).
 _OUTCOME_TASKS: set = set()
 
+# Review 1c-r9-F1: the 'disabled' skip record is emitted once per
+# process (a default install must not append a line per CLI turn).
+_DISABLED_LOGGED = False
+
 
 def _log_path() -> Path:
     # Resolved per call, not at import: env overrides and test patches
@@ -789,25 +793,103 @@ def _screen_texts_sync(subject: str, session_id: str, texts: list) -> tuple:
         return pool.submit(_run).result()
 
 
+def _resolve_scope(stores: list, session_id: str):
+    """Chat-path scope: row first from ANY usable store (review 1c-r9-F3:
+    ``or`` picked the first truthy store, not the one that can answer),
+    then the read-only state DB, then each store's adopted snapshot.
+    A resolved label decides immediately (row authoritative). Returns
+    True/False when resolved, None when nothing can tell (the caller
+    then applies the Desktop-backend process scope)."""
+    for store in stores:
+        try:
+            read_ctx = getattr(store, "_read_ctx", None)
+        except Exception:
+            read_ctx = None
+        if callable(read_ctx):
+            try:
+                with read_ctx() as conn:
+                    try:
+                        found = conn.execute(
+                            "SELECT source, created_source FROM sessions "
+                            "WHERE id=?", (session_id,)).fetchone()
+                    except Exception:
+                        found = conn.execute(
+                            "SELECT source FROM sessions WHERE id=?",
+                            (session_id,)).fetchone()
+                        found = (found[0], None) if found else None
+                if found is not None:
+                    label = _resolve_label(found[0],
+                                           found[1] if len(found) > 1 else None)
+                    if label:
+                        return label in _scoped_sources()
+            except Exception:
+                pass
+    label = _source_from_db(session_id)
+    if label:
+        return label in _scoped_sources()
+    for store in stores:
+        label = _source_from_store(store, session_id)
+        if label:
+            return label in _scoped_sources()
+    return None
+
+
 def chat_gate(chat, agent, message) -> str | None:
     """Screen one Desktop serve chat turn; returns the hold notice text
     when the submit is held (the caller shows it instead of running
     the turn), None when the turn may proceed. NEVER raises: every
-    failure degrades to 'proceed', logged."""
+    failure degrades to 'proceed', logged. Every skip writes a
+    ``skipped_<reason>`` record to the screen log (review 1c-r8: a
+    silent skip hid a live gate miss twice)."""
+    reason = None
     try:
         if not desktop_screen_enabled():
+            reason = "disabled"
             return None
         session_id = str(getattr(chat, "session_id", "")
                          or getattr(agent, "session_id", "") or "")
         if not session_id:
+            reason = "no_session"
             return None
-        db = getattr(agent, "_session_db", None)
-        if db is None:
+        # The CLI chat object holds the store itself (self._session_db);
+        # the agent's copy can be None in the serve flow (review 1c-r8).
+        stores = []
+        for candidate in (getattr(agent, "_session_db", None),
+                          getattr(chat, "_session_db", None)):
+            if candidate is not None and all(candidate is not s
+                                             for s in stores):
+                stores.append(candidate)
+        if not stores:
+            # Review 1c-r9-F6: no store at all in the Desktop backend
+            # still screens under process scope (the secure direction);
+            # every other process skips, logged.
+            if _flag("HERMES_DESKTOP").lower() in ("1", "true", "yes", "on"):
+                texts = _message_texts(message)
+                if not texts:
+                    reason = "no_text"
+                    return None
+                reason = "process_scope_no_store"
+                held, reasons = _screen_texts_sync(
+                    "desktop-chat", session_id, texts)
+                if not held:
+                    return None
+                shown = "; ".join(reasons[:3]) if reasons else "block tier"
+                return f"{_hold_notice()} [{shown}]"
+            reason = "no_store"
             return None
-        if not session_in_scope(_ChatAuthority(db), session_id):
+        scope = _resolve_scope(stores, session_id)
+        if scope is None:
+            # Cannot tell: the Desktop backend screens under process
+            # scope (r4 behaviour, restored in r9); elsewhere skip.
+            if _flag("HERMES_DESKTOP").lower() not in ("1", "true", "yes", "on"):
+                reason = "out_of_scope"
+                return None
+        elif not scope:
+            reason = "out_of_scope"
             return None
         texts = _message_texts(message)
         if not texts:
+            reason = "no_text"
             return None
         held, reasons = _screen_texts_sync("desktop-chat", session_id, texts)
         if not held:
@@ -817,4 +899,28 @@ def chat_gate(chat, agent, message) -> str | None:
     except Exception:
         logger.warning("desktop_screen: chat gate failed; proceeding",
                        exc_info=True)
+        reason = "error"
         return None
+    finally:
+        if reason is not None:
+            try:
+                # Review 1c-r9-F1/F2: skip records carry the REASON ONLY
+                # - never message text (a default install must stay
+                # inert, and machine notifications must never be
+                # persisted). Review F5: the error path is logged too.
+                global _DISABLED_LOGGED
+                emit = True
+                if reason == "disabled":
+                    emit = not _DISABLED_LOGGED
+                    _DISABLED_LOGGED = True
+                if emit:
+                    session = ""
+                    try:
+                        session = str(getattr(chat, "session_id", "") or "")
+                    except Exception:
+                        pass
+                    _log({"subject": "desktop-chat",
+                          "session": session,
+                          "tier": f"skipped_{reason}"})
+            except Exception:
+                pass

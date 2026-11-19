@@ -693,18 +693,22 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
     """
     if not identifier:
         return []
+    from agent.vault_login_classifier import LoginControl, classify_otp_controls, is_excluded_login_control
+
     anchor = password_fill[0]["index"] if password_fill else None
     form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
     if form is None:
         raw_anchor = next((r for r in raw_controls if int(r.get("index", -1) or -1) == anchor), None)
         form = raw_anchor.get("formIndex", raw_anchor.get("form_index")) if raw_anchor else None
 
-    fields = [c for c in classified if c.token in ("username", "email", "tel")]
+    # A box enter_code would write the code into (one-time-code, or a code/OTP/2FA name or label) is not the
+    # identifier unless the page declares a login token on it (score 100): a type=tel code box would otherwise
+    # be classified as a phone and outscore a labelled username box.
+    fields = [c for c in classified if c.token in ("username", "email", "tel")
+              and (c.score == 100 or not classify_otp_controls([c.control]))]
     if fields:
         best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
         return [{"index": best.control.index, "token": best.token, "value": identifier}]
-
-    from agent.vault_login_classifier import LoginControl, is_excluded_login_control
 
     taken = {f["index"] for f in password_fill}
     candidates = []
@@ -718,7 +722,7 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
         if control.index in taken or control.type not in ("text", "tel", "email"):
             continue
         # A one-time-code or new-password box is never the identifier, classified or not.
-        if control.form_index != form or is_excluded_login_control(control):
+        if control.form_index != form or is_excluded_login_control(control) or classify_otp_controls([control]):
             continue
         candidates.append(control)
     if len(candidates) != 1:  # ambiguous: fill nothing rather than guess

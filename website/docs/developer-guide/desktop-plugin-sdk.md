@@ -43,6 +43,9 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
   model, profile, viewport. `gateway` is the WebSocket, not turn-busy.
 - **`host.*` actions** — curated safe verbs: toast, navigate, tail logs,
   restart the gateway, subscribe to the gateway event stream.
+- **`host.clerk`** — the sanitized Clerk user/organization snapshot plus
+  organization switch, create, refresh, and sign-out actions (see
+  [Titlebar account trigger](#titlebar-account-trigger)).
 - **`ctx.preview`** — run JavaScript in the focused session's preview Browser
   page. Closed by default: the plugin declares `capabilities:
   ['preview.executeJavaScript']` and the user allows it per page origin
@@ -319,6 +322,42 @@ ctx.registerMany([
 
 `codicon` is a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
 id. Navigate to a route from anywhere with `host.navigate('/my-page')`.
+
+### Titlebar account trigger
+
+`TITLEBAR_AREAS.center` accepts render contributions inside the titlebar's left
+cluster. Give the button `style={{ order: -1 }}` to paint it before the fixed
+sidebar open/hide button. The center slot does not claim page-owned titlebar
+chrome, so the trigger stays off pages that own the titlebar band.
+
+```javascript
+import { TITLEBAR_AREAS } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'account',
+  area: TITLEBAR_AREAS.center,
+  render: () => jsx(AccountTrigger, {})
+})
+```
+
+#### Clerk account and organizations — `host.clerk`
+
+`host.clerk` is present when the Desktop runs its Clerk authentication build.
+The snapshot is sanitized — no access tokens or secret keys — and the actions
+are fixed verbs, not a Clerk passthrough.
+
+```ts
+host.clerk.snapshot // ReadableAtom<ClerkSessionSnapshot>
+host.clerk.setActiveOrganization(orgId | null) // null = personal account
+host.clerk.createOrganization({ name, slug? })
+host.clerk.refresh()
+host.clerk.signOut()
+```
+
+The bridge switches the Clerk session, refreshes the token, re-submits it to
+the backend for the window's active profile, and keeps other open windows in
+sync. Feature-detect `host.clerk` when a plugin can also run on an older
+Desktop build.
 
 ### Status bar and title bar
 

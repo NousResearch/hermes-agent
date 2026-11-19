@@ -12,24 +12,33 @@ const repoRoot = resolve(import.meta.dirname, '../../..')
 // Evaluate the one identity module in a fresh process. Its CJS cache and the
 // caller's environment must not carry a previous variant into this artifact.
 function productIdentity(source, stamp) {
-  const variant = stamp.updateMechanism === 'microsoft-store' ? 'store'
-    : stamp.payload === 'bootstrap' ? '' : stamp.payload
+  const variant =
+    stamp.updateMechanism === 'microsoft-store' ? 'store' : stamp.payload === 'bootstrap' ? '' : stamp.payload
   if (!['', 'bundled', 'light', 'store'].includes(variant)) {
     throw new Error(`Invalid desktop stamp payload: ${stamp.payload}`)
   }
-  return execFileSync(process.execPath, ['-e', 'console.log(JSON.stringify(require(process.argv[1])))',
-    join(source, 'apps/desktop/product-identity.cjs')], {
-    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: stamp.tag || '',
-      // Commit builds stamp source='commit-build'; the display name carries
-      // the short SHA (see product-identity.cjs). Tagged builds pass ''.
-      HERMES_BUILD_COMMIT: stamp.source === 'commit-build' ? (stamp.commit || '') : '' },
-    encoding: 'utf8',
-  }).trim()
+  return execFileSync(
+    process.execPath,
+    ['-e', 'console.log(JSON.stringify(require(process.argv[1])))', join(source, 'apps/desktop/product-identity.cjs')],
+    {
+      env: {
+        ...process.env,
+        HERMES_DESKTOP_VARIANT: variant,
+        HERMES_PAYLOAD_TAG: stamp.tag || '',
+        // Commit builds stamp source='commit-build'; the display name carries
+        // the short SHA (see product-identity.cjs). Tagged builds pass ''.
+        HERMES_BUILD_COMMIT: stamp.source === 'commit-build' ? stamp.commit || '' : ''
+      },
+      encoding: 'utf8'
+    }
+  ).trim()
 }
 
 /** Every file bundleElectronMain writes: the only outputs that bake the install stamp. */
 export const electronOutputs = Object.freeze({
-  main: 'electron-main.mjs', preload: 'electron-preload.js', previewGuestPreload: 'preview-guest-preload.js',
+  main: 'electron-main.mjs',
+  preload: 'electron-preload.js',
+  previewGuestPreload: 'preview-guest-preload.js'
 })
 
 /** Bundle main/preload using only the prepared workspace's compiler. */
@@ -37,10 +46,13 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   source = resolve(source)
   out = resolve(out)
   const { build } = await import(pathToFileURL(workspaceTool(source, 'apps/desktop', 'esbuild')).href)
+  const { loadEnv } = await import(pathToFileURL(workspaceTool(source, 'apps/desktop', 'vite')).href)
   // Defaults must run before bundled modules resolve paths or onboarding flags.
   // Dev bundles leave the environment alone so source-tree resolution keeps working.
   const envBanner = dev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')
-  const define = {}
+  const fileEnv = loadEnv(dev ? 'development' : 'production', join(source, 'apps/desktop'), 'VITE_')
+  const clerkKey = 'pk_live_Y2xlcmsudW5pdGFsay5haSQ'
+  const define = { __UNITALK_CLERK_PUBLISHABLE_KEY__: JSON.stringify(clerkKey) }
   let bakedStamp = null
   if (!dev) {
     if (!stamp) throw new Error('A prepared install stamp is required')
@@ -61,7 +73,7 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     target: 'node20',
     external: ['electron', 'node-pty', 'get-windows', 'fs'],
     define,
-    logLevel: 'info',
+    logLevel: 'info'
   }
   await build({
     ...common,
@@ -70,13 +82,15 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     entryPoints: [join(source, 'apps/desktop/electron/entry.ts')],
     format: 'esm',
     outfile: join(out, electronOutputs.main),
-    banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner },
+    banner: {
+      js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" + envBanner
+    }
   })
   await build({
     ...common,
     entryPoints: [join(source, 'apps/desktop/electron/preload.ts')],
     format: 'cjs',
-    outfile: join(out, electronOutputs.preload),
+    outfile: join(out, electronOutputs.preload)
   })
   // Preview-pane <webview> guest preload; main.ts hands this path to the
   // preview webview via will-attach-webview.
@@ -84,19 +98,23 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     ...common,
     entryPoints: [join(source, 'apps/desktop/electron/preview-guest-preload-entry.ts')],
     format: 'cjs',
-    outfile: join(out, electronOutputs.previewGuestPreload),
+    outfile: join(out, electronOutputs.previewGuestPreload)
   })
   return { stampClock: bakedStamp }
 }
 
 if (isMain(import.meta.url)) {
-  const { values } = parseArgs({ options: {
-    source: { type: 'string', default: repoRoot },
-    out: { type: 'string' }, stamp: { type: 'string' }, dev: { type: 'boolean' },
-  } })
+  const { values } = parseArgs({
+    options: {
+      source: { type: 'string', default: repoRoot },
+      out: { type: 'string' },
+      stamp: { type: 'string' },
+      dev: { type: 'boolean' }
+    }
+  })
   await bundleElectronMain({
     ...values,
     out: values.out || join(values.source, 'apps/desktop/dist'),
-    stamp: values.stamp || join(values.source, 'apps/desktop/build/install-stamp.json'),
+    stamp: values.stamp || join(values.source, 'apps/desktop/build/install-stamp.json')
   })
 }

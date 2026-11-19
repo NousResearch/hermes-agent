@@ -1,5 +1,7 @@
+import { exposeClerkBridge } from '@clerk/electron/preload'
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import { CLERK_RENDERER_HOST, CLERK_RENDERER_SCHEME, clerkEnabled } from './clerk-config'
 import type { DesktopProfileRoute } from './desktop-profile'
 import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
 import { customWindowControlsEnabled } from './window-controls'
@@ -14,6 +16,7 @@ import { customWindowControlsEnabled } from './window-controls'
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
+const clerkRuntimeEnabled = ipcRenderer.sendSync('hermes:clerk:enabled') === true
 
 const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean } | undefined =
   ipcRenderer.sendSync('hermes:feature-flags')
@@ -29,7 +32,16 @@ const uiPreferencesSnapshot = ipcRenderer.sendSync('hermes:ui-preferences:snapsh
 
 import { unwrapExpectedNotFound } from './api-expected-404'
 
+if (clerkEnabled() && clerkRuntimeEnabled) {
+  exposeClerkBridge()
+}
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  clerk: {
+    enabled: clerkEnabled() && clerkRuntimeEnabled,
+    host: CLERK_RENDERER_HOST,
+    scheme: CLERK_RENDERER_SCHEME
+  },
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
   // Launch-flag fact: the app was started with --local, so the renderer may
@@ -606,13 +618,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:deep-link', listener)
   },
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
-  /** Clerk SSO callback from Electron main: `unitalk://callback?token=X` → token string. */
-  onUnitalkOauthCallback: callback => {
-    const listener = (_event, token) => callback(token)
-    ipcRenderer.on('unitalk-oauth-callback', listener)
-
-    return () => ipcRenderer.removeListener('unitalk-oauth-callback', listener)
-  },
   probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
   installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
   removeDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:removeDesktop', payload),

@@ -30,6 +30,7 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { AuthGate } from './app/auth'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
@@ -99,14 +100,15 @@ if (winParam === 'overlay') {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <ThemeProvider>
-              <HapticsProvider>
-                {/* ONE tooltip provider for the whole app. Every `Tip` used to
+              <AuthGate>
+                <HapticsProvider>
+                  {/* ONE tooltip provider for the whole app. Every `Tip` used to
                     carry its own, and with ~107 call sites those subtrees
                     dominated unrelated interactions (52,784 TooltipProvider
                     renders in a single sash drag). Radix's provider holds only
                     refs and stable callbacks, so hoisting is what it's for. */}
-                <RootTooltipProvider>
-                  {/* useTransitions={false}: react-router v7's HashRouter wraps every
+                  <RootTooltipProvider>
+                    {/* useTransitions={false}: react-router v7's HashRouter wraps every
                     route state update in React.startTransition() by default. In
                     React 19's concurrent renderer, transitions are non-urgent — React
                     can yield mid-render and resume later. When the app is under load
@@ -115,11 +117,12 @@ if (winParam === 'overlay') {
                     the route change commit. The session sidebar highlight + main pane
                     both freeze for seconds despite the main thread being free.
                     Disabling transitions makes navigate() commit at default priority. */}
-                  <HashRouter useTransitions={false}>
-                    <App />
-                  </HashRouter>
-                </RootTooltipProvider>
-              </HapticsProvider>
+                    <HashRouter useTransitions={false}>
+                      <App />
+                    </HashRouter>
+                  </RootTooltipProvider>
+                </HapticsProvider>
+              </AuthGate>
             </ThemeProvider>
           </I18nProvider>
         </QueryClientProvider>

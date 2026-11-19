@@ -49,6 +49,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { clerkSessionHost } from '@/store/clerk-session'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -607,6 +608,9 @@ export const host = {
 
   /** Read, update, and observe the allowlisted Desktop appearance preferences. */
   settings: desktopSettings,
+
+  /** Current Clerk user/organization state and the fixed organization actions. */
+  clerk: clerkSessionHost,
 
   /** Toast into the app's notification stack. */
   notify,
@@ -1737,6 +1741,9 @@ export {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 export { EmptyState } from '@/components/ui/empty-state'
@@ -1895,6 +1902,12 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export type {
+  ClerkOrganizationInput,
+  ClerkOrganizationSummary,
+  ClerkSessionSnapshot,
+  ClerkUserSummary
+} from '@/store/clerk-session'
 export { gatewayActivationEpoch, useGatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen

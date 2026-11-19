@@ -82,3 +82,28 @@ def test_transcript_append_refuses_ambiguous_legacy_rows(backend, scope_a, scope
         b.messages.append_batch("legacy-duplicate", [turn])
     assert not transcript_rows(a, "legacy-duplicate")
     assert not transcript_rows(b, "legacy-duplicate")
+
+
+def test_retained_legacy_accounting_marker_refuses_direct_and_queued_usage(backend, scope_a):
+    import hashlib
+
+    from hermes_constants import get_default_hermes_root
+    from tests.fixtures.storage_holder import raw_holder
+
+    store = backend.open(scope_a)
+    seed_session(store, "receipt-owner", "cli")
+    holder = raw_holder(store)
+    directory = get_default_hermes_root() / ".session-lineage-locks" / "accounting"
+    directory.mkdir(mode=0o700, parents=True)
+    location = hashlib.sha256(str(holder.db_path.resolve()).encode()).hexdigest()
+    marker = directory / f"usage-{location}-old-inode-retained.lock"
+    marker.touch(mode=0o600)
+
+    from persistence.sqlite.conversation._store.usage import update_token_counts
+
+    with pytest.raises(PersistenceError, match="Unresolved legacy accounting marker"):
+        update_token_counts(holder, "receipt-owner", input_tokens=7)
+    with pytest.raises(PersistenceError, match="Unresolved legacy accounting marker"):
+        holder.queue_token_counts("receipt-owner", input_tokens=7)
+    assert marker.is_file()
+    assert holder._read_one("SELECT input_tokens FROM sessions WHERE id='receipt-owner'")[0] == 0

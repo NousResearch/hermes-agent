@@ -1453,6 +1453,9 @@ class StoreHolder:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
+        from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+
+        require_legacy_accounting_clear(self)
         if _token_delta_applier is None:
             from . import SQLiteBackend  # loads the repositories; the usage family registers the applier
         with self._token_queue_cond:

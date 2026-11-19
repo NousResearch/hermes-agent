@@ -447,8 +447,9 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
 
 def _restore_session_credentials(cli, provider, base_url, api_mode, *, managed, provider_changed, endpoint_changed):
     """Resolve credentials only for the restored provider and its selected endpoint."""
-    from cli import logger
+    import logging
 
+    logger = logging.getLogger("cli")
     explicit_base = getattr(cli, "_explicit_base_url", None)
     if managed and explicit_base and not provider_changed:
         return

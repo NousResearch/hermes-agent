@@ -114,6 +114,9 @@ def update_token_counts(
     land in ``session_model_usage`` under that task, but never become the session's recorded route.
     ``prompt_cache_clock`` (JSON of the latest prompt-cache event) replaces the stored one when given."""
     values = dict(locals())
+    from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+
+    require_legacy_accounting_clear(holder)
     values.pop('holder')
     values.pop('session_id')
     values.pop('source')

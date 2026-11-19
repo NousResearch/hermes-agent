@@ -600,9 +600,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             drain_thread.join(timeout=2)
 
         try:
-            # Adaptive poll: start at 1ms so fast commands return in ~1-2ms, back
-            # off exponentially toward 200ms so long builds don't pay poll CPU.
-            _poll_sleep = 0.001
+            # Poll every 2 ms for the first 50 ms, then back off toward 200 ms: an exponential
+            # schedule from the start finds a 14 ms command at its 21 ms tick, and the early polls
+            # cost ~25 cheap waitpid calls, while long builds still pay almost no poll CPU.
+            _poll_sleep = 0.002
+            _fast_until = time.monotonic() + 0.05
             while proc.poll() is None:
                 trace.iterations += 1
                 if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
@@ -634,7 +636,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
                 touch_activity_if_due(_activity_state, "terminal command running")
                 trace.heartbeat()
                 time.sleep(_poll_sleep)
-                if _poll_sleep < 0.2:
+                if _poll_sleep < 0.2 and time.monotonic() >= _fast_until:
                     _poll_sleep = min(_poll_sleep * 1.5, 0.2)
         except (KeyboardInterrupt, SystemExit):
             trace.exception_exit()

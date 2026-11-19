@@ -1,0 +1,20 @@
+name: lenz
+repo: https://github.com/cygnostik/hermes-lenz
+sha: 592676f1a59807ebbfd0d7a724f0967717eee6a4
+title: Lenz for Hermes
+description: "Fact-check claims in Hermes. See the credit cost before sending text to Lenz. Review drafts with a 500-credit cap per profile per reset period."
+maintainer: cygnostik
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+version: "1.1.0"
+image: https://raw.githubusercontent.com/cygnostik/hermes-lenz/592676f1a59807ebbfd0d7a724f0967717eee6a4/docs/media/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cygnostik/hermes-lenz/592676f1a59807ebbfd0d7a724f0967717eee6a4/docs/media/preview-tool-output.png
+  - https://raw.githubusercontent.com/cygnostik/hermes-lenz/592676f1a59807ebbfd0d7a724f0967717eee6a4/docs/media/desktop-settings.png
+readme: true
+capabilities:
+  provides_tools: [lenz_policy, lenz_extract, lenz_assess, lenz_verify, lenz_review, lenz_status, lenz_usage]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [LENZ_API_KEY]

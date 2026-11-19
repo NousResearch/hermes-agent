@@ -212,6 +212,76 @@ class TestRecordAuthority:
             assert _replace_target_belongs_to_other_profile(424242) is True
 
 
+class TestStalePidSelfHeal:
+    """Dead-PID-only self-heal: a record naming a process that no longer exists is
+    rotated to .stale and the caller continues (nothing to signal → no cross-profile
+    risk). A LIVE process — whatever its profile — must keep refusing. Malformed
+    records still fail closed."""
+
+    def test_dead_recorded_pid_rotates_and_continues(self, profile_env):
+        """A record whose PID reads no live start-time is provably dead → rotate the
+        pid file to .stale and return False (continue to replace)."""
+        from gateway.run import _replace_target_belongs_to_other_profile
+
+        pid_path = profile_env / "gateway.pid"
+        pid_path.write_text("{}")
+        with (
+            patch(
+                "gateway.status._read_pid_record",
+                return_value=_record(pid=999999, home=str(profile_env)),
+            ),
+            patch("gateway.status._get_pid_path", return_value=pid_path),
+            patch("gateway.status._get_process_start_time", return_value=None),
+        ):
+            result = _replace_target_belongs_to_other_profile(424242)
+        assert result is False
+        assert not pid_path.exists()
+        assert (profile_env / "gateway.pid.stale").exists()
+
+    def test_live_recorded_pid_still_refuses(self, profile_env):
+        """A LIVE recorded PID (start-time readable) must NOT be rotated — keep the
+        fail-closed refusal and leave the pid file untouched."""
+        from gateway.run import _replace_target_belongs_to_other_profile
+
+        pid_path = profile_env / "gateway.pid"
+        pid_path.write_text("{}")
+        with (
+            patch(
+                "gateway.status._read_pid_record",
+                return_value=_record(pid=999999, home=str(profile_env)),
+            ),
+            patch("gateway.status._get_pid_path", return_value=pid_path),
+            patch("gateway.status._get_process_start_time", return_value=111222333),
+            patch(
+                "gateway.status._get_process_hermes_home",
+                return_value=profile_env,
+            ),
+        ):
+            result = _replace_target_belongs_to_other_profile(424242)
+        assert result is True
+        assert pid_path.exists()
+        assert not (profile_env / "gateway.pid.stale").exists()
+
+    def test_malformed_record_still_fails_closed(self, profile_env):
+        """A record with no usable PID must not self-heal — fall through to the
+        fail-closed refusal, no .stale file created."""
+        from gateway.run import _replace_target_belongs_to_other_profile
+
+        pid_path = profile_env / "gateway.pid"
+        pid_path.write_text("{}")
+        with (
+            patch("gateway.status._read_pid_record", return_value={"kind": "hermes-gateway"}),
+            patch("gateway.status._get_pid_path", return_value=pid_path),
+            patch(
+                "gateway.status._get_process_hermes_home",
+                return_value=profile_env,
+            ),
+        ):
+            result = _replace_target_belongs_to_other_profile(424242)
+        assert result is True
+        assert not (profile_env / "gateway.pid.stale").exists()
+
+
 class TestArgvConsistencyCheck:
     """Readable argv is a consistency check ONLY — never authority."""
 

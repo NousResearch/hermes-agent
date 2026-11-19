@@ -272,6 +272,22 @@ class TestReadBack:
         assert _run(setup, js)["reverted"] == 1
 
 
+class TestInspection:
+    def test_the_autocomplete_attribute_is_reported_as_written(self):
+        """Chromium normalises the ``autocomplete`` PROPERTY to "" for a token list it does not
+        accept (``off one-time-code``), while the attribute keeps what the page wrote. The
+        exclusions work on the tokens, so the inspection must report the attribute or a code box
+        reads as a plain text input."""
+        setup = """
+          globalThis.getComputedStyle = () => ({ display: "block", visibility: "visible" });
+          const code = add(document, "input", { type: "text", autocomplete: "" });
+          code.setAttribute("autocomplete", "off one-time-code");
+          code.getClientRects = () => [1];
+        """
+        [control] = _run(setup, build_inspection_js(NONCE))
+        assert control["autocomplete"] == "off one-time-code"
+
+
 class TestOverlappingOperations:
     @pytest.mark.parametrize("cleanup", ["read-back", "unstamp"])
     def test_one_operation_keeps_its_stamps_through_another_on_the_same_page(self, cleanup):

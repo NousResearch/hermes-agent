@@ -284,7 +284,9 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
-      autocomplete: element.autocomplete || "",
+      // The attribute, not the property: Chromium reports "" for a token list it rejects
+      // ("off one-time-code"), which would hide the token the exclusions look for.
+      autocomplete: element.getAttribute("autocomplete") || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,

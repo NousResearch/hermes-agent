@@ -228,8 +228,10 @@ def test_a_channel_change_during_the_focus_check_reports_the_move(tmp_path):
 def test_a_plugin_page_appearing_after_a_focused_answer_stops_the_keystroke(tmp_path, mangled):
     """The focus check answered ``focused`` on the CDP session, then a plugin page took the task: the
     session and document are unchanged, so only the channel recheck right before the insert stops
-    the identifier from reaching the browser the operation no longer runs on."""
-    from tools.browser_vault_tool import _MOVED
+    the identifier from reaching the browser the operation no longer runs on. The password is
+    already on the page by then (the JS write runs before any keystroke), so the refusal says that
+    nothing FURTHER was typed, in Hermes's fixed text."""
+    from tools.browser_vault_tool import _MOVED_WHILE_TYPING
 
     sup = _Supervisor(_LOGIN)
     plugin: dict[str, Any] = {"page": None}
@@ -259,8 +261,26 @@ def test_a_plugin_page_appearing_after_a_focused_answer_stops_the_keystroke(tmp_
     with patch("tools.browser_vault_tool._TYPE_PER_KEY_DELAY_S", 0):
         out = _fill(sup, tmp_path, page=lambda t: plugin["page"])
     assert out["success"] is False and out["error_type"] == "supervisor_required", out
-    assert out["error"] == _MOVED["error"]
+    assert out["error"] == _MOVED_WHILE_TYPING
+    assert "Nothing further was typed" in out["error"] and "Nothing was written" not in out["error"]
     assert sup.typed == ([IDENTIFIER] if mangled else [])
+
+
+def test_a_session_moved_after_a_focused_answer_says_nothing_further_was_typed(tmp_path):
+    """The supervisor's own refusal of the keystroke (the session moved after the focus check) comes
+    after the password's JS write, so it too reports only that nothing further was typed."""
+    from tools.browser_vault_tool import _MOVED_WHILE_TYPING
+
+    sup = _Supervisor(_LOGIN)
+
+    def move():
+        sup.sid = "S2"
+
+    sup.on_focus = move
+    out = _fill(sup, tmp_path)
+    assert out["success"] is False and out["error_type"] == "supervisor_required", out
+    assert out["error"] == _MOVED_WHILE_TYPING
+    assert sup.typed == []
 
 
 def test_a_read_back_refused_for_a_moved_channel_reports_the_move():

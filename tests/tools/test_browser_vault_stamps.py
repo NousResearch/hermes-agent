@@ -7,6 +7,7 @@ ever removes them; a stamp left behind lets a later read address the control the
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
 
 import pytest
@@ -48,16 +49,18 @@ def test_every_exit_after_the_inspection_removes_its_stamps(store, path, control
     from agent.vault_backends import unlock as unlock_mod
     from tools import browser_vault_tool
 
-    page = {"stamped": False}
+    page = {"stamped": False, "nonce": None}
 
     def run(expression):
         if 'setAttribute("data-hermes-vault-slot-"' in expression:
             page["stamped"] = True
+            page["nonce"] = re.search(r'const nonce = "(\w+)"', expression).group(1)
             return {"success": True, "result": json.dumps(controls)}
         if "removeAttribute(slot)" in expression and "unstamped" in expression:
             if expected == "unstamp_failed":
                 return {"success": False, "error": "the page went away"}
-            page["stamped"] = False
+            if f'"data-hermes-vault-slot-{page["nonce"]}"' in expression:  # this inspection's own stamps
+                page["stamped"] = False
             return {"success": True, "result": {"unstamped": True}}
         if "location.href" in expression:
             return {"success": True, "result": "https://example.com/login"}
@@ -91,3 +94,35 @@ def test_every_exit_after_the_inspection_removes_its_stamps(store, path, control
     if path == "enter_code" or expected == "origin_changed":
         assert out["error_type"] == expected
     assert page["stamped"] is False
+
+
+def test_an_operation_that_raises_after_the_inspection_removes_its_stamps(store):
+    """A plugin manager can fail while the password is resolved, after the page was stamped: the
+    error propagates to the tool's ``backend_unavailable`` refusal, and the stamps go on the way out."""
+    from agent.vault_backends.local import LocalLoginBackend
+    from agent.vault_backends.plugin import PluginBackendError
+    from tools import browser_vault_tool
+
+    page = {"stamped": False, "nonce": None}
+
+    def run(expression):
+        if 'setAttribute("data-hermes-vault-slot-"' in expression:
+            page["stamped"] = True
+            page["nonce"] = re.search(r'const nonce = "(\w+)"', expression).group(1)
+            return {"success": True, "result": json.dumps([_USER_BOX, _PW_BOX])}
+        if "removeAttribute(slot)" in expression and f'"data-hermes-vault-slot-{page["nonce"]}"' in expression:
+            page["stamped"] = False
+            return {"success": True, "result": {"unstamped": True}}
+        if "location.href" in expression:
+            return {"success": True, "result": "https://example.com/login"}
+        return {"success": True, "result": False}
+
+    meta = _add_login(store, origin="https://example.com")
+    with patch("agent.vault_store.get_vault_store", return_value=store), \
+         patch.object(LocalLoginBackend, "resolve_password", side_effect=PluginBackendError("manager failed")), \
+         patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+         patch.object(browser_vault_tool, "_eval_js", side_effect=lambda t, e: run(e)), \
+         patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda t, e: run(e)):
+        out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+    assert out["error_type"] == "backend_unavailable", out
+    assert page["nonce"] is not None and page["stamped"] is False

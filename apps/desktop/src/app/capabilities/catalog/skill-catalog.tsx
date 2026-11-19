@@ -5,7 +5,7 @@ import { capabilityScoped } from '@/api/client'
 import { Loader } from '@/components/ui/loader'
 import { getOfficialSkills, getSkillHubUpdates, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed } from '@/store/hub-actions'
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
@@ -19,7 +19,7 @@ import { useProviderCatalog } from './provider-catalog'
 import { ProviderActions, ProviderDetail, ProviderNotices } from './provider-detail'
 import { ProviderReviewDialog } from './provider-review-dialog'
 import { buildSkillCatalog } from './skill-catalog-data'
-import { useSourceLifecycle } from './source-lifecycle'
+import { bootstrapKey, sourceLifecycle } from './source-lifecycle'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -72,7 +72,9 @@ function ScopedSkillCatalog({
     }
   }, [])
 
-  const lifecycle = useSourceLifecycle()
+  // Descriptor authority is keyed by scope and outlives this component, like the bodies it orders.
+  const scope = profileScopeKey(profile)
+  const lifecycle = sourceLifecycle(scope)
 
   const {
     data: officialData,
@@ -80,7 +82,7 @@ function ScopedSkillCatalog({
     error: officialError,
     refetch: refreshOfficial
   } = useQuery({
-    queryKey: [...OFFICIAL_SKILLS_KEY, profileScopeKey(profile)],
+    queryKey: bootstrapKey('official', scope),
     queryFn: () => lifecycle.issue('official', () => getOfficialSkills(profile)),
     staleTime: 60_000,
     retry: false
@@ -95,7 +97,7 @@ function ScopedSkillCatalog({
     error: hubError,
     refetch: refreshHub
   } = useQuery({
-    queryKey: [...HUB_SOURCES_KEY, profileScopeKey(profile)],
+    queryKey: bootstrapKey('hub', scope),
     // SkillInfo has provenance, not a source identifier. Read the installed
     // lock map rather than guessing identity from a community skill's name.
     // The older getSkillHubSources helper cannot carry a connection pin.
@@ -115,7 +117,7 @@ function ScopedSkillCatalog({
   // Upstream check fetches every hub skill's source: cache it for a while, and
   // never let a slow or failed check hold up the page.
   const { data: updatesData } = useQuery({
-    queryKey: [...HUB_SOURCES_KEY, 'updates', profileScopeKey(profile)],
+    queryKey: [...HUB_SOURCES_KEY, 'updates', scope],
     queryFn: () => getSkillHubUpdates(profile),
     enabled: hasHubSkills,
     staleTime: 15 * 60_000,

@@ -479,6 +479,84 @@ it('retires the source facet selection together with the descriptor', async () =
   expect(screen.getAllByRole('article').some(article => article.textContent?.includes('Public lookalike'))).toBe(true)
 })
 
+const hubSkills: SkillInfo[] = [{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }]
+
+/** Both bootstraps advertise the provider until a refresh of `origin` retires it. */
+const retireVia = async (origin: 'official' | 'hub') => {
+  let disabled = false
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.endsWith('/official')) { return Promise.resolve(disabled ? stock : official) }
+
+    if (request.path.endsWith('/sources')) { return Promise.resolve({ sources: disabled ? [] : [source], installed: {}, featured: [] }) }
+
+    return original(request)
+  })
+  const view = setup(hubSkills)
+  await teamCard()
+  disabled = true
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: [origin === 'official' ? 'official-skills' : 'skill-hub-sources', 'local::alice'] }) })
+  await waitFor(() => expect(screen.queryByText('Team skills')).toBeNull())
+
+  return view
+}
+
+const settle = () => act(async () => { await new Promise(done => setTimeout(done, 20)) })
+
+it.each(['official', 'hub'] as const)('remount within freshness keeps a source retired by the %s refresh retired', async origin => {
+  const view = await retireVia(origin)
+  const requests = api.mock.calls.length
+  view.unmount()
+  setup(hubSkills)
+  await settle()
+  expect(api.mock.calls).toHaveLength(requests)
+  expect(screen.queryByText('Team skills')).toBeNull()
+})
+
+it.each(['official', 'hub'] as const)('a connection round trip keeps a source retired by the %s refresh retired', async origin => {
+  const view = await retireVia(origin)
+  const remote = { connectionId: 'remote', profile: 'alice' }
+  view.rerender(<QueryClientProvider client={queryClient}><SkillCatalog profile={remote} renderInstalledDetail={() => null} skills={hubSkills} /></QueryClientProvider>)
+  await waitFor(() => expect(api.mock.calls.filter(([request]) => request.connectionId === 'remote' && request.path.endsWith('/sources'))).toHaveLength(1))
+  await settle()
+  const requests = api.mock.calls.length
+  view.rerender(<QueryClientProvider client={queryClient}><SkillCatalog profile={profile} renderInstalledDetail={() => null} skills={hubSkills} /></QueryClientProvider>)
+  await settle()
+  expect(api.mock.calls).toHaveLength(requests)
+  expect(api.mock.calls.filter(([request]) => request.path.includes('/search'))).toHaveLength(1)
+  expect(screen.queryByText('Team skills')).toBeNull()
+})
+
+it.each(['official', 'hub'] as const)('a pre-disable %s reply landing after a remount cannot resurrect the retired source', async delayed => {
+  let land!: (body: unknown) => void
+  let disabled = false
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    const origin = request.path.endsWith('/official') ? 'official' : request.path.endsWith('/sources') ? 'hub' : undefined
+
+    if (origin === delayed && !disabled) { return new Promise(done => { land = done }) }
+
+    if (origin === 'official') { return Promise.resolve(disabled ? stock : official) }
+
+    if (origin === 'hub') { return Promise.resolve({ sources: disabled ? [] : [source], installed: {}, featured: [] }) }
+
+    return original(request)
+  })
+  const view = setup(hubSkills)
+  await teamCard()
+  await waitFor(() => expect(land).toBeTruthy())
+  disabled = true
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: [delayed === 'official' ? 'skill-hub-sources' : 'official-skills', 'local::alice'] }) })
+  await waitFor(() => expect(screen.queryByText('Team skills')).toBeNull())
+  const requests = api.mock.calls.length
+  view.unmount()
+  await act(async () => land(delayed === 'official' ? official : { sources: [source], installed: {}, featured: [] }))
+  setup(hubSkills)
+  await settle()
+  expect(api.mock.calls).toHaveLength(requests)
+  expect(screen.queryByText('Team skills')).toBeNull()
+})
+
 const disableThenEnable = async (enabled: unknown = official) => {
   await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], stock) })
   await waitFor(() => expect(screen.queryAllByText('Team skills')).toHaveLength(0))

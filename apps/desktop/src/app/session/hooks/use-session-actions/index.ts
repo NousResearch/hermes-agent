@@ -3321,7 +3321,7 @@ export function useSessionActions({
           // and re-list through the slice router so a messaging/cron row lands
           // back in its own list, not the sessions one.
           untombstoneSessions([storedSessionId, archived._lineage_root_id])
-          restoreListedSession({ ...archived, archived: false })
+          restoreListedSession({ ...archived, archived: false, ...(profile ? { profile } : {}) })
         }
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.restored })

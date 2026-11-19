@@ -3636,7 +3636,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             phrases = self._voice_fx_cfg.get("ack_phrases") or _default_voice_ack_phrases()
             phrase = random.choice(phrases)
         import uuid as _uuid
-        from gateway.platforms.base import tts_scratch_dir
+        from tools.tts_tool import tts_scratch_dir
         audio_path = os.path.join(
             tts_scratch_dir(),
             f"ack_{_uuid.uuid4().hex[:12]}.mp3",

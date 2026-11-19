@@ -322,9 +322,8 @@ class CLIVoiceMixin:
                 return
             self._voice_last_tts_text = tts_text
             # MP3 for CLI playback (afplay doesn't handle OGG well); the TTS tool may
-            # auto-convert MP3->OGG but the original MP3 remains. The base dir must pass
-            # the write-safe guard (Docker HERMES_WRITE_SAFE_ROOT=/opt/data) — same as gateway.
-            from gateway.platforms.base import tts_scratch_dir
+            # auto-convert MP3->OGG but the original MP3 remains.
+            from tools.tts_tool import tts_scratch_dir
 
             out_dir = tts_scratch_dir()
             mp3_path = os.path.join(out_dir, f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3")

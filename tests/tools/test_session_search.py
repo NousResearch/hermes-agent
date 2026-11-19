@@ -435,6 +435,28 @@ class TestCompactionRecoveryPointersRecover:
         kwargs = _emitted_session_search_kwargs(stub, "TAILMARK_3141")
         result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
         assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+        hit = next(r for r in result["results"] if r["session_id"] == sid)
+        scrolled = json.loads(session_search(session_id=sid, around_message_id=hit["match_message_id"],
+                                             persistence=persistence, current_session_id=sid))
+        assert scrolled["mode"] == "scroll", scrolled
+        # A later compaction archives the stub; the full original must stay recoverable.
+        db.messages.compact(sid, [NewMessage.from_live({"role": "user", "content": "[CONTEXT COMPACTION] again"})])
+        result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
+        assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+
+    def test_the_footer_call_recovers_an_archived_image_turn_caption(self, db, persistence):
+        from agent.context_compressor import _build_recovery_footer
+
+        sid = "s_image"
+        seed_session(db, sid, "cli")
+        seed_messages(db, sid, {"role": "user", "content": [
+            {"type": "text", "text": "the dashboard CAPTIONMARK_88 is broken"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+            {"role": "assistant", "content": "looking"})
+        _compact(db, sid)
+        kwargs = _emitted_session_search_kwargs(_build_recovery_footer(sid, region_len=2), "CAPTIONMARK_88")
+        result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
+        assert self._recovered(result, sid, "CAPTIONMARK_88"), result
 
 
 class TestDiscoverySort:

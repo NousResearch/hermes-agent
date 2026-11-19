@@ -268,7 +268,8 @@ class MessageReadsMixin(MessageBase):
         for session_id, transcript in self._ns(scope)["transcripts"].items():
             row = transcript.find(int(message_id))
             if row is not None:
-                return MessageStorageState(session_id=SessionId(session_id), visibility=row.visibility)
+                return MessageStorageState(session_id=SessionId(session_id), visibility=row.visibility,
+                                           superseded=transcript.superseded(row))
         return None
 
     def latest_row_id(self, session_id: SessionId, *, role: str = "user", offset: int = 0,

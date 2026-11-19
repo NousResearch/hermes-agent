@@ -377,7 +377,6 @@ class _Row:
     tool_calls: Optional[str]
     visibility: RowVisibility
     display_kind: Optional[str]
-    message_uid: Optional[str] = None
 
     def word_columns(self) -> list[str]:
         content = (self.content or "")[:FTS_TOOL_CONTENT_PREFIX_CHARS] if self.role == "tool" else self.content or ""
@@ -463,14 +462,21 @@ class InMemorySessionSearch:
                 stored.id, sessions[sid], stored.message.role, _stored_text(stored.message.content), stored.message.content,
                 stored.epoch, stored.message.tool_name,
                 json.dumps(list(stored.message.tool_calls)) if stored.message.tool_calls else None,
-                stored.visibility, stored.message.display_kind, stored.message.message_uid)
-                for stored in transcript.rows), key=lambda r: (r.timestamp, r.id))
+                stored.visibility, stored.message.display_kind) for stored in transcript.rows), key=lambda r: (r.timestamp, r.id))
         return out
 
     def _rebuild_authority(self, scope: ProfileScope) -> threading.Lock:
         """The per-store rebuild authority; kept off the scope store (the authority reference deep-copies those tables)."""
         with self._authorities_guard:
             return self._authorities.setdefault(scope.hermes_home_key, threading.Lock())
+
+    def _left_live(self, scope: ProfileScope, session_id: str) -> set[int]:
+        """Ids of the session's rows that left its live transcript: compaction-archived and superseded originals."""
+        from .transcript_store import transcripts_of
+
+        transcript = transcripts_of(self._backend, scope).get(session_id)
+        return {row.id for row in (transcript.rows if transcript else ())
+                if row.visibility is RowVisibility.COMPACTION_ARCHIVED or transcript.superseded(row)}
 
     # ── fixture seeding seam ─────────────────────────────────────────────────
 
@@ -548,7 +554,7 @@ class InMemorySessionSearch:
         if not text:
             return ()
         transcripts = self._transcript_rows(scope)
-        left_live = None if compacted_in_session is None else _left_live(transcripts.get(compacted_in_session, []))
+        left_live = None if compacted_in_session is None else self._left_live(scope, compacted_in_session)
         pool = [row for rows in transcripts.values() for row in rows if _eligible(
             row, include_inactive=include_inactive or left_live is not None, source_filter=source_filter,
             exclude_sources=exclude_sources, role_filter=role_filter, after_ts=after_ts, before_ts=before_ts,
@@ -573,18 +579,6 @@ class InMemorySessionSearch:
                 except QuerySyntaxError:
                     found = []
         return tuple(_hit(row, snippet, transcripts, projection) for row, snippet in found)
-
-
-def _left_live(rows: list[_Row]) -> set[int]:
-    """Ids of one session's rows that left its live transcript: compaction-archived rows, and a superseded
-    original whose active copy (same ``message_uid``) holds different content."""
-    active = {}
-    for row in rows:
-        if row.visibility is RowVisibility.ACTIVE and row.message_uid:
-            active.setdefault(row.message_uid, []).append(row.content)
-    return {row.id for row in rows if row.visibility is RowVisibility.COMPACTION_ARCHIVED or (
-        row.visibility is RowVisibility.REWOUND and row.message_uid
-        and any(content != row.content for content in active.get(row.message_uid, ())))}
 
 
 def _eligible(row: _Row, *, include_inactive: bool, source_filter: Optional[Sequence[str]], exclude_sources: Optional[Sequence[str]],

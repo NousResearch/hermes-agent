@@ -246,6 +246,16 @@ def test_session_scope_and_rows_that_left_one_session(backend, scope_a):
     for roles, expected in ((["user", "assistant"], rows["user"]), (["tool"], rows["tool"])):
         assert set(ids(backend, scope_a, "scopeterm", role_filter=roles, compacted_in_session="own")) == set(expected)
     assert live not in ids(backend, scope_a, "scopeterm", role_filter=["user"], compacted_in_session="own")
+    # CONTRACT: the original stays reachable once its rewritten copy is itself compaction-archived.
+    seed("own", "tool", "scopeterm second body", timestamp=T0 + 8, tool_name="terminal",
+         visibility=RowVisibility.REWOUND, message_uid="u-gone")
+    second = ids(backend, scope_a, "scopeterm second", role_filter=["tool"], include_inactive=True)
+    seed("own", "tool", "scopeterm archived stub", timestamp=T0 + 9, tool_name="terminal",
+         visibility=RowVisibility.COMPACTION_ARCHIVED, message_uid="u-gone")
+    assert set(second) <= set(ids(backend, scope_a, "scopeterm", role_filter=["tool"], compacted_in_session="own"))
+    # CONTRACT: message_storage_state marks exactly the superseded originals.
+    states = {i: store_a.messages.message_storage_state(i) for i in (original, live, archived, *second)}
+    assert {i for i, s in states.items() if s.superseded} == {original, *second}
 
 
 def test_source_role_and_session_start_filters(backend, scope_a):

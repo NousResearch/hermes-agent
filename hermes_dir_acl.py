@@ -452,13 +452,11 @@ def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False,
     return target
 
 
-def repair_user_dir(path: str | Path, *, elevated: bool | None = None) -> None:
-    """The existing-leaf repair of :func:`make_user_dir` without its ``mkdir``: elevated, an existing
-    directory is granted once per directory object (and what is already inside it, when the write was
-    needed); a missing *path* stays missing. For a caller that must never create *path* (a named
-    profile home that a delete or rename may have just removed)."""
+def repair_user_dir(path: str | Path) -> None:
+    """:func:`make_user_dir`'s existing-leaf repair without its ``mkdir``: elevated, an existing
+    directory gets the same once-per-object grant attempt; a missing *path* stays missing."""
     target = Path(path)
-    if _elevated(elevated) and target.is_dir():
+    if process_is_elevated() and target.is_dir():
         _grant_dirs(target, [target])
 
 

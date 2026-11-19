@@ -2241,8 +2241,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
     # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
     # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
-    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
-    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
+    # and SQLite handles; any of those that create directories outside ``mkdir_under_hermes_home``
+    # re-create the old home the moment it moves, and the periodic reconcile re-adopts the
     # resurrected dir as a ghost served profile (#109267).
     live_mux = _live_default_multiplexer()
     if live_mux:

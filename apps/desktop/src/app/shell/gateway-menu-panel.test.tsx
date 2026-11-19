@@ -126,4 +126,31 @@ describe('GatewayMenuPanel recent activity source', () => {
     expect(await screen.findByText(/gateway is alive/)).toBeTruthy()
     expect(screen.queryByText(/gui stale line/)).toBeNull()
   })
+
+  it('keeps the last tail when both log reads fail', async () => {
+    // The per-file `.catch`s mean a bridge failure no longer reaches the outer catch that used to
+    // hold the tail, so the section must not be blanked by a transient read error.
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getLogs).mockResolvedValue({
+        file: 'gateway',
+        lines: ['2026-11-13 13:02:11,004 INFO gateway is alive']
+      })
+
+      renderPanel('open')
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText(/gateway is alive/)).toBeTruthy()
+
+      vi.mocked(getLogs).mockRejectedValue(new Error('bridge gone'))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000)
+      })
+
+      expect(screen.getByText(/gateway is alive/)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

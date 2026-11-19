@@ -57,6 +57,13 @@ function useGatewayLogTail(): string[] {
           return
         }
 
+        if (gui === null && gateway === null) {
+          // Both reads failed (bridge missing, plain-browser mode): keep the last tail. The
+          // per-file catches swallow what the outer catch used to handle, so without this a
+          // bridge hiccup blanked the section instead of holding the last known lines.
+          return
+        }
+
         const freshest = pickFreshestLogTail([
           { file: 'gui', lines: gui?.lines ?? [] },
           { file: 'gateway', lines: gateway?.lines ?? [] }

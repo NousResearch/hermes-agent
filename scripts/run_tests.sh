@@ -136,10 +136,10 @@ _resolved_path() {
       *) if [ -L "$resolved/$part" ]; then
            hops=$((hops + 1))
            [ "$hops" -le 40 ] || return 1
-           # $(...) strips every trailing newline; keep the target's own.
-           target="$(readlink "$resolved/$part"; printf x)"
+           # $(...) strips every trailing newline, and BSD readlink adds none
+           # to a target already ending in one: read it bare, then strip x.
+           target="$(readlink -n "$resolved/$part" && printf x)" || return 1
            target="${target%x}"
-           target="${target%$'\n'}"
            case "$target" in /*) resolved="" ;; esac
            rest="$target${rest:+/$rest}"
          else
@@ -179,17 +179,25 @@ _avoid_account_stores() {
   local stores target named fallback
   stores="$(_account_stores)"
   [ -n "$stores" ] || return 0
-  if ! target="$(_pm_store "${stores%%$'\n'*}")"; then
+  # Both print one newline after the path; the x keeps a path's own from $(...).
+  if ! target="$(_pm_store "${stores%%$'\n'*}" && printf x)"; then
     echo "error: faked HOME: cannot check whether that is the account's tool store (${stores//$'\n'/, }); set HERMES_RUNTIME_DIR to a store of this home's own" >&2
     return 1
+  fi
+  target="${target%$'\nx'}"
+  # setup-hermes.sh stages its bootstrap uv into $HOME/.hermes/tools before pm
+  # runs; when that is the account's store, point it at the one pm provisions.
+  if [ -z "${HERMES_RUNTIME_DIR:-}" ] && _which_store "$HOME/.hermes/tools" "$stores" >/dev/null; then
+    export HERMES_RUNTIME_DIR="$target"
   fi
   named="$(_which_store "$target" "$stores")" || return 0
   ! _store_has_pins "$named" >/dev/null || return 0
   # The suffix is appended literally (hermes_constants), `..` included.
-  if ! fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools")"; then
+  if ! fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools" && printf x)"; then
     echo "error: faked HOME: $HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools runs through more than 40 symlinks" >&2
     return 1
   fi
+  fallback="${fallback%$'\nx'}"
   if _which_store "$fallback" "$stores" >/dev/null; then
     echo "error: faked HOME: $fallback is the account's tool store $named, which records other pins; set HERMES_RUNTIME_DIR to a store of this home's own" >&2
     return 1

@@ -103,16 +103,24 @@ def _snapshot(store: Path) -> list:
     return sorted((p.relative_to(store), p.is_file() and p.read_bytes(), p.stat().st_mode) for p in store.rglob("*"))
 
 
-def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, bootstrap: bool = True, cwd: Path | None = None):
+def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, bootstrap: bool = True, cwd: Path | None = None,
+                real_setup: bool = False):
     """Run the real runner in a repo-shaped tree holding the real runner, activation library, pin
     check and pm; return the run and the store its setup step was aimed at (None when setup never
     ran). Setup is replaced at its process boundary: it records the store pm resolves for this run
     and stops, so nothing is installed. ``getent`` answers with ``account`` as the OS account's
     home, which makes ``home`` a faked HOME. ``bootstrap=False`` leaves the checkout without the
     interpreter the runner could ask pm with. Like the real setup, the stub reads the environment
-    from the checkout (setup-hermes.sh cd's there first); ``cwd`` is where the runner is started."""
+    from the checkout (setup-hermes.sh cd's there first); ``cwd`` is where the runner is started.
+    ``real_setup`` runs the real setup-hermes.sh instead, stopped at the ``mktemp`` that opens its
+    bootstrap uv staging; the store returned is the directory that staging would have written."""
     root = tmp_path / "checkout"
-    if not root.exists():
+    if real_setup and not root.exists():
+        root.mkdir(parents=True)
+        shutil.copy2(ROOT / "setup-hermes.sh", root / "setup-hermes.sh")
+        _executable(tmp_path / "bin" / "mktemp").write_text(
+            f"#!/bin/sh\nprintf '%s' \"${{2%/*}}\" > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
+    if not (root / "scripts").exists():
         (root / "scripts").mkdir(parents=True)
         for name in ("run_tests.sh", "run-in-hermes-env", "_activation.sh", "tool_store_pins.py"):
             shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
@@ -121,11 +129,12 @@ def _run_runner(tmp_path: Path, account: Path, home: Path, naming: dict, *, boot
         if bootstrap:
             _executable(root / ".venv" / "bin" / "python").write_text(
                 f"#!/bin/sh\nexec '{sys.executable}' \"$@\"\n", encoding="utf-8")
-        (root / "setup-hermes.sh").write_text(
-            'cd "$(dirname "$0")"\n'
-            f"'{sys.executable}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
-            "from pm.environments import store_root\nprint(store_root(sys.argv[1]), end=\"\")' "
-            f"'{root}' > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
+        if not real_setup:
+            (root / "setup-hermes.sh").write_text(
+                'cd "$(dirname "$0")"\n'
+                f"'{sys.executable}' -I -B -c 'import sys\nsys.path.insert(0, sys.argv[1])\n"
+                "from pm.environments import store_root\nprint(store_root(sys.argv[1]), end=\"\")' "
+                f"'{root}' > '{root}/provisioned'\nexit 1\n", encoding="utf-8")
         _executable(tmp_path / "bin" / "getent").write_text(
             f"#!/bin/sh\necho 'account:x:0:0::{account}:/bin/sh'\n", encoding="utf-8")
     home.mkdir(exist_ok=True)
@@ -311,10 +320,23 @@ def test_runtime_dir_through_a_link_into_the_account_store_is_recognised(tmp_pat
     assert _snapshot(store) == before
 
 
+def _bsd_readlink(bin_dir: Path) -> None:
+    """macOS/FreeBSD readlink (stat.c): the newline it ends with is only added when the target does
+    not already end in one, so targets ``x`` and ``x\\n`` print the same bytes; ``-n`` adds none."""
+    _executable(bin_dir / "readlink").write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' -I -c 'import os, sys\n"
+        "args = sys.argv[1:]; bare = args[:1] == [\"-n\"]; target = os.readlink(args[-1])\n"
+        "sys.stdout.write(target if bare or target.endswith(chr(10)) else target + chr(10))' \"$@\"\n",
+        encoding="utf-8")
+
+
 @pytest.mark.platforms("posix")
-def test_link_target_ending_in_a_newline_is_followed_as_named(tmp_path):
+@pytest.mark.parametrize("readlink", ["host", "bsd"])
+def test_link_target_ending_in_a_newline_is_followed_as_named(tmp_path, readlink):
     """A link target is a name, trailing newline included: ``fakehome/x\\n`` (a link to the account's
-    store) is not the real directory ``fakehome/x`` beside it."""
+    store) is not the real directory ``fakehome/x`` beside it, whichever readlink the host ships."""
+    if readlink == "bsd":
+        _bsd_readlink(tmp_path / "bin")
     account, home = tmp_path / "account", tmp_path / "fakehome"
     store = _store_at_other_pins(account / ".hermes" / "tools")
     home.mkdir()
@@ -325,6 +347,48 @@ def test_link_target_ending_in_a_newline_is_followed_as_named(tmp_path):
     before = _snapshot(store)
     run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(home / "rt")})
     assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("ends_in", ["account", "fallback"])
+def test_resolved_store_preserves_its_final_newline(tmp_path, ends_in):
+    """A store whose resolved path ends in a newline is that directory, not its newline-less sibling:
+    neither the account's store (``account``) nor the faked home's own (``fallback``) may lose it."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    physical = tmp_path / "physical\n"
+    if ends_in == "account":
+        _store_at_other_pins(physical)
+        (account / ".hermes").mkdir(parents=True)
+        (account / ".hermes" / "tools").symlink_to(physical)
+        store = account / ".hermes" / "tools"
+    else:
+        store = _store_at_other_pins(account / ".hermes" / "tools")
+        physical.mkdir()
+        (home / ".hermes").mkdir(parents=True)
+        (home / ".hermes" / "tools").symlink_to(physical)
+    before = _snapshot(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(store)})
+    assert provisioned == (home / ".hermes" / "tools").resolve(), run.stdout + run.stderr
+    assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_bootstrap_uv_is_not_staged_into_the_account_store_the_faked_home_links_to(tmp_path):
+    """setup-hermes.sh stages its bootstrap uv into ``$HOME/.hermes/tools`` before pm runs. With the
+    faked home's ``.hermes`` linked to the account's and a separate HERMES_HOME choosing pm's store,
+    that staging must go where pm provisions, not into the account's store."""
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    home.mkdir()
+    (home / ".hermes").symlink_to(account / ".hermes")
+    custom = tmp_path / "custom"
+    run, pm_store = _run_runner(tmp_path, account, home, {"HERMES_HOME": str(custom)})
+    assert pm_store == (custom / "tools").resolve(), "control: pm provisions the custom home's store"
+    before = _snapshot(store)
+    run, staged = _run_runner(tmp_path / "real", account, home, {"HERMES_HOME": str(custom)}, real_setup=True)
+    assert staged is not None, run.stdout + run.stderr
+    assert Path(staged).resolve() == (custom / "tools").resolve(), run.stdout + run.stderr
     assert _snapshot(store) == before
 
 

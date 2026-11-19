@@ -315,7 +315,9 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
     current = authority.db.get_session(ref.session_id)
     owns_projection = current is not None and (
         current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
-    if operation == 'model' and owns_projection and 'global_selection' in result:
+    # A later session-only pick changes the generation but cannot supersede the profile default.
+    # The committed global-selection fence decides whether an exact retry may repair config.yaml.
+    if operation == 'model' and 'global_selection' in result:
         from gateway.session_mutation_model import persist_global_selection
         await asyncio.to_thread(persist_global_selection, authority, ref, result)
     if operation == 'compress' and applied and owns_projection and live is not None:

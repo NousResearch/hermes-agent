@@ -1165,7 +1165,12 @@ def _append_multimodal_context(
     if _mm_ctx:
         _stamp_typed_ask_once(agent, turn_user_msg)
     # A stamp means injected context landed on the parts (here or as gateway notes): backfill either way.
+    from copy import deepcopy
+    from agent.session_persistence import refresh_persist_user_anchor
+
+    previous_content = deepcopy(turn_user_msg.get("content"))
     appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
+    refresh_persist_user_anchor(agent, turn_user_msg, previous_content)
     if not appended and typed_ask_text(turn_user_msg) is None:
         return
     from agent.session_persistence import _persist_lock

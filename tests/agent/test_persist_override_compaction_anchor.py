@@ -95,9 +95,8 @@ def test_a_normal_turn_still_gets_the_clean_override():
     assert messages[1]["content"] == "actual question"
 
 
-def test_a_merged_row_keeps_the_prefix_and_takes_the_clean_tail():
-    """A consecutive-user merge folds this turn's row into the earlier unanswered one: the survivor still
-    holds this turn's ask past its recorded prefix, so the override joins like the merge does."""
+def test_an_absorbed_turn_transfers_ownership_to_the_survivor():
+    """Sequence repair transfers ownership when it absorbs this turn's unchanged row."""
     wire = "[2026-04-13T17:02:06+0200] can you also run the smoke tests"
     messages = [
         {"role": "assistant", "content": "previous response"},
@@ -107,12 +106,13 @@ def test_a_merged_row_keeps_the_prefix_and_takes_the_clean_tail():
     agent = _agent(2, "can you also run the smoke tests")
     note_persist_user_anchor(agent, messages)
 
-    assert repair_message_sequence(None, messages) == 1  # our row folds into the earlier one
-    agent._persist_user_message_idx = 1  # what reanchor does for a rebuilt list
+    assert repair_message_sequence(agent, messages) == 1
+    agent._persist_user_message_idx = 1  # the turn index follows the surviving merged row
     agent._apply_persist_user_message_override(messages)
 
     assert messages[1][MERGED_TURN_PREFIX] == "please deploy build 42 to staging"
     assert messages[1]["content"] == "please deploy build 42 to staging\n\ncan you also run the smoke tests"
+    assert agent._persist_user_message_anchor_row is messages[1]
 
 
 def test_a_multimodal_row_still_takes_its_list_override_after_appended_context():
@@ -127,7 +127,10 @@ def test_a_multimodal_row_still_takes_its_list_override_after_appended_context()
     agent = _agent(1, [{"type": "text", "text": ask}])
     note_persist_user_anchor(agent, messages)
 
-    messages[1]["content"] = [*content, {"type": "text", "text": "\n\nPLUGIN-CTX"}]
+    from agent.turn_context import _append_multimodal_context
+
+    _append_multimodal_context(agent, messages[1], "", "PLUGIN-CTX", preflight_compressed=False)
+    assert len(messages[1]["content"]) > len(content) - 1
     agent._apply_persist_user_message_override(messages)
 
     assert messages[1]["content"] == [{"type": "text", "text": ask}]
@@ -175,3 +178,124 @@ def test_a_folded_todo_snapshot_does_not_disarm_the_anchor():
     agent._apply_persist_user_message_override(messages)
 
     assert messages[1]["content"] == "actual question"
+
+
+def test_stale_prefix_cannot_certify_an_ask_prefixed_summary():
+    messages = [{"role": "user", "content": "actual question"}]
+    agent = _agent(0, "actual question")
+    note_persist_user_anchor(agent, messages)
+    messages[0][MERGED_TURN_PREFIX] = "actual question"
+    compacted = "actual question\n\n<summary>keep the decision</summary>"
+    messages[0]["content"] = compacted
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"] == compacted
+
+
+def test_nested_multimodal_mutation_does_not_mutate_the_frozen_anchor():
+    messages = [{"role": "user", "content": [{"type": "text", "text": "ask"}]}]
+    agent = _agent(0, [{"type": "text", "text": "clean"}])
+    note_persist_user_anchor(agent, messages)
+    messages[0]["content"][0]["text"] = "summary"
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"][0]["text"] == "summary"
+
+
+def test_missing_staged_row_and_index_drift_fail_closed():
+    for initial_idx in (0, 99):
+        messages = [{"role": "user", "content": "API ask"}]
+        agent = _agent(initial_idx, "clean")
+        note_persist_user_anchor(agent, messages)
+        agent._persist_user_message_idx = 0
+        messages[0] = {"role": "user", "content": "unrelated summary"}
+        agent._apply_persist_user_message_override(messages)
+        assert messages[0]["content"] == "unrelated summary"
+
+
+def test_hermes_todo_fold_cannot_recertify_an_engine_replacement():
+    from agent.conversation_compression import _fold_todo_snapshot
+    from tools.todo_tool import TodoStore
+
+    messages = [{"role": "user", "content": "API ask"}]
+    agent = _agent(0, "clean")
+    agent._todo_store = TodoStore()
+    agent._todo_store.write([{"id": "1", "content": "run tests", "status": "pending"}])
+    note_persist_user_anchor(agent, messages)
+    messages[0]["content"] = "API ask\n\n<summary>keep</summary>"
+    _fold_todo_snapshot(agent, messages)
+    folded = messages[0]["content"]
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"] == folded
+
+
+def test_owned_survivor_does_not_certify_absorbed_context():
+    messages = [{"role": "user", "content": "API ask"}, {"role": "user", "content": "context"}]
+    agent = _agent(0, "clean")
+    note_persist_user_anchor(agent, messages)
+    assert repair_message_sequence(agent, messages) == 1
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"] == "API ask\n\ncontext"
+
+
+def test_a_following_summary_stays_separate_and_survives_the_override():
+    from session_rules.turns import _merge_consecutive_users
+
+    for ask in ("API ask", ""):
+        messages = [
+            {"role": "user", "content": ask},
+            {"role": "user", "content": "<summary>KEEP</summary>", "_compressed_summary": True},
+        ]
+        agent = _agent(0, "clean")
+        note_persist_user_anchor(agent, messages)
+        merged, repairs = _merge_consecutive_users(messages, agent)
+        agent._apply_persist_user_message_override(merged)
+        assert any("KEEP" in row["content"] for row in merged)
+        assert repairs == 0
+        assert merged[0]["content"] == "clean"
+        assert merged[1] is messages[1]
+
+
+def test_an_equal_historical_row_cannot_refresh_or_adopt_ownership():
+    from copy import deepcopy
+
+    from agent.session_persistence import adopt_persist_user_anchor, refresh_persist_user_anchor
+
+    for payload in ("ask", [{"type": "text", "text": "ask"}]):
+        owner = {"role": "user", "content": deepcopy(payload)}
+        historical = deepcopy(owner)
+        agent = _agent(0, "clean")
+        note_persist_user_anchor(agent, [owner])
+        anchor = agent._persist_user_message_anchor
+        historical["content"] = "historical context"
+        refresh_persist_user_anchor(agent, historical, payload)
+        assert agent._persist_user_message_anchor is anchor
+        assert agent._persist_user_message_anchor_row is owner
+        historical["content"] = deepcopy(payload)
+        target = {"role": "user", "content": "merged history"}
+        adopt_persist_user_anchor(agent, target, historical)
+        assert agent._persist_user_message_anchor is anchor
+        assert agent._persist_user_message_anchor_row is owner
+
+
+def test_a_copied_unmarked_summary_keeps_its_bytes():
+    from copy import deepcopy
+
+    content = "API ask\n\n<summary>KEEP</summary>"
+    messages = [{"role": "user", "content": content}]
+    agent = _agent(0, "clean")
+    note_persist_user_anchor(agent, messages)
+    messages[0] = deepcopy(messages[0])
+    messages[0]["content"] = content
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert "KEEP" in messages[0]["content"]
+    assert messages[0]["content"] == content
+
+
+def test_a_copied_row_keeps_its_bytes():
+    messages = [{"role": "user", "content": "API ask"}]
+    agent = _agent(0, "clean")
+    note_persist_user_anchor(agent, messages)
+    messages[0] = dict(messages[0])
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"] == "API ask"

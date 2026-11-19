@@ -2976,7 +2976,10 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                     # assistant rows, so use the normal replay repair to keep metadata consistent.
                     agent._repair_message_sequence(compressed)
             else:
+                previous_content = copy.deepcopy(_todo_content)
                 _replace_message_content(_todo_message, _todo_stripped)
+                from agent.session_persistence import refresh_persist_user_anchor
+                refresh_persist_user_anchor(agent, _todo_message, previous_content)
                 # No longer todo-only scaffolding; other synthetic flags stay authoritative and
                 # _is_real_user_message() recomputes provenance from content + flags.
                 _todo_message.pop("_todo_snapshot_synthetic", None)
@@ -3007,7 +3010,10 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
             _probe["content"] = _stripped
             if _is_real_user_message(_probe):
                 _snapshot_text = f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
+                previous_content = copy.deepcopy(_tail.get("content"))
                 _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
+                from agent.session_persistence import refresh_persist_user_anchor
+                refresh_persist_user_anchor(agent, _tail, previous_content)
                 merged = True
             elif (
                 _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()

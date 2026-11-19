@@ -212,8 +212,13 @@ def derive_glob(normalized: str) -> Optional[str]:
 def _glob_matches_source(glob: str, command: str) -> bool:
     """True when the runtime allowlist check would let *glob* approve *command* as written.
     The glob comes from the home-folded command (``~/bin/docker restart *``), which the source
-    ``/home/me/bin/docker restart web`` never matches."""
+    ``/home/me/bin/docker restart web`` never matches; nor does a multi-line source, which the
+    runtime refuses before comparing (``derive_glob`` only saw it with newlines folded)."""
+    from tools.approval_floors import _has_allowlist_shell_operator
+
     command = command.strip()
+    if _has_allowlist_shell_operator(command):
+        return False
     return command == glob or fnmatch.fnmatchcase(command, glob)
 
 

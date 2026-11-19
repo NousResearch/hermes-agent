@@ -239,6 +239,16 @@ class TestProposalRedaction:
         mixed += [("docker restart web", "docker restart/stop/kill (container lifecycle)")] * 2
         assert [(p.pattern, p.count) for p in build_proposals(mixed)] == [("docker restart *", 2)]
 
+    @pytest.mark.parametrize("command, proposed", [
+        ("git push -f\necho hi", []),
+        ("  git push --force  ", [("git push *", 2)]),
+    ])
+    def test_proposal_counts_only_commands_the_runtime_would_approve(self, command, proposed):
+        """The runtime strips the command and refuses a multi-line one before any glob compare,
+        so a newline-joined command must not be credited to `git push *`, a padded one must."""
+        records = [(command, "git push --force")] * 2
+        assert [(p.pattern, p.count) for p in build_proposals(records)] == proposed
+
 
 # ---------------------------------------------------------------------------
 # --apply / dry-run

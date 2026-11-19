@@ -21,6 +21,8 @@ def store(tmp_path):
     ("+48 600 100 200", "phone"),
     ("(600) 100-200", "phone"),
     ("600.100.200", "phone"),
+    ("(+48) 600 100 200", "phone"),  # a country code in parentheses, as the tel read-back accepts
+    ("48 (+600) 100 200", "username"),  # a + after a digit is not a leading country code
     ("tek@acme.test", "email"),
     ("tek-2024", "username"),
     ("12 34", "username"),  # too few digits for a phone number

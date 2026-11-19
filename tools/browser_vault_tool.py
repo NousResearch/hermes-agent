@@ -555,7 +555,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
 
 
 # Digits with the separators people type a number with ("+48 600 100 200", "(600) 100-200").
-_RE_PHONE = re.compile(r"\+?[\d\s().-]+")
+# The + may lead, or follow one "(" ("(+48) 600 ..."), as the tel read-back allows; nowhere else.
+_RE_PHONE = re.compile(r"(?:\(\s*)?\+?[\d\s().-]+")
 
 
 def _looks_like_phone(identifier: str) -> bool:

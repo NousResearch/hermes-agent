@@ -583,7 +583,7 @@ terminal:
   container_persistent: true       # Snapshot/restore filesystem
 ```
 
-**Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file.
+**Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file. The `~/.modal.toml` login is used only by a single-profile Hermes: on a multiplexed gateway, each routed profile needs both `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in its own `.env` (or secret source), and is refused without them.
 
 **Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json` and are retained until you delete them (Hermes opts out of the Modal SDK's 30-day snapshot expiry). This preserves filesystem state, not live processes, PID space, or background jobs.
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  compareModelNames,
   currentPickerSelection,
   displayModelName,
   formatModelPillLabel,
@@ -125,6 +126,39 @@ describe('model-status-label', () => {
     // Quant-only ids are unchanged: quant stays off the pill.
     expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
     expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
+  })
+
+  describe('compareModelNames', () => {
+    it('orders by the displayed name, case-insensitively', () => {
+      // Raw ids sort uppercase-first: Zulu-1, beta-3, zeta-10.
+      const ids = ['zeta-10', 'beta-3', 'Zulu-1']
+
+      expect([...ids].sort(compareModelNames)).toEqual(['beta-3', 'zeta-10', 'Zulu-1'])
+    })
+
+    it('compares version numbers numerically, not as text', () => {
+      const ids = ['glm-5.10', 'glm-5.2', 'glm-5']
+
+      expect([...ids].sort(compareModelNames)).toEqual(['glm-5', 'glm-5.2', 'glm-5.10'])
+    })
+
+    it('keeps a variant row next to its base, in a stable order', () => {
+      // The variant tag renders in its own area, so the base row reads "GLM 5.3"
+      // while the sort key is "GLM 5.3 Flash": the pair stays adjacent and the
+      // catalog order can no longer swap them between refreshes.
+      const ids = ['glm-5.3', 'glm-5.3-flash']
+
+      expect([...ids].sort(compareModelNames)).toEqual(ids)
+      expect([...ids].reverse().sort(compareModelNames)).toEqual(ids)
+    })
+
+    it('sorts by the name the user reads, not by the raw id', () => {
+      // An aggregator ships `z-ai/glm-5.2` before `anthropic/claude-sonnet-5` by
+      // id, but the rows read "GLM 5.2" and "Sonnet 5".
+      const ids = ['z-ai/glm-5.2', 'anthropic/claude-sonnet-5']
+
+      expect([...ids].sort(compareModelNames)).toEqual(['z-ai/glm-5.2', 'anthropic/claude-sonnet-5'])
+    })
   })
 
   describe('currentPickerSelection', () => {

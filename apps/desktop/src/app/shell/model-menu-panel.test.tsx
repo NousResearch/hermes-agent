@@ -203,10 +203,11 @@ describe('ModelMenuPanel search', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
 
-    // First matching family of the first (alphabetical) matching provider.
+    // First matching family of the first (alphabetical) matching provider,
+    // and inside it the first row of the alphabetical name order.
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
-        model: 'gemini-3.1-pro',
+        model: 'gemini-2.5-flash',
         provider: 'google',
         sessionId: 'runtime-1'
       })
@@ -270,7 +271,7 @@ describe('ModelMenuPanel search', () => {
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-pro',
         provider: 'google',
         sessionId: 'runtime-1'
       })
@@ -323,7 +324,7 @@ describe('ModelMenuPanel search', () => {
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-pro',
         provider: 'google',
         sessionId: 'runtime-1'
       })

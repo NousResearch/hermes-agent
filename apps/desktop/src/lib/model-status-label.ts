@@ -208,6 +208,16 @@ export function displayModelName(model: string): string {
   return tag ? `${name} ${tag}` : name
 }
 
+const modelNameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+/** Sort rows by the name shown to the user, case-insensitively and with
+ *  numbers in version order (`GLM 5.2` before `GLM 5.10`). Rating and free
+ *  badges are separate render areas, so they never enter the sort key.
+ *  Break label ties by the actual model ID. */
+export function compareModelNames(a: string, b: string): number {
+  return modelNameCollator.compare(displayModelName(a), displayModelName(b)) || a.localeCompare(b)
+}
+
 /** The variant tag a model id carries (Fast, Flash, Thinking, Preview,
  *  Latest) — the one taxonomy both the catalog rows and the composer pill
  *  split on, so distinct ids never render as one model listed twice.

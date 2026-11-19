@@ -63,6 +63,24 @@ prompt) and `cli_turn_v1.turn_author.name` reaches memory
 attribution providers, not the model prompt; neither is screened
 this cycle (same A6 deferral as attachments/voice_context).
 
+## API-turn admission path (cycle 1d, 19 Nov 2026)
+
+The 19 Nov live test proved the Desktop app's turns take a THIRD
+route: the serve's HTTP api_server ->
+``gateway/session_api_turn._admit_api_payload``, which admits via
+``admit_session_input`` directly (principal ``api``) - bypassing both
+gated seams. ``api_turn_gate`` screens the admission's model-visible
+text (``text`` / ``api_text`` / nested ``cli_turn_v1.api_text`` /
+multimodal parts) BEFORE the durable admission; a block verdict
+raises the same hold, and the HTTP surface returns the admission
+refusal. Same engine, budget, tiers, logging, outcome reporting; every
+skip writes a reason-only record with subject ``desktop-api``.
+History-only admissions (``history_from_session``) carry no new viewer
+text and skip as ``skipped_no_text`` - each turn's own message is
+screened when it arrives. The cron admission path
+(``session_cron.py``) is a machine producer and stays out of scope by
+design.
+
 ## Desktop serve chat path (cycle 1c, 17 Nov 2026)
 
 The 17 Nov live test exposed a route the admission gate cannot see:

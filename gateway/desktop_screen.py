@@ -281,6 +281,25 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
             _OUTCOME_TASKS.discard(finished)
 
 
+def _parts_texts(value) -> list:
+    """Text pieces of a submit-shaped value that may be a plain string
+    or a multimodal parts list (dict 'text' fields and bare strings,
+    deduplicated)."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        parts: list = []
+        for item in value:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                if item["text"].strip() and item["text"] not in parts:
+                    parts.append(item["text"])
+            elif isinstance(item, str):
+                if item.strip() and item not in parts:
+                    parts.append(item)
+        return parts
+    return []
+
+
 def submit_texts(params) -> list:
     """Every model-visible text of one submit-shaped params/payload
     dict, in deterministic order, deduplicated. Reads BOTH the raw
@@ -290,8 +309,9 @@ def submit_texts(params) -> list:
     COMMITTED payload, so a resolver that only reads top-level
     ``api_text`` is dead code at the only real call site - the hostile
     model-facing text rode in unscreened behind a benign ``text``).
-    Identical values are screened once. Empty list when there is
-    nothing to screen."""
+    A multimodal parts list yields its text parts (cycle 1d: the API
+    turn's ``user_message`` can be one). Identical values are screened
+    once. Empty list when there is nothing to screen."""
     texts: list = []
     candidates = []
     if isinstance(params, dict):
@@ -301,8 +321,9 @@ def submit_texts(params) -> list:
             candidates.append(cli.get("api_text"))
         candidates.append(params.get("text"))
     for value in candidates:
-        if isinstance(value, str) and value.strip() and value not in texts:
-            texts.append(value)
+        for part in _parts_texts(value):
+            if part not in texts:
+                texts.append(part)
     return texts
 
 
@@ -723,31 +744,18 @@ class _ChatAuthority:
 
 
 def _message_texts(message) -> list:
-    """Model-visible text pieces of one chat() message. Viewer strings
-    and multimodal text parts are screened (deduplicated);
-    ``TimelineNotification`` rows are machine-produced UI metadata
-    (never viewer input - and a str SUBCLASS in real code, so they are
-    excluded BEFORE the str check) and images are A6-deferred, so
-    neither is screened."""
+    """Model-visible text pieces of one chat() message (viewer strings
+    and multimodal text parts, deduplicated). ``TimelineNotification``
+    rows are machine-produced UI metadata (never viewer input - and a
+    str SUBCLASS in real code, so they are excluded BEFORE the str
+    check) and images are A6-deferred, so neither is screened."""
     try:
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(message, TimelineNotification):
             return []
     except Exception:
         pass
-    if isinstance(message, str):
-        return [message] if message.strip() else []
-    if isinstance(message, list):
-        parts: list = []
-        for item in message:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                if item["text"].strip() and item["text"] not in parts:
-                    parts.append(item["text"])
-            elif isinstance(item, str):
-                if item.strip() and item not in parts:
-                    parts.append(item)
-        return parts
-    return []
+    return _parts_texts(message)
 
 
 def _screen_texts_sync(subject: str, session_id: str, texts: list) -> tuple:
@@ -921,6 +929,144 @@ def chat_gate(chat, agent, message) -> str | None:
                         pass
                     _log({"subject": "desktop-chat",
                           "session": session,
+                          "tier": f"skipped_{reason}"})
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# API-turn admission gate (cycle 1d, owner-approved 19 Nov 2026)
+#
+# The Desktop app's turns enter through the serve's HTTP api_server ->
+# gateway/session_api_turn.py, which admits via admit_session_input
+# DIRECTLY (principal 'api') - bypassing SessionAuthority._submit (seam
+# 1) and cli_chatTurnMixin.chat (seam 2). Proven live 19 Nov: the
+# owner's desktop test session produced no gate activity on either
+# gated seam. This is seam 3.
+
+
+def api_turn_gate(authority, session_id, payload) -> None:
+    """Screen one API-turn admission BEFORE ``admit_session_input``
+    writes it. Same engine, chunking, budget, tiers, logging and
+    outcome reporting as the other seams; raises the control-plane
+    hold (RuntimeStoreError reason ``desktop_screen_hold``) on a block
+    verdict so the HTTP surface returns the admission refusal.
+    NEVER raises otherwise; every skip writes a ``skipped_<reason>``
+    record (reason only, never text) with subject ``desktop-api``."""
+    reason = None
+    try:
+        if not desktop_screen_enabled():
+            reason = "disabled"
+            return
+        texts = submit_texts(payload)
+        if not texts:
+            reason = "no_text"
+            return
+        if not session_in_scope(authority, session_id):
+            reason = "out_of_scope"
+            return
+        held, reasons = _screen_texts_sync("desktop-api", session_id, texts)
+        if not held:
+            return
+        raise hold_error(reasons)
+    except RuntimeStoreError:
+        raise
+    except Exception:
+        logger.warning("desktop_screen: api turn gate failed; proceeding",
+                       exc_info=True)
+        reason = "error"
+        return
+    finally:
+        if reason is not None:
+            try:
+                global _DISABLED_LOGGED
+                emit = True
+                if reason == "disabled":
+                    emit = not _DISABLED_LOGGED
+                    _DISABLED_LOGGED = True
+                if emit:
+                    session = ""
+                    try:
+                        session = str(session_id or "")
+                    except Exception:
+                        pass
+                    _log({"subject": "desktop-api",
+                          "session": session,
+                          "tier": f"skipped_{reason}"})
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# TUI-gateway turn gate (cycle 1d-r2, 19 Nov 2026)
+#
+# Empirical trace (log capture during a live turn) proved the Desktop
+# app's chats are driven by the serve's in-process ``tui_gateway``:
+# "tui turn finished: ui_session=... agent_session_id=..." with ZERO
+# admission rows anywhere (925-db forensic) - neither the gateway
+# submit seam, the CLI chat seam, nor the API admission door. This is
+# seam 4: ``tui_gateway/prompt_turn._run_prompt_submit``, the
+# ownership/liveness choke point every TUI turn source crosses.
+
+
+def tui_turn_gate(sid: str, session, text) -> str | None:
+    """Screen one Desktop/TUI prompt turn BEFORE ``_admit_prompt_turn``;
+    returns the hold notice text when held (the caller emits it as the
+    turn error and runs nothing), None when the turn may proceed.
+    Synthesized turns (auto-continue, wake-ups) also cross here - their
+    text is machine-produced, and the session-row scope (frozen launch
+    source) decides, same as every seam. NEVER raises; every skip
+    writes a reason-only record (subject ``desktop-tui``)."""
+    reason = None
+    try:
+        if not desktop_screen_enabled():
+            reason = "disabled"
+            return None
+        session = session if isinstance(session, dict) else {}
+        agent = session.get("agent")
+        session_id = str(getattr(agent, "session_id", "")
+                         or session.get("session_key") or sid or "")
+        if not session_id:
+            reason = "no_session"
+            return None
+        label = _source_from_db(session_id)
+        if not label:
+            label = _source_from_store(
+                getattr(agent, "_session_db", None), session_id)
+        if not label:
+            if _flag("HERMES_DESKTOP").lower() in ("1", "true", "yes", "on"):
+                label = "desktop"  # process scope: this IS the app backend
+            else:
+                reason = "out_of_scope"
+                return None
+        if label not in _scoped_sources():
+            reason = "out_of_scope"
+            return None
+        texts = _parts_texts(text)
+        if not texts:
+            reason = "no_text"
+            return None
+        held, reasons = _screen_texts_sync("desktop-tui", session_id, texts)
+        if not held:
+            return None
+        shown = "; ".join(reasons[:3]) if reasons else "block tier"
+        return f"{_hold_notice()} [{shown}]"
+    except Exception:
+        logger.warning("desktop_screen: tui turn gate failed; proceeding",
+                       exc_info=True)
+        reason = "error"
+        return None
+    finally:
+        if reason is not None:
+            try:
+                global _DISABLED_LOGGED
+                emit = True
+                if reason == "disabled":
+                    emit = not _DISABLED_LOGGED
+                    _DISABLED_LOGGED = True
+                if emit:
+                    _log({"subject": "desktop-tui",
+                          "session": str(sid or ""),
                           "tier": f"skipped_{reason}"})
             except Exception:
                 pass

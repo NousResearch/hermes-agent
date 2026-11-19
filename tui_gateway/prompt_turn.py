@@ -1119,6 +1119,56 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
         logger.debug("routing-provenance reopen failed for %s", session_id, exc_info=True)
 
 
+def _hold_turn_cleanup(session, notice: str) -> None:
+    """Reset turn state after a desktop-screen hold so the session is
+    not left wedged busy (round-2 F1): callers set ``running`` (and the
+    inflight turn, submit-row staging, dispatcher claim, hosted-room
+    slot, auto-continue latch) BEFORE dispatch, and the normal cleanup
+    lives in the turn body's ``finally`` - which never runs for a held
+    turn. Mirror the failure path: fail the inflight turn (replayable
+    failed bubble on resume; pops the submit-row adoption slot so a
+    later turn cannot adopt the held text), clear running/claim/slot/
+    latch. Self-sufficient imports: this module's handlers normally run
+    inside ``bind_module``-injected globals, but a direct import (tests,
+    probes) has none of them. NEVER raises."""
+    import contextlib
+    import logging
+    import time
+
+    logger = logging.getLogger("tui_gateway.prompt_turn")
+    try:
+        from tui_gateway.session_history import _fail_inflight_turn
+        from tui_gateway.session_lifecycle import _release_hosted_room_turn_slot
+    except Exception:  # pragma: no cover - import breakage is fatal anyway
+        logger.warning("desktop screen hold cleanup could not import helpers",
+                       exc_info=True)
+        return
+    try:
+        if not isinstance(session, dict):
+            return
+
+        def _apply() -> None:
+            session["running"] = False
+            session["last_active"] = time.time()
+            session.pop("_turn_user_input", None)
+            session.pop("_notif_turn_claim", None)
+            session.pop("_auto_continue_scheduled", None)
+            with contextlib.suppress(Exception):
+                _release_hosted_room_turn_slot(session)
+            _fail_inflight_turn(session, notice, error_surface={
+                "layer": "runtime", "code": "desktop_screen_hold",
+                "retryable": False})
+
+        lock = session.get("history_lock")
+        if lock is not None:
+            with lock:
+                _apply()
+        else:
+            _apply()
+    except Exception:
+        logger.warning("desktop screen hold cleanup failed", exc_info=True)
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
@@ -1133,6 +1183,31 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+    # W1 cycle 1d-r2/r3: the Desktop app's turns run through THIS in-process
+    # tui_gateway choke point (proven by live trace + the 925-db forensic:
+    # no admission rows anywhere). Screen the turn's text before anything
+    # runs; a hold emits the notice as the turn error, resets the turn
+    # state the callers staged (round-2 F1: otherwise the session stays
+    # wedged busy) and runs nothing. The held text stays as the durable
+    # send-row in the UI/DB (same visibility as a gateway hold), but the
+    # model never ingests it: row adoption happens inside the turn body,
+    # which never runs. See gateway/desktop_screen.tui_turn_gate.
+    try:
+        from gateway.desktop_screen import tui_turn_gate
+        held_notice = tui_turn_gate(sid, session, text)
+    except Exception:
+        held_notice = None
+    if held_notice:
+        import logging
+
+        logging.getLogger("tui_gateway.prompt_turn").info(
+            "tui prompt held by desktop screen: ui_session=%s", sid)
+        _hold_turn_cleanup(session, held_notice)
+        try:
+            _emit("error", sid, {"message": held_notice})
+        except Exception:  # direct-import contexts have no injected _emit
+            pass
+        return False
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
         report_ownership_refusal=report_ownership_refusal)

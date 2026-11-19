@@ -592,13 +592,13 @@ def test_pythonpath_strips_older_install_generation(tmp_path, monkeypatch, selec
     state = tmp_path / "hermes/installs/this-install"
     monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
     if selection == "newer":
-        newer = state / "environments/newer"
+        newer = state / "environments/newer/venv"
         newer.mkdir(parents=True)
         (newer / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
         facts = runtime_facts_path(Path(__file__).resolve().parents[2])
         facts.write_text(json.dumps({"packages": {"venv": {"environment": str(newer)}}}), encoding="utf-8")
     # The older generation may already have been collected, including pyvenv.cfg.
-    owned = site_packages(state / "environments/older")
+    owned = site_packages(state / "environments/older/venv")
     user = tmp_path / "user-lib"
     env = {"PYTHONPATH": os.pathsep.join(map(str, [owned, user]))}
     pp._strip_hermes_owned_pythonpath(env)
@@ -611,7 +611,7 @@ def test_pythonpath_keeps_other_install_and_generation_subdirectory(tmp_path, mo
 
     state = tmp_path / "hermes/installs/this-install"
     monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
-    entries = [str(site_packages(state.parent / "other-install/environments/older")),
+    entries = [str(site_packages(state.parent / "other-install/environments/older/venv")),
                str(state / "environments/older/workspace")]
     env = {"HERMES_HOME": str(tmp_path / "hermes"), "PYTHONPATH": os.pathsep.join(entries)}
     pp._strip_hermes_owned_pythonpath(env)
@@ -684,7 +684,9 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
+    # A site-packages under this install's environments/<uuid>/venv is Hermes-owned by
+    # layout, recorded selection or not; VIRTUAL_ENV and aliases still confer nothing.
+    expected = [str(user_site)]
     assert result["PYTHONPATH"].split(os.pathsep) == expected
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)

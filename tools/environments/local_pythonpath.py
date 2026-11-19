@@ -143,7 +143,7 @@ def _is_hermes_install_environment_site_packages(path: Path) -> bool:
         relative = path.relative_to(environments)
         if not relative.parts:
             return False
-        generation = environments / relative.parts[0]
+        generation = environments / relative.parts[0] / "venv"
         return _same_path(path, site_packages(generation))
     except (OSError, RuntimeError, ValueError):
         return False

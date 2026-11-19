@@ -1088,6 +1088,23 @@ rejected delivery.
 Not supported yet: the `poll` and `push` delivery modes, and subscriptions made from a secondary
 profile under `gateway.multiplex_profiles`.
 
+When Hermes uses the **Codex app-server runtime**, MCP servers are migrated
+into Codex and their confirmation requests return through the Codex bridge.
+Opt in each trusted server explicitly to route binary confirmations through
+the same Hermes approval surface:
+
+```yaml
+mcp_servers:
+  todoist:
+    url: "https://ai.todoist.net/mcp"
+    elicitation:
+      approval: prompt
+```
+
+The Codex bridge stays fail-closed when this setting is absent or invalid.
+It prompts only for binary confirmations (form mode with no requested input);
+URL elicitations and forms that require the user to supply values are declined.
+
 ## Running Hermes as an MCP server
 
 Hermes can also **be** an MCP server, so Claude Code, Claude Desktop, Cursor, Codex or any MCP client can list and read your messaging conversations, wait for new messages and send messages across every platform Hermes is connected to, and optionally call Hermes' own web, browser, vision, image generation, skills and TTS tools. This ships as the official **mcp-serve** plugin:

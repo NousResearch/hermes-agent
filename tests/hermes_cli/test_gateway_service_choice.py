@@ -166,6 +166,29 @@ def test_explicit_install_records_only_completed_install(supervisor, monkeypatch
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.parametrize("choice", ["decline", None])
+def test_installer_step_after_setup_honours_the_recorded_choice(supervisor, monkeypatch, choice):
+    """Regression for #157677: ``install.sh``/``install.ps1`` run ``gateway install --if-missing``
+    after setup. A decline recorded there installs nothing and stays recorded; an unanswered
+    question is asked once, and No still writes no unit."""
+    from argparse import Namespace
+
+    _profile, calls = supervisor
+    config_api.save_config({"gateway": {"service_install_choice": choice}})
+    prompts = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args: prompts.append(args) or False)
+    stream = io.StringIO()
+    stream.isatty = lambda: True
+    monkeypatch.setattr(sys, "stdin", stream)
+    gateway._cmd_install(Namespace(if_missing=True, force=False, system=False, run_as_user=None,
+                                   start_now=None, start_on_login=None))
+    assert not gateway.get_systemd_unit_path().exists()
+    assert not any(set(op) & {"enable", "start", "daemon-reload"} for op in _operations(calls))
+    assert config_api.load_config()["gateway"]["service_install_choice"] == "decline"
+    assert len(prompts) == (0 if choice == "decline" else 1)
+
+
+@pytest.mark.platforms("linux")
 def test_wizard_start_does_not_spawn_over_reserved_owner(supervisor, monkeypatch):
     from gateway.runtime_ownership import ProfileOwnership
     profile, _calls = supervisor

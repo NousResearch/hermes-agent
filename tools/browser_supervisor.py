@@ -502,7 +502,6 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 # are deliberately kept — they reconcile as fresh events arrive (worst case a
                 # stale dialog entry is rejected with "no dialog is showing", logged only).
                 self._page_session_id = None
-                self._documents.clear()  # session ids die with the connection
                 await self._attach_initial_page()
                 self._set_active(True)
                 last_success_at = time.time()

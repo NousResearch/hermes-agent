@@ -132,7 +132,6 @@ class FrameTrackingMixin:
         with self._state_lock:
             self._frames.update({fid: replace(f, cdp_session_id=None) for fid, f in self._frames.items()
                                  if f.cdp_session_id == sid})
-            self._documents.pop(sid, None)
 
     def _build_frame_tree_locked(self) -> dict[str, Any]:
         """Capped frame_tree payload (must hold state lock). Top frame = one with

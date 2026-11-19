@@ -357,3 +357,15 @@ class TestForgedVerdicts:
         """
         out = _run(setup, _GUARDED_SCRIPTS[script]())
         assert isinstance(out, dict) and "refused" not in out, out
+
+    @pytest.mark.parametrize("page", ["json-stringify", "everything"])
+    def test_a_page_cannot_claim_a_focus_it_does_not_hold(self, page):
+        """On the checked origin too, the focus verdict is the script's own: focus held by another
+        element (an iframe's host, a decoy input) reads as lost whatever the page's JSON says."""
+        setup = """
+          const pw = stamp(add(document, "input", { type: "password", value: "" }), 1);
+          const decoy = add(document, "iframe");
+          pw.focus = () => focusOn(decoy);
+        """ + _LYING_PAGES[page]
+        out = _run(setup, _GUARDED_SCRIPTS["focus"]())
+        assert isinstance(out, dict) and out.get("refused") == "focus_lost", out

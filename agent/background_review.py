@@ -1592,13 +1592,24 @@ def _run_review_in_thread(
 
     See #84423.
     """
-    if review_run is not None and review_run.cancel_requested.is_set():
-        finish_background_review_run(agent, review_run)
-        return
     meta = _REVIEW_HOOK_META.get()
     focus = meta[0] if meta is not None else None
     review_skills = meta[1] if meta is not None else (not review_memory)
     started_at = time.monotonic()
+    route_provider, route_model, route_routed = _preview_review_route(agent, task_cfg)
+
+    def _emit_early_exit(outcome: str, *, skip_reason: Optional[str] = None) -> None:
+        _notify_post_background_review(
+            agent=agent, review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
+            provider=route_provider, model=route_model, routed=route_routed, outcome=outcome,
+            result_kind="none", actions=[], tool_calls=[], skills_touched=[], usage={},
+            duration_seconds=time.monotonic() - started_at, skip_reason=skip_reason,
+        )
+
+    if review_run is not None and review_run.cancel_requested.is_set():
+        finish_background_review_run(agent, review_run)
+        _emit_early_exit("cancelled")
+        return
     _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
@@ -1610,9 +1621,10 @@ def _run_review_in_thread(
             "auxiliary.background_review.{provider,model} to route the review to a normal model.",
             getattr(agent, "provider", "?"),
         )
+        finish_background_review_run(agent, review_run)
         _set_thread_approval_callback(None)
+        _emit_early_exit("skipped", skip_reason="provider_cannot_emit_tool_calls")
         return
-    route_provider, route_model, route_routed = _preview_review_route(agent, task_cfg)
     decision = _apply_pre_background_review_hook(
         agent=agent, messages_snapshot=messages_snapshot, prompt=prompt, task_cfg=task_cfg,
         review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
@@ -1622,12 +1634,7 @@ def _run_review_in_thread(
         logger.info("Background review skipped by pre_background_review hook: %s", decision.skip_reason or "no reason")
         finish_background_review_run(agent, review_run)
         _set_thread_approval_callback(None)
-        _notify_post_background_review(
-            agent=agent, review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
-            provider=route_provider, model=route_model, routed=route_routed, outcome="skipped",
-            result_kind="none", actions=[], tool_calls=[], skills_touched=[], usage={},
-            duration_seconds=time.monotonic() - started_at, skip_reason=decision.skip_reason,
-        )
+        _emit_early_exit("skipped", skip_reason=decision.skip_reason)
         return
     effective_prompt = decision.prompt
     effective_task_cfg = _merge_hook_extra_tools(task_cfg, decision.extra_tools)

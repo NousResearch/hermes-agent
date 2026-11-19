@@ -793,21 +793,32 @@ def chat_gate(chat, agent, message) -> str | None:
     """Screen one Desktop serve chat turn; returns the hold notice text
     when the submit is held (the caller shows it instead of running
     the turn), None when the turn may proceed. NEVER raises: every
-    failure degrades to 'proceed', logged."""
+    failure degrades to 'proceed', logged. Every skip writes a
+    ``skipped_<reason>`` record to the screen log (review 1c-r8: a
+    silent skip hid a live gate miss twice)."""
+    reason = None
     try:
         if not desktop_screen_enabled():
+            reason = "disabled"
             return None
         session_id = str(getattr(chat, "session_id", "")
                          or getattr(agent, "session_id", "") or "")
         if not session_id:
+            reason = "no_session"
             return None
-        db = getattr(agent, "_session_db", None)
+        # The CLI chat object holds the store itself (self._session_db);
+        # the agent's copy can be None in the serve flow (review 1c-r8).
+        db = (getattr(agent, "_session_db", None)
+              or getattr(chat, "_session_db", None))
         if db is None:
+            reason = "no_store"
             return None
         if not session_in_scope(_ChatAuthority(db), session_id):
+            reason = "out_of_scope"
             return None
         texts = _message_texts(message)
         if not texts:
+            reason = "no_text"
             return None
         held, reasons = _screen_texts_sync("desktop-chat", session_id, texts)
         if not held:
@@ -818,3 +829,13 @@ def chat_gate(chat, agent, message) -> str | None:
         logger.warning("desktop_screen: chat gate failed; proceeding",
                        exc_info=True)
         return None
+    finally:
+        if reason is not None:
+            try:
+                _log({"subject": "desktop-chat",
+                      "session": str(getattr(chat, "session_id", "") or ""),
+                      "tier": f"skipped_{reason}",
+                      "preview": str(message)[:120]
+                      if isinstance(message, str) else ""})
+            except Exception:
+                pass

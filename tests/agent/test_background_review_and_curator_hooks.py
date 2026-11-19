@@ -183,6 +183,45 @@ def test_pre_background_review_fail_open_on_callback_error(monkeypatch):
     assert fork_prompts == ["BASE_PROMPT"]
 
 
+def test_pre_start_cancellation_and_non_tool_provider_emit_post_background_review(monkeypatch):
+    """Every early exit from ``_run_review_in_thread`` must still uphold the once-per-pass
+    ``post_background_review`` contract (pre-start cancellation and non-tool-capable provider)."""
+    from agent import background_review as br
+
+    post_seen: list[dict] = []
+    pre_seen: list[dict] = []
+    pm = _plugins().get_plugin_manager()
+    pm._hooks.setdefault("pre_background_review", []).append(lambda **kw: pre_seen.append(kw))
+    pm._hooks.setdefault("post_background_review", []).append(lambda **kw: post_seen.append(kw))
+
+    # 1. Pre-start cancellation: request_done is set before post hook fires with outcome="cancelled".
+    run = br._BackgroundReviewRun()
+    run.cancel_requested.set()
+    done_at_hook_time: list[bool] = []
+    pm._hooks["post_background_review"].append(lambda **_kw: done_at_hook_time.append(run.request_done.is_set()))
+    br._run_review_in_thread(_make_parent_agent(), _snapshot_with_skill(), "BASE_PROMPT", review_run=run)
+
+    assert pre_seen == []
+    assert done_at_hook_time == [True]
+    assert len(post_seen) == 1
+    assert post_seen[0]["outcome"] == "cancelled"
+    assert post_seen[0]["result_kind"] == "none"
+
+    # 2. Provider cannot emit Hermes tool calls: skipped early exit still notifies post hook.
+    post_seen.clear()
+    pm._hooks["post_background_review"] = [lambda **kw: post_seen.append(kw)]
+    parent = _make_parent_agent()
+    parent.client = SimpleNamespace(SUPPORTS_HERMES_TOOL_CALLS=False)
+    monkeypatch.setattr(br, "_resolve_review_runtime", lambda *_a, **_kw: {"routed": False})
+    run2 = br._BackgroundReviewRun()
+    br._run_review_in_thread(parent, _snapshot_with_skill(), "BASE_PROMPT", review_run=run2)
+
+    assert run2.request_done.is_set()
+    assert len(post_seen) == 1
+    assert post_seen[0]["outcome"] == "skipped"
+    assert post_seen[0]["skip_reason"] == "provider_cannot_emit_tool_calls"
+
+
 def test_pre_curator_run_skip_prevents_mutations_and_matches_payload_shape(isolated_home):
     from hermes_cli.hooks import _DEFAULT_PAYLOADS
 

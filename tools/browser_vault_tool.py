@@ -684,7 +684,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
 
 
 def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
-                     password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+                     password_fill: list[dict[str, Any]], identifier: str,
+                     identifier_type: Optional[str] = None) -> list[dict[str, Any]]:
     """The username/email/phone control for a user-chosen login.
 
     With a password field, only a control in the password's form is a candidate (a formless
@@ -694,11 +695,16 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
     a phone entry on a framework form often carries no autocomplete, name, id or placeholder at
     all, so there is nothing to score. On an identifier-only step (no password field yet) the
     best classified control on the page is the whole fill (formless first, as before).
+
+    A saved phone number is read back as ``tel`` whatever box it went into: only ``tel`` lets a
+    display mask regroup the digits ("+48 600 100 200"), and the box's own guess (``username``, or
+    nothing at all in the fallback) would report a correctly masked number as reverted.
     """
     if not identifier:
         return []
     from agent.vault_login_classifier import classify_otp_controls
 
+    phone = identifier_type == "phone"
     anchor = password_fill[0]["index"] if password_fill else None
     form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
 
@@ -710,11 +716,11 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
               and (c.score == 100 or not classify_otp_controls([c.control]))]
     if fields:
         best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
-        return [{"index": best.control.index, "token": best.token, "value": identifier}]
+        return [{"index": best.control.index, "token": "tel" if phone else best.token, "value": identifier}]
     if anchor is None:
         return []
     box = _single_unclassified_box(raw_controls, form, {f["index"] for f in password_fill})
-    return [] if box is None else [{"index": box, "token": "username", "value": identifier}]
+    return [] if box is None else [{"index": box, "token": "tel" if phone else "username", "value": identifier}]
 
 
 def _single_unclassified_box(raw_controls: list[dict[str, Any]], form: Optional[int], taken: set) -> Optional[int]:
@@ -1093,7 +1099,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
             if with_identifier:
-                fills += _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""))
+                fills += _identifier_fill(classified, raw_controls, fills, str(meta.identifier or ""),
+                                          meta.identifier_type)
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
 import stat
 import sys
 from contextlib import nullcontext
@@ -1189,6 +1190,44 @@ class TestBrowserVaultTools:
         assert out["success"] is True and out["filled_fields"] == 2, out
         assert not any('"index": 2' in e for e in secret_exprs)
         assert any('"index": 0' in e and "user@example.com" in e for e in secret_exprs)
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+    @pytest.mark.parametrize("box", [{"label": "", "name": ""}, {"label": "Login", "name": "login"}],
+                             ids=["unlabelled-fallback", "classified-username"])
+    def test_a_phone_in_a_masked_box_reads_back_as_a_phone(self, store, box):
+        """A saved phone number goes into the box beside the password (unlabelled: the fallback; or
+        labelled "Login": classified as a username), whose mask shows it as "+48 600 100 200". The
+        real read-back script (run in node) accepts that only for a phone (tel), so the fill must
+        carry the login's identifier type, not the box's guess or ``username``."""
+        from tests.agent.test_vault_fill_scripts import NONCE, _run
+        from tools import browser_vault_tool
+
+        meta = store.add_item(kind="login", label="Phone login", origin="https://example.com",
+                              secret={"identifier_type": "phone", "identifier": "+48600100200", "password": "s3cret-pw"})
+        controls = [
+            {"formIndex": 0, "index": 0, "type": "text", "autocomplete": "", **box},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+        page = ('stamp(add(document, "input", { type: "text", value: "+48 600 100 200" }), 0);'
+                'stamp(add(document, "input", { type: "password", value: "s3cret-pw" }), 1);')
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(_run(page, expression))}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool.secrets, "token_hex", return_value=NONCE), \
+             patch.object(browser_vault_tool, "_FILL_VERIFY_STABLE_S", 0), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["filled_fields"] == 2, out
 
     def test_an_unlabelled_identifier_box_is_typed_not_written_by_js(self, store):
         """The fallback's box is unclassified, but it is a text field: with a working supervisor it

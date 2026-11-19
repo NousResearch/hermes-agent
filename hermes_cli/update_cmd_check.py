@@ -65,6 +65,23 @@ def report_pack_tidy(root: Path) -> None:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
+def _commits_head_has_that_target_lacks(git_cmd: list[str], root: Path, target: str) -> int:
+    """Commits this checkout's HEAD carries that ``target`` does not: what a move onto
+    ``target`` would silently drop from the running tree. ``-1`` = the
+    ancestry or the count could not be proven; callers must not claim a clean move.
+    """
+    ancestor = _git(git_cmd, root, ["merge-base", "--is-ancestor", "HEAD", target])
+    if ancestor.returncode == 0:
+        return 0  # fast-forward: the release contains everything HEAD has.
+    done = _git(git_cmd, root, ["rev-list", "--count", f"{target}..HEAD"])
+    if done.returncode != 0:
+        return -1
+    try:
+        return int((done.stdout or "").strip() or "0")
+    except ValueError:
+        return -1
+
+
 def _refuses(git_cmd: list[str], root: Path, target: str, repository: str) -> bool:
     """`hermes update` would refuse ``target`` (see update_downgrade_guard), so --check must not offer it."""
     from hermes_cli.update_downgrade_guard import would_refuse
@@ -120,8 +137,19 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print("  `hermes update` moves it back to that release"
               " (`hermes update --set-channel main` follows every commit).")
     else:
-        print(f"→ Selected release available: {target.label}")
-        print("  Run `hermes update` to install it.")
+        # ANCESTRY-GUARD: a release this checkout diverges from is held, not
+        # advertised — moving onto it would silently drop the checkout's newer commits
+        # from the running tree.
+        dropped = _commits_head_has_that_target_lacks(git_cmd, root, target.commit)
+        noun = "commit" if dropped == 1 else "commits"
+        if dropped > 0:
+            print(f"✓ Held: this checkout has {dropped} local {noun} the release does not contain.")
+        else:
+            print("✓ Held: this checkout has local commits the release does not contain, and"
+                  " they cannot be proven safe for a release move.")
+        print("  `hermes update` refuses the move so they are not dropped;"
+              " `hermes update --set-channel main` follows every commit.")
+        return None
     return None
 
 

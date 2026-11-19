@@ -1222,6 +1222,47 @@ def _switch_branch_at_commit_point(git_cmd, branch, target_ref, *, pre, stash):
     return result
 
 
+def _release_drops_local_work_refusal(git_cmd, target_ref: str) -> str | None:
+    """The refusal for a release move that would orphan this checkout's newer commits.
+
+    A release whose commit is not a descendant of HEAD moves the running tree BACKWARDS past
+    commits HEAD carries; the release-move path returns before any ancestry test.
+    """
+    dropped = _check._commits_head_has_that_target_lacks(git_cmd, _m().PROJECT_ROOT, target_ref)
+    if dropped == 0:
+        return None
+    head = _resolved_commit(git_cmd, "HEAD")[:10]
+    if dropped > 0:
+        noun = "commit" if dropped == 1 else "commits"
+        return (f"✗ Held: this checkout has {dropped} local {noun} the release does not contain\n"
+                f"  (HEAD {head}). Moving would silently drop them from the running tree. Push them\n"
+                f"  onto a branch, or follow every commit explicitly: hermes update --set-channel main")
+    # Ancestry could not be proven (a git error, not a clean fast-forward): never claim safety.
+    return ("✗ Held: this checkout has local commits the release does not contain, and they\n"
+            f"  cannot be proven safe for a release move (HEAD {head}).\n"
+            "  Push them onto a branch first, or run: hermes update --set-channel main")
+
+
+def _apply_ancestry_gate(git_cmd, target_ref: str, args, resume_windows_gateways) -> None:
+    """Refuse (or warn, when a channel/branch was named) a release move that would drop work.
+
+    Runs before any tree write: an unchosen channel leaves the install untouched.
+    """
+    explicit_channel = any((getattr(args, "set_channel", None), getattr(args, "channel", None),
+                            getattr(args, "branch", None)))
+    drops = _release_drops_local_work_refusal(git_cmd, target_ref)
+    if drops is None:
+        return
+    if explicit_channel:
+        print(f"⚠ {drops.splitlines()[0][2:]} Moving anyway: a channel/branch was"
+              " named for this update.")
+        return
+    print(drops + "\n  No update was applied; your install is unchanged.")
+    _record_stop("release_drops_local_work")
+    _m()._resume_windows_gateways_after_update(resume_windows_gateways)
+    sys.exit(1)
+
+
 def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) -> None:
     """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
     reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
@@ -1913,6 +1954,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if held:
                 target_ref = held
                 held_message = f"✓ Holding at this build until a newer {channel} release ships."
+            _apply_ancestry_gate(git_cmd, target_ref, args, _windows_gateway_resume)
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,

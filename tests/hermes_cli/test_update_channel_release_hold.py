@@ -116,16 +116,25 @@ def test_a_channel_release_older_than_the_runtime_holds_the_install_and_exits_cl
     assert source.completed[0]["completion_message"] == f"✓ Holding at this build until a newer {name} release ships."
 
 
-def test_the_same_release_still_applies_while_no_store_holds_runtime_history(source, monkeypatch, capsys):
+def test_a_diverged_release_on_the_default_channel_is_now_refused_not_applied(
+        source, monkeypatch, capsys):
+    # The old contract moved a diverged checkout back onto the channel's release; that
+    # silently rolled the running tree back past newer local commits, so the default channel
+    # now refuses instead. An explicit --set-channel keeps the move on the
+    # warning-plus-consent path.
     name = "preview-before-runtime"
     set_install_channel(name, source.root)
     _channel_publishes(monkeypatch, source, name)
 
-    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)
+    with pytest.raises(SystemExit) as stopped:
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)
 
-    assert git(source.root, "rev-parse", "HEAD") == source.release
-    assert "newer than the" not in capsys.readouterr().out
-    assert source.completed[0]["expected_sha"] == source.release
+    out = capsys.readouterr().out
+    assert stopped.value.code == 1
+    assert git(source.root, "rev-parse", "HEAD") == source.installed
+    assert "local commit" in out and "does not contain" in out
+    assert "No update was applied" in out
+    assert source.completed == []
 
 
 def test_an_explicit_branch_to_a_pre_runtime_commit_is_still_refused(source, monkeypatch, capsys):

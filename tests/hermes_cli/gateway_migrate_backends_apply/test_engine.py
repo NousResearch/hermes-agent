@@ -1399,3 +1399,19 @@ def test_unknown_running_turns_block_like_a_running_turn(home, monkeypatch, forc
         assert code == engine.EXIT_BLOCKED
         _nothing_applied(host, home, before)
 
+
+
+# --------------------------------------------------------------------------- another home's same-named gateway
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_gateway_unit_of_another_home_is_refused_before_any_change(home, capsys, dry_run):
+    """``~/.hermes/profiles/work`` and ``/srv/team/profiles/work`` both map to ``hermes-gateway-work``."""
+    host = FakeHost(home)
+    host.foreign_home = "/srv/team/profiles/work"
+    before = _config_files(home)
+
+    assert engine.cmd_apply(host, _args(dry_run=dry_run)) == engine.EXIT_BLOCKED
+
+    assert "belongs to another Hermes home (it runs HERMES_HOME=/srv/team/profiles/work)" in capsys.readouterr().out
+    _nothing_applied(host, home, before)

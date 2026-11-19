@@ -981,6 +981,11 @@ def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
     from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home
     rec, item = plan.rec, plan.item
+    if (other := host.foreign_gateway_home()) is not None:
+        unit = (plan.gateway or {}).get("unit") or "the gateway service"
+        plan.blockers.append(f"{unit} belongs to another Hermes home (it runs HERMES_HOME={other}): the move "
+                             f"would restart, stop or remove that home's gateway. Run the migration from that "
+                             f"home, or remove its service there first, then run this again. Nothing changed.")
     if plan.running_turns is None and not force_interrupt and not plan.blockers:
         # None is "cannot be read", never 0: stopping the old backend could cut off a reply being written.
         plan.blockers.append("The old backend's running turns cannot be read, so this command cannot prove no "

@@ -80,7 +80,7 @@ _ARCH_LABEL = {
 _KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
 _ROW_ORDER = [("mac", "arm64"), ("win", "x64"), ("win", "arm64"),
               ("linux", "x64"), ("linux", "arm64")]
-# Linux AppImages are diagnostic builds: staged with the tag, offered to no one until smoke-tested.
+# Linux AppImages are diagnostic builds: staged in the tag archive, kept off download tables.
 _UNLISTED_OS = frozenset({"linux"})
 
 

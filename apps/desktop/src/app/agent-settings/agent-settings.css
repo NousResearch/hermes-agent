@@ -120,7 +120,8 @@
 
 /* Every agent page scroller ends like a Settings page: the last row clears the stage edge by the
    page's end space and the content fades out under it while more is below. */
-.agent-management-scroll {
+.agent-management-scroll,
+.agent-history {
   padding-bottom: var(--portal-page-end-space);
 }
 

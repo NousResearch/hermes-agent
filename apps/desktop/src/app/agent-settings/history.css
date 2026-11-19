@@ -291,10 +291,11 @@
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
   color: var(--ui-text-primary);
 }
+/* The scroller's end space is under it (agent-settings.css), so the row pads only its top. */
 .agent-history-footer {
   display: flex;
   justify-content: center;
-  padding: 12px;
+  padding-top: 12px;
 }
 /* An option (878:9906): 14 Medium label, 6px to its control. */
 .agent-history-field {

@@ -19,6 +19,7 @@ the backend found now is not the one the plan was confirmed for, or an earlier r
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -384,6 +385,7 @@ def apply(host, plan: BackendPlan, *, detached: bool = False) -> int:
     linger = host.linger()
     run.data["linger_after"] = linger
     run.data["outage_seconds"] = round(outage, 2)
+    run.data["files_after_apply"] = _file_digests(host.home)  # --restore refuses once these change
     run.finish("done", f"migrated: the gateway serves {run.data['new_address']}")
     gap = (f"old backend retired; {run.data['old_address']} no longer answers" if plan.keep_webapp
            else f"old address unavailable for {outage:.1f}s")
@@ -421,6 +423,45 @@ def _restore_file(home: Path, name: str, backup: Optional[str], mode: Optional[i
     write_private_file(target, Path(backup).read_bytes())
     if mode is not None and mode != 0o600:
         os.chmod(target, mode)
+
+
+#: The files a --restore puts back from its backups. Their digests after the apply are recorded, so a
+#: restore never overwrites edits made since.
+_RESTORED_FILES = (("config", "config.yaml"), ("env", ".env"))
+
+
+def _file_digests(home: Path) -> dict:
+    """sha256 of each restored file (None: absent; "unreadable" when it cannot be read)."""
+    out: dict = {}
+    for _key, name in _RESTORED_FILES:
+        path = Path(home) / name
+        try:
+            out[name] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+        except OSError:
+            out[name] = "unreadable"
+    return out
+
+
+def _restore_files_problem(home: Path, m: dict) -> Optional[str]:
+    """Why a restore would lose data or could not put a file back, else None: every recorded backup must
+    be readable, and config.yaml/.env must be exactly as the apply left them (a manifest that has no
+    record of that is unknown: refused)."""
+    backups = m.get("backups") or {}
+    for key, name in _RESTORED_FILES:
+        if isinstance(path := backups.get(key), str):
+            try:
+                Path(path).read_bytes()
+            except OSError as exc:
+                return f"the backup of {name} ({path}) cannot be read: {exc.strerror or exc}"
+    recorded = m.get("files_after_apply")
+    if not isinstance(recorded, dict) or any(name not in recorded for _k, name in _RESTORED_FILES):
+        return ("this migration did not record config.yaml and .env as it left them, so a restore cannot "
+                "tell whether they were edited since")
+    now = _file_digests(home)
+    changed = [name for _k, name in _RESTORED_FILES if now[name] != recorded[name] or now[name] == "unreadable"]
+    if changed:
+        return f"{' and '.join(str(Path(home) / n) for n in changed)} changed since the migration"
+    return None
 
 
 def _webapp_before(host) -> Optional[dict]:
@@ -716,6 +757,18 @@ def restore(host, *, yes: bool, detached: bool = False) -> int:
         print(f"✗ Nothing changed: {reason}.")
         if detached:
             record_refusal(host, mode="restore", reason=reason, exit_code=EXIT_BLOCKED)
+        return EXIT_BLOCKED
+    if (problem := _restore_files_problem(host.home, m)) is not None:
+        # Checked before any service is touched: putting the backups back would lose those edits.
+        m.setdefault("home", str(host.home))
+        reason = f"{problem}; a restore would overwrite it, so the gateway keeps serving"
+        print(f"✗ Nothing changed: {reason}.")
+        print("  To restore by hand, keeping your edits: merge them into the backup copies named below (or "
+              "re-apply them after), then run these steps:")
+        print("\n".join(f"  {n}. {s}" for n, s in enumerate(_manual_rollback_steps(m), 1)))
+        if detached:
+            record_refusal(host, mode="restore", reason=reason, exit_code=EXIT_BLOCKED,
+                           manual_steps=_manual_rollback_steps(m))
         return EXIT_BLOCKED
     if (missing := _snapshot_problem(m)) is not None:
         # Checked before the gateway is stopped: without it the old backend could not be started as it ran.

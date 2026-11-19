@@ -590,6 +590,33 @@ class SystemHost:
             state["active"] = state["installed"] and gw._launchctl_supervised_pid(state["unit"]) is not None
         return state
 
+    def foreign_gateway_home(self) -> Optional[str]:
+        """The HERMES_HOME pinned by the gateway's unit or LaunchAgent when it belongs to ANOTHER home (two
+        homes can share ``hermes-gateway-NAME``: ``~/.hermes/profiles/NAME`` and ``/srv/x/profiles/NAME``),
+        else None. Driving it would restart, stop or remove that home's gateway."""
+        from hermes_cli import gateway as gw
+        from hermes_cli import gateway_service_owner as owner
+        kind = self.gateway_kind()
+        if kind == "systemd":
+            return owner.foreign_systemd_unit_home(False)
+        if kind == "launchd":
+            pinned = owner.pinned_home(gw.get_launchd_plist_path()) if gw.get_launchd_plist_path().exists() else None
+            if pinned and owner._resolve(pinned) != owner._resolve(gw.get_hermes_home()):
+                return pinned
+        return None
+
+    def _refuse_foreign_gateway(self, action: str) -> None:
+        """Raise instead of driving another home's same-named gateway unit or LaunchAgent."""
+        from hermes_cli import gateway_service_owner as owner
+        try:
+            if self.gateway_kind() == "launchd":
+                run_quietly(lambda: owner.refuse_foreign_launchd_plist(action))
+            else:
+                run_quietly(lambda: owner.refuse_foreign_systemd_unit(action, False))
+        except SystemExit:
+            raise RuntimeError(f"refusing to {action} the gateway service: it belongs to another Hermes home "
+                               f"({self.foreign_gateway_home()})") from None
+
     def gateway_preflight(self) -> Optional[str]:
         """Why the gateway's user service cannot be driven from here, else None."""
         from hermes_cli import gateway as gw
@@ -621,6 +648,7 @@ class SystemHost:
     def gateway_verb(self, verb: str) -> None:
         """``start`` / ``restart`` / ``stop`` / ``enable`` / ``disable`` on the gateway's user service."""
         from hermes_cli import gateway as gw
+        self._refuse_foreign_gateway(verb)
         if self.gateway_kind() == "launchd":
             # launchd has no separate enablement (an installed agent loads at login), so only the
             # start/stop/restart verbs reach it; their own "✓ Service started" stays out of the report.
@@ -632,6 +660,7 @@ class SystemHost:
 
     def uninstall_gateway(self) -> None:
         from hermes_cli import gateway as gw
+        self._refuse_foreign_gateway("uninstall")
         if self.gateway_kind() == "launchd":
             run_quietly(gw.launchd_uninstall)
             return

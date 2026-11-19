@@ -351,3 +351,80 @@ def test_a_respawned_backend_is_never_claimed_for_another_home(tmp_path, monkeyp
     (found,) = host.backends()
 
     assert found.supervisor == "unknown" and found.this_home is not True
+
+
+def _foreign_same_named_unit(tmp_path, monkeypatch):
+    """A custom root's ``profiles/work`` beside a user unit ``hermes-gateway-work`` that pins the account's
+    own ``~/.hermes/profiles/work``: same unit name, another home."""
+    from hermes_cli import gateway as gw
+    account = tmp_path / "account"
+    mine = tmp_path / "srv" / "team" / "profiles" / "work"
+    other = account / ".hermes" / "profiles" / "work"
+    for d in (mine, other):
+        d.mkdir(parents=True)
+    unit = tmp_path / "units" / "hermes-gateway-work.service"
+    unit.parent.mkdir()
+    unit.write_text(f"[Service]\nEnvironment=HERMES_HOME={other}\nExecStart=/usr/bin/hermes gateway run\n",
+                    encoding="utf-8")
+    monkeypatch.setenv("HOME", str(account))
+    monkeypatch.setenv("HERMES_HOME", str(mine))
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit)
+    monkeypatch.setattr(gw, "get_service_name", lambda: "hermes-gateway-work")
+    calls: list = []
+    monkeypatch.setattr(host_module, "_systemctl", lambda *a, **kw: calls.append(a) or subprocess.CompletedProcess(a, 0, "", ""))
+    monkeypatch.setattr(gw, "systemd_uninstall", lambda **kw: calls.append(("uninstall", kw)))
+
+    class _Host(SystemHost):
+        def gateway_kind(self):
+            return "systemd"
+
+    return _Host(mine), str(other), calls
+
+
+def test_a_same_named_unit_of_another_home_is_found_and_never_driven(tmp_path, monkeypatch):
+    host, other, calls = _foreign_same_named_unit(tmp_path, monkeypatch)
+
+    assert host.foreign_gateway_home() == other
+    for verb in ("restart", "stop", "start"):
+        with pytest.raises(RuntimeError, match="belongs to another Hermes home"):
+            host.gateway_verb(verb)
+    with pytest.raises(RuntimeError, match="belongs to another Hermes home"):
+        host.uninstall_gateway()
+    assert calls == []
+
+
+def test_the_unit_of_this_home_is_driven(tmp_path, monkeypatch):
+    host, _other, calls = _foreign_same_named_unit(tmp_path, monkeypatch)
+    from hermes_cli import gateway as gw
+    gw.get_systemd_unit_path().write_text(f"[Service]\nEnvironment=HERMES_HOME={host.home}\n", encoding="utf-8")
+
+    assert host.foreign_gateway_home() is None
+    host.gateway_verb("restart")
+    assert calls and calls[0][1] == ["restart", "hermes-gateway-work"]
+
+
+def test_a_launchagent_of_another_home_is_found_and_never_driven(tmp_path, monkeypatch):
+    from hermes_cli import gateway as gw
+    mine, other = tmp_path / "srv" / "team" / "profiles" / "work", tmp_path / "account" / ".hermes" / "profiles" / "work"
+    for d in (mine, other):
+        d.mkdir(parents=True)
+    plist = tmp_path / "ai.hermes.gateway-work.plist"
+    plist.write_text(f"<plist><dict><key>EnvironmentVariables</key><dict><key>HERMES_HOME</key>"
+                     f"<string>{other}</string></dict></dict></plist>", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(mine))
+    monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist)
+    called: list = []
+    monkeypatch.setattr(gw, "_service_call", lambda *a: called.append(a))
+    monkeypatch.setattr(gw, "launchd_uninstall", lambda: called.append("uninstall"))
+
+    class _Host(SystemHost):
+        def gateway_kind(self):
+            return "launchd"
+
+    host = _Host(mine)
+    assert host.foreign_gateway_home() == str(other)
+    with pytest.raises(RuntimeError, match="belongs to another Hermes home"):
+        host.gateway_verb("restart")
+    with pytest.raises(RuntimeError, match="belongs to another Hermes home"):
+        host.uninstall_gateway()
+    assert called == []

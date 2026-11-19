@@ -153,6 +153,11 @@ class FakeHost(SystemHost):
     def gateway_preflight(self):
         return None
 
+    foreign_home = None  # the HERMES_HOME of another home that owns the same-named gateway unit
+
+    def foreign_gateway_home(self):
+        return self.foreign_home
+
     def install_gateway(self):
         self._change("install_gateway")
         self.gw.update(installed=True, enabled=True)

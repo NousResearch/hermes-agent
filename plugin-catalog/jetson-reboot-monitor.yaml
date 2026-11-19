@@ -1,0 +1,15 @@
+name: jetson-reboot-monitor
+repo: https://github.com/PeterChang02/Jetson-Orin-Nano-Reboot-Monitor
+sha: b02abef9cd0d8e4e686e215a73320f1d42405c7b
+description: Read-only reboot forensics and health monitoring for NVIDIA Jetson (Orin Nano tested).
+maintainer: PeterChang02
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+version: "0.2.0"
+platforms: [linux]
+capabilities:
+  provides_tools: [jetson_reboot_history, jetson_reboot_diagnose, jetson_health_snapshot]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -473,26 +473,40 @@ def assert_named_profile_home_live(path: str | Path) -> None:
 def mkdir_under_hermes_home(path: str | Path) -> Path:
     """Create *path*, but never materialize a deleted/missing named profile.
 
-    Under a named profile home only the directories strictly below the home are created, one at a
-    time and never the home itself: a delete or rename that removes the home after the liveness
-    check makes the first ``mkdir`` fail (``FileNotFoundError``) instead of ``parents=True``
-    re-creating the home for the caller's write (a config save then left a live duplicate of a
-    renamed profile under its old name). The default home and custom homes keep ``parents=True``.
+    Under a named profile home the home itself is never created: a delete or rename that removes it
+    after the liveness check makes the write fail (``FileNotFoundError``) instead of re-creating the
+    home (a config save then left a live duplicate of a renamed profile under its old name). The home
+    as *path* is only ACL-repaired; below it, see :func:`_mkdir_below_home`. The default home and
+    custom homes keep ``parents=True``.
     """
     target = Path(path)
     assert_named_profile_home_live(target)
     # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
     # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
     # elevated grant (tests/pm/test_bootstrap_import_closure.py).
-    from hermes_dir_acl import make_user_dir
+    from hermes_dir_acl import make_user_dir, repair_user_dir
     home = named_profile_home(target)
     if home is None:
         make_user_dir(target, parents=True, exist_ok=True)
-        return target
-    below = target.relative_to(home).parts
-    for depth in range(1, len(below) + 1):
-        make_user_dir(home.joinpath(*below[:depth]), exist_ok=True)
+    elif target == home:
+        repair_user_dir(home)
+    else:
+        _mkdir_below_home(home, target)
     return target
+
+
+def _mkdir_below_home(home: Path, path: Path) -> None:
+    """``make_user_dir(path, exist_ok=True)`` leaf first, for *path* strictly below *home*: an
+    existing leaf gets only its usual repair and existing ancestors are never touched. A missing
+    parent is created the same way first, but never *home*: its absence is the caller's error."""
+    from hermes_dir_acl import make_user_dir
+    try:
+        make_user_dir(path, exist_ok=True)
+    except FileNotFoundError:
+        if path.parent == home:
+            raise
+        _mkdir_below_home(home, path.parent)
+        make_user_dir(path, exist_ok=True)
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:

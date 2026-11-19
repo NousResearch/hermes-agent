@@ -452,6 +452,16 @@ def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False,
     return target
 
 
+def repair_user_dir(path: str | Path, *, elevated: bool | None = None) -> None:
+    """The existing-leaf repair of :func:`make_user_dir` without its ``mkdir``: elevated, an existing
+    directory is granted once per directory object (and what is already inside it, when the write was
+    needed); a missing *path* stays missing. For a caller that must never create *path* (a named
+    profile home that a delete or rename may have just removed)."""
+    target = Path(path)
+    if _elevated(elevated) and target.is_dir():
+        _grant_dirs(target, [target])
+
+
 def _grant_dirs(target: Path, to_grant: list[Path], fresh: set[Path] = frozenset()) -> None:
     """Grant *to_grant*; a dir in *fresh* (this call created it) is always granted, an existing
     one once per verified object identity."""

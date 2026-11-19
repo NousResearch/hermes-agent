@@ -55,7 +55,7 @@ class DurableWebhookCoalescer:
 
     async def producer_seen(self, bound, route_name, profile, delivery_id, payload, prompt):
         from gateway.platforms.webhook_delivery import producer_event
-        from gateway.platforms.webhook_ingress import producer_scope, _prepared, _committed, _release_preparation
+        from gateway.platforms.webhook_ingress import producer_scope, producer_receipt_seen
 
         event = producer_event(self.adapter, payload, prompt, delivery_id, time.time(),
             route_config=self.adapter._routes[route_name], route_name=route_name, profile=profile)
@@ -64,14 +64,7 @@ class DurableWebhookCoalescer:
                 raise ValueError('Webhook authority changed')
             token = expected_binding.set(bound)
             try:
-                prepared, principal = await _prepared(authority, event)
-                try:
-                    rows = await drain_thread(_committed, authority, principal, delivery_id)
-                    if len(rows) > 1:
-                        raise ValueError('Ambiguous webhook producer receipt')
-                    return bool(rows)
-                finally:
-                    await drain_task(asyncio.create_task(_release_preparation(authority, prepared)))
+                return await producer_receipt_seen(authority, event)
             finally:
                 expected_binding.reset(token)
 
@@ -240,9 +233,13 @@ class DurableWebhookCoalescer:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def ingress_revision(adapter, route_name, route, profile, delivery_id):
+def ingress_route_revision(adapter, route):
     from gateway.platforms.webhook_delivery import route_config_digest
-    return (route_config_digest(route), hashlib.sha256(adapter.token.encode()).hexdigest(),
+    return route_config_digest(route), hashlib.sha256(adapter.token.encode()).hexdigest()
+
+
+def ingress_revision(adapter, route_name, route, profile, delivery_id):
+    return (*ingress_route_revision(adapter, route),
             adapter._admission_source(route_name, profile, delivery_id).profile)
 
 

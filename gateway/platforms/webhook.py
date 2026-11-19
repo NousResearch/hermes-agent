@@ -81,8 +81,10 @@ _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 def _header_delivery_id(headers) -> str:
     """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
-    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
+    for name in ("X-GitHub-Delivery", "svix-id", "webhook-id", "X-Request-ID"):
+        if name in headers:
+            return headers[name]
+    return uuid.uuid4().hex
 
 
 @dataclass(frozen=True)
@@ -685,16 +687,35 @@ class WebhookAdapter(BasePlatformAdapter):
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
         from copy import deepcopy
-        from gateway.platforms.webhook_coalesce.recovery import ingress_revision
+        from gateway.platforms.webhook_coalesce.recovery import ingress_revision, ingress_route_revision, revision_current
         route_config = deepcopy(route_config)
-        revision = (ingress_revision(self, route_name, route_config, profile, _header_delivery_id(request.headers))
-                    if route_config else None)
+        route_revision = ingress_route_revision(self, route_config) if route_config else None
+        runner_config = getattr(self.gateway_runner, 'config', None)
+        profile_routes = getattr(runner_config, 'profile_routes', None)
+        routing_revision = deepcopy((getattr(runner_config, 'multiplex_profiles', False), profile_routes,
+                                     getattr(runner_config, '_runtime_profile_homes', None))) if isinstance(
+                                         profile_routes, (list, tuple)) else None
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
             return error_response
         headers = request.headers
         delivery_id = _header_delivery_id(headers)
+        self._reload_dynamic_routes()
+        current_route = self._routes.get(route_name)
+        runner_config = getattr(self.gateway_runner, 'config', None)
+        if (self._coalescer._closed or not current_route or not current_route.get('enabled', True)
+                or ingress_route_revision(self, current_route) != route_revision
+                or (routing_revision is not None and routing_revision != (
+                    getattr(runner_config, 'multiplex_profiles', False),
+                    getattr(runner_config, 'profile_routes', None),
+                    getattr(runner_config, '_runtime_profile_homes', None)))):
+            return _json_error("Route changed; retry this delivery", 503)
+        payload = self._parse_body(raw_body)
+        if payload is _UNPARSEABLE:
+            return _json_error("Cannot parse body", 400)
+        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
+        revision = ingress_revision(self, route_name, route_config, profile, delivery_id)
         # A parked profile is retried, before any delivery id is recorded. The check resolves
         # ``profile_routes`` against the very source admission builds for this delivery.
         from gateway.platforms.webhook_ingress import parked_profile_refusal
@@ -706,13 +727,13 @@ class WebhookAdapter(BasePlatformAdapter):
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
-        payload = self._parse_body(raw_body)
-        if payload is _UNPARSEABLE:
-            return _json_error("Cannot parse body", 400)
+        if not revision_current(self, route_name, profile, delivery_id, revision):
+            return _json_error("Route changed; retry this delivery", 503)
         mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
         if mcp_control is not None:
             return mcp_control
-        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
+        if not revision_current(self, route_name, profile, delivery_id, revision):
+            return _json_error("Route changed; retry this delivery", 503)
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -733,6 +754,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 # copies contextvars so the profile scope follows.
                 keep, transformed_payload = await asyncio.to_thread(
                     self._route_processor.run_route_script, script, payload)
+                if not revision_current(self, route_name, profile, delivery_id, revision):
+                    return _json_error("Route changed; retry this delivery", 503)
                 if not keep:
                     logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})

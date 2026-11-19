@@ -147,7 +147,7 @@ async def test_cancelled_http_retains_post_validation_admission(monkeypatch, mod
             assert retry.status == 200 and json.loads(retry.text)['status'] == 'duplicate'
             assert calls == ['effect']
         else:
-            # Ordinary retries must reach their verifier rather than a cache shortcut.
+            # Both ordinary requests reach the mocked dispatch boundary.
             assert retry.status == 202 and calls == ['effect', 'effect']
         assert not adapter._coalescer.intakes and not adapter._coalescer.delivery_turns
     finally:
@@ -324,4 +324,72 @@ async def test_failed_claim_and_defer_wait_before_relaunch(monkeypatch):
         assert admissions[-1].message_id == 'backoff'
     finally:
         release.set()
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['mcp', 'headerless'])
+@pytest.mark.parametrize('mode', ['agent', 'unresolved', 'coalesced'])
+async def test_final_delivery_identity_drives_profile_routing(monkeypatch, tmp_path, kind, mode):
+    import uuid
+    from pathlib import Path
+    from types import SimpleNamespace
+    from gateway.config import GatewayConfig
+    from gateway.profile_routing import ProfileRoute
+    from gateway.run import GatewayRunner
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+
+    home = tmp_path / '.hermes'
+    beta = home / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    (beta / 'config.yaml').write_text('{}')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    fallback = uuid.UUID('00000000-0000-4000-8000-000000000001')
+    generated = []
+
+    def make_uuid():
+        generated.append(fallback)
+        return fallback
+
+    monkeypatch.setattr('gateway.platforms.webhook.uuid', SimpleNamespace(uuid4=make_uuid))
+    final_id = 'mcp-event:occurrence' if kind == 'mcp' else fallback.hex
+    route = {'secret': 'INSECURE_NO_AUTH', 'prompt': '{action}'}
+    if kind == 'mcp':
+        route['mcp_event'] = {}
+    if mode != 'agent':
+        route['coalesce'] = {'key': 'pull_request.number' if mode == 'coalesced' else 'missing',
+                             'window_seconds': 60}
+    adapter = _make_adapter(routes={'pr': route})
+    config = GatewayConfig()
+    config.multiplex_profiles = True
+    config._runtime_profile_homes = (('default', home), ('beta', beta))
+    config.profile_routes = [ProfileRoute(name='beta-route', platform='webhook', profile='beta',
+        chat_id=_WebhookDeliveryIdentity.from_parts(None, 'pr', final_id).session_chat_id)]
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = config
+    adapter.gateway_runner = runner
+    _capture_admissions(adapter, monkeypatch)
+    dispatched = []
+
+    async def dispatch(*args):
+        dispatched.append((args[7], adapter._admission_source('pr', None, args[7]).profile))
+        return web.json_response({'status': 'accepted'}, status=202)
+
+    monkeypatch.setattr(adapter, '_dispatch_agent_run', dispatch)
+    payload = {'action': 'opened', 'pull_request': {'number': 7}}
+    if kind == 'mcp':
+        payload['eventId'] = 'occurrence'
+    request = _mock_request(json.dumps(payload).encode(), delivery_id='transport' if kind == 'mcp' else '')
+    try:
+        response = await adapter._handle_webhook(request)
+        assert response.status == 202
+        assert adapter._admission_source('pr', None, final_id).profile == 'beta'
+        assert generated == ([] if kind == 'mcp' else [fallback])
+        if mode == 'coalesced':
+            assert json.loads(response.text)['status'] == 'coalesced'
+            assert not dispatched
+        else:
+            assert dispatched == [(final_id, 'beta')]
+    finally:
         await adapter.disconnect()

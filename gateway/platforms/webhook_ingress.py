@@ -229,6 +229,19 @@ async def _delivery_turn(key):
         yield
 
 
+async def producer_receipt_seen(authority, event):
+    """Look up a producer receipt without hooks, payload comparison or finalization."""
+    from agent.async_utils import drain_task, drain_thread
+    payload, principal = await _prepared(authority, event)
+    try:
+        rows = await drain_thread(_committed, authority, principal, event.message_id)
+        if len(rows) > 1:
+            raise ValueError('Ambiguous webhook producer receipt')
+        return bool(rows)
+    finally:
+        await drain_task(asyncio.create_task(_release_preparation(authority, payload)))
+
+
 async def _release_preparation(authority, payload):
     """A delivery a plugin skipped or consumed, or one refused or cancelled after preparing, is never
     admitted: release the media its preparation (``_prepared``) copied into the retained store. A path

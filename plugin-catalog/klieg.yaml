@@ -1,0 +1,66 @@
+name: klieg
+repo: https://github.com/LangerSword/hermes-klieg
+sha: 6e03c7b3ab78da2ae0e4abe9c03b49f096a1d933
+version: "0.3.0"
+title: Klieg
+description: >-
+  Motion design for Hermes. klieg_motion lets the agent author a scene - kinetic type,
+  transitions, lower-thirds, logo stings, loops, explainers - as a declarative spec, a
+  template, or raw HTML+GSAP, and render it to MP4/GIF locally with no API keys; rendering
+  is deterministic (seek + screenshot per frame) so motion is smooth, and each render is a
+  detached job verified by its artefact. The same job engine drives Blender and other DCC
+  hosts (Houdini, Nuke, Cinema 4D, After Effects, Resolve) behind one adapter interface:
+  probe what is installed, run scripts inside the host, render frame ranges as resumable
+  jobs that survive the agent's shell. A job is only "done" when its artefact is newer than
+  the job started - klieg_jobs verify compares mtime and the promised frame count, so a
+  render that dies at frame 3 of 288, or emits frames from a blend that failed to rebuild,
+  cannot report success. klieg_plan resolves a pass without running or writing anything.
+  One GPU, one render: a second request queues behind the holder, queue=false refuses, and
+  killing the holder dispatches the next job. klieg_publish encodes with explicit BT.709
+  conversion and colour tags, including mid-sequence and gapped frame sets. Built-in gates
+  (flash, loop, stats, safe_band) measure any frame set with numpy/Pillow, no DCC required.
+  klieg_ledger seals a finished job's provenance - scene, script, every frame, colour
+  manifest, encode - into sha256 commitments and checks it for drift later. Children get a
+  13-variable environment allow-list, never os.environ, and key/token/secret names are
+  dropped and recorded.
+
+  Disclosure - klieg_run, klieg_track and klieg_gate script=... execute model-authored
+  Python inside the host application with the user's privileges; klieg_motion render/preview
+  executes model-authored HTML+JavaScript in a headless browser (playwright/chromium) and
+  spawns ffmpeg. All are approval-gated per action (read-only actions of mixed tools pass
+  free); unattended runs fail closed. Klieg is not a sandbox: an approved script or scene is
+  arbitrary code, and a malicious scene file executes when the host opens it. Outputs are
+  refused under system and credential paths. The flash gate is a screening approximation,
+  not a certified Harding test; the ledger detects drift but is not a signature. A live
+  session bridge into a running Blender is available through klieg_session; other hosts
+  remain batch-only. After Effects and Resolve are reported present-but-unsupported rather
+  than faked. Motion rendering requires playwright + a chromium headless shell (reported as
+  data when absent). Built with AI assistance (Hermes Agent); author-reviewed and tested.
+maintainer: LangerSword
+tier: community
+category: tools
+docs_url: https://github.com/LangerSword/hermes-klieg
+requires_hermes: ">=0.22.0"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - klieg_probe
+    - klieg_plan
+    - klieg_run
+    - klieg_render
+    - klieg_jobs
+    - klieg_track
+    - klieg_gate
+    - klieg_publish
+    - klieg_scene
+    - klieg_session
+    - klieg_colour
+    - klieg_taste
+    - klieg_ledger
+    - klieg_motion
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

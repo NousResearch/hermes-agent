@@ -7075,7 +7075,7 @@ def register(ctx) -> None:
         # "No live adapter" when cron runs apart from the gateway.
         standalone_sender_fn=_standalone_send,
         # Slack allows 40,000 chars; leave margin.
-        max_message_length=39000,
+        max_message_length=SlackAdapter.MAX_MESSAGE_LENGTH,
         emoji="💼",
         allow_update_command=True,
         platform_hint=PLATFORM_HINT,

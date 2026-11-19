@@ -6630,7 +6630,7 @@ def register(ctx) -> None:
         **DASHBOARD_CARD,
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
         install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
-        standalone_sender_fn=standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
+        standalone_sender_fn=standalone_send, max_message_length=TelegramAdapter.MAX_MESSAGE_LENGTH, emoji="✈️", allow_update_command=True,
         platform_hint=PLATFORM_HINT, platform_hint_tool_notes=PLATFORM_HINT_TOOL_NOTES,
         display_tier="high",
         # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.

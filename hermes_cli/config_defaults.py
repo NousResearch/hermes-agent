@@ -739,7 +739,7 @@ DEFAULT_CONFIG = {
         # stream-only.
         "stream_only_base_urls": [],
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
-        # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
+        # overrides provider; api_key falls back to OPENAI_API_KEY (OpenAI hosts only); reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
@@ -1370,11 +1370,11 @@ DEFAULT_CONFIG = {
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.
         "subagent_auto_approve": False,
-        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
-        # notifications to the PARENT; false suppresses them (the child's result is the
-        # deliverable). Async-delegation results are NEVER suppressed.
+        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern notifications to
+        # the PARENT; false suppresses them (the child's result is the deliverable). Async-delegation results are NEVER
+        # suppressed. auto_resume: opt-in (spends tokens unattended), gives up with one failure after the deadline.
         "surface_child_process_notifications": False,
-        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False,  # stopped-child records; auto: opt-in
+        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False, "auto_resume_deadline_minutes": 360,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

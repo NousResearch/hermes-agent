@@ -170,7 +170,10 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
-    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
+    upload_hint: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
+    upload_hint_local: "Semmi sem lett feltöltve. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez, vagy a `/debug local` parancsot a megtekintéséhez itt."
+    nous_refused: "Semmi sem lett feltöltve. A privát Nous-feltöltés innen nem érhető el: futtasd a `hermes debug share --nous` parancsot egy terminálban, vagy használd a Send diagnostics funkciót az asztali alkalmazásban. A `/debug upload` ehelyett nyilvános paste-be tölti fel az összefoglalót."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."
@@ -657,8 +660,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Nem sikerült kézbesíteni a mellékletet ({kind}: {file_name})."
     delivery_failed_retry: "⚠️ Az üzenet kézbesítése több próbálkozás után sem sikerült. Próbáld újra — a kérésed feldolgoztam, de a választ nem tudtam elküldeni."
     plain_fallback_prefix: "(A válasz formázása nem sikerült, egyszerű szöveg:)\n\n{content}"
-    turn_error_no_details: "nincs elérhető részlet"
-    turn_error_detailed: "Sajnálom, hibába ütköztem ({error_type}).\n{error_detail}\nPróbáld újra, vagy kezdj új munkamenetet a /reset paranccsal."
     turn_error: "Sajnálom, hibába ütköztem."
     context_injection_refused: "A kontextusbeszúrás elutasítva."
     no_home_channel: "📬 Nincs beállítva home csatorna a(z) {platform} platformhoz. A home csatornába kézbesíti a Hermes a cronfeladatok eredményeit és a platformok közötti üzeneteket.\n\nÍrd be: {sethome_cmd}, hogy ez a csevegés legyen a home csatornád, vagy hagyd figyelmen kívül."
@@ -996,6 +997,7 @@ platform:
     denied: "❌ Elutasítva."
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
   shared:
+    response_as_file: "📎 Hosszú válasz: a teljes szöveg csatolva."
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"
     approval_expired: "⌛ A jóváhagyás lejárt — a parancs nem futott le (időtúllépés, vagy máshol már eldőlt)."
@@ -1189,8 +1191,6 @@ platform:
         unknown: "Ismeretlen skill: `{name}`. Kezdj el gépelni az automatikus kiegészítéshez."
       auto_args_description: "Argumentumok: {args_hint}"
       auto_description_fallback: "/{name} futtatása"
-    limits:
-      response_truncated: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). {dropped_chars} karakter nem lett kézbesítve; a teljes válasz a munkamenet naplóiban található."
     forum:
       default_title: "Új bejegyzés"
     voice:
@@ -1726,7 +1726,7 @@ slash:
   version:
     description: "A Hermes Agent verziójának megjelenítése"
   debug:
-    description: "Hibakeresési jelentés (rendszerinfó + naplók) feltöltése és megosztható linkek kérése"
+    description: "Hibakeresési jelentés (rendszerinfó + naplók): előbb az adatvédelmi tájékoztató; a /debug upload linkeket oszt meg"
   quit:
     description: "Kilépés a CLI-ből (a --delete a munkamenet előzményeit is törli)"
 cli:

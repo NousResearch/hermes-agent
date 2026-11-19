@@ -639,7 +639,7 @@ compression:
 `AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 不再使用辅助 LLM。长页面会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
 :::
 
-对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥或 `OPENAI_API_KEY`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。
+对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥；未设置时，使用与主端点源完全相同的主模型密钥，然后 `OPENAI_API_KEY` 仅用于 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。
 
 ## 回退提供商（仅 config.yaml）
 

@@ -3,6 +3,8 @@
 # the real findings, unless this file declares it.
 self-hosted-runner:
   labels:
+    - unitalk-azure
+    - unitalk-azure-linux-arm
     - blacksmith-2vcpu-ubuntu-2404
     - blacksmith-4vcpu-ubuntu-2404
     - blacksmith-4vcpu-ubuntu-2404-arm

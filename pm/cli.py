@@ -448,7 +448,7 @@ def cmd_doctor(args) -> int:
             continue
         facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
-        soft = package.optional or package.internal
+        soft = package.is_optional(target) or package.internal
         identity = _identity(lockfile, name, target)
         if (
             fact is not None

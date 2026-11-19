@@ -237,6 +237,9 @@ class LearningNodeEdit(BaseModel):
     profile: Optional[str] = None
 
 class DebugShareRequest(BaseModel):
+    # Set by the client only after the user confirmed the public upload; missing/false is refused
+    # so an empty POST can never publish logs (#94876).
+    consent: bool = False
     # Redaction scrubs credential-shaped tokens before logs leave the machine; opt-out only.
     redact: bool = True
     lines: int = 200  # recent log lines in the summary tail (full logs are separate)

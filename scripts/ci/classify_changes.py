@@ -367,6 +367,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
     "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",

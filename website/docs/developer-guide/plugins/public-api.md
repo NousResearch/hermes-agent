@@ -133,3 +133,4 @@ with a name allows that one name only.
 | `hermes_cli.web_routers.mcp` | `list_mcp_servers` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
 | `hermes_cli.web_routers.mcp` | `remove_mcp_server` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
 | `hermes_cli.web_routers.mcp` | `set_mcp_server_enabled` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.urllib_security` | `open_credentialed_url` | plugins/index.md § Send a credentialed HTTP request without leaking it on redirect |

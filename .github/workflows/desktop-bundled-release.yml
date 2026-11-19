@@ -216,7 +216,7 @@ jobs:
     # One dispatch: in disposable mode the allocation steps run first (the
     # channel pin comes from them), then admission validates the build source.
     # A failed allocation fails this job and skips everything downstream.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     # Public root is an environment variable, not a repository variable. No
     # secret is injected into admission; downstream jobs consume its outputs.
     environment: release-signing
@@ -261,7 +261,7 @@ jobs:
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ (inputs.build_commit != '' || inputs.channel != '' || inputs.release-phase != '') && github.sha || inputs.tag }}
           # Full checkout, always. Commit admission (require_pushed) needs the
@@ -806,7 +806,7 @@ jobs:
     # The trust-branch legs are read through needs.*.result below, so they must
     # stay in the list — the result job gates on their outcomes, not its own.
     needs: [validate, build-win32-x64-release, build-win32-x64-commit]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     permissions: {}
     timeout-minutes: 5
     env:
@@ -833,7 +833,7 @@ jobs:
     # The trust-branch legs are read through needs.*.result below, so they must
     # stay in the list — the result job gates on their outcomes, not its own.
     needs: [validate, build-win32-arm64-release, build-win32-arm64-commit]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     permissions: {}
     timeout-minutes: 5
     env:
@@ -1193,7 +1193,7 @@ jobs:
     # The trust-branch legs are read through needs.*.result below, so they must
     # stay in the list — the result job gates on their outcomes, not its own.
     needs: [validate, build-darwin-arm64-release, build-darwin-arm64-commit]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     permissions: {}
     timeout-minutes: 5
     env:
@@ -1207,7 +1207,7 @@ jobs:
     name: bundled linux-x64 (disabled for now)
     if: needs.validate.outputs.linux-x64 == 'true'
     needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 5
     steps:
       - name: Disabled
@@ -1218,7 +1218,7 @@ jobs:
     name: bundled linux-arm64 (disabled for now)
     if: needs.validate.outputs.linux-arm64 == 'true'
     needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     timeout-minutes: 5
     steps:
       - name: Disabled
@@ -1236,7 +1236,7 @@ jobs:
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.validate.outputs.darwin-arm64 == 'true'
       && needs.build-darwin-arm64.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     timeout-minutes: 15
     outputs:
@@ -1250,7 +1250,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           # Claim custody is re-checked in place: full history and the tags.
@@ -1576,7 +1576,7 @@ jobs:
       && needs.assemble-win32-bundle.result == 'success'
       && needs.smoke-darwin-arm64.result == 'success'
       && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     cache-mode: read
     timeout-minutes: 45
@@ -1595,7 +1595,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           # require_pushed proves commit-build ancestry from local history;
@@ -1626,7 +1626,7 @@ jobs:
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.assemble-win32-bundle.result == 'success'
       && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     timeout-minutes: 15
     concurrency:
@@ -1642,7 +1642,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
       - uses: ./.github/actions/setup-pm
@@ -1653,8 +1653,9 @@ jobs:
       - name: Retrieve the tested universal bundle
         shell: bash
         run: |
+          artifact_name=$(node -p 'require("./apps/desktop/product-identity.cjs").artifactNamePascal')
           python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name windows-universal --root staged --include 'HermesBundled-*-win.msixbundle'
+            --name windows-universal --root staged --include "${artifact_name}-*-win.msixbundle"
       - name: Publish identical tested bytes without rebuilding
         shell: bash
         run: |
@@ -1662,17 +1663,17 @@ jobs:
             import identity from "./apps/desktop/product-identity.cjs";
             import { appIdentity, OUT_OF_STORE_PUBLISHER } from "./scripts/msix-shared.mjs";
             const build = appIdentity(process.cwd() + "/apps/desktop");
-            console.log(JSON.stringify({identity: identity.msixAppIdWithOrg, publisher: OUT_OF_STORE_PUBLISHER, version: build.version}));
+            console.log(JSON.stringify({identity: identity.msixAppIdWithOrg, artifactName: identity.artifactNamePascal, publisher: OUT_OF_STORE_PUBLISHER, version: build.version}));
           ' > staged/expected-identity.json
           python - <<'PY'
           import json, os, re
           from pathlib import Path
           from scripts.bundles.release_artifacts import main, single
           expected = json.loads(Path('staged/expected-identity.json').read_text(encoding='utf-8'))
-          bundle = single(Path('staged').glob('HermesBundled-*-win.msixbundle'))
+          bundle = single(Path('staged').glob(f"{expected['artifactName']}-*-win.msixbundle"))
           # The handoff binds the assembly filename and bytes. Never recompute
           # its revision against stable tags that can change after native smoke.
-          match = re.fullmatch(r'HermesBundled-(\d+\.\d+\.\d+\.\d+)-win\.msixbundle', bundle.name)
+          match = re.fullmatch(rf"{re.escape(expected['artifactName'])}-(\d+\.\d+\.\d+\.\d+)-win\.msixbundle", bundle.name)
           if not match:
               raise ValueError('Missing assembly version in receipt-bound bundle name')
           version = match[1]
@@ -1706,7 +1707,7 @@ jobs:
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin-arm64.result == 'success'
       && needs.smoke-darwin-arm64.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     timeout-minutes: 15
     concurrency:
@@ -1720,7 +1721,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Privileged job: pin to the SHA validate admitted, not the tag.
           ref: ${{ needs.validate.outputs.sha }}
@@ -1763,7 +1764,7 @@ jobs:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate]
     if: inputs.channel == '' && inputs.disposable_channel == '' && needs.validate.outputs.termux == 'true' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: [self-hosted, Linux, ARM64, unitalk-azure-linux-arm]
     environment: release-signing
     timeout-minutes: 90
     env:
@@ -1783,7 +1784,7 @@ jobs:
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
       # Use the admitted commit, not a tag that can move after validation.
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           # Commit builds only rev-parse HEAD; tag builds verify ancestry.
@@ -2137,9 +2138,9 @@ jobs:
     needs: validate
     # Pairs with builds-table: a pending page nothing finalizes must not be written.
     if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.all-jobs == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
       - name: Render the placeholder
@@ -2180,10 +2181,10 @@ jobs:
       always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.validate.outputs.all-jobs == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Privileged job: pin to the SHA validate admitted. A bare checkout
           # here would land on the dispatch branch, not the release bytes.
@@ -2236,13 +2237,13 @@ jobs:
       always() && inputs.build_commit != '' && inputs.channel == '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.validate.outputs.all-jobs == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     permissions:
       contents: write
       actions: read
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Runs from the admitted commit so the renderer matches the built bytes.
           ref: ${{ needs.validate.outputs.sha }}
@@ -2276,7 +2277,7 @@ jobs:
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
       - name: Return to the trusted receipt controller
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -2298,7 +2299,7 @@ jobs:
     name: Verify published candidate files
     needs: validate
     if: inputs.release-phase == 'publish'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     timeout-minutes: 90
     env:
@@ -2312,7 +2313,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
       - uses: ./.github/actions/setup-pm
@@ -2396,9 +2397,9 @@ jobs:
         stable-publish,
         stable-store
       ]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - name: Require every phase job
@@ -2458,10 +2459,10 @@ jobs:
       && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
       && needs.publish-win32-updater.result == 'success'
       && needs.publish-darwin-updater.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: 0

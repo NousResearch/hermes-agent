@@ -61,10 +61,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: unitalk-azure
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64, unitalk-azure-linux-arm]
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -109,10 +109,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-24.04
+            runner: unitalk-azure
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, Linux, ARM64, unitalk-azure-linux-arm]
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90

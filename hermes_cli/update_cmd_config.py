@@ -35,7 +35,8 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None,
     and run the NON-INTERACTIVE quiet migration — prompt-requiring settings wait for that profile's
     own session. Returns ``[(name, from_version, to_version), ...]``; never raises. *notes* receives
     each migrated sibling's display lines for what quiet mode muted (a reset/removed setting, a
-    warning), as the active profile's quiet path re-prints them; the tuple shape stays for old updaters.
+    warning), as the active profile's quiet path re-prints them; *stopped* receives
+    ``{name: failed_step}`` for each sibling whose ladder stopped. The tuple shape stays for old updaters.
 
     91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the shared checkout serves every
     profile, but ``hermes update`` historically migrated only the active profile's config — siblings drifted
@@ -192,8 +193,10 @@ def _check_and_apply_config_migration(
         print("     Run 'hermes config migrate' to check manually.")
         return
 
-    owed_error = None
-    partial_migration_step = None
+    # Why this update still owes migration steps (the active profile's stop or failed write, each
+    # sibling's stop); one RuntimeError names them all after the safety nets below run.
+    owed: list[str] = []
+    owed_cause: Exception | None = None
     sibling_stopped: dict[str, int] = {}
     has_new_options = bool(missing_env or missing_config)
     version_bump_only = not has_new_options and current_ver < latest_ver
@@ -209,7 +212,7 @@ def _check_and_apply_config_migration(
             if _mig_results.get("failed_step") is None:
                 print("  ✓ Config format updated (no new settings to configure)")
             else:
-                partial_migration_step = _mig_results["failed_step"]
+                owed.append(f"stopped at v{_mig_results['failed_step']}")
             # quiet=True also mutes steps that RESET/REMOVE a setting; re-surface them so an
             # unattended update never silently changes config (config_added holds only mutations here).
             # In this branch missing_config is empty, so config_added can only contain migration-step
@@ -221,11 +224,9 @@ def _check_and_apply_config_migration(
         except Exception as _mig_err:
             print(f"  ⚠️  Config format update failed: {_mig_err}")
             print("     Run 'hermes config migrate' to retry.")
-            # Not a silent success: raised after the sibling migration and snapshot safety nets
-            # below (independent of the active write, and the snapshot id is only in hand now), so
-            # the caller's owed-step guard records ``config_migration`` and keeps the tail pending.
-            owed_error = RuntimeError(f"config format v{current_ver} → v{latest_ver} was not written: {_mig_err}")
-            owed_error.__cause__ = _mig_err
+            # Not a silent success: owed, so the caller's guard records ``config_migration``.
+            owed.append(f"format v{current_ver} → v{latest_ver} was not written: {_mig_err}")
+            owed_cause = _mig_err
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, for an informed yes/no.
@@ -245,7 +246,7 @@ def _check_and_apply_config_migration(
             unattended = gateway_mode or assume_yes or response == "auto"
             results = migrate_config(interactive=not unattended, quiet=False)
             if results.get("failed_step") is not None:
-                partial_migration_step = results["failed_step"]
+                owed.append(f"stopped at v{results['failed_step']}")
             elif results["env_added"] or results["config_added"]:
                 print()
                 print("✓ Configuration updated!")
@@ -262,21 +263,21 @@ def _check_and_apply_config_migration(
     with _best_effort('Sibling config migration failed: %s'):
         sibling_notes: dict[str, list[str]] = {}
         for _name, _from_ver, _to_ver in _migrate_sibling_profile_configs(sibling_notes, sibling_stopped):
-            print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
+            if _name in sibling_stopped:  # advanced, then stopped: not an update to report as done
+                print(f"  ⚠️  Profile '{_name}': config migration stopped at v{sibling_stopped[_name]}"
+                      f" (v{_from_ver} → v{_to_ver} applied)")
+            else:
+                print(f"  ✓ Profile '{_name}': config format updated (v{_from_ver} → v{_to_ver})")
             for _note in sibling_notes.get(_name, ()):
                 print(f"      {_note}")
 
     _restore_snapshot_safety_nets(pre_update_snapshot_id)
-    if partial_migration_step is not None or sibling_stopped:
-        # A migration that stopped cleanly still owes the remaining steps. Raise only after the
-        # independent sibling sweep and snapshot recovery so the update receipt records a follow-up.
-        where = ([f"v{partial_migration_step}"] if partial_migration_step is not None else []) + [
-            f"profile '{name}' v{step}" for name, step in sibling_stopped.items()]
-        raise RuntimeError(
-            f"config migration stopped at {', '.join(where)}; "
-            "run `hermes config migrate` to retry the remaining steps")
-    if owed_error is not None:
-        raise owed_error
+    owed += [f"profile '{name}' stopped at v{step}" for name, step in sibling_stopped.items()]
+    if owed:
+        # Raised only after the independent sibling sweep and snapshot recovery, so the update
+        # receipt records a ``config_migration`` follow-up naming every reason.
+        raise RuntimeError(f"config migration {'; '.join(owed)}; "
+                           "run `hermes config migrate` to retry the remaining steps") from owed_cause
 
 
 # {profile: snapshot_id} from this run's pre-update backup, consumed by the per-profile

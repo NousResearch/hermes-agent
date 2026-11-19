@@ -603,6 +603,28 @@ _NOUS_PRIVACY_NOTICE = """\
 """
 
 
+def run_debug_slash(cmd_original: str = "") -> None:
+    """The classic CLI / TUI ``/debug [upload|nous [upload]|local]``: uploads only on ``upload``.
+
+    Bare ``/debug`` / ``/debug nous`` print the privacy notice and upload nothing; adding
+    ``upload`` sends to the public paste (or Nous-internal storage with ``nous``); ``local``
+    renders to stdout and wins over everything else (never touches the network).
+    """
+    words = {w.lower() for w in cmd_original.split()[1:]}
+    local = "local" in words
+    nous = "nous" in words and not local
+    if not local and ("upload" not in words or words - {"upload", "nous"}):
+        # The notice must come BEFORE anything leaves the machine: a bare /debug is a request
+        # for the report, not consent to publish it (#94876). Only `upload` [+ `nous`] consents,
+        # so a refusal that contains the word (`/debug do not upload`) is not consent.
+        print(_NOUS_PRIVACY_NOTICE if nous else _PRIVACY_NOTICE)
+        print(f"Nothing was uploaded. Run `/debug {'nous upload' if nous else 'upload'}` to upload, "
+              "or `/debug local` to view the report without uploading.")
+        return
+    # The explicit `upload` word is the consent (yes=True); input() would hang in prompt_toolkit.
+    run_debug_share(SimpleNamespace(lines=200, expire=1, local=local, nous=nous, yes=True))
+
+
 def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     """``hermes debug share --nous``: gzip the same bundle into the Nous envelope → Nous-S3."""
     from hermes_cli.diagnostics_upload import share_to_nous

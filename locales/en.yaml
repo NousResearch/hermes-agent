@@ -170,7 +170,10 @@ gateway:
     full_logs_hint: "For full log uploads, use `hermes debug share` from the CLI."
     share_hint: "Share these links with the Hermes team for support."
     report_label: "Report"
-    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug` to upload the summary report."
+    local_refused: "`/debug local` keeps the report on the machine running Hermes, so it isn't available from a chat. Send `/debug upload` to upload the summary report."
+    upload_hint: "Nothing was uploaded. Send `/debug upload` to upload the summary report."
+    upload_hint_local: "Nothing was uploaded. Send `/debug upload` to upload the summary report, or `/debug local` to view it here."
+    nous_refused: "Nothing was uploaded. Private Nous uploads aren't available from here: run `hermes debug share --nous` in a terminal, or use Send diagnostics in the desktop app. `/debug upload` uploads the summary to a public paste instead."
   deny:
     stale: "❌ Command denied (approval was stale)."
     no_pending: "No pending command to deny."
@@ -651,8 +654,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Couldn't deliver the {kind} attachment ({file_name})."
     delivery_failed_retry: "⚠️ Message delivery failed after multiple attempts. Please try again — your request was processed but the response could not be sent."
     plain_fallback_prefix: "(Response formatting failed, plain text:)\n\n{content}"
-    turn_error_no_details: "no details available"
-    turn_error_detailed: "Sorry, I encountered an error ({error_type}).\n{error_detail}\nTry again or use /reset to start a fresh session."
     turn_error: "Sorry, I encountered an error."
     context_injection_refused: "Context injection refused."
     no_home_channel: "📬 No home channel is set for {platform}. A home channel is where Hermes delivers cron job results and cross-platform messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore to skip."
@@ -1026,6 +1027,7 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
     approval_expired: "⌛ Approval expired — the command was not run (it already timed out or was resolved elsewhere)."
@@ -1222,8 +1224,6 @@ platform:
         unknown: "Unknown skill: `{name}`. Start typing for autocomplete suggestions."
       auto_args_description: "Arguments: {args_hint}"
       auto_description_fallback: "Run /{name}"
-    limits:
-      response_truncated: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). {dropped_chars} characters were not delivered; the full response is in the session logs."
     forum:
       default_title: "New Post"
     voice:
@@ -1780,7 +1780,7 @@ slash:
   version:
     description: "Show Hermes Agent version"
   debug:
-    description: "Upload debug report (system info + logs) and get shareable links"
+    description: "Debug report (system info + logs): shows the privacy notice; /debug upload shares links"
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:

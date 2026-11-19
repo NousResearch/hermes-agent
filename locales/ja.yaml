@@ -167,7 +167,10 @@ gateway:
     full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
-    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint_local: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を、ここで表示するには `/debug local` を送信してください。"
+    nous_refused: "何もアップロードされていません。ここからは Nous へのプライベートアップロードは利用できません。ターミナルで `hermes debug share --nous` を実行するか、デスクトップアプリの Send diagnostics を使ってください。`/debug upload` は代わりに要約を公開ペーストにアップロードします。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"
@@ -647,8 +650,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind}の添付ファイル ({file_name}) を配信できませんでした。"
     delivery_failed_retry: "⚠️ 複数回試みましたがメッセージを配信できませんでした。もう一度お試しください — リクエストは処理されましたが、応答を送信できませんでした。"
     plain_fallback_prefix: "(応答の書式設定に失敗したため、プレーンテキストで表示します:)\n\n{content}"
-    turn_error_no_details: "詳細情報はありません"
-    turn_error_detailed: "申し訳ありません。エラーが発生しました ({error_type})。\n{error_detail}\nもう一度試すか、/reset で新しいセッションを始めてください。"
     turn_error: "申し訳ありません。エラーが発生しました。"
     context_injection_refused: "コンテキストの注入を拒否しました。"
     no_home_channel: "📬 {platform} のホームチャンネルが設定されていません。ホームチャンネルは、Hermes が cron ジョブの結果やプラットフォーム間メッセージを配信する場所です。\n\nこのチャットをホームチャンネルにするには {sethome_cmd} と入力してください。不要な場合は無視してください。"
@@ -982,6 +983,7 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
@@ -1172,8 +1174,6 @@ platform:
         unknown: "不明なスキル: `{name}`。入力を始めると自動補完の候補が表示されます。"
       auto_args_description: "引数: {args_hint}"
       auto_description_fallback: "/{name} を実行"
-    limits:
-      response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
     forum:
       default_title: "新しい投稿"
     voice:
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent のバージョンを表示"
   debug:
-    description: "デバッグレポート（システム情報 + ログ）をアップロードして共有リンクを取得"
+    description: "デバッグレポート（システム情報 + ログ）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:

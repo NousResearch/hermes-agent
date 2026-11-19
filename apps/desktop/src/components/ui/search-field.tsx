@@ -88,7 +88,13 @@ export function SearchField({
       <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
       {leadingContent}
       <input
+        // Off by default for every consumer, matching the shared Input
+        // (components/ui/input.tsx): search fields are filters, never prose or
+        // identity fields, so browser completion has nothing to offer.
         aria-label={ariaLabel ?? placeholder}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
         className={cn(
           // `field-sizing: content` sizes the input to its placeholder/typed
           // text, so a width-less caller's row stays compact; `flex-1` +
@@ -107,6 +113,7 @@ export function SearchField({
         onKeyDown={onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}
+        spellCheck={false}
         type="text"
         value={value}
       />

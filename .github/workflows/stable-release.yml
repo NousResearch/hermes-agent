@@ -38,7 +38,7 @@ jobs:
     # that can read it.
     permissions:
       contents: write
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     outputs:
       claim-tag: ${{ steps.admit.outputs.claim-tag }}
       claim-object: ${{ steps.admit.outputs.claim-object }}
@@ -275,7 +275,7 @@ jobs:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-arm64']
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
@@ -311,7 +311,7 @@ jobs:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-win32']
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
@@ -352,7 +352,7 @@ jobs:
     if: always() && fromJSON(needs.admit.outputs.jobs)['candidate-manifest']
     needs: [admit, candidates-darwin-arm64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     environment: release-signing
     timeout-minutes: 90
     outputs:
@@ -423,7 +423,7 @@ jobs:
     name: Bootstrap installer release identity
     needs: admit
     if: fromJSON(needs.admit.outputs.jobs)['bootstrap-version']
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -462,7 +462,7 @@ jobs:
             candidate-manifest, transitions-darwin-arm64,
             transitions-win32, windows-packaged, macos-packaged-arm64,
             bootstrap-version]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -520,7 +520,7 @@ jobs:
     name: All artifact publication succeeded
     if: always()
     needs: [admit, acceptance, publish-docker, publish-bundles]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, unitalk-azure]
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:

@@ -1,11 +1,11 @@
 name: chalk
 repo: https://github.com/Nnadijoshuac/Hermes-chalk
-sha: 05a66d02b830ddb255315a0df9ff527f9a82992c
+sha: 694af892f33ce1c8c19676dbd71ebe7ee448e88f
 description: >-
   Hermes teaches on a chalkboard. Ask it to explain something and Hermes Desktop draws the lesson
   inline in the chat, stroke by stroke in chalk, while the narration plays; replay it or save it
   as an MP4. The agent's chalk_teach tool sends only structure (flow, list, compare, equation,
-  graph, cycle, tree, note, circle/underline, clear) and the board lays itself out, so small
+  graph, cycle, tree, note, labelled sketch, circle/underline, clear) and the board lays itself out, so small
   models produce clean boards; full boards are wiped by an eraser and continue on a fresh one.
   Other surfaces receive the narration as one audio file. Disclosure: narration text goes to the
   user's configured TTS provider through Hermes' own text_to_speech tool (ctx.dispatch_tool);

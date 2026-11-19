@@ -1178,6 +1178,22 @@ One directory per plugin means every plugin's data is inspectable in one
 predictable place. Secrets don't belong here — credential reads go through
 the standard `.env` / secret-scope path like everywhere else.
 
+### Redact secrets before storing or sending text
+
+Text your plugin saves or uploads (a transcript, a diff, a log) can carry API keys
+the user pasted. Run it through `ctx.redact_text()` first instead of importing
+Hermes internals:
+
+```python
+safe = ctx.redact_text(transcript, force=True)  # force: this text leaves the machine
+```
+
+It uses the same scrubber as Hermes's own output, at its strongest setting:
+prefixed keys become a sentinel such as `«redacted:sk-…»` with no key characters
+left, and assignments like `API_KEY=…` are masked. Patterns registered with
+`ctx.register_redaction_patterns()` apply too. Without `force`, a user who set
+`security.redact_secrets: false` gets the text back unchanged.
+
 ### Bundle skills
 
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
@@ -1259,7 +1275,8 @@ returns the on-disk catalog only.
 
 A plugin that reads or writes a path the model chose (an attachment, an export target, a file to
 summarise) should refuse the same paths Hermes's own file tools refuse: credential stores, the
-skills-hub cache, project `.env` files and anything outside `HERMES_WRITE_SAFE_ROOT`. Call these
+skills-hub cache, project `.env` files, device and `/proc` process files, and anything outside
+`HERMES_WRITE_SAFE_ROOT`. Call these
 instead of keeping your own denylist:
 
 | Import | What it gives you |
@@ -1285,6 +1302,24 @@ Import the names themselves (`from hermes_yaml import safe_load`), as above: `he
 validate` accepts those spellings and reports a bare `import agent.file_safety` as a private import.
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
 parsing `config.yaml` yourself.
+
+### Send a credentialed HTTP request without leaking it on redirect
+
+Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header
+still attached. `hermes_cli.urllib_security.open_credentialed_url(request, timeout=...)` opens a
+`urllib.request.Request` the way Hermes's own provider calls do: credential headers are dropped when
+a redirect leaves the original origin, and the process's installed opener (proxy, TLS trust) is kept.
+
+```python
+import urllib.request
+
+from hermes_cli.urllib_security import open_credentialed_url
+
+def fetch_models(base_url, api_key):
+    request = urllib.request.Request(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+    with open_credentialed_url(request, timeout=10) as response:
+        return response.read()
+```
 
 ### Ship a language pack
 

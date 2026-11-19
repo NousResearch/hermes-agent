@@ -1365,7 +1365,7 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
-    task_id: Optional[str], session_id: Optional[str], session_key: str,
+    task_id: Optional[str], session_id: Optional[str], session_key: str, cwd_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
     metered: bool = True,
 ) -> str:
@@ -1387,7 +1387,7 @@ def _run_foreground(
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                workdir=workdir, default_cwd=plan.cwd, session_key=cwd_key, env_type=env_type,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 env=env,
             )
@@ -1426,7 +1426,7 @@ def _run_foreground(
         record_terminal_outcome(command, env_type, result)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
-        task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
+        task_id=task_id, session_id=session_id, session_key=cwd_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
 
@@ -1552,6 +1552,13 @@ def terminal_tool(
             from tools.approval import get_current_session_key
 
             session_key = get_current_session_key(default="") or (task_id or "")
+            # A delegated child inherits its parent's session key (approvals, completion routing),
+            # but its cwd is its own: seed_workspace records it under the child's task id, and
+            # sibling children share the parent's key, so reading cwd by that key runs one child
+            # in another's directory (its isolation worktree).
+            from agent.delegation_context import is_delegated_child_context
+
+            cwd_key = (task_id or session_key) if is_delegated_child_context() else session_key
 
             # The supervised-gateway identity probe ends in a kernel process query
             # (psutil create_time) that has wedged for the better part of an hour on
@@ -1571,7 +1578,7 @@ def terminal_tool(
             try:
                 bounded_guard = run_bounded_sync(
                     lambda: _pre_exec_block(
-                        command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                        command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=cwd_key,
                     ),
                     guard_timeout,
                     label="terminal.pre-exec-guard",
@@ -1596,7 +1603,7 @@ def terminal_tool(
             if background:
                 result = spawn_background_process(
                     command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                    task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                    task_id=task_id, session_key=session_key, cwd_key=cwd_key, workdir=workdir, cwd=cwd,
                     mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                     effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                     watch_patterns=watch_patterns, approval_note=verdict.note,
@@ -1611,7 +1618,7 @@ def terminal_tool(
                 return _metered(None if _host_local else plan, result)
             return _metered(None if _host_local else plan, _run_foreground(
                 command, env, plan,
-                task_id=task_id, session_id=session_id, session_key=session_key,
+                task_id=task_id, session_id=session_id, session_key=session_key, cwd_key=cwd_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
                 metered=not _host_local,
             ))

@@ -1,0 +1,5 @@
+name: unitalk
+kind: model-provider
+version: 1.0.0
+description: Unitalk model gateway provider
+author: Unitalk

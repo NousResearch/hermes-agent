@@ -106,8 +106,14 @@ def note_persist_user_anchor(agent, messages: list) -> None:
 def _row_holds_anchored_ask(anchor: Any, msg: dict) -> bool:
     """May the override rewrite ``msg``? An agent with no anchor (direct callers, a row with no text to
     fingerprint) keeps the historical behaviour; an anchored one only while the row still holds this turn's
-    ask — a compaction head does not, and rewriting it would erase the summary from the live context."""
-    return anchor is None or anchor in _turn_ask_texts(msg)
+    ask — a compaction head does not, and rewriting it would erase the summary from the live context.
+
+    The ask counts as held when it is a whole candidate, at the row's head (a built-in mutation that appends
+    to the ask — ``_fold_todo_snapshot`` folding the live todo list in, ``_append_multimodal_context``) or a
+    whole candidate of the merge structure; a compaction head matches none of them."""
+    if anchor is None:
+        return True
+    return any(text == anchor or text.startswith(anchor + "\n\n") for text in _turn_ask_texts(msg))
 
 
 def _content_with_turn_override(msg: dict, content: Any, override: Any) -> Any:

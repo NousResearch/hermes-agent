@@ -115,3 +115,27 @@ def test_a_stale_merge_prefix_does_not_rescue_a_compacted_head():
     agent._apply_persist_user_message_override(messages)
 
     assert messages[1]["content"] == SUMMARY_HEAD
+
+
+def test_a_folded_todo_snapshot_does_not_disarm_the_anchor():
+    """The compression boundary appends its todo snapshot to the trailing real user row. That built-in
+    mutation keeps this turn's ask at the head, but the frozen anchor is the bare ask, so the finalizer
+    must still rewrite the row — otherwise the API-only text stays in the returned history and in
+    trajectory exports while only the DB projection is clean."""
+    from agent.conversation_compression import _fold_todo_snapshot
+    from tools.todo_tool import TODO_INJECTION_HEADER, TodoStore
+
+    agent = _agent(1, "actual question")
+    agent._todo_store = TodoStore()
+    agent._todo_store.write([{"id": "1", "content": "run tests", "status": "pending"}])
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "[API-only guidance] actual question"},
+    ]
+    note_persist_user_anchor(agent, messages)
+    _fold_todo_snapshot(agent, messages)
+    assert TODO_INJECTION_HEADER in messages[1]["content"]  # the boundary really folded the snapshot in
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages[1]["content"] == "actual question"

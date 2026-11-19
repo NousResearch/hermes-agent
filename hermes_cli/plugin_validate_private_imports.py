@@ -100,9 +100,11 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
     target = f"{module}.{name}" if name else module
     own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
     hermes = module.split(".")[0] in core and module not in local and not own
-    public_api, old = _public_api(), original_module(module)
-    public = original_module(target) in public_api or f"{old}:{name}" in public_api \
-        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
+    # A name is public under its old or its current spelling: a MOVES key may fold a module into a published one.
+    public_api = _public_api()
+    public = bool({original_module(target), current_module(target)} & public_api) or any(
+        f"{mod}:{name}" in public_api or (mod in public_api and not name.startswith("_"))  # ``from gateway.platforms import base``
+        for mod in {original_module(module), current_module(module)})
     return target if hermes and not public else ""
 
 

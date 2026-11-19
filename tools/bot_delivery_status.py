@@ -87,17 +87,13 @@ def _read_receipt(path: Path) -> dict | None:
 def stored_admission_status(home: Path, admission_id: str) -> str | None:
     """``session_admissions.status`` read from the target's own store, read-only. None when the
     profile has no store or the row is gone."""
-    from hermes_state import SessionDB
-    from hermes_state_runtime import get_session_admission
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
 
-    if not admission_id or not (home / "state.db").is_file():
+    if not admission_id or not store_exists(profile_scope(home=home)):
         return None
-    db = SessionDB(db_path=home / "state.db", read_only=True)
-    try:
-        row = get_session_admission(db, admission_id=admission_id)
-    finally:
-        db.close()
-    return row["status"] if row else None
+    with open_persistence_reader(home) as store:
+        row = store.admissions.get(admission_id=admission_id)
+    return row.status if row else None
 
 
 def stored_live_state(_name: str, home: Path, record: dict) -> tuple[str | None, str | None]:
@@ -157,7 +153,9 @@ def list_sender_deliveries(
     now = time.time() if now is None else now
     author_id = f"bot:{sender}"
     rows: list[dict] = []
-    for name, home in (_roster(root) if profiles is None else profiles):
+    roster = list(_roster(root) if profiles is None else profiles)
+    names = {name for name, _home in roster}
+    for name, home in roster:
         if name == sender:
             continue
         for path, record, since in _receipts(Path(home)):
@@ -176,7 +174,7 @@ def list_sender_deliveries(
             state = delivery_state(status, admission, waiting_on)
             if state is None:
                 continue
-            row = {"delivery_id": path.stem, "target": name, "target_handle": _handle(name),
+            row = {"delivery_id": path.stem, "target": name, "target_handle": _handle(name, names),
                    "state": state, "since": since, "preview": _preview(record.get("message"))}
             if state == "waiting_on_you":
                 row["waiting_on"] = waiting_on

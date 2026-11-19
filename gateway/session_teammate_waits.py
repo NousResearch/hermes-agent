@@ -9,7 +9,7 @@ import asyncio
 from functools import partial
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
 
 
 def handlers(connection):
@@ -20,7 +20,7 @@ def _target_live_state(runner, _name, home, record):
     """``(admission_status, waiting_on)`` read through the target's own authority under ITS
     profile scope; the durable store alone when this process does not serve that profile."""
     from gateway.session_authorities import authority_for_home, owner_scope
-    from hermes_state_runtime import get_session_admission
+    from gateway.session_persistence import authority_persistence
     from tools.bot_delivery_status import stored_live_state
 
     target = authority_for_home(runner, home) if runner is not None else None
@@ -28,11 +28,11 @@ def _target_live_state(runner, _name, home, record):
         return stored_live_state(_name, home, record)
     admission_id = record.get('retry_admission_id') or record.get('admission_id') or ''
     with owner_scope(target):
-        row = get_session_admission(target.db, admission_id=admission_id) if admission_id else None
+        row = authority_persistence(target).admissions.get(admission_id=admission_id) if admission_id else None
         live = target.sessions.get(record.get('session_id') or '')
         kinds = live.controls.waiting_kinds() if live is not None and getattr(live, 'controls', None) else []
     # One open prompt is enough to say "waiting on you"; a clarify is named before an approval.
-    return (row['status'] if row else None), (kinds[0] if kinds else None)
+    return (row.status if row else None), (kinds[0] if kinds else None)
 
 
 async def bot_delivery_list(connection, _ref, params):
@@ -46,7 +46,7 @@ async def bot_delivery_list(connection, _ref, params):
         raise RuntimeStoreError('permission_denied')
     if set(params) - {'profile'}:
         raise RuntimeStoreError('invalid_params')
-    home = await asyncio.to_thread(lambda: Path(authority.db.db_path).parent.resolve())
+    home = await asyncio.to_thread(lambda: Path(authority.profile_id).resolve())
     sender = served_profile_name(home)
     live_state = partial(_target_live_state, getattr(authority, 'runner', None))
     rows = await asyncio.to_thread(list_sender_deliveries, _hermes_root(home), sender, live_state=live_state)

@@ -110,8 +110,8 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
     # Queued behind the parked turn in the same chat: it waits on that turn, not on the user.
     _receipt(scribe, "3" * 32, sender="default", status="queued")
     admissions = {"adm-" + "1" * 32: "started", "adm-" + "2" * 32: "started", "adm-" + "3" * 32: "queued"}
-    monkeypatch.setattr("hermes_state_runtime.get_session_admission",
-                        lambda db, *, admission_id: {"status": admissions[admission_id]})
+    store = SimpleNamespace(admissions=SimpleNamespace(
+        get=lambda *, admission_id: SimpleNamespace(status=admissions[admission_id])))
 
     events = _Events()
     waiting = PendingControls(events)
@@ -121,13 +121,13 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
     published_before = list(events.published)
 
     def authority(home, controls):
-        return SimpleNamespace(db=SimpleNamespace(db_path=str(home / "state.db")), retired=False,
+        return SimpleNamespace(profile_id=str(home), persistence=store, retired=False,
                                sessions={"chat-1": SimpleNamespace(controls=controls)})
 
     authorities = {scribe: authority(scribe, waiting), critic: authority(critic, PendingControls(_Events()))}
     registry = SimpleNamespace(for_home=lambda home: authorities.get(Path(home)))
     runner = SimpleNamespace(session_authorities=registry)
-    sender = SimpleNamespace(db=SimpleNamespace(db_path=str(alice / "state.db")), retired=False, runner=runner)
+    sender = SimpleNamespace(profile_id=str(alice), retired=False, runner=runner)
     connection = SimpleNamespace(authority=sender, actor=SimpleNamespace(capabilities={"session:read"}))
 
     result = asyncio.run(bot_delivery_list(connection, None, {}))

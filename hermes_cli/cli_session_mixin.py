@@ -63,11 +63,9 @@ def _credential_fingerprint(value):
     """Hash string secrets; compare token callbacks/objects by process identity."""
     from hashlib import sha256
 
-    try:
-        if value is None or isinstance(value, str):
+    if value is None or isinstance(value, str):
+        with contextlib.suppress(ValueError):  # UnicodeError: fingerprinting never blocks a new session
             return sha256(str.encode("" if value is None else value, errors="surrogatepass")).digest()
-    except Exception:
-        pass  # Fingerprinting must never prevent a new session.
     return ("obj", id(value))
 
 
@@ -157,7 +155,8 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                 _startup_rt = _resolve_rt(
                     requested=r.target_provider, target_model=r.new_model,
                     explicit_base_url=_startup_base_url) or {}
-            except Exception:
+            except Exception:  # health: allow BLE001 -- fail closed: any resolver failure keeps the switch result
+                logger.debug("Startup endpoint credential re-resolution failed", exc_info=True)
                 _startup_rt = {}
             if _startup_rt.get("api_key") and (_startup_base_url or _startup_rt.get("base_url")):
                 r.base_url = _startup_base_url or _startup_rt["base_url"]
@@ -197,7 +196,7 @@ def _reset_model_to_session_baseline(cli, silent: bool) -> None:
                 _cprint(f"  (model reset to startup selection: {r.new_model})")
             else:
                 _cprint(f"  {t('cli.session.model_reset_default', model=r.new_model)}")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- main's best-effort /new boundary: a route never blocks /new
         logger.debug("/new model reset to session baseline failed", exc_info=True)
 
 

@@ -56,7 +56,8 @@ class StatusReporter:
     Timed on the WALL clock. A machine suspend stops the monotonic clock the event loop sleeps on
     while the wall clock keeps host time, so a slept interval would resume with its remainder after
     the wake. Compared on ``time.time()`` the deadline is already past by then, and the first report
-    after a wake goes out within a tick.
+    after a wake goes out on the next poll, unless the receiver is holding the sender off or a
+    goodbye's quiet minute is still running.
 
     State is in memory only and changes only on the event loop. File and network work runs on the
     reporter's own threads, never the loop's default ones: the suspend lever runs there, and a
@@ -207,7 +208,8 @@ class StatusReporter:
             # A sender keeps sending: no other gateway can take the lock from this directory either.
             if self._is_sender:
                 return True
-            self._stand_by(logging.WARNING, "the gateway lock directory is not usable")
+            self._stand_by(logging.WARNING, "the gateway lock directory is not usable (it must be writable "
+                           "by this user, on a disk with free space)")
             return False
         self._is_sender = acquired
         if acquired:

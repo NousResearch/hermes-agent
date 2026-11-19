@@ -193,6 +193,7 @@ async def test_an_unusable_lock_directory_stands_the_sender_by_until_it_is_repai
     said = [record for record in caplog.records
             if record.name.startswith("gateway.status_report") and record.levelno >= logging.WARNING]
     assert len(said) == 1, [record.getMessage() for record in said]
+    assert "writable" in said[0].getMessage() and "free space" in said[0].getMessage(), "the warning names no remedy"
 
     unusable_lock_dir.chmod(stat.S_IRWXU)
     clock.advance(AFTER_INTERVAL_S)

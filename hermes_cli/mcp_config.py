@@ -530,9 +530,9 @@ def _oauth_tokens_present(name: str) -> bool:
     try:
         from tools.mcp_oauth import HermesTokenStorage
         return HermesTokenStorage(name).has_cached_tokens()
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
-        return True  # permissive: don't block a real success
+    except Exception:  # pragma: no cover — defensive
+        logger.debug("Could not check OAuth tokens for '%s'", name)
+        return False
 
 
 def _unwrap_exception_group(exc: BaseException) -> Exception:
@@ -883,7 +883,7 @@ def cmd_mcp_test(args):
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
     """Force a fresh OAuth flow for one server. Returns True on success.
 
-    Browser login clears cached state and re-probes. Device login replaces state only after
+    Browser login stages fresh state and re-probes. Device login replaces state only after
     approval. Both verify a token landed. Shared by ``login`` and ``reauth``.
     """
     url = server_config.get("url")
@@ -900,19 +900,6 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     if selected_flow not in {"browser", "device"}:
         _error("oauth.flow must be browser or device")
         return False
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        if selected_flow == "browser":
-            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
-            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
-            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
-            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
-            from tools.mcp_oauth import HermesTokenStorage
-            get_manager().evict(name)
-            HermesTokenStorage(name).remove(keep_metadata=True)
-    except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
-
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
@@ -924,19 +911,26 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     # terminals), where _is_interactive() alone would refuse to open a browser.
     try:
         from tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
+        from tools.mcp_oauth_login import staged_browser_oauth
 
         if selected_flow == "device":
             from tools.mcp_oauth_device import login_device
             asyncio.run(login_device(name, url, oauth_cfg))
-        probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
-        with force_interactive_oauth():
-            tools = _probe_single_server(
-                name, probe_config, connect_timeout=login_connect_timeout(probe_config)
-            )
+        probe_config = _resolve_mcp_server_config({**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}})
+        from tools.mcp_tool_errors import _resolve_identity_header
+        identity = _resolve_identity_header(name, probe_config)
+        if identity is not None:
+            probe_config["identity_header"] = {"name": identity[0], "value_from": "static", "value": identity[1]}
+        transaction = staged_browser_oauth(name) if selected_flow == "browser" else contextlib.nullcontext()
+        with transaction as commit, force_interactive_oauth():
+            tools = _probe_single_server(name, probe_config, connect_timeout=login_connect_timeout(probe_config))
+            authenticated = _oauth_tokens_present(name)
+            if authenticated and commit is not None:
+                commit()
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.
-        if not _oauth_tokens_present(name):
+        if not authenticated:
             _warning("Server responded, but no OAuth token was obtained — authentication did not complete.")
             print()
             _info(
@@ -972,8 +966,9 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
     cfg = _lookup_server(args.name, _get_mcp_servers())
-    if cfg is not None:
-        _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
+    if cfg is None:
+        return 3
+    return 0 if _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None)) else 1
 
 
 def cmd_mcp_reauth(args):
@@ -990,7 +985,7 @@ def cmd_mcp_reauth(args):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]
         if not oauth_servers:
             _info("No OAuth-based MCP servers found in config.")
-            return
+            return 0
         print()
         _info(f"Re-authenticating {len(oauth_servers)} OAuth server(s) one at a time...")
         succeeded = 0
@@ -1000,15 +995,17 @@ def cmd_mcp_reauth(args):
             if _reauth_oauth_server(n, c):
                 succeeded += 1
         print()
-        _success(f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)")
-        return
+        report = _success if succeeded == len(oauth_servers) else _warning
+        report(f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)")
+        return 0 if succeeded == len(oauth_servers) else 1
     if not name:
         _error("Specify a server name, or use --all to re-auth every OAuth server.")
         _info("Usage: hermes mcp reauth <name>   |   hermes mcp reauth --all")
-        return
+        return 2
     cfg = _lookup_server(name, servers)
-    if cfg is not None:
-        _reauth_oauth_server(name, cfg)
+    if cfg is None:
+        return 3
+    return 0 if _reauth_oauth_server(name, cfg) else 1
 
 
 def _rebuild_exclude_list(

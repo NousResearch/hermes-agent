@@ -138,23 +138,37 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if not ok:
                     break
                 if asm:
-                    self.context.oauth_metadata = asm
-                    storage = self._hermes_storage()  # persist now so a later cold-load skips discovery
-                    if storage is not None:
-                        storage.save_oauth_metadata(asm)
+                    await self._persist_oauth_metadata_if_changed(asm)
                     logger.debug("MCP OAuth '%s': pre-flight ASM discovered token_endpoint=%s",
                                  self._hermes_server_name, asm.token_endpoint)
                     break
 
-    def _persist_oauth_metadata_if_changed(self) -> None:
+    async def _persist_oauth_metadata_if_changed(self, metadata=None) -> None:
         """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""
-        meta = self.context.oauth_metadata
+        meta = metadata if metadata is not None else self.context.oauth_metadata
         storage = self._hermes_storage()
         if meta is None or storage is None:
             return
-        existing = storage.load_oauth_metadata()
-        if existing is None or str(existing.token_endpoint) != str(meta.token_endpoint):
-            storage.save_oauth_metadata(meta)
+        from tools.mcp_oauth_login import registration_version, require_settled_publication
+        await self._hermes_acquire_refresh_fence()
+        try:
+            require_settled_publication(storage)
+            observed = getattr(self, "_hermes_registration_version", None)
+            existing = storage.load_oauth_metadata()
+            if observed is not None and registration_version(storage) != observed and existing == meta:
+                # A peer may have persisted our identical discovery metadata. It
+                # is safe to adopt only after checking the client as well.
+                await self._hermes_check_disk_registration()
+                self._hermes_registration_version = registration_version(storage)
+                return
+            if observed is None or registration_version(storage) != observed:
+                raise RuntimeError("MCP OAuth registration changed during discovery; reconnect before persisting metadata")
+            if existing != meta:
+                storage.save_oauth_metadata(meta)
+            self.context.oauth_metadata = meta
+            self._hermes_registration_version = registration_version(storage)
+        finally:
+            await self._hermes_release_refresh_fence()
 
     async def _is_invalid_client_at_token_endpoint(self, response: Any) -> bool:
         """True when *response* is the token endpoint (same scheme/host/path, query ignored)
@@ -187,6 +201,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     or not await self._is_invalid_client_at_token_endpoint(response)):
                 return
             storage = self._hermes_storage()
+            if storage is not None:
+                await self._invalidate_rejected_registration(storage)
+            # Drop the in-memory client so the SDK re-registers next flow.
+            self.context.client_info = None
+            self._initialized = False
+        except Exception as exc:  # pragma: no cover — must not throw
+            self._log_nonfatal("invalid_client detection", exc)
+
+    async def _invalidate_rejected_registration(self, storage):
+        from tools.mcp_oauth_login import registration_version, require_settled_publication
+        owns_fence = self._hermes_fence is None
+        if owns_fence:
+            await self._hermes_acquire_refresh_fence()
+        try:
+            require_settled_publication(storage)
+            observed = getattr(self, "_hermes_registration_version", None)
+            if observed is None or registration_version(storage) != observed:
+                raise RuntimeError("MCP OAuth registration changed before invalid-client response; preserve the newer grant")
             # A rejected CIMD URL would loop if re-presented (the server already fetched and refused
             # it): drop it so the retry takes DCR, and mark it on disk so the next process doesn't walk
             # back into the same refusal (`hermes mcp login` clears the marker).
@@ -196,15 +228,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                                "with invalid_client — falling back to dynamic client registration.",
                                self._hermes_server_name, cimd_url)
                 self.context.client_metadata_url = None
-                if storage is not None:
-                    storage.mark_cimd_rejected()
-            if storage is not None:
-                storage.poison_client_registration()
-            # Drop the in-memory client so the SDK re-registers next flow.
-            self.context.client_info = None
-            self._initialized = False
-        except Exception as exc:  # pragma: no cover — must not throw
-            self._log_nonfatal("invalid_client detection", exc)
+                storage.mark_cimd_rejected()
+            storage.poison_client_registration()
+            self._hermes_registration_version = registration_version(storage)
+        finally:
+            if owns_fence:
+                await self._hermes_release_refresh_fence()
 
     async def _maybe_reject_fabricated_registration(self, outgoing: Any) -> None:
         """Refuse to send the SDK's *fabricated* dynamic client registration (#78190).
@@ -239,6 +268,15 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             f"client_secret), then run `hermes mcp login {name}`.")
 
     async def async_auth_flow(self, request):  # type: ignore[override]
+        storage = self._hermes_storage()
+        if storage is not None and getattr(self, "_hermes_registration_version", None) is None:
+            from tools.mcp_oauth_login import registration_version, require_settled_publication
+            await self._hermes_acquire_refresh_fence()
+            try:
+                require_settled_publication(storage)
+                self._hermes_registration_version = registration_version(storage)
+            finally:
+                await self._hermes_release_refresh_fence()
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
@@ -290,7 +328,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 await self._maybe_flag_poisoned_client(incoming)
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
-            self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
+            await self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
             if resource_lock_released:
                 # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
@@ -300,7 +338,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     await self.context.lock.acquire()
         if retry_after_concurrent_auth:
             yield request
-            self._persist_oauth_metadata_if_changed()
+            await self._persist_oauth_metadata_if_changed()
 
 
 # Cached at import time; None when the SDK's OAuth module is unavailable.
@@ -323,6 +361,8 @@ class MCPOAuthManager:
         key = self._key(server_name)
         with self._entries_lock:
             entry = self._entries.get(key)
+            if entry is not None and self._registration_changed(entry.provider):
+                entry = None
             if entry is not None and entry.server_url != server_url:
                 logger.info("MCP OAuth '%s': URL changed from %s to %s, discarding cache", server_name, entry.server_url, server_url)
                 entry = None
@@ -333,6 +373,18 @@ class MCPOAuthManager:
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
             return entry.provider
+
+    @staticmethod
+    def _registration_changed(provider):
+        if provider is None:
+            return False
+        observed = getattr(provider, "_hermes_registration_version", None)
+        storage = provider._hermes_storage() if isinstance(observed, tuple) else None
+        if storage is None:
+            return False
+        from tools.mcp_oauth_login import registration_version, require_settled_publication
+        require_settled_publication(storage)
+        return registration_version(storage) != observed
 
     @staticmethod
     def _key(server_name: str, hermes_home: str | Path | None = None) -> tuple[str, str]:
@@ -386,6 +438,9 @@ class MCPOAuthManager:
         if entry is None or entry.provider is None:
             return False
         async with entry.lock:
+            if self._registration_changed(entry.provider):
+                self.evict(server_name, hermes_home=hermes_home)
+                return True
             try:
                 mtime_ns = (_get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json").stat().st_mtime_ns
             except OSError:

@@ -71,6 +71,93 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
+def test_reconnect_builds_new_provider_after_registration_publication(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_login import registration_version
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("shared")
+    storage._client_info_path().parent.mkdir(parents=True, exist_ok=True)
+    storage._client_info_path().write_text('{"client_id":"old-client"}')
+    manager = MCPOAuthManager()
+    monkeypatch.setattr(manager, "_build_provider", lambda *args: SimpleNamespace(
+        _hermes_storage=lambda: storage, _hermes_registration_version=registration_version(storage)))
+    old = manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    storage._client_info_path().write_text('{"client_id":"new-client"}')
+    current = manager.get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    assert current is not old
+    assert manager.get_or_build_provider("shared", "https://mcp.example/mcp", {}) is current
+
+
+@pytest.mark.asyncio
+async def test_inflight_old_discovery_cannot_overwrite_reauthorized_metadata(tmp_path, monkeypatch):
+    from mcp.shared.auth import OAuthMetadata
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_login import registration_version
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    def metadata(host):
+        return OAuthMetadata(issuer=host, authorization_endpoint=host + "/authorize",
+                             token_endpoint=host + "/token", response_types_supported=["code"])
+    storage = HermesTokenStorage("shared")
+    old_meta = metadata("https://old.example")
+    new_meta = metadata("https://new.example")
+    storage.save_oauth_metadata(old_meta)
+    provider = MCPOAuthManager().get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    provider._hermes_registration_version = registration_version(storage)
+    provider.context.oauth_metadata = old_meta
+    # A grant is published while the old request is in flight; its response arrives later.
+    storage.save_oauth_metadata(new_meta)
+    before = storage._meta_path().read_bytes()
+    with pytest.raises(RuntimeError, match="registration changed"):
+        await provider._persist_oauth_metadata_if_changed()
+    assert storage._meta_path().read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_owned_discovery_persists_metadata_under_the_current_generation(tmp_path, monkeypatch):
+    from mcp.shared.auth import OAuthMetadata
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_login import registration_version
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    storage = HermesTokenStorage("shared")
+    provider = MCPOAuthManager().get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    provider._hermes_registration_version = registration_version(storage)
+    meta = OAuthMetadata(issuer="https://issuer.example", authorization_endpoint="https://issuer.example/authorize",
+                         token_endpoint="https://issuer.example/token", response_types_supported=["code"])
+    await provider._persist_oauth_metadata_if_changed(meta)
+    assert storage.load_oauth_metadata() == meta
+    assert provider._hermes_registration_version == registration_version(storage)
+
+
+@pytest.mark.asyncio
+async def test_late_invalid_client_response_preserves_a_new_registration(tmp_path, monkeypatch):
+    from mcp.shared.auth import OAuthMetadata
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_login import registration_version, _read_state
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    storage = HermesTokenStorage("shared")
+    provider = MCPOAuthManager().get_or_build_provider("shared", "https://mcp.example/mcp", {})
+    provider._hermes_registration_version = registration_version(storage)
+    meta = OAuthMetadata(issuer="https://new.example", authorization_endpoint="https://new.example/authorize",
+                         token_endpoint="https://new.example/token", response_types_supported=["code"])
+    storage.save_oauth_metadata(meta)
+    before = _read_state(storage)
+    with pytest.raises(RuntimeError, match="registration changed"):
+        await provider._invalidate_rejected_registration(storage)
+    assert _read_state(storage) == before
+
+
 
 
 @pytest.mark.asyncio
@@ -189,6 +276,7 @@ def _fake_response(status, url, body):
     resp = MagicMock()
     resp.status_code = status
     resp.request = SimpleNamespace(url=url)
+    resp.next_request = None
 
     async def _aread():
         return body
@@ -845,6 +933,106 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
     with pytest.raises(mcp_oauth.RefreshFenceTimeout):
         await mcp_oauth.acquire_refresh_fence(tmp_path / "srv.json", timeout=5.0)
     assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["client", "issuer", "endpoint"])
+async def test_waiting_refresh_never_mixes_a_new_registration_with_old_context(tmp_path, monkeypatch, change):
+    """A browser promotion wins the fence while an expired provider waits."""
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
+    from tools import mcp_oauth, mcp_oauth_login
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _fenced_provider(tmp_path, monkeypatch, "https://idp.example.com/oauth/token")
+    storage = provider.context.storage
+    await storage.set_client_info(provider.context.client_info)
+    storage.save_oauth_metadata(provider.context.oauth_metadata)
+    await storage.set_tokens(_token("A1", "R1", expires_in=0))
+    original = mcp_oauth_login._read_state(storage)
+    candidate = mcp_oauth.HermesTokenStorage("srv", hermes_home=tmp_path / "candidate")
+    client = provider.context.client_info.model_dump(mode="json", exclude_none=True)
+    metadata = provider.context.oauth_metadata.model_dump(mode="json", exclude_none=True)
+    if change == "client":
+        client["client_id"] = "new-client"
+    elif change == "issuer":
+        metadata["issuer"] = "https://new-idp.example.com"
+    else:
+        metadata["token_endpoint"] = "https://idp.example.com/new/token"
+    await candidate.set_client_info(OAuthClientInformationFull.model_validate(client))
+    candidate.save_oauth_metadata(OAuthMetadata.model_validate(metadata))
+    candidate.bind_issuer(metadata["issuer"])
+    await candidate.set_tokens(_token("A2", "R2", expires_in=0))
+    promoted = mcp_oauth_login._read_state(candidate)
+    fd = await mcp_oauth.acquire_refresh_fence(storage._tokens_path())
+    waiting = asyncio.Event()
+    real_acquire = mcp_oauth.acquire_refresh_fence
+
+    async def acquire(path, **kwargs):
+        waiting.set()
+        return await real_acquire(path, **kwargs)
+
+    monkeypatch.setattr(mcp_oauth, "acquire_refresh_fence", acquire)
+    task = asyncio.create_task(provider._refresh_token())
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=3)
+        assert not task.done()
+        # The actual publisher runs while this test owns its native fence.
+        mcp_oauth_login._publish(storage, promoted, original)
+    finally:
+        mcp_oauth.release_refresh_fence(fd)
+    with pytest.raises(RuntimeError, match="registration changed"):
+        await asyncio.wait_for(task, timeout=3)
+    assert mcp_oauth_login._read_state(storage) == promoted
+    assert provider.context.current_tokens.refresh_token == "R1"
+    assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_pending_publication_blocks_initialization_before_issuer_enforcement(tmp_path, monkeypatch):
+    from tools.mcp_oauth_login import _read_state
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _fenced_provider(tmp_path, monkeypatch, "https://idp.example.com/oauth/token")
+    storage = provider.context.storage
+    storage.bind_issuer("https://new-idp.example.com")
+    await storage.set_tokens(_token("A2", "R2"))
+    original = _read_state(storage)
+    recovery = storage._tokens_path().parent / ".oauth-login-srv.interrupted"
+    recovery.mkdir(mode=0o700)
+    with pytest.raises(RuntimeError, match="publication recovery required"):
+        await provider._initialize()
+    assert _read_state(storage) == original
+    assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_disk_watch_reinitialization_never_strips_a_new_issuer_grant(tmp_path, monkeypatch):
+    from mcp.shared.auth import OAuthMetadata
+    from tools.mcp_oauth_login import _read_state
+    from tools.mcp_oauth_manager import MCPOAuthManager, _ProviderEntry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _fenced_provider(tmp_path, monkeypatch, "https://idp.example.com/oauth/token")
+    storage = provider.context.storage
+    await storage.set_client_info(provider.context.client_info)
+    storage.save_oauth_metadata(provider.context.oauth_metadata)
+    await storage.set_tokens(_token("A1", "R1"))
+    await provider._initialize()
+    manager = MCPOAuthManager()
+    manager._entries[manager._key("srv")] = _ProviderEntry(server_url="https://mcp.example.com", oauth_config={}, provider=provider)
+    assert await manager.invalidate_if_disk_changed("srv") is False
+    metadata = provider.context.oauth_metadata.model_dump(mode="json", exclude_none=True)
+    metadata["issuer"] = "https://new-idp.example.com"
+    storage.save_oauth_metadata(OAuthMetadata.model_validate(metadata))
+    storage.bind_issuer(metadata["issuer"])
+    await storage.set_tokens(_token("A2", "R2"))
+    replacement = _read_state(storage)
+    assert await manager.invalidate_if_disk_changed("srv") is True
+    assert manager._key("srv") not in manager._entries
+    with pytest.raises(RuntimeError, match="registration changed"):
+        await provider._initialize()
+    assert _read_state(storage) == replacement
+    assert provider._hermes_fence is None
 
 
 @pytest.mark.asyncio

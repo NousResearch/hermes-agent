@@ -488,27 +488,26 @@ def _ffmpeg_s16le_mono(path: str) -> tuple:
 
 @router.post("/api/audio/stt-lease")
 async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
-    """Desktop voice-input sessions as STT warm-up / release signals.
+    """Desktop voice-input sessions as STT warm-up signals.
 
-    ``active: true`` registers a lease and pre-loads the configured local STT
-    model (first-use download + load) so the transcription request doesn't pay
-    the cold cost inside its timeout; ``active: false`` drops the lease. The
-    model stays resident after the last release — it is shared with the
-    gateway/CLI surfaces in this process, and ``stt.local.unload_after_idle_seconds``
-    still governs eviction. Blocking work runs off the event loop. Warm-up
-    failures are reported in the body, never as an HTTP error — recording must
-    start even when preload fails.
+    ``active: true`` pre-loads the configured local STT model (first-use
+    download + load) so the transcription request doesn't pay the cold cost
+    inside its timeout; ``active: false`` is acknowledged and does nothing. The
+    model stays resident: it is shared with the gateway/CLI surfaces in this
+    process, and ``stt.local.unload_after_idle_seconds`` governs eviction.
+    Blocking work runs off the event loop. Warm-up failures are reported in the
+    body, never as an HTTP error — recording must start even when preload fails.
     """
     lease = (payload.lease or "").strip()
     if not lease:
         raise HTTPException(status_code=400, detail="lease is required")
 
     def _apply():
-        from tools.stt_lease import acquire_stt_lease, release_stt_lease
-        if payload.active:
-            with _config_profile_scope(profile):
-                return acquire_stt_lease(lease)
-        return release_stt_lease(lease)
+        from tools.stt_lease import warm_stt_provider
+        if not payload.active:
+            return {}
+        with _config_profile_scope(profile):
+            return warm_stt_provider()
 
     try:
         result = await asyncio.to_thread(_apply)
@@ -516,7 +515,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.warning("STT lease %s (%s) failed: %s", lease, payload.active, exc)
-        result = {"leases": None, "action": "error", "error": str(exc)}
+        result = {"action": "error", "error": str(exc)}
     if result.get("error"):  # warm-up never raises: a load failure returns as error=str(exc)
         result = {**result, "error": client_error(result["error"])}
     return {"ok": True, "lease": lease, "active": payload.active, **result}

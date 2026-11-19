@@ -6,6 +6,9 @@ import json
 
 import pytest
 import pytest_asyncio
+from persistence_assembly import close_stores_under
+
+from tests.fixtures.storage_holder import policy_key, raw_holder
 
 CONFIG = (
     'platform_toolsets: {cli: []}\n'
@@ -44,7 +47,7 @@ async def _start(home, monkeypatch):
 
 async def _stop(running):
     await running[2].close()
-    running[1].db.close()
+    close_stores_under(running[1].persistence.scope.profile_dir)
 
 
 def _params(home, **fields):
@@ -62,20 +65,19 @@ def _stage(authority, connection, params):
 
 
 def _commit(authority, staged):
+    from gateway.session_local import commit_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
-    commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
+    commit_local_session(authority.persistence, epoch=authority.epoch, receipt=staged)
     return restore_local_session(authority, staged['session_id'])
 
 
 def _policy(authority, ref):
-    from hermes_state_local import local_receipt
-    return local_receipt(authority.db, ref.session_id)['policy']
+    return authority.persistence.bindings.receipt(ref.session_id).policy
 
 
 def _refusal(call, *args):
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError) as refused:
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal) as refused:
         call(*args)
     return refused.value.reason
 
@@ -176,19 +178,18 @@ async def test_a_receipt_committed_before_this_change_still_takes_its_exact_retr
     """Receipts written before ``route_derived`` (and, for a same-name alias, before ``model_requested``
     was stamped for it), retried after the owner restarts on this code: the unchanged retry still
     returns the original session."""
-    from hermes_state_local import POLICY_PREFIX
     home, authority, connection = owner
     params = _params(home, model=alias)
     ref = _create(authority, connection, params)
 
     def rewrite(conn):
-        key = POLICY_PREFIX + ref.session_id
+        key = policy_key(ref.session_id)
         receipt = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
         request = json.loads(receipt['policy']['request_json'])
         old_shape(request)
         receipt['policy']['request_json'] = json.dumps(request, sort_keys=True)
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(receipt), key))
-    authority.db._execute_write(rewrite)
+    raw_holder(authority.persistence)._execute_write(rewrite)
     await _stop(owner)
     owner[1:] = await _start(home, monkeypatch)
     authority, connection = owner[1:]
@@ -201,10 +202,10 @@ async def test_a_receipt_committed_before_this_change_still_takes_its_exact_retr
 
 
 def _attempt(call, *args):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         return call(*args)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         return exc.reason
 
 
@@ -228,7 +229,7 @@ async def test_an_overlapping_exact_alias_retry_after_a_key_rotation_reuses_the_
     ordered = staged if order == 'first-wins' else staged[::-1]
     ref = _commit(authority, ordered[0])
     assert _commit(authority, ordered[1]) == ref
-    with authority.db._read_ctx() as conn:
+    with raw_holder(authority.persistence)._read_ctx() as conn:
         assert conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 1
     policy = restore_policy(_policy(authority, ref))
     assert launch_key(authority, policy) == 'alias-key-1'
@@ -265,7 +266,7 @@ async def test_an_overlapping_alias_retry_with_another_client_env_never_takes_th
     _stage(authority, connection, with_env(first))
     _rotate_key(home)
     assert _attempt(_stage, authority, connection, with_env(second)) == 'admission_conflict'
-    with authority.db._read_ctx() as conn:
+    with raw_holder(authority.persistence)._read_ctx() as conn:
         assert conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 0
 
 

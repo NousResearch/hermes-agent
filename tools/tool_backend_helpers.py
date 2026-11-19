@@ -58,9 +58,6 @@ def coerce_modal_mode(value: object | None) -> str:
     return mode if mode in _VALID_MODAL_MODES else _DEFAULT_MODAL_MODE
 
 
-normalize_modal_mode = coerce_modal_mode
-
-
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available. The token pair is a
     profile credential: read it through the secret scope so the default profile's Modal
@@ -180,16 +177,6 @@ def resolve_openai_audio_api_key() -> str:
             or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
 
 
-def prefers_gateway(config_section: str) -> bool:
-    """True when ``<section>.use_gateway`` is set in config.yaml. Never raises."""
-    try:
-        from hermes_cli.config import load_config
-        section = (load_config() or {}).get(config_section)
-        return isinstance(section, dict) and is_truthy_value(section.get("use_gateway"))
-    except Exception:
-        return False
-
-
 # Provider value the managed "Nous Subscription" picker rows write for every category;
 # any other name = that vendor direct; no key = legacy autodetect.
 NOUS_MANAGED_PROVIDER = "nous"
@@ -270,31 +257,8 @@ def selection_exists(section: str) -> bool:
     return raw is not None and any(str(raw.get(key) or "").strip() for key in extra)
 
 
-# Backends that once shipped in-tree but were removed; a config still pointing at one would
-# otherwise fail silently at the FIRST tool call with a generic "no registered provider has that
-# name". Used by the startup config check and selection_error(); add removals here, never as
-# one-off string checks:  "web": {"<name>": "the <Name> backend was removed in vX (...)"}
-REMOVED_BACKENDS: dict[str, dict[str, str]] = {}
-
-
-# Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails
-# silently at the FIRST tool call with a generic "no registered provider has that name" — no migration, no
-# startup notice (reported after the Tavily removal in #99199). Both the startup config check
-# (hermes_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
-# what actually happened and what to do. Declared data, one policy — add future removals here, never as
-# one-off string checks at call sites.
-# Currently empty: the Tavily removal (#99199) that introduced this registry was reverted by the #99731
-# restore. Future backend removals add an entry here, e.g. "web": {"<name>": "the <Name> backend was removed
-# in vX.Y.Z (...)"},
-def removed_backend_note(section: str, name: str) -> Optional[str]:
-    """Explanation for a backend that used to ship in-tree, or None. ``name`` tolerates the
-    quoted form callers pass to selection_error()."""
-    return REMOVED_BACKENDS.get(section, {}).get((name or "").strip().strip("'\"").lower())
-
-
 def selection_error(section: str, selection_name: str, failure: str) -> str:
     """The uniform honest-error contract for a selected-but-broken provider."""
-    failure = removed_backend_note(section, selection_name) or failure
     return (f"{section} is configured to use {selection_name} (set via hermes "
             f"tools), but {failure}. Run 'hermes tools' to change it.")
 

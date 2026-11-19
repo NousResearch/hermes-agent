@@ -6791,7 +6791,7 @@ if DISCORD_AVAILABLE:
 
 
 # ── Standalone (out-of-process) sender ────────────────────────────────────────
-# Used by ``tools/send_message_tool._send_via_adapter`` when no live DiscordAdapter is in this
+# Used by ``gateway/outbound/send._send_via_adapter`` when no live DiscordAdapter is in this
 # process (e.g. standalone ``hermes cron``); same forum/thread/multipart logic via Discord REST.
 
 # Process-local channel-type probe cache: avoids re-probing every send when the directory cache misses.

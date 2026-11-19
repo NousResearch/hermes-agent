@@ -3,6 +3,7 @@ move runs in the new folder even when the session had ``cd``-ed before it."""
 import pytest
 
 from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_resume_config_refresh import (
     _Backend, _call, _connect, _home, _mutate, _owner_authority, _policy, _terminal)
 
@@ -51,7 +52,6 @@ async def test_a_refresh_whose_cwd_save_fails_still_publishes_its_committed_poli
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_policy import restore_policy
     from gateway.session_policy_refresh import commit_refresh
-    from hermes_state_local import local_receipt
     from tests.gateway.test_session_resume_config_refresh import AFTER
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
@@ -62,14 +62,14 @@ async def test_a_refresh_whose_cwd_save_fails_still_publishes_its_committed_poli
         mirror = store.sessions_dir / 'sessions.json'
         mirror.unlink(missing_ok=True)
         mirror.mkdir()
-        store._db._write_sql("CREATE TRIGGER refuse_routes BEFORE DELETE ON gateway_routing "
-                             "BEGIN SELECT RAISE(ABORT, 'routing disk unavailable'); END")
+        raw_holder(store.persistence)._write_sql("CREATE TRIGGER refuse_routes BEFORE DELETE ON gateway_routing "
+                                                 "BEGIN SELECT RAISE(ABORT, 'routing disk unavailable'); END")
         (home / 'config.yaml').write_text(AFTER)
         assert await commit_refresh(authority, SessionRef(authority.profile_id, sid))
-        stored = restore_policy(local_receipt(authority.db, sid)['policy'])
+        stored = restore_policy(authority.persistence.bindings.receipt(sid).policy)
         backends = [json.loads(p.terminal_json)['TERMINAL_ENV'] for p in (stored, _policy(authority, sid))]
         assert backends == ['docker', 'docker']
-        store._db._write_sql('DROP TRIGGER refuse_routes')
+        raw_holder(store.persistence)._write_sql('DROP TRIGGER refuse_routes')
         mirror.rmdir()
         restore_local_session(authority, sid)
     finally:

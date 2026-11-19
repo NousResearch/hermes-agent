@@ -9,8 +9,8 @@ live dumps all-thread stacks (``faulthandler``), records the exit in the lifecyc
 
 Slow-but-alive startups are not killed. Order of authority: (1) phase-owned progress
 leases (:func:`report_startup_progress`) — authoritative, prove the *startup path itself*
-is alive, work for I/O-bound phases (schema migration, corruption repair in
-``SessionDB.__init__``) with ~zero CPU; (2) process-wide CPU progress, capped at
+is alive, work for I/O-bound phases (schema migration, corruption repair while the
+session store opens) with ~zero CPU; (2) process-wide CPU progress, capped at
 ``_MAX_CPU_EXTENSIONS`` since an unrelated thread burning CPU must not hide a parked
 startup thread forever. Known limitation: a *spinning* startup deadlock earns the capped
 extensions before firing; the observed class is parked-thread deadlocks. Idle-by-design
@@ -495,8 +495,8 @@ def report_startup_progress(expected_s: float, phase: str = "") -> None:
     """Declare a phase-owned progress lease on the armed startup watchdog.
 
     Call from startup phases about to do legitimately long synchronous work — most
-    importantly ``state.db`` schema migrations and corruption repair/backup inside
-    ``SessionDB.__init__`` — with an honest worst case, renewing for multi-step phases.
+    importantly ``state.db`` schema migrations and corruption repair/backup while the
+    session store opens, with an honest worst case, renewing for multi-step phases.
     Per-call duration is clamped to ``_MAX_LEASE_S``. No-op when not armed; never
     raises — safe to call unconditionally from application code.
     """

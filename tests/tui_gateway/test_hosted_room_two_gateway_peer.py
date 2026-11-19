@@ -13,6 +13,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import async_wait_until, wait_until
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 
@@ -21,6 +22,7 @@ from gateway import hosted_room_driver as driver
 from gateway.config import PlatformConfig
 from gateway.hosted_rooms import local_authority_gateway_id
 from gateway.platforms.api_server import APIServerAdapter
+from persistence.gateway.hosted_rooms import TERMINAL_STATUSES
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -90,7 +92,8 @@ async def _linked_home(tmp_path: Path, **runtime):
     )
     home = HostedRoomService(
         _server(),
-        db_path=tmp_path / "home-state.db",
+        store=storage_handle(tmp_path / "home"),
+        placement="profile",
         peer_routes={("room-1", "member-peer"): route},
         peer_clients={catalog["installation_id"]: client},
     )
@@ -154,11 +157,12 @@ def _lose_first_reply(monkeypatch, *, arrives: bool = True, down: threading.Even
     return keys
 
 
-async def _peer_task(home, statuses=driver.TERMINAL_STATUSES, *, timeout: float = 20.0):
+async def _peer_task(home, statuses=TERMINAL_STATUSES, *, timeout: float = 20.0):
     """Wait for the peer member's room turn to reach one of ``statuses`` (by default, settle)."""
     return await async_wait_until(
         lambda: next((task for status in statuses
-                      for task in driver.list_tasks(home.db_path, room_id="room-1", status=status)
+                      for task in driver.list_tasks(home.store, placement=home.placement, room_id="room-1",
+                                                    status=status)
                       if task["payload"].get("target_member_id") == "member-peer"), None),
         timeout=timeout, what=f"peer turn reaching {statuses}")
 
@@ -293,12 +297,12 @@ async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_
             try:
                 await asyncio.to_thread(home.retry_room_task, "room-1", task_id=a["identity"].task_id)
             except TurnBusyError:
-                assert driver.get_task(home.db_path, a["identity"])["status"] == "deferred"
+                assert driver.get_task(home.store, a["identity"], placement=home.placement)["status"] == "deferred"
             release_b.set()
             assert await asyncio.to_thread(finished_b.wait, 5)
             def terminal_b():
-                current = driver.get_task(home.db_path, b["identity"])
-                return current if current["status"] in driver.TERMINAL_STATUSES else None
+                current = driver.get_task(home.store, b["identity"], placement=home.placement)
+                return current if current["status"] in TERMINAL_STATUSES else None
             current = await async_wait_until(terminal_b, timeout=5, what="newer peer turn settling")
             assert current["status"] == "settled", (current["status"], home.runtime.status(), keys)
             assert current["result"]["text"] == "B completed"

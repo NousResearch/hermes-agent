@@ -35,14 +35,27 @@ def _service(profile, *, deadline=None):
     return lookup(profile, deadline=deadline)
 
 
-def _body(raw):
+class _Body(dict):
+    """Retain JSON member ambiguity until the optional-provider branch is known."""
+
+    def __init__(self, pairs):
+        super().__init__(pairs)
+        self.duplicate = len(pairs) != len(self)
+        self.profiles = [value for key, value in pairs if key == 'profile']
+
+
+def _hint(raw):
     try:
-        body = json.loads(raw)
+        return json.loads(raw, object_pairs_hook=_Body) if raw else _Body([])
     except (ValueError, UnicodeError):
-        raise CatalogError('invalid_request', 'Invalid catalog request.') from None
-    if type(body) is not dict:
+        return None
+
+
+def _body(raw):
+    body = _hint(raw)
+    if not isinstance(body, _Body) or body.duplicate:
         raise CatalogError('invalid_request', 'Invalid catalog request.')
-    return body
+    return dict(body)
 
 
 def _fields(body, required, optional=()):
@@ -52,11 +65,34 @@ def _fields(body, required, optional=()):
 
 def _profile(body, query):
     selected = body.get('profile')
-    if selected is not None and type(selected) is not str:
+    if 'profile' in body and type(selected) is not str:
         raise CatalogError('invalid_request', 'Invalid profile.')
     if selected is not None and query is not None and selected != query:
         raise CatalogError('invalid_request', 'Conflicting catalog profiles.')
     return selected or query
+
+
+async def _selected_service(request, hint, deadline):
+    queries = request.query_params.getlist('profile')
+    profiles = hint.profiles if isinstance(hint, _Body) else []
+    selectors = queries + profiles
+    ambiguous = (len(queries) > 1 or len(profiles) > 1
+                 or any(type(value) is not str for value in profiles)
+                 or len({value for value in selectors if type(value) is str}) > 1)
+    if ambiguous:
+        # A last-value-wins parser must not hide a live catalog behind an unknown
+        # profile. Inspect each proposed scope without granting either authority.
+        candidates = dict.fromkeys(value for value in selectors if type(value) is str)
+        for profile in candidates or (None,):
+            try:
+                service = await asyncio.to_thread(_service, profile, deadline=deadline)
+            except HTTPException:
+                continue
+            if service is not None:
+                raise CatalogError('invalid_request', 'Ambiguous catalog profiles.')
+        return None
+    profile = next(iter(profiles or queries), None)
+    return await asyncio.to_thread(_service, profile, deadline=deadline)
 
 
 def _invoke(service, method, *args, **kwargs):
@@ -86,6 +122,12 @@ async def _provider_action(service, route, body):
 
 
 async def delegate(request, stock):
+    if (request.url.path.startswith('/api/skills/hub/') and request.method == 'GET'
+            and len(request.query_params.getlist('profile')) > 1):
+        # Resolve ambiguous read scopes before starting independent public search.
+        # With no source, the stock handler still owns duplicate-query semantics.
+        if await _selected_service(request, None, time.monotonic() + 5) is None:
+            return await stock(request)
     if request.url.path == '/api/skills/hub/search' and not request.query_params.get('source', '').startswith('plugin.'):
         public = asyncio.create_task(stock(request))
         async def completed(_request):
@@ -106,18 +148,9 @@ async def _delegate(request, stock):
         return await stock(request)
     query_profile = request.query_params.get('profile')
     raw = await request.body() if request.method == 'POST' else b''
-    # Read only enough body state to select the old body-profile winner. Invalid
-    # bodies still get the untouched stock validator if there is no live source.
-    try:
-        hint = json.loads(raw) if raw else {}
-    except (ValueError, UnicodeError):
-        hint = {}
-    body_profile = hint.get('profile') if type(hint) is dict else None
-    if body_profile is not None and query_profile is not None and body_profile != query_profile:
-        if await asyncio.to_thread(_service, query_profile) is not None:
-            raise CatalogError('invalid_request', 'Conflicting catalog profiles.')
-    lookup_profile = body_profile if type(body_profile) is str and body_profile else query_profile
-    service = await asyncio.to_thread(_service, lookup_profile, deadline=provider_deadline)
+    # Keep every selector until optional-provider admission has resolved it.
+    # Providerless requests retain the stock last-value/body-profile behavior.
+    service = await _selected_service(request, _hint(raw), provider_deadline)
     if service is None:
         return await stock(request)
     if request.method == 'POST':
@@ -216,7 +249,7 @@ def _installed_map(service, *, deadline=None):
     deadline = deadline if deadline is not None else time.monotonic() + 3
     for entry in service.entries():
         for record in installed_records(entry, deadline=deadline):
-            rows[record['identifier']] = record['name']
+            rows[record['identifier']] = dict(name=record['name'], trust_level='community', scan_verdict='unknown')
     return rows
 
 

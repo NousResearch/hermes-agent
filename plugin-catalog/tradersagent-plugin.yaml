@@ -2,15 +2,7 @@ name: tradersagent-plugin
 repo: https://github.com/godzillacode0000/tradersagent-plugin
 sha: 3c927216ace9e5f01d3399a36f5a85834bdfe01c
 subdir: traders-desk
-description: >-
-  A chart-first Trader's Agent for Hermes Desktop: one sidebar row docks a live Vela chart beside your
-  conversation — replay, drawing tools, the LuxAlgo Library, a paper broker and Edge Stats behind it.
-  Disclosure — the pane frames a local console service on 127.0.0.1:8787 that this package does not
-  include or start: clone the repo and run ./console/start.sh (see known_issues). That console is a
-  long-running Python process on your machine that fetches bars from Binance's public klines and
-  Library scripts from LuxAlgo's hosted MCP over the network; it shells nothing, keeps no account, no
-  key and no telemetry. The agent's 56 chart tools come from the repo's traders-chart MCP server,
-  registered separately with ./bin/register-mcp.sh — the plugin itself registers UI only.
+description: "A chart-first Trader's Agent for Hermes Desktop: one sidebar row docks a live Vela chart beside your conversation — replay, drawing tools, the LuxAlgo Library, a paper broker and Edge Stats behind it. Disclosure — the pane frames a local console service on 127.0.0.1:8787 that this package does not include or start: you clone the repository and run its ./install.sh or ./console/start.sh. install.sh registers that console as a background service (a systemd user unit on Linux, a launchd agent on macOS) that starts at login and restarts itself, registers the separate traders-chart MCP server with `hermes mcp add`, and with --with-edge clones LuxAlgo's Edge Stats engine at a pinned commit and installs its Node dependencies. The console fetches market data from Binance, Dukascopy and Yahoo Finance and Library scripts from LuxAlgo's hosted MCP (mcp.luxalgo.com), runs local image converters (vips, ImageMagick or ffmpeg) and the optional LuxAlgo Node engines, and keeps no account, key or telemetry. When no chat is open, the sidebar row creates and opens one Hermes chat titled \"Trader's Agent — desk\" (a palette command turns that off). The plugin itself registers UI only."
 maintainer: godzillacode0000
 tier: community
 category: desktop

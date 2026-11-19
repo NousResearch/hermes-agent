@@ -1705,6 +1705,7 @@ class TestSaveLoginPrompt:
         ("tek@acme.test", "email"),
         ("tek-2024", "username"),
         ("12 34", "username"),  # too few digits for a phone number
+        ("600100200x", "username"),  # a digit run with a letter is a handle
     ])
     def test_a_phone_number_is_stored_as_phone_however_it_was_typed(self, store, monkeypatch, identifier, id_type):
         """The fill reads a saved phone back as ``tel``, which tolerates a mask's grouping; stored as a

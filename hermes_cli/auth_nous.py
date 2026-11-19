@@ -331,7 +331,7 @@ def _set_nous_agent_key_from_invoke_jwt(
     existing_obtained_at = state.get("agent_key_obtained_at")
     if not obtained_at:
         reuse = state.get("agent_key") == access_token and _nonempty_str(existing_obtained_at)
-        obtained_at = existing_obtained_at if reuse else datetime.now(UTC).isoformat()
+        obtained_at = existing_obtained_at if reuse else (state.get("obtained_at") or datetime.now(UTC).isoformat())
     expires_at = _nous_jwt_expires_at(access_token, state.get("expires_at"), state.get("obtained_at"))
     expires_in = _remaining_ttl(expires_at, state.get("expires_in"))
     if expires_at:
@@ -882,7 +882,7 @@ def _agent_key_is_usable(state: dict[str, Any], min_ttl_seconds: int) -> bool:
     key = state.get("agent_key")
     return _nonempty_str(key) and _nous_invoke_jwt_is_usable(
         key, scope=state.get("scope"), expires_at=state.get("agent_key_expires_at"),
-        obtained_at=state.get("obtained_at"), min_ttl_seconds=max(0, int(min_ttl_seconds)))
+        obtained_at=state.get("agent_key_obtained_at"), min_ttl_seconds=max(0, int(min_ttl_seconds)))
 
 
 def refresh_nous_oauth_pure(

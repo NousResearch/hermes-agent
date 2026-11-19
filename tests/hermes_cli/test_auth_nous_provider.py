@@ -185,6 +185,10 @@ def test_fresh_invoke_jwt_is_usable_when_the_local_clock_runs_ahead():
     assert _nous_invoke_jwt_status(token, obtained_at=received) is None
     long_ago = datetime.fromtimestamp(time.time() - 900, tz=UTC).isoformat()
     assert _nous_invoke_jwt_status(token, obtained_at=long_ago) == "invoke_jwt_expiring"
+    # An old agent key is judged by its own arrival, never the newer access token's.
+    from hermes_cli.auth import _agent_key_is_usable
+    assert not _agent_key_is_usable(
+        {"agent_key": token, "agent_key_obtained_at": long_ago, "obtained_at": received}, 120)
 
 
 def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(

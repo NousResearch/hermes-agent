@@ -348,7 +348,8 @@ _ROUTE_MODEL_REJECTION_PATTERNS = (
 )
 
 _MODEL_NOT_FOUND_PATTERNS = (
-    "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
+    "is not a valid model", "invalid model", "model not found", "model is not found",
+    "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
     "openrouter catalog",
     # Nous 404 when the provider retires a :free route — the slug is dead for every

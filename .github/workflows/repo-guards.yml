@@ -160,6 +160,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_retired_shims_manifest.py
 
+      # ── Pull requests, python lane: pinned catalog plugins this change breaks ─────────────
+
+      # Catalog plugins live in their own repos, so no test here sees a core PR remove a module or
+      # name one of them imports. scripts/ci/catalog_core_imports/ records each pinned entry's
+      # Hermes imports (refreshed by catalog-core-imports.yml); this resolves them against the base
+      # and the merge commit from git objects alone (no network, no plugin code, a few seconds) and
+      # fails naming the plugin, file:line and the import, with the fixes: an official seam PR, a
+      # compat move, or the breaks-catalog-plugin label. Local: `python3 scripts/ci/catalog_core_imports.py check --base origin/main`.
+      - name: Name the pinned catalog plugins this change breaks
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.python }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/catalog_core_imports.py check --base HEAD^1 --head HEAD
+
       # ── Pull requests: unrelated histories ────────────────────────────────────────────────
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI

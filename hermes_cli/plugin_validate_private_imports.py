@@ -95,17 +95,21 @@ def _is_own_module_path(module: str, local: set[str]) -> bool:
     return any(".".join(parts[i:]) in local for i in range(1, len(parts))) and not _core_module_exists(module)
 
 
+def _is_hermes_import(module: str, name: str, core: frozenset, local: set[str]) -> bool:
+    """True when ``module`` (with ``name`` from it) is a Hermes core import, not the plugin's own module."""
+    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(f"{module}.{name}", local)
+    return module.split(".")[0] in core and module not in local and not own
+
+
 def _private_target(module: str, name: str, core: frozenset, local: set[str]) -> str:
     """The dotted target to report, or "" when the import is public, local or not Hermes's."""
     target = f"{module}.{name}" if name else module
-    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
-    hermes = module.split(".")[0] in core and module not in local and not own
     # A name is public under its old or its current spelling: a MOVES key may fold a module into a published one.
     public_api = _public_api()
     public = bool({original_module(target), current_module(target)} & public_api) or any(
         f"{mod}:{name}" in public_api or (mod in public_api and not name.startswith("_"))  # ``from gateway.platforms import base``
         for mod in {original_module(module), current_module(module)})
-    return target if hermes and not public else ""
+    return target if _is_hermes_import(module, name, core, local) and not public else ""
 
 
 def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:
@@ -120,6 +124,55 @@ def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:
         except (SyntaxError, ValueError):
             continue
     return parsed
+
+
+_IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError", "Exception", "BaseException"})
+
+# How an import is reached: unconditionally, inside a ``try`` that catches its failure, or as the fallback
+# in that ``try``'s handler (it runs only when the guarded import failed).
+PLAIN, GUARDED, FALLBACK = 0, 1, 2
+
+
+def _catches_import_errors(node: ast.Try) -> bool:
+    return any(handler.type is None or {ast.unparse(t).rpartition(".")[2] for t in (
+        handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type])} & _IMPORT_ERRORS
+        for handler in node.handlers)
+
+
+def _import_roles(tree: ast.AST) -> dict[int, tuple[int, list[ast.AST]]]:
+    """``id(import node) -> (role, alternatives)`` for imports in a ``try`` that catches import errors:
+    a guarded import's alternatives are its handler's imports, a fallback's are the ``try`` body's."""
+    roles: dict[int, tuple[int, list[ast.AST]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and _catches_import_errors(node):
+            body = [n for stmt in node.body for n in ast.walk(stmt) if _imported(n)]
+            handler = [n for h in node.handlers for stmt in h.body for n in ast.walk(stmt) if _imported(n)]
+            roles.update({id(n): (GUARDED, handler) for n in body})
+            roles.update({id(n): (FALLBACK, body) for n in handler if id(n) not in roles})
+    return roles
+
+
+def hermes_import_sites(plugin_dir: Path) -> list[tuple[str, int, str, str, int, tuple[tuple[str, str], ...]]]:
+    """``(rel, line, module, name, role, alternatives)`` for every import of a Hermes core module, public or
+    not, in file/line order. ``name`` is "" for ``import module``; ``role`` is ``PLAIN``, ``GUARDED`` or
+    ``FALLBACK``, and ``alternatives`` the Hermes ``(module, name)`` pairs that stand in for it.
+    ``TYPE_CHECKING`` imports never load, so they are left out."""
+    files = _parsed_files(Path(plugin_dir))
+    local = _local_modules(rel for rel, _tree in files)
+    core = _hermes_packages()
+    found: set = set()
+    for rel, tree in files:
+        skipped, roles = _type_checking_nodes(tree), _import_roles(tree)
+        for node in ast.walk(tree):
+            if id(node) in skipped:
+                continue
+            role, others = roles.get(id(node), (PLAIN, []))
+            alternatives = tuple(sorted({pair for other in others for pair in _imported(other)
+                                         if _is_hermes_import(*pair, core, local)}))
+            for module, name in _imported(node):
+                if _is_hermes_import(module, name, core, local):
+                    found.add((rel.as_posix(), getattr(node, "lineno", 0), module, name, role, alternatives))
+    return sorted(found)
 
 
 def private_import_findings(plugin_dir: Path) -> list[str]:

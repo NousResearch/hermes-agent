@@ -174,7 +174,9 @@ in its own PR first, naming the plugin that needs it: prefer a `ctx` method or h
 the name in `plugin_api.json` (`module:Name`), regenerate `public-api.md` with
 `scripts/gen_plugin_api_docs.py`, document it and add a behavior test. A listed name is published to
 every plugin author: never list one just to pass the lint.
-`--update` rewrites the whole baseline from the tree, so check that its diff holds only the lines
+Catalog plugins get the same rule from the other side: `scripts/ci/catalog_core_imports.py check` (Repository
+guards) fails a core PR that removes a module or name a pinned catalog plugin imports; its message offers the seam PR, a
+`compat/moves.py` key, or the `breaks-catalog-plugin` label. `--update` rewrites the whole baseline from the tree, so check that its diff holds only the lines
 you meant. Run it for an intended crossing (say why in the PR body), for an import moved to
 another file (the baseline counts per importing file), or after removing crossings, so the lower
 count sticks. Never run it just to turn CI green.

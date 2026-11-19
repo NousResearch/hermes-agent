@@ -281,22 +281,47 @@ def _safe_result_filename(tool_use_id: str, ext: str = "txt") -> str:
     return f"{safe_stem}.{ext}"
 
 
-def _backend_reads_host_files() -> bool:
-    """True only on the ``local`` terminal backend outside a hosted scope: the one place ``read_file`` opens
-    host paths. Every other backend (docker, modal, ssh, daytona, vercel_sandbox, plugins, unknown names)
-    reads its own filesystem, and the prune holds no environment to copy an archive into, so a stub would
-    name a file the model cannot open. Decided on the backend, never on whether a path translates
-    (``cache/pruned`` is mounted nowhere, so a translation check passed everywhere). An unresolvable
-    policy (refusal scope) answers False: fail closed, keep the result whole."""
+# Built-in backends that publish ``cache/pruned`` (``tools.credential_files._CACHE_DIRS``): docker bind-mounts
+# it, modal/ssh/daytona/vercel_sandbox file-sync it, at the path ``to_agent_visible_cache_path`` names.
+_ARCHIVE_PUBLISHING_BACKENDS = frozenset({"docker", "modal", "ssh", "daytona", "vercel_sandbox"})
+
+
+def _archive_backend() -> str | None:
+    """The active terminal backend when ``read_file`` there can open a ``cache/pruned`` archive: ``"local"``
+    (host paths) or a backend that publishes the folder. None keeps every result whole: a plugin or unknown
+    backend (nothing says it mounts the folder), a hosted scope (its own sandbox, no host cache), or an
+    unresolvable policy (refusal scope). Decided on the backend: the prune holds no environment to probe."""
     from tools.environments.sandbox_scope import hosted_scope
     from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
 
     if hosted_scope() is not None:
-        return False
+        return None
     try:
-        return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+        backend = terminal_env("TERMINAL_ENV", "local").strip().lower() or "local"
     except TerminalPolicyUnavailable:
-        return False
+        return None
+    return backend if backend == "local" or backend in _ARCHIVE_PUBLISHING_BACKENDS else None
+
+
+def _backend_reads_host_files() -> bool:
+    """True only on the ``local`` backend (outside a hosted scope): the one place a host path is the model's."""
+    return _archive_backend() == "local"
+
+
+def _archive_stub_path(host_path: str) -> str:
+    """Where the model's ``read_file`` finds the archive at *host_path*: the ``~/``-relative display path on
+    the local backend, else the mounted/synced path (``/root/.hermes/...`` or ``~/.hermes/...``). Always
+    ``/``-separated, so the reference scan finds ``cache/pruned/<name>`` in either form."""
+    from pathlib import Path, PurePath
+
+    from hermes_constants import display_hermes_home, get_hermes_home
+
+    if _archive_backend() != "local":
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(host_path)
+    rel = Path(host_path).relative_to(get_hermes_home())
+    return f"{PurePath(display_hermes_home()).as_posix()}/{rel.as_posix()}"
 
 
 def write_pruned_original(content: str, session_id: str, tool_name: str, tool_call_id: str) -> tuple[str, str] | None:
@@ -305,18 +330,17 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
     Writes ``$HERMES_HOME/cache/pruned/<session>_<UTC stamp>_<tool>_<short id>.<json|txt>`` (``.json``
     when the body parses as JSON), read back and compared byte-for-byte like a spill. Returns
     ``(host path, stub path)``; the stub path is the ``~/``-relative display path, always ``/``-separated so
-    the reference scan finds ``cache/pruned/<name>``. None when the backend cannot read host files or the
-    write failed: the caller then must keep that result unpruned.
+    the reference scan finds ``cache/pruned/<name>``; on a sandboxed backend it is the path the sandbox reads
+    (:func:`_archive_stub_path`). None when the backend cannot open the archive or the write failed: the
+    caller then must keep that result unpruned.
     """
     try:
         json.loads(content)
         ext = "json"
     except ValueError:
         ext = "txt"
-    from pathlib import PurePath
-
-    from hermes_constants import display_hermes_home, get_hermes_home
-    if not _backend_reads_host_files():
+    from hermes_constants import get_hermes_home
+    if _archive_backend() is None:
         return None
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     short_id = hashlib.sha256(str(tool_call_id or "").encode("utf-8")).hexdigest()[:8]
@@ -329,7 +353,7 @@ def write_pruned_original(content: str, session_id: str, tool_name: str, tool_ca
     host_path = str(archive_dir / filename)
     if _write_to_spillover(content, filename, PRUNED_SUBDIR, exclusive=True) is None:
         return None
-    return host_path, f"{PurePath(display_hermes_home()).as_posix()}/{PRUNED_SUBDIR}/{filename}"
+    return host_path, _archive_stub_path(host_path)
 
 
 # ── Archive-before-stub: compaction / proactive-prune originals under cache/pruned/ ──
@@ -444,11 +468,11 @@ def archive_compaction_drops(
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
 
-    A compaction must still reclaim where ``read_file`` cannot open host paths (sandboxed backends), so
-    there the plain stubs stand and nothing is written; on the local backend a result whose write fails
+    A compaction must still reclaim where ``read_file`` cannot open an archive (plugin backends, a hosted
+    scope), so there the plain stubs stand and nothing is written; elsewhere a result whose write fails
     keeps its original, and the compaction proceeds with the rest.
     """
-    if not _backend_reads_host_files():
+    if _archive_backend() is None:
         return dropped, [], 0
     return archive_pruned_originals(messages, dropped, session_id)
 
@@ -471,15 +495,14 @@ def archive_list_for_summary(named: set[str], kept: list[dict[str, Any]]) -> str
     deterministic list to append to the committed summary; ``""`` when none. The generated summary may drop
     a pointer: this list keeps the model's recovery path, and the reference the retention sweep reads,
     whatever the summarizer wrote."""
-    from pathlib import PurePath
-
-    from hermes_constants import display_hermes_home
+    from hermes_constants import get_hermes_home
 
     missing = named - pruned_archive_refs(kept)
     if not missing:
         return ""
-    home = PurePath(display_hermes_home()).as_posix()
-    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(f"\n- {home}/{ref}" for ref in sorted(missing))
+    home = get_hermes_home()
+    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(
+        f"\n- {_archive_stub_path(str(home / ref))}" for ref in sorted(missing))
 
 
 def discard_archives(paths: list[str]) -> None:

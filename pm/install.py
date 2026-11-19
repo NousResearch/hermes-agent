@@ -87,14 +87,20 @@ def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+                        roots: tuple[Path, ...] | None = None, heal: bool = True,
+                        root_facts: dict[Path, Facts] | None = None):
     """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
-    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch).
+    ``root_facts`` maps each root to its already-read facts, for a caller looking up many packages."""
     search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
+    primary = paths.store_root() if root_facts is None else None
     fallback = None
     for root in search_roots:
         store = Store(root)
-        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        if root_facts is not None:
+            facts = root_facts[root]
+        else:
+            facts = _facts() if root == primary else Facts(root / "facts.json")
         # Every row may hold the exact pin, but only the selected (first) row may be the outdated
         # fallback, never an older pin another install keeps; a later root's fallback still
         # replaces it, as before.
@@ -1133,11 +1139,18 @@ def _store_path_dirs() -> list[str]:
 
     lockfile = _lockfile()
     target = current_target()
+    # Resolved once per call, not once per package: each resolution walks the install stamp and
+    # payload manifest from disk and re-reads facts.json, and every terminal command composes this
+    # PATH (~11 ms -> <1 ms).
+    primary = paths.store_root()
+    roots = tuple(dict.fromkeys((primary, paths.writable_store_root())))
+    root_facts = {root: _facts() if root == primary else Facts(root / "facts.json") for root in roots}
     locations: dict[str, object] = {}
 
     def located(package):
         if package.name not in locations:
-            locations[package.name] = _installed_location(package, lockfile, target)
+            locations[package.name] = _installed_location(
+                package, lockfile, target, roots=roots, root_facts=root_facts)
         return locations[package.name]
 
     dirs: list[str] = []

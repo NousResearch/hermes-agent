@@ -85,10 +85,12 @@ class StatusReporter:
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
         self._pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._stopped = False  # run() has ended: a lock taken after that is given back
 
     async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
         """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
         is noticed; whether one is due is decided on the wall clock."""
+        self._stopped = False
         try:
             while is_running():
                 goodbyes_said = self._goodbyes_said
@@ -98,6 +100,7 @@ class StatusReporter:
                     self._poll_failed(exc, goodbye_since=self._goodbyes_said != goodbyes_said)
                 await asyncio.sleep(tick)
         finally:
+            self._stopped = True
             if self._is_sender:
                 self._is_sender = False
                 release_scoped_lock(_LOCK_SCOPE, self._target.url)
@@ -196,11 +199,11 @@ class StatusReporter:
         try:
             acquired, _holder = await asyncio.shield(asyncio.wrap_future(taking))
         except asyncio.CancelledError:
-            # Cancelled (a gateway shutdown) while the thread was still taking the lock: run()'s
-            # cleanup ran before it was ours, so give it back once the thread is done. A sender only
-            # confirmed a lock it holds (a goodbye cancelled here): the watcher still reports under it.
-            if not self._is_sender:
-                taking.add_done_callback(self._give_back_if_taken)
+            # Cancelled while the thread is still taking the lock. When the watcher stops (a gateway
+            # shutdown), run()'s cleanup can run before the thread is done and take the lock again,
+            # so the thread gives it back. A goodbye cancelled alone leaves a sender's lock held: the
+            # watcher still reports under it. Decided once the thread is done, when run() has said.
+            taking.add_done_callback(lambda done, was_sender=self._is_sender: self._give_back_if_taken(done, was_sender))
             raise
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
@@ -218,9 +221,12 @@ class StatusReporter:
             self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired
 
-    def _give_back_if_taken(self, taking: concurrent.futures.Future) -> None:
-        """On the reporter's thread, as soon as a lock taken after a cancel is in hand."""
-        if not taking.cancelled() and taking.exception() is None and taking.result()[0]:
+    def _give_back_if_taken(self, taking: concurrent.futures.Future, was_sender: bool) -> None:
+        """On the reporter's thread, once a lock taken after a cancel is in hand: given back unless a
+        sender's watcher is still running (only a goodbye was cancelled)."""
+        if taking.cancelled() or taking.exception() is not None or not taking.result()[0]:
+            return
+        if self._stopped or not was_sender:
             release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
     def _stand_by(self, level: int, why: str) -> None:

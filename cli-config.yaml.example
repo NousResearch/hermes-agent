@@ -1790,6 +1790,11 @@ stt:
   #   elevenlabs             -> unsupported; DEBUG log, then continue
   #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
   # prompt: "Hermes, Teknium, Nous Research, kanban"
+  # elevenlabs:
+  #   # Vocabulary hints so names and domain terms are transcribed correctly (Scribe v2+).
+  #   # Each term: max 50 chars, max 5 words, none of <>{}[]\. Max 1000 terms.
+  #   # ElevenLabs bills 20% extra on requests that send keyterms.
+  #   keyterms: ["Hermes", "Nous Research"]
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # blank = inherit stt.language; set "en", "es", "fr", etc. to force

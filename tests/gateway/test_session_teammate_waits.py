@@ -9,6 +9,8 @@ import os
 import threading
 import time
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from gateway.session_pending_controls import PendingControls
@@ -140,3 +142,29 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
     clarify.event.set()  # the user answered: the same delivery is plain work again
     again = asyncio.run(bot_delivery_list(connection, None, {}))
     assert {row["delivery_id"][0]: row["state"] for row in again["deliveries"]}["1"] == "working"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file")
+def test_a_receipt_that_cannot_be_read_fails_the_poll_instead_of_vanishing(tmp_path):
+    root = tmp_path / "hermes"
+    _profile(root, "default")
+    scribe = _profile(root, "scribe")
+    live = _receipt(scribe, "a" * 32, sender="alice", status="queued")
+    (scribe / "runtime/bot_live_delivery/notes.json").write_text("not json", encoding="utf-8")
+
+    def poll():
+        return list_sender_deliveries(root, "alice", profiles=[("scribe", scribe)], live_state=lambda *_: (None, None))
+
+    assert [row["state"] for row in poll()] == ["queued"]  # a foreign file is still skipped
+    record = json.loads(live.read_text(encoding="utf-8-sig"))
+    tmp = live.with_suffix(".tmp")
+    tmp.write_text(json.dumps({**record, "status": "claimed"}), encoding="utf-8")
+    os.replace(tmp, live)
+    live.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            poll()  # an error the client keeps its last rows through, never an empty answer
+    finally:
+        live.chmod(0o600)
+    assert [row["delivery_id"][0] for row in poll()] == ["a"]

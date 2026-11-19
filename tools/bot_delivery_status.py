@@ -75,11 +75,16 @@ def _preview(message: Any) -> str:
 
 
 def _read_receipt(path: Path) -> dict | None:
-    """Tolerant bulk read: an unreadable or foreign file is skipped, never fatal to the list."""
+    """One receipt, or None for a file that is gone or is not a receipt (malformed, foreign).
+
+    Any other read failure raises: skipping it would answer a shorter list, and the strip would
+    drop a delivery that is still pending instead of keeping its last known row."""
     try:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        log.debug("bot_delivery_status: skipping unreadable receipt %s", path, exc_info=True)
+    except FileNotFoundError:
+        return None  # deleted between the scan and the read
+    except ValueError:
+        log.debug("bot_delivery_status: skipping malformed receipt %s", path, exc_info=True)
         return None
     return record if isinstance(record, dict) else None
 

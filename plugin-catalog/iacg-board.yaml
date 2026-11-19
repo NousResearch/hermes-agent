@@ -4,14 +4,7 @@ subdir: profiles/iacgenius/dashboard-plugins/iacg-board
 sha: 7ba880ee2968adbbd80b41341d49fc69797887a5
 version: "0.1.0"
 title: IaCGenius Board — mission evidence dashboard tab
-description: >-
-  Web dashboard tab showing the IaC Genius mission board: findings, validation evidence with tool +
-  version, repair attempts spent/allowed, disposition and next owner. It renders the snapshot the
-  iacg-desk service writes and never invents live state; an empty state is shown until a snapshot
-  exists. Disclosure — read-only; reads the desk's board.json/board.html over the local Unix socket
-  or shared data dir; renders the board in a sandboxed iframe (allow-scripts, no allow-same-origin)
-  and accepts postMessage only from that iframe; registers no agent tools, hooks or middleware; makes
-  no network calls, runs no subprocess and stores nothing; no telemetry, no self-update.
+description: "Web dashboard tab showing the IaC Genius mission board: findings, validation evidence with tool + version, repair attempts spent/allowed, disposition and next owner. It renders the snapshot the iacg-desk service writes and never invents live state; an empty state is shown until a snapshot exists. Disclosure — read-only dashboard tab: reads the iacg-desk board snapshot (board.json/board.html) over the local Unix socket or the shared data dir, renders it in a sandboxed iframe (scripts allowed, no same-origin access) and accepts messages only from that iframe; registers no agent tools or hooks, makes no network calls, runs no subprocess, no telemetry, no self-update. Disclosure — talks to the local iacg desk service over a Unix socket (or runs python -m iacg_desk as a subprocess); the desk's terraform init downloads providers read-only from the public Terraform registry into a shared cache; while the plugin is enabled it refuses terraform/tofu apply and cloud write commands in every terminal call of every session, not only IaC Genius missions; approve, confirm and deliver each raise Hermes' approval prompt so a person must grant them; model-supplied tree/out paths are confined to the desk work dir and validation tools run with a secret-free environment; delivery pushes a branch and opens a pull request on GitHub with the IACG_GITHUB_TOKEN secret only after the gates pass and a human approves; no telemetry, no self-update."
 maintainer: RajaRenga
 tier: community
 category: desktop

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from tests.tools.test_delegate import _make_mock_parent
-from tools.delegate_tool import _resolve_delegation_credentials
+from tools.delegate_tool_config import _resolve_delegation_credentials
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):

@@ -636,7 +636,8 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
     The identifier is typed as trusted browser input: a normal input tool writes the value into
     the DOM without React/Vue/MUI accepting it, and the page then re-renders the field empty. The
     password goes by the guarded JS write on its stamped control (never a keystroke, which lands
-    wherever focus is). Both are read back.
+    wherever focus is). Both are read back. A card or address item goes by the same JS write:
+    the login identifier is the only value ever typed.
     Pass ``with_identifier=False`` to write the password only.
     The password is resolved server-side and never enters a result; the result reports only
     counts and metadata.
@@ -733,7 +734,7 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
 def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[str, Any]],
                          js_fills: list[dict[str, Any]], page_origin: str, nonce: str,
                          secret: dict[str, Any]) -> dict[str, Any]:
-    """Fill the non-secret text fields (the identifier) with CDP TRUSTED typing (``Input.insertText``).
+    """Fill a login's identifier with CDP TRUSTED typing (``Input.insertText``).
 
     A framework-controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
     JS value write: the page sees the same ``input`` event a human keystroke produces.
@@ -1113,14 +1114,14 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # inspection stamped (no plugin page backend in front of it).
     trusted = (bool(callable(insert_text)) and page_backend is None
                and _eval_js(effective_task_id, _FRAME_PROBE).get("result") is not True)
-    # Only non-secret text is typed: Input.insertText lands wherever focus is when the browser
+    # Only a login's identifier is typed: Input.insertText lands wherever focus is when the browser
     # processes it, and a frame inside a closed shadow root (which no page script can see) can take
-    # focus after the check. The password and card values go by the guarded JS write, which
-    # addresses the stamped control itself.
+    # focus after the check. The password, card and address values go by the guarded JS write,
+    # which addresses the stamped control itself; an address is bound to its site like a card.
     type_fills = [f for f in fills
                   if f["index"] in type_by_index
                   and type_by_index[f["index"]] not in ("select", "checkbox", "radio")
-                  and meta.kind != "payment" and f.get("token") != "current-password"]
+                  and meta.kind == "login" and f.get("token") != "current-password"]
     js_fills = [f for f in fills if f not in type_fills]
 
     if trusted and type_fills:

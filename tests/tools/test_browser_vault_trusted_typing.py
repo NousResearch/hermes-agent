@@ -384,3 +384,25 @@ def test_card_values_are_never_sent_as_keystrokes(tmp_path):
         out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
     assert out["success"] is True and out["filled_fields"] == 2, out
     assert sup.typed == []
+
+
+def test_address_values_are_never_sent_as_keystrokes(tmp_path):
+    """A saved address is bound to its checkout site like a card: the guarded JS write, never insert_text,
+    which lands wherever focus is (a frame no page script can see can take it)."""
+    from tools import browser_vault_tool
+
+    controls = [{"autocomplete": "address-line1", "formIndex": 0, "index": 0, "label": "", "name": "street", "type": "text"},
+                {"autocomplete": "postal-code", "formIndex": 0, "index": 1, "label": "", "name": "zip", "type": "text"}]
+    sup = _Supervisor(controls)
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(kind="address", label="Home", origin="https://example.com",
+                          secret={"address_line1": "1 Main St", "city": "Springfield", "postal_code": "12345",
+                                  "country": "US"})
+    with patch("agent.vault_store.get_vault_store", return_value=store), \
+         patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+         patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+         patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+         patch.object(browser_vault_tool, "_FILL_VERIFY_STABLE_S", 0):
+        out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+    assert out["success"] is True and out["filled_fields"] == 2, out
+    assert sup.typed == []

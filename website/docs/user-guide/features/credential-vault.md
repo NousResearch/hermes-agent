@@ -114,7 +114,9 @@ and filled by the agent on that site only. **Every card fill asks you first**,
 with the same approval prompt as a dangerous command; declining writes nothing.
 Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
-cannot spend. Address fills need no confirmation.
+cannot spend. Address fills need no confirmation. Card and address values are
+written straight into their fields like the password; only a login's identifier
+is ever typed as browser input.
 
 ## Managing what's saved
 

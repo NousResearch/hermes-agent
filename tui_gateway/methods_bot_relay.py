@@ -147,12 +147,12 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     admission state only; ``waiting_on_you`` needs the owner (``gateway/session_teammate_waits.py``).
     Each target's store is read under that target's own profile scope, never this process's."""
     from tools.bot_delivery_status import list_sender_deliveries, stored_live_state
-    from tools.bot_mode_probe import _roster
+    from tools.bot_mode_probe import _profile_for_handle, _roster
 
     profile = params.get("profile") or "default"
-    resolved = "default" if profile.lower() == "hermes" else profile
     root = _root()
     roster = _roster(root)
+    resolved = _profile_for_handle(profile, {name for name, _home in roster})
     if resolved not in dict(roster):
         return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={"reason": "unknown_profile"})
 

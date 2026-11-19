@@ -810,8 +810,11 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         return _abort("fill_unverified", "The browser has no attached page to type into; nothing was written.")
 
     def _insert(text: str, document: Any) -> Optional[dict[str, Any]]:
-        # The same write-time admission every secret script gets (_eval_js_secret): the focus check
-        # before this key can have taken long enough for a human to take the screen.
+        # The same write-time admissions every secret script gets (_eval_js_secret): the channel the
+        # origin check ran on (a plugin page that took the task during the focus check leaves the CDP
+        # session and document as they were), and the screen a human can have taken since.
+        if _eval_channel(task_id)[2] is not None:
+            return _abort("supervisor_required", _MOVED["error"])
         taken = _human_lease_refusal(task_id)
         if taken is not None:
             return _abort("human_has_control", taken["error"])

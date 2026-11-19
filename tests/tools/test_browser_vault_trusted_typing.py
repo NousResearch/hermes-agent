@@ -224,6 +224,45 @@ def test_a_channel_change_during_the_focus_check_reports_the_move(tmp_path):
     assert sup.typed == []
 
 
+@pytest.mark.parametrize("mangled", [False, True], ids=["bulk", "per-key-retype"])
+def test_a_plugin_page_appearing_after_a_focused_answer_stops_the_keystroke(tmp_path, mangled):
+    """The focus check answered ``focused`` on the CDP session, then a plugin page took the task: the
+    session and document are unchanged, so only the channel recheck right before the insert stops
+    the identifier from reaching the browser the operation no longer runs on."""
+    from tools.browser_vault_tool import _MOVED
+
+    sup = _Supervisor(_LOGIN)
+    plugin: dict[str, Any] = {"page": None}
+
+    class _Plugin:
+        name = "fakeplugin"
+
+    reads = {"n": 0}
+    answer = sup._answer
+
+    def mangle_first_read(expression):
+        if mangled and "reverted" in expression:
+            reads["n"] += 1
+            if reads["n"] == 1:  # the bulk insert reads back wrong: retype key by key
+                return {"landed": 0, "reverted": 1, "missing": []}
+        return answer(expression)
+
+    focus_checks = {"n": 0}
+
+    def appear():
+        focus_checks["n"] += 1
+        if focus_checks["n"] == (2 if mangled else 1):  # after the check before the bulk / first key
+            plugin["page"] = _Plugin()
+
+    sup._answer = mangle_first_read
+    sup.on_focus = appear
+    with patch("tools.browser_vault_tool._TYPE_PER_KEY_DELAY_S", 0):
+        out = _fill(sup, tmp_path, page=lambda t: plugin["page"])
+    assert out["success"] is False and out["error_type"] == "supervisor_required", out
+    assert out["error"] == _MOVED["error"]
+    assert sup.typed == ([IDENTIFIER] if mangled else [])
+
+
 def test_a_read_back_refused_for_a_moved_channel_reports_the_move():
     from tools import browser_vault_tool
 

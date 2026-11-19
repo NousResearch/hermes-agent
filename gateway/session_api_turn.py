@@ -225,6 +225,14 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
                                     caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
     check_api_turn(authority, ref, payload)
+    # W1 cycle 1d: the Desktop app's turns enter through THIS admission
+    # (bypassing SessionAuthority._submit where the gateway gate lives).
+    # Screen the same model-visible text before durable admission; a
+    # block verdict raises the hold and the HTTP surface returns the
+    # admission refusal. See gateway/desktop_screen.api_turn_gate
+    # (never raises otherwise; every skip is logged with its reason).
+    from gateway.desktop_screen import api_turn_gate
+    api_turn_gate(authority, sid, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
                         _authorize_write=authority._admission_gate(partial(

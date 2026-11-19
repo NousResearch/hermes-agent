@@ -347,3 +347,25 @@ async def test_bind_turn_wiring_uses_delivery_adapter_for_activity_pane():
     GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
     assert ctx.matrix_activity_pane is not None
     assert ctx.matrix_activity_pane.adapter is adapter
+
+
+@pytest.mark.asyncio
+async def test_bind_turn_wiring_activity_pane_follows_adapter_swap():
+    from gateway.run_turn import GatewayTurnMixin
+
+    first, second = SimpleNamespace(name="matrix"), SimpleNamespace(name="matrix")
+    live = {"adapter": first}
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org")
+    ctx = TurnContext(source=source, tool_progress_enabled=True)
+    host = SimpleNamespace(
+        _delivery_adapter_for=lambda _source: live["adapter"],
+        _run_agent_progress_threading=lambda *_a, **_k: ({"thread_id": "$t"}, "$reply", None),
+        hooks=object(),
+    )
+    turn_runner = SimpleNamespace(
+        _step_callback_sync=object(), _event_callback_sync=object(), _status_callback_sync=object(),
+    )
+    GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
+    assert ctx.matrix_activity_pane.adapter is first
+    live["adapter"] = second
+    assert ctx.matrix_activity_pane.adapter is second

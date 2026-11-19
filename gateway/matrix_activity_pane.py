@@ -19,12 +19,14 @@ class MatrixActivityPane:
     def __init__(
         self,
         *,
-        adapter: Any,
+        adapter: Any = None,
+        resolve_adapter: Optional[Callable[[], Any]] = None,
         chat_id: str,
         reply_to: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        self.adapter = adapter
+        # Zero-arg resolver re-asked at every send/edit, like TurnContext.bind_status_adapter (#138133).
+        self._resolve_adapter = resolve_adapter if resolve_adapter is not None else (lambda: adapter)
         self.chat_id = chat_id
         self.reply_to = reply_to
         self.metadata = dict(metadata or {})
@@ -37,6 +39,12 @@ class MatrixActivityPane:
         self.publish_interval = 0.0
         self._last_publish = float("-inf")
         self._delivered_snapshot = None
+
+    @property
+    def adapter(self) -> Any:
+        """The adapter answering the room NOW. A reconnect retires the turn-start instance; the root
+        event id survives the swap, so the next m.replace goes through the replacement."""
+        return self._resolve_adapter()
 
     SEAL_ATTEMPTS = 3
     TRANSPORT_TIMEOUT = 2.0
@@ -157,9 +165,14 @@ class MatrixActivityPane:
         metadata["_interim_send"] = True
 
         try:
+            adapter = self.adapter
+            if adapter is None:
+                # Reconnect gap: skip this tick; state stays pending for the next one.
+                logger.debug("Matrix activity pane: no live adapter; skipping this update")
+                return None
             if self.root_event_id is None:
                 result = await self._await_transport(
-                    self.adapter.send(
+                    adapter.send(
                         chat_id=self.chat_id,
                         content=body,
                         reply_to=self.reply_to,
@@ -179,9 +192,9 @@ class MatrixActivityPane:
                 "content": body,
                 "metadata": metadata,
             }
-            if getattr(self.adapter, "REQUIRES_EDIT_FINALIZE", False):
+            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
                 kwargs["finalize"] = True
-            result = await self._await_transport(self.adapter.edit_message(**kwargs))
+            result = await self._await_transport(adapter.edit_message(**kwargs))
             if getattr(result, "success", False):
                 self._delivered_snapshot = (lines, footer)
             return result

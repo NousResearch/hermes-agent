@@ -312,3 +312,37 @@ def test_suppressed_warning_does_not_enter_activity_pane(monkeypatch):
     assert queued == []
     runner._status_callback_sync("status", "still working")
     assert queued == ["still working"]
+
+
+@pytest.mark.asyncio
+async def test_pane_re_resolves_adapter_and_edits_same_root_after_swap(caplog):
+    """A reconnect swaps the adapter mid-turn: the next update edits the SAME root via the
+    replacement (#138133), and a reconnect gap (resolver -> None) skips without losing state."""
+    first, second = _PaneAdapter(), _PaneAdapter()
+    live = {"adapter": first}
+    pane = MatrixActivityPane(
+        resolve_adapter=lambda: live["adapter"],
+        chat_id="!room:example",
+        reply_to="$user",
+        metadata={"thread": "kept"},
+    )
+    await pane.append_activity("first tool")
+    assert len(first.sends) == 1 and pane.root_event_id == "$root"
+
+    live["adapter"] = None
+    with caplog.at_level("DEBUG", logger="gateway.matrix_activity_pane"):
+        assert await pane.append_activity("gap tool") is None
+    assert "no live adapter" in caplog.text
+    assert pane.root_event_id == "$root"
+    assert pane.activity_lines == ["first tool", "gap tool"]
+    assert len(first.sends) == 1 and not first.edits
+
+    live["adapter"] = second
+    await pane.append_activity("second tool")
+    assert not second.sends and not first.edits
+    assert [e["message_id"] for e in second.edits] == ["$root"]
+    edit = second.edits[0]
+    assert "gap tool" in edit["metadata"]["matrix_formatted_body"]
+    assert edit["metadata"]["matrix_formatted_body_unprefixed"] is True
+    await pane.close()
+    assert pane.closed and not second.sends and len(first.sends) == 1

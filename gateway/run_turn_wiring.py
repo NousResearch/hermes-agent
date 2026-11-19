@@ -88,7 +88,7 @@ class GatewayTurnWiringMixin:
         if turn_ctx.tool_progress_enabled and adapter is not None and is_matrix_pane_target(adapter, source):
             from gateway.matrix_activity_pane import MatrixActivityPane
             turn_ctx.matrix_activity_pane = MatrixActivityPane(
-                adapter=adapter, chat_id=source.chat_id, reply_to=turn_ctx._progress_reply_to,
+                resolve_adapter=lambda: self._delivery_adapter_for(source), chat_id=source.chat_id, reply_to=turn_ctx._progress_reply_to,
                 metadata=turn_ctx._progress_metadata,
             )
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.

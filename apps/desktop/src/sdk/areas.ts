@@ -9,6 +9,18 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
  *  runs once per registration, not once per route. Page-owned controls that
  *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+/** Agents a plugin runs outside `delegate_task` (a workflow's Kanban workers, a
+ *  harness's subagents): register an `AGENT_ROWS_AREA` data contribution whose
+ *  `rows` are rows in the Agents page's own shape, and register the same id
+ *  again when they change. Their running/queued rows join the status bar's
+ *  Agents count; the page lists them under the plugin's name. Validated,
+ *  capped and namespaced per plugin by the host. */
+export {
+  AGENT_ROWS_AREA,
+  AGENT_ROWS_LIMITS,
+  type AgentRowsContribution,
+  type PluginAgentRow
+} from '@/contrib/agent-rows'
 /** Per-card labels on Kanban tiles: register a `KANBAN_CARD_AREAS.badges`
  *  data contribution whose `decorate({ id, status, tenant, assignee },
  *  { tenants })` returns `{ label, tone?, tooltip? }` (or a few, or `null`). Core paints

@@ -176,6 +176,32 @@ def test_only_the_page_stage_contract_lays_the_page_column(tmp_path):
     ]
 
 
+@pytest.mark.parametrize(
+    "decl",
+    [
+        "margin-top: calc(-1 * var(--portal-page-top));",
+        "margin: calc(0px - var(--portal-page-top)) 0 0;",
+        "margin-block-start: calc(var(--portal-settings-top) * -1);",
+        "translate: 0 calc(-1 * var(--portal-page-top));",
+    ],
+)
+def test_a_row_pulled_into_the_page_top_inset_is_flagged(decl):
+    assert _kinds(GATED.format(decl)) == ["page-top"]
+
+
+@pytest.mark.parametrize(
+    "decl",
+    [
+        "padding-block: var(--portal-page-top) var(--portal-page-end-space);",
+        "margin-top: var(--portal-page-top);",
+        # The settings cards' documented bleed over the column's inline inset.
+        "margin-inline: calc(-1 * var(--portal-settings-inset));",
+    ],
+)
+def test_the_page_top_inset_read_as_space_or_an_inline_bleed_passes(decl):
+    assert _kinds(GATED.format(decl)) == []
+
+
 def test_docs_tables_list_dark_and_light_values_per_token(tmp_path):
     (tmp_path / "shape.css").write_text(
         ":root[data-shell='portal'] {\n  /* Cards, tables, menus. */\n  --portal-radius-card: 4px;\n"

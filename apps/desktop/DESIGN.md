@@ -1158,8 +1158,8 @@ opens "What kind of routine?" with an agent select), the overview row, and NEEDS
 streak, its first plain error sentence, when it tries again, Retry) and a Routine · Agent · When · Last
 run · Status table; on compact the schedule moves under the name. A routine needs attention when its
 newest run failed or did not deliver, or its slot sits overdue past the scheduler's grace (a run in
-flight supersedes the result); the rail button then carries the error-ink dot. The detail keeps the H1
-at the page's y (the breadcrumb rides the top band); on the rail it shows what it does, when and where
+flight supersedes the result); the rail button then carries the error-ink dot. The detail's breadcrumb
+is its first row, at the page top like every page's first row, with the H1 under it; on the rail it shows what it does, when and where
 read-only with an "Edit in <agent>" card, and Runs (each opens as a chat via `openCronRun`; chips only
 where the backend recorded an outcome). In the agent's settings each row has Change, plus Advanced
 (model, missed runs, run limit, remember last run; developer mode adds expression, script, id) and

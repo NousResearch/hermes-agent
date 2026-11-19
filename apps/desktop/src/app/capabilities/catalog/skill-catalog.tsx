@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
+import type { CatalogSource } from '@/types/skill-catalog'
 
 import { skillSearchTerms } from '../skills/skills-data'
 
@@ -82,9 +83,6 @@ function ScopedSkillCatalog({
     retry: false
   })
 
-  const providerSources = (officialData?.provider_sources ?? []).filter(source => source.state !== 'hidden')
-  const providers = useProviderCatalog(providerSources, profile, query ?? '')
-  const providerAction = useProviderAction(profile)
   const hasHubSkills = skills.some(skill => skill.provenance === 'hub')
 
   const {
@@ -118,6 +116,10 @@ function ScopedSkillCatalog({
     retry: false
   })
 
+  const hubProviders = (hubData?.sources ?? []).filter((source): source is typeof source & CatalogSource => 'provider' in source)
+  const providerSources = [...new Map([...hubProviders, ...(officialData?.provider_sources ?? [])].map(source => [source.id, source])).values()].filter(source => source.state !== 'hidden')
+  const providers = useProviderCatalog(providerSources, profile, query ?? '')
+  const providerAction = useProviderAction(profile)
   const catalog = buildSkillCatalog(skills, hubData, officialData, updatesData, providerSources)
 
   // Skills install by name, so a same-named entry can never be added beside the installed one.

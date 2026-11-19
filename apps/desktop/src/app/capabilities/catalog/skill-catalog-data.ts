@@ -37,7 +37,8 @@ export function buildSkillCatalog(skills: SkillInfo[], hubData: SkillHubSourcesR
       }
 
       skillsById.set(installed.id, skill)
-      installedByName.set(skill.name, installed)
+
+      if (!entry.provider) { installedByName.set(skill.name, installed) }
 
       if (entry.provider) { installedByIdentifier.set(entry.identifier, installed) }
 

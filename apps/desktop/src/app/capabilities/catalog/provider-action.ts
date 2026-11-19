@@ -50,7 +50,11 @@ export function useProviderAction(profile: ProfileScope) {
     if (!alive.current) { return }
     const previous = current.current
 
-    if (previous) { setState({ ...previous, operation: next, busy: false, uncertain: false, error: undefined }) }
+    if (previous && next.identifier === previous.identifier && next.action === previous.action && (!previous.operation || next.operation_id === previous.operation.operation_id)) { setState({ ...previous, operation: next, busy: false, uncertain: false, error: undefined }) }
+    else if (previous) { setState({ ...previous, busy: false, uncertain: true, error: 'invalid_response' });
+
+ return }
+
     refresh()
   }
 

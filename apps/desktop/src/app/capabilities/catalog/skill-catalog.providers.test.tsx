@@ -83,6 +83,17 @@ it.each(['never-used', 'previously-used-disabled', 'flag-off', 'signed-out', 'fa
   expect(api.mock.calls.map(([request]) => request)).toEqual([{ path: '/api/skills/hub/official', connectionId: 'local', profile: 'alice', priority: 'foreground' }])
 })
 
+it.each([false, true])('stock local/empty fixture remains unchanged: local=%s', async local => {
+  api.mockResolvedValue(stock)
+  queryClient.setQueryData(['public-catalog', 'skills'], [])
+  const { container } = setup(local ? [{ name: 'Local remainder', description: 'Edited local bytes', category: '', enabled: true, provenance: 'agent' }] : [])
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(1))
+  expect(container.textContent).toMatchSnapshot()
+  expect(Array.from(container.querySelectorAll('button')).map(button => button.getAttribute('aria-label') ?? button.textContent)).toMatchSnapshot()
+  expect(api.mock.calls.map(([request]) => request.path)).toEqual(['/api/skills/hub/official'])
+  expect(screen.queryByText('Team skills')).toBeNull()
+})
+
 it('bootstraps descriptors without hub installs and keeps same-named public and provider cards distinct', async () => {
   setup()
   const card = await teamCard()
@@ -258,6 +269,17 @@ it.each(['review_changed', 'review_expired', 'ownership_conflict'])('%s clears a
   expect(screen.queryByRole('button', { name: 'Recover original operation' })).toBeNull()
 })
 
+it('never accepts another item operation as the confirmation result', async () => {
+  confirmResponse = { ...completed, identifier: 'other:item' }
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByRole('alert')
+  expect(screen.queryByText('installed', { selector: '[role="status"]' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Recover original operation' })).toBeTruthy()
+})
+
 it('leaves a prior operation recoverable after closing and reopening its card', async () => {
   confirmResponse = { ok: false, error: { code: 'outcome_unknown', message: 'Lost response' } }
   setup()
@@ -291,6 +313,69 @@ it('never mistakes a provider partial failure for an empty library', async () =>
   setup()
   await screen.findByText('Source offline')
   expect(screen.queryByText('This source has no matching skills.')).toBeNull()
+})
+
+it('bootstraps descriptors from an already requested hub response', async () => {
+  api.mockImplementation(async ({ path }: { path: string }) => {
+    if (path.endsWith('/official')) { return stock }
+
+    if (path.endsWith('/sources')) { return { sources: [source], installed: {}, featured: [] } }
+
+    if (path.endsWith('/updates')) { return { updates: [] } }
+
+    if (path.includes('/search')) { return search }
+    throw new Error(`Unexpected request ${path}`)
+  })
+  setup([{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await teamCard()
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/sources'))).toHaveLength(1)
+})
+
+it('keeps hub identity when a same-named team row follows the local hub row', async () => {
+  queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
+    { name: 'Example skill', description: 'Hub catalog', source: 'github', identifier: 'github:org/example', installIdentifier: 'github:org/example' }
+  ]))
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => request.path.endsWith('/sources') ? Promise.resolve({ sources: [source], installed: { 'github:org/example': { name: 'Example skill' } }, featured: [] }) : original(request))
+  setup([
+    { name: 'Example skill', description: 'Hub bytes', category: '', enabled: true, provenance: 'hub' },
+    { name: 'Example skill', description: 'Managed', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '2', managed_state: 'installed', installation_revision: 'r1', actions: ['update', 'uninstall'] } as SkillInfo
+  ])
+  await teamCard()
+  await waitFor(() => expect(api.mock.calls.some(([request]) => request.path.endsWith('/sources'))).toBe(true))
+  expect(screen.getAllByRole('article')).toHaveLength(2)
+  expect(screen.getAllByRole('article').some(article => article.textContent?.includes('Hub catalog'))).toBe(true)
+})
+
+it('shows an empty ready library without a failure alert', async () => {
+  searchResponse = { results: [], next_cursor: null }
+  setup()
+  await screen.findByText('This source has no matching skills.')
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('reads pending operations without a second confirmation', async () => {
+  confirmResponse = { ...completed, state: 'pending', outcome: null, settlement: 'reconciling' }
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByText('installed', { selector: '[role="status"]' })
+  expect(api.mock.calls.filter(([request]) => request.path === '/api/skills/hub/confirm')).toHaveLength(1)
+  expect(api.mock.calls.find(([request]) => request.path.startsWith('/api/skills/hub/operation'))?.[0]).toMatchObject(profile)
+})
+
+it.each(['connectionId', 'profile'] as const)('drops a pending review on %s switch', async field => {
+  let resolve!: (value: unknown) => void
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => request.path.endsWith('/review') ? new Promise(done => { resolve = done }) : original(request))
+  const view = setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  await waitFor(() => expect(resolve).toBeTruthy())
+  view.rerender(<QueryClientProvider client={queryClient}><SkillCatalog profile={{ ...profile, [field]: 'other' }} renderInstalledDetail={() => null} skills={[]} /></QueryClientProvider>)
+  await act(async () => resolve(review))
+  expect(screen.queryByRole('dialog', { name: 'Review install' })).toBeNull()
+  expect(api.mock.calls.some(([request]) => request.path.endsWith('/confirm'))).toBe(false)
 })
 
 it('drops a late provider response when the connection changes', async () => {

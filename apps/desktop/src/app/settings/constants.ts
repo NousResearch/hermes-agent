@@ -481,6 +481,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     maxRecordingSeconds: 'Max Recording Length',
     autoTts: 'Read Responses Aloud',
+    clientDirect: 'Direct Voice Connection',
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
@@ -653,7 +654,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   memory: {
     memoryEnabled: 'Save durable memories that can help future sessions.',
-    userProfileEnabled: 'Maintain a compact profile of user preferences.'
+    userProfileEnabled: 'Maintain a compact profile of user preferences.',
+    provider: 'Memory provider plugin'
   },
   context: {
     engine: 'Strategy for managing long conversations near the context limit.'
@@ -670,6 +672,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   voice: {
     autoTts: 'Automatically speak assistant responses.',
+    clientDirect:
+      'The app calls your speech-to-text and text-to-speech providers itself instead of relaying audio through the gateway. Providers that only run on the gateway host (local Whisper, Edge TTS, command providers) always relay.',
     voiceChatMode:
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {

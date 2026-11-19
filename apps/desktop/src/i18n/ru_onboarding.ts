@@ -75,5 +75,12 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} вход / ${output} выход за Mtok`,
   change: 'Изменить',
   startChatting: 'Начать',
-  docs: provider => `Документация ${provider}`
+  docs: provider => `Документация ${provider}`,
+  providerNames: {
+    anthropic: 'Аккаунт Anthropic',
+    'claude-code': 'Anthropic OAuth: для подписки нужны кредиты Extra Usage',
+    'openai-codex': 'Подписка ChatGPT или Codex'
+  },
+  customEndpointName: 'Локальная или своя конечная точка',
+  directApiAccess: provider => `Прямой доступ к API ${provider}.`
 }

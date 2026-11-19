@@ -4182,6 +4182,17 @@ export const deOverrides = {
     versionDetailsBackend: 'Verbundenes Backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build-Ursprung',
+    versionDetailsSource: {
+      build: 'Build',
+      ci: 'CI',
+      'commit-build': 'Commit-Build',
+      docker: 'Docker',
+      fallback: 'Fallback',
+      git: 'Git',
+      local: 'Lokal',
+      nix: 'Nix',
+      unknown: 'Unbekannt'
+    },
     versionDetailsDistribution: 'Distribution',
     versionDetailsDistributionDesktop: 'Desktop-App',
     versionDetailsDistributionDesktopMsix: 'Desktop-App (MSIX)',

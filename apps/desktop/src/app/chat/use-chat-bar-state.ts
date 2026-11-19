@@ -4,6 +4,7 @@ import type * as React from 'react'
 import { useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { quickModelOptions } from '@/lib/chat-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 
@@ -40,6 +41,8 @@ export function useChatBarState({
   reasoningMenuContent,
   requestModelOptionsForOwner
 }: ChatBarStateOptions): ChatBarState {
+  const { t } = useI18n()
+
   const modelOptionsQuery = useQuery<ModelOptionsResult>({
     queryKey: modelOptionsQueryKey(
       modelOptionsProfile || activeGatewayProfile,
@@ -77,7 +80,7 @@ export function useChatBarState({
       },
       tools: {
         enabled: true,
-        label: 'Add context',
+        label: t.composer.addContext,
         suggestions: contextSuggestions
       },
       voice: {
@@ -93,7 +96,8 @@ export function useChatBarState({
       modelMenuContent,
       quickModels,
       reasoningMenuContent,
-      supportsReasoning
+      supportsReasoning,
+      t.composer.addContext
     ]
   )
 }

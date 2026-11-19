@@ -127,7 +127,7 @@ describe('group-chat hydration', () => {
   it("keeps a stored room's Desktop engine and adds none to a room without one", async () => {
     try {
       plugin.register({
-        i18n: { register: () => () => undefined },
+        i18n: { onLocaleChange: () => () => undefined, register: () => () => undefined, t: (key: string) => key },
         onDispose: () => undefined,
         register: () => () => undefined,
         storage: { get: async (key: string) => (key === 'group-chats' ? stored : undefined), set: async () => undefined }

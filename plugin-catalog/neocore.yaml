@@ -1,9 +1,9 @@
 name: neocore
 title: NeoCore
 repo: https://github.com/VincentPorquet777/neocore
-sha: 7491574e47f9c898295cabfff20a7594f5b46b9f
+sha: fb8140eabe2db7bab7d858a6a963d1ca52c3431b
 subdir: integrations/hermes
-version: "0.3.1"
+version: "0.3.2"
 description: >-
   One memory for every AI harness you use: your own Hermes conversations (CLI, desktop, and
   direct messages from the ids in `owners`) share the NeoCore memory that Claude Code and Codex
@@ -18,8 +18,10 @@ description: >-
   sent to the memory server that machine was connected to; other chats in
   $HERMES_HOME/neocore/memory.db. Text is stored after Hermes's and NeoCore's secret scrubbing.
   After the owner's turns, at most once every 5 minutes, a detached `neocore sync` process
-  indexes the memory and, if that memory is set up with a background model (an installed Codex
-  or Claude Code CLI, or one named in its config; `neocore doctor` shows which, or none), forms
+  indexes the memory and, if that memory is set up with a background model (the one named in its
+  config, else the first installed of the Hermes CLI, on the model and provider set up in
+  Hermes, with no tools, rules or memory, one turn and a tool session kept out of session lists,
+  then the Codex or Claude Code CLI; `neocore doctor` shows which, or none), forms
   dated facts and a short briefing with it, as NeoCore does for Claude Code and Codex; on such a
   machine it also reads Claude Code and Codex transcripts, as their own NeoCore hooks do. Recall
   itself never calls a model unless the optional hosted relevance filter was chosen at setup.
@@ -31,14 +33,14 @@ description: >-
   from the NeoCore GitHub release, switched on only if a speed check passes; it runs a local
   scoring server on 127.0.0.1:8796 that keeps nothing. shared: off keeps Hermes on a memory of
   its own; neosift: off disables NeoSift. No telemetry. Subagent, cron and flush contexts never
-  write. Programs it starts (the detached sync, the Codex or Claude Code CLI, the NeoSift
-  server) get a minimal environment without Hermes's provider keys; only a key the NeoCore config
-  itself names is passed.
+  write. Programs it starts (the detached sync, the Hermes, Codex or Claude Code CLI, the
+  NeoSift server) get a minimal environment without Hermes's provider keys (the Hermes CLI reads its own);
+  only a key the NeoCore config itself names is passed.
 maintainer: VincentPorquet777
 tier: community
 category: memory
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/VincentPorquet777/neocore/blob/7491574e47f9c898295cabfff20a7594f5b46b9f/integrations/hermes/README.md
+docs_url: https://github.com/VincentPorquet777/neocore/blob/fb8140eabe2db7bab7d858a6a963d1ca52c3431b/integrations/hermes/README.md
 capabilities:
   provides_tools: []
   provides_hooks: []

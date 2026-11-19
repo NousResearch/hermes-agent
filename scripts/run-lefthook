@@ -6,19 +6,36 @@
 # checkout's `.venv` and editable-installs the checkout into it, so a `.venv` linked to
 # another checkout's venv re-pointed that checkout at this tree's code on every commit.
 # Hooks are shared by every worktree of a clone, so the clone's main checkout is searched too.
+#
+# Only lefthook starts here, with no environment setup: lefthook filters the staged files
+# first, and a job that matches resolves its own environment (scripts/hook-just).
 top="$(git rev-parse --show-toplevel)" || exit 1
 common="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)" || exit 1
 os="$(uname | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
 exe=
 case "$os" in mingw*|msys*|cygwin*) os=windows exe=.exe ;; esac
+pkg="lefthook-$os-$arch"
 found=
-# pnpm's native binary, not the node_modules/.bin shim: that one needs node on PATH,
-# which a commit from an unactivated shell does not have.
+pick() {
+    if [ -z "$found" ] && [ -x "$1" ]; then
+        found="$1"
+    fi
+}
 for root in "$top" "$common"; do
-    for candidate in "$root"/node_modules/.pnpm/lefthook-"$os"-"$arch"@*/node_modules/lefthook-"$os"-"$arch"/bin/lefthook"$exe"; do
-        if [ -z "$found" ] && [ -x "$candidate" ]; then
-            found="$candidate"
+    # pnpm's isolated layout. The native binary, not the node_modules/.bin shim: that one
+    # needs node on PATH, which a commit from an unactivated shell does not have.
+    for candidate in "$root"/node_modules/.pnpm/"$pkg"@*/node_modules/"$pkg"/bin/lefthook"$exe"; do
+        pick "$candidate"
+    done
+    # The hoisted layouts (npm, `pnpm --node-linker=hoisted`): the generated hook's own list,
+    # minus its package-manager and `uv run` fallbacks.
+    for dir in "" /web /apps/bootstrap-installer /apps/desktop /ui-tui /apps/shared /tests-js; do
+        pick "$root$dir/node_modules/$pkg/bin/lefthook$exe"
+        pick "$root$dir/node_modules/@evilmartians/lefthook/bin/$pkg/lefthook$exe"
+        pick "$root$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook$exe"
+        if command -v node >/dev/null 2>&1; then
+            pick "$root$dir/node_modules/lefthook/bin/index.js"
         fi
     done
 done
@@ -29,9 +46,4 @@ if [ -z "$found" ]; then
     echo "git hooks skipped: lefthook is not installed (run pnpm install at the repo root)" >&2
     exit 0
 fi
-# The jobs call `just`, a PM tool: an unactivated shell gets it from this checkout's own
-# environment (scripts/run-in-hermes-env), never from a venv on PATH.
-if command -v just >/dev/null 2>&1; then
-    exec "$found" "$@"
-fi
-exec "$top/scripts/run-in-hermes-env" "$found" "$@"
+exec "$found" "$@"

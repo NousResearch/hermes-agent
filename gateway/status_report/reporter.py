@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import itertools
 import logging
 import random
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 from agent.runtime_scope import bind_state, scope_for_profile
 from gateway.status import acquire_scoped_lock
@@ -35,6 +37,11 @@ _GOODBYE_TIMEOUT_S = 3.0
 _GOODBYE_QUIET_S = 60.0
 _TICK_S = 1.0
 _LOCK_SCOPE = "status-report"
+# Two: a goodbye must not queue behind a beat still waiting for its reply (up to its timeout).
+_THREADS = 2
+_THREAD_NAME = "status-report"
+
+_T = TypeVar("_T")
 
 
 def _jittered(interval_s: float) -> float:
@@ -51,8 +58,9 @@ class StatusReporter:
     the wake. Compared on ``time.time()`` the deadline is already past by then, and the first report
     after a wake goes out within a tick.
 
-    State is in memory only and changes only on the event loop; file and network work runs on
-    worker threads."""
+    State is in memory only and changes only on the event loop. File and network work runs on the
+    reporter's own threads, never the loop's default ones: the suspend lever runs there, and a
+    report waiting for its reply must not delay it."""
 
     def __init__(self, target: ReportTarget, *, launch_home: Path,
                  read_source: Callable[[], Mapping[str, Any]] = read_status_source, opener: Any = None) -> None:
@@ -75,6 +83,7 @@ class StatusReporter:
         self._poll_failures: set[str] = set()
         self._last_kind: Optional[str] = None
         self._goodbyes: set[asyncio.Task] = set()
+        self._pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
     async def run(self, is_running: Callable[[], bool], *, tick: float = _TICK_S) -> None:
         """Poll until the gateway stops. The sleep between polls only bounds how soon a due report
@@ -91,6 +100,20 @@ class StatusReporter:
             if self._is_sender:
                 self._is_sender = False
                 release_scoped_lock(_LOCK_SCOPE, self._target.url)
+            pool, self._pool = self._pool, None
+            if pool is not None:
+                pool.shutdown(wait=False)  # work already running finishes; its threads then end
+
+    def _submit(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> concurrent.futures.Future[_T]:
+        """Run *fn* on the reporter's own threads, in a copy of the caller's context (as
+        ``asyncio.to_thread`` does). The pool is made on first use, so a watcher that is respawned
+        after it stopped gets a new one."""
+        if self._pool is None:
+            self._pool = concurrent.futures.ThreadPoolExecutor(_THREADS, thread_name_prefix=_THREAD_NAME)
+        return self._pool.submit(contextvars.copy_context().run, fn, *args, **kwargs)
+
+    async def _off_loop(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        return await asyncio.wrap_future(self._submit(fn, *args, **kwargs))
 
     def _poll_failed(self, exc: Exception, *, goodbye_since: bool = False) -> None:
         """A poll that raised costs one interval, never the watcher: a supervised task that keeps
@@ -122,7 +145,7 @@ class StatusReporter:
         body = retry or await self._next_report("beat")
         if self._goodbyes_said != goodbyes_said:
             return  # a goodbye went out while this beat was prepared: it is superseded, and the goodbye set the next one
-        outcome = await asyncio.to_thread(
+        outcome = await self._off_loop(
             post_report, self._target, body, timeout=_BEAT_TIMEOUT_S, opener=self._opener)
         self._settle(outcome, body, retried=retry is not None, after_goodbye=self._goodbyes_said != goodbyes_said)
 
@@ -152,7 +175,7 @@ class StatusReporter:
 
     async def _say_goodbye(self) -> None:
         body = await self._next_report("goodbye")
-        outcome = await asyncio.to_thread(
+        outcome = await self._off_loop(
             post_report, self._target, body, timeout=_GOODBYE_TIMEOUT_S, opener=self._opener)
         logger.info("status report: goodbye %s (%s)", outcome.kind, outcome.status or "no reply")
 
@@ -163,7 +186,7 @@ class StatusReporter:
         it each time matters because a stopped owner counts as gone: a sender that resumes after
         another gateway took its lock stands by instead of reporting beside it."""
         try:
-            acquired, _holder = await asyncio.to_thread(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
+            acquired, _holder = await self._off_loop(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
             # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
@@ -187,7 +210,7 @@ class StatusReporter:
 
     async def _next_report(self, kind: ReportKind) -> bytes:
         seq = next(self._seqs)
-        source = await asyncio.to_thread(self._read_scoped_source)
+        source = await self._off_loop(self._read_scoped_source)
         return build_report(kind, seq=seq, boot_id=self.boot_id, source=source)
 
     def _read_scoped_source(self) -> Mapping[str, Any]:

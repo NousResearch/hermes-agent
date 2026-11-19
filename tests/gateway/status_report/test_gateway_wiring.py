@@ -4,6 +4,7 @@ that reporting is not activity."""
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import types
 import urllib.request
@@ -127,6 +128,10 @@ def _sender_locks() -> list:
     return list(gateway_status._get_lock_dir().glob("*.lock"))
 
 
+def _reporter_threads() -> list[str]:
+    return [thread.name for thread in threading.enumerate() if thread.name.startswith("status-report")]
+
+
 @pytest.mark.asyncio
 async def test_a_gateway_start_runs_the_watcher_to_its_first_beat_and_a_stop_ends_it(monkeypatch):
     credential = new_credential()
@@ -151,6 +156,7 @@ async def test_a_gateway_start_runs_the_watcher_to_its_first_beat_and_a_stop_end
         await settle()
 
     assert _sender_locks() == []
+    await async_wait_until(lambda: not _reporter_threads(), timeout=5, what="the reporter's threads to end")
 
 
 @pytest.mark.asyncio
@@ -249,6 +255,33 @@ async def test_a_hanging_receiver_neither_delays_nor_stops_the_lever(monkeypatch
         assert pulled == ["lever"]
         assert relay.redial == redial  # the suspend ran to its normal end
         assert receiver.answered == 1  # ... while the goodbye was still waiting for its reply
+    finally:
+        hang.set()
+        await settle()
+
+
+@pytest.mark.asyncio
+async def test_a_beat_on_the_wire_neither_delays_the_lever_nor_holds_the_goodbye_back(monkeypatch):
+    """The lever runs on the event loop's default threads, and a beat can wait up to its timeout for
+    a reply. Neither may queue behind the other: however few default threads there are, the lever
+    runs at once, and the goodbye still goes out while the beat waits."""
+    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+    clock = Clock(monkeypatch)
+    runner, _relay, pulled = _suspendable(monkeypatch, "in-guest")
+    receiver, hang = Receiver(), threading.Event()
+    reporter = runner._status_reporter = await _sender(receiver)
+    receiver.reply_with(Reply(hang=hang))
+    _levers(monkeypatch, lambda *args, **kwargs: pulled.append("lever") or True)
+    clock.advance(AFTER_INTERVAL_S)
+    beat = asyncio.create_task(reporter.poll())
+    try:
+        await async_wait_until(lambda: receiver.kinds == ["beat", "beat"], timeout=5, what="a beat on the wire")
+
+        await asyncio.wait_for(runner._scale_to_zero_self_suspend(), timeout=5)
+        await async_wait_until(lambda: receiver.kinds == ["beat", "beat", "goodbye"], timeout=5, what="the goodbye")
+
+        assert pulled == ["lever"]
+        assert not beat.done(), "the beat was answered: this test no longer holds a thread"
     finally:
         hang.set()
         await settle()

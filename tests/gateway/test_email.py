@@ -635,6 +635,7 @@ class TestSessionLifecycle(unittest.TestCase):
             "body": body,
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
         asyncio.run(adapter._dispatch_message(msg_data))
         return captured
@@ -742,6 +743,7 @@ class TestReplySubjectIsolation(unittest.TestCase):
             "body": body,
             "attachments": [],
             "date": "",
+            "sender_authenticated": True,
         }
         asyncio.run(adapter._dispatch_message(msg_data))
         return captured

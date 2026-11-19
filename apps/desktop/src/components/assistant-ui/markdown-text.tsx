@@ -24,6 +24,7 @@ import { defaultRemarkPlugins } from 'streamdown'
 import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { sessionFileOrigin } from '@/components/chat/session-file-origin'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -129,15 +130,15 @@ function useOpenMediaFile(path: string) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const runtimeId = useStore(view.$runtimeId)
-  const sessionId = storedId || runtimeId || ''
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
-        setOpenFailed(true)
-      )
+      // The session's owning profile rides along: the gateway looks the session up there.
+      void sessionFileOrigin(storedId, runtimeId)
+        .then(origin => downloadGatewayMediaFile(path, origin))
+        .catch(() => setOpenFailed(true))
     } else {
       openExternalLink(mediaExternalUrl(path))
     }

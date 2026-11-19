@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionFileOrigin } from '@/components/chat/session-file-origin'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
@@ -206,7 +207,9 @@ export function PreviewAttachment({ target }: { target: string }) {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
+      // Name the session's owning profile too: the gateway looks the session up in the
+      // request's profile, so a chat on another profile than the window's would 404.
+      const result = await downloadGatewayMediaFile(target, await sessionFileOrigin(storedId, runtimeId))
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

@@ -51,7 +51,7 @@ class _FakePage:
         self.href, self.controls, self.writes = href, controls, []
 
     def focus_page(self, origin: str, accept=None) -> dict:
-        return {"ok": bool(origin) and normalize_origin(self.href) == origin, "url": self.href}
+        return {"ok": bool(origin) and normalize_origin(self.href) == origin, "url": self.href, "session_id": "S1"}
 
     def current_page_session(self) -> str:
         return "S1"

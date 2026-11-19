@@ -108,3 +108,13 @@ def test_a_pinned_evaluate_refuses_once_the_supervisor_moved(supervisor):
     assert sup.evaluate_runtime("1 + 1")["ok"] is True
     assert [sid for expr, sid in cdp.evaluates if "s3cret" in expr] == [pinned]
     assert cdp.evaluates[-1] == ("1 + 1", moved)
+
+
+def test_focus_page_names_the_session_it_attached(supervisor):
+    """A vault fill pins the session its origin check ran on: ``focus_page`` reports the session it
+    attached, and that is the one the supervisor then holds."""
+    sup, _cdp = supervisor
+    before = sup.current_page_session()
+    out = sup.focus_page("https://example.com")
+    assert out["ok"] is True
+    assert out["session_id"] == sup.current_page_session() != before

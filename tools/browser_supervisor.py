@@ -337,7 +337,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         so a login and a checkout tab on one site resolve to the right one. When the tab browser_exec
         drives (``set_driven_target``) is on ``origin`` it is the only candidate, probe or not: on a shared
         CDP browser the first same-origin tab can be another session's or a stale one. Returns
-        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        ``{"ok": True, "url", "session_id"}`` (the session it attached, for the caller to pin) or
+        ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -379,7 +380,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         continue
                 with self._state_lock:
                     self._page_session_id = sid
-                return {"ok": True, "url": url}
+                return {"ok": True, "url": url, "session_id": sid}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
         try:

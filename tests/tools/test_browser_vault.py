@@ -480,7 +480,7 @@ class TestBrowserVaultTools:
                 return {"ok": True}
 
             def focus_page(self, origin, accept=None):
-                return {"ok": True, "url": "https://example.com/login"}
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
 
         return [
             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
@@ -606,7 +606,7 @@ class TestBrowserVaultTools:
             return {"ok": True}
 
         def focus_page(self, origin, accept=None):
-            return {"ok": True, "url": "https://example.com/login"}
+            return {"ok": True, "url": "https://example.com/login", "session_id": self.sid}
 
     def test_focus_is_reasserted_before_every_retyped_key(self, store):
         """On the key-by-key retype the page can move focus after the first character; the next
@@ -694,7 +694,7 @@ class TestBrowserVaultTools:
                 return self.sid
 
             def focus_page(self, origin, accept=None):
-                return {"ok": True, "url": "https://example.com/login"}
+                return {"ok": True, "url": "https://example.com/login", "session_id": self.sid}
 
             def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
                 if "location.href" in expression:
@@ -728,7 +728,7 @@ class TestBrowserVaultTools:
             return self.sid
 
         def focus_page(self, origin, accept=None):
-            return {"ok": True, "url": origin + "/login"}
+            return {"ok": True, "url": origin + "/login", "session_id": self.sid}
 
         def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
             self.sent.append((expression, session_id))
@@ -783,10 +783,78 @@ class TestBrowserVaultTools:
                               "label": "", "name": "pw", "type": "password"}], sid=None)
         p = self._supervised(store, sup)
         with p[0], p[1], p[2], p[3], \
-             patch.object(browser_vault_tool, "_bound_page_origin", return_value="https://example.com"):
+             patch.object(browser_vault_tool, "_bound_page_origin",
+                          return_value=browser_vault_tool._CheckedPage("https://example.com")):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
         assert out["success"] is False and out["error_type"] == "supervisor_required"
         assert sup.sent == []
+
+    def test_a_reconnect_after_the_origin_check_does_not_move_the_fill(self, store):
+        """The origin was checked on the tab ``focus_page`` attached. When the supervisor moves to
+        another tab before the fill starts (a reconnect lands on the first page target), the fill
+        stays on the checked session and is refused there, rather than running on the new tab."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        checked = browser_vault_tool._bound_page_origin
+
+        def checked_then_reconnected(*args, **kwargs):
+            out = checked(*args, **kwargs)
+            sup.sid = "S2"
+            return out
+
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3], \
+             patch.object(browser_vault_tool, "_bound_page_origin", side_effect=checked_then_reconnected):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []  # nothing, not even the inspection, reaches the new tab
+
+    def test_a_current_page_check_pins_the_session_it_read(self, store):
+        """No tab was focused, so the origin came from reading the current page. The fill pins the
+        session that read answered on, not whichever one the supervisor holds once the fill starts."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+
+        class _NoFocus(self._RecordingSup):
+            def focus_page(self, origin, accept=None):
+                return {"ok": False, "error": "no open page"}
+
+            def evaluate_runtime(self, expression, **kwargs):
+                out = super().evaluate_runtime(expression, **kwargs)
+                if "location.href" in expression:
+                    self.sid = "S2"  # the reconnect lands right after the origin read
+                return out
+
+        sup = _NoFocus([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                         "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [(expr, sid) for expr, sid in sup.sent if "location.href" not in expr] == []
+        assert [sid for _expr, sid in sup.sent] == ["S1"]  # the origin read itself was pinned
+
+    def test_a_supervisor_that_vanished_after_the_origin_check_refuses_the_fill(self, store):
+        """The origin was checked on a supervisor that is gone from the registry by the time the fill
+        starts. A fresh supervisor that turns up later never inherits the fill unpinned."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        fresh = self._RecordingSup(sup.controls, sid="S9")
+        answers = iter([sup, None])
+
+        p = self._supervised(store, sup)
+        with p[0], p[2], p[3], \
+             patch.object(browser_vault_tool, "_ensure_supervisor", side_effect=lambda t: next(answers, fresh)):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [e for e, _sid in sup.sent + fresh.sent if "s3cret-pw" in e] == []
 
     def test_a_read_back_on_another_origin_stops_at_once(self):
         """The read-back carries the values: once the page has left the bound origin, it is not
@@ -915,7 +983,7 @@ class TestBrowserVaultTools:
                 return "S1"
 
             def focus_page(self, origin, accept=None):
-                return {"ok": True, "url": "https://example.com/login"}
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
 
             def evaluate_runtime(self, expression, *, session_id=None):
                 if "location.href" in expression:
@@ -1015,7 +1083,7 @@ class TestBrowserVaultTools:
                 return {"ok": True}
 
             def focus_page(self, origin, accept=None):
-                return {"ok": True, "url": "https://example.com/login"}
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
@@ -1071,7 +1139,7 @@ class TestBrowserVaultTools:
                 return {"ok": True}
 
             def focus_page(self, origin, accept=None):
-                return {"ok": True, "url": "https://example.com/login"}
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
@@ -1495,6 +1563,28 @@ class TestTwoFactor:
         assert out["success"] is False
         writes = [sid for expr, sid in sup.sent if "246810" in expr]
         assert writes == ["S1"]
+
+    def test_a_reconnecting_supervisor_refuses_the_code(self, store):
+        """enter_code with no page session to pin refuses before the inspection and before anyone is
+        asked for a code: an unpinned write would follow whichever tab the reconnect lands on."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls, sid=None)
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+                 patch.object(browser_vault_tool, "_current_page_origin", return_value="https://acme.test"):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == [] and asked == []
 
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never

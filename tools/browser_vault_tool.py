@@ -35,6 +35,7 @@ import logging
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
 
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
@@ -117,23 +118,35 @@ def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> 
     return {"success": True, "result": result}
 
 
-@contextmanager
-def _pinned_page_session(task_id: str) -> Iterator[Optional[dict[str, Any]]]:
-    """Pin every eval inside this block to the page session the supervisor is on now.
+@dataclass(frozen=True)
+class _CheckedPage:
+    """A page origin and the CDP page session it was checked on. ``session`` is None when there is
+    no session to check: a plugin page backend owns its page, and without a supervisor there is no CDP."""
 
-    Entered once a fill has its bound origin (``_bound_page_origin`` may focus another tab first).
-    A plugin page backend owns its page and has no CDP session, so there is nothing to pin.
-    Yields the refusal to return when a supervisor holds no page session (it is reconnecting):
-    an unpinned fill would follow whichever tab the reconnect lands on.
+    origin: str
+    session: Optional[str] = None
+
+
+@contextmanager
+def _pinned_page_session(task_id: str, checked: Optional[str]) -> Iterator[Optional[dict[str, Any]]]:
+    """Pin every eval inside this block to ``checked``, the page session the origin check ran on.
+
+    The pin is that session, not the one the supervisor holds when the block is entered: a
+    reconnect or a ``focus_page`` in between (a payment prompt can last minutes) moves the
+    supervisor to a tab the origin check never looked at. A plugin page backend owns its page and
+    has no CDP session, so there is nothing to pin.
+    Yields the refusal to return when the supervisor no longer holds the checked session (it moved
+    or is reconnecting, or it is gone), or when there was a supervisor but no session to check.
     """
     supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
-    pinned = supervisor.current_page_session() if supervisor is not None else None
+    attached = supervisor.current_page_session() if supervisor is not None else None
+    cdp = supervisor is not None or checked is not None
     refusal = None
-    if supervisor is not None and not pinned:
+    if cdp and (checked is None or attached != checked):
         refusal = {"success": False, "error_type": "supervisor_required",
-                   "error": "The browser supervisor has no attached page right now (it is reconnecting). "
-                            "Nothing was written; retry in a moment."}
-    token = _fill_session.set(pinned)
+                   "error": "The browser moved to another tab or is reconnecting since the page origin "
+                            "was checked. Nothing was written; retry in a moment."}
+    token = _fill_session.set(checked)
     try:
         yield refusal
     finally:
@@ -279,10 +292,11 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[_CheckedPage]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page).
+    login page). Returns the origin (its URL for ``origin=""``) and the session ``focus_page`` attached
+    when a tab was focused, else None (caller falls back to the current page).
     A plugin page backend's current page IS the tab the agent drove, so there is nothing to focus."""
     if _page_backend(task_id) is not None:
         return None
@@ -293,31 +307,47 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    if not focused.get("ok"):
+        return None
+    return _CheckedPage(origin or str(focused.get("url") or ""), focused.get("session_id"))
 
 
-def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[str, Any]:
+def _current_page_check(task_id: str) -> Optional[_CheckedPage]:
+    """The current page's origin, read on the session the supervisor holds now and returned with it
+    (the read is pinned to it, so a reconnect during the read cannot answer for another tab)."""
+    supervisor = None if _page_backend(task_id) is not None else _ensure_supervisor(task_id)
+    session = supervisor.current_page_session() if supervisor is not None else None
+    token = _fill_session.set(session)
+    try:
+        origin = _current_page_origin(task_id)
+    finally:
+        _fill_session.reset(token)
+    return _CheckedPage(origin, session) if origin else None
+
+
+def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> _CheckedPage | dict[str, Any]:
     """The origin guard every fill of a stored secret (password, one-time code, card, address) passes
-    BEFORE the backend resolves any value: the page origin when it is one of the item's saved origins,
-    else the refusal to return. Manager items may bind several websites; matching is exact and
-    nothing wildcard or parent-domain is inferred. The caller hands the returned origin to ``build_fill_js``,
-    which re-asserts it inside the page immediately before the write (navigation between check and fill)."""
+    BEFORE the backend resolves any value: the checked page (origin + the session it was checked on)
+    when its origin is one of the item's saved origins, else the refusal to return. Manager items may
+    bind several websites; matching is exact and nothing wildcard or parent-domain is inferred. The
+    caller pins the checked session and hands the origin to ``build_fill_js``, which re-asserts it
+    inside the page immediately before the write (navigation between check and fill)."""
     allowed = saved_origins(meta)
     if not allowed:
         return {"success": False, "error_type": "no_origin",
                 "error": f"Vault item {meta.id!r} has no bound origin; {meta.kind} items are filled only on "
                          "the site they were saved for."}
-    page_origin = next((o for o in (_focus_bound_origin(task_id, c, probe_kind) for c in allowed) if o), None)
-    page_origin = page_origin or _current_page_origin(task_id)
-    if not page_origin:
+    page = next((p for p in (_focus_bound_origin(task_id, c, probe_kind) for c in allowed) if p), None)
+    page = page or _current_page_check(task_id)
+    if page is None:
         return {"success": False,
                 "error": "Could not determine the current page origin. Navigate to the login page first."}
-    if page_origin not in allowed:
+    if page.origin not in allowed:
         return {"success": False, "error_type": "origin_mismatch",
-                "error": (f"Refused: current page origin ({page_origin}) does not match the vault item's bound "
+                "error": (f"Refused: current page origin ({page.origin}) does not match the vault item's bound "
                           f"origin(s) ({', '.join(allowed)}). Vault fills only run on the exact origin(s) the "
                           "credential was saved for.")}
-    return page_origin
+    return page
 
 
 # ---------------------------------------------------------------------------
@@ -462,22 +492,21 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     effective_task_id = task_id or "default"
     backend, meta = _saved_login(handle)
     if meta is not None:
-        bound = _bound_page_origin(effective_task_id, meta, "otp")
-        if isinstance(bound, dict):
-            if bound.get("error_type") == "origin_mismatch":
-                bound["next"] = ("If this page asks for the code of a different account, call enter_code without a "
-                                 "handle so the user is asked.")
-            return json.dumps(bound)
-        origin = bound
+        page = _bound_page_origin(effective_task_id, meta, "otp")
+        if isinstance(page, dict):
+            if page.get("error_type") == "origin_mismatch":
+                page["next"] = ("If this page asks for the code of a different account, call enter_code without a "
+                                "handle so the user is asked.")
+            return json.dumps(page)
     else:
         _focus_bound_origin(effective_task_id, "", "otp")
-        origin = _current_page_origin(effective_task_id)
-        if not origin:
+        page = _current_page_check(effective_task_id)
+        if page is None:
             return json.dumps({"success": False, "error": "No page with a code field is open."})
-    with _pinned_page_session(effective_task_id) as unpinned:
+    with _pinned_page_session(effective_task_id, page.session) as unpinned:
         if unpinned is not None:
             return json.dumps(unpinned)
-        return _enter_code_on_page(backend, handle, meta, origin, effective_task_id)
+        return _enter_code_on_page(backend, handle, meta, page.origin, effective_task_id)
 
 
 def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effective_task_id: str) -> str:
@@ -568,18 +597,18 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         )
     # Origin binding pre-check (the authoritative re-check runs inside the fill script), before the user is
     # asked to confirm a card, before the backend's fill_context is entered and before any value is resolved.
-    page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
-    if isinstance(page_origin, dict):
-        return json.dumps(page_origin)
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
+    page = _bound_page_origin(effective_task_id, meta, meta.kind)
+    if isinstance(page, dict):
+        return json.dumps(page)
+    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page.origin):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
-    with backend.fill_context(), _pinned_page_session(effective_task_id) as unpinned:
-        refusal = unpinned or snapshot_refusal(backend, handle, meta, page_origin)
+    with backend.fill_context(), _pinned_page_session(effective_task_id, page.session) as unpinned:
+        refusal = unpinned or snapshot_refusal(backend, handle, meta, page.origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)
+        return _fill_bound_page(backend, handle, meta, page.origin, effective_task_id, with_identifier)
 
 
 def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],

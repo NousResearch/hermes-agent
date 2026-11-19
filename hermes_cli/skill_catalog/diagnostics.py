@@ -9,22 +9,27 @@ from agent.monitoring.redaction import redact_bounded
 
 _home = contextvars.ContextVar('catalog_diagnostic_home', default=None)
 _lock = threading.Lock()
-_handlers = {}
+
+
+class _Sink(RotatingFileHandler):
+    def handleError(self, record):
+        # Diagnostics are best-effort. logging's default prints private data to stderr.
+        return
 
 
 def write(home, text):
-    """Diagnostic failure is not permission to fall back to a terminal stream."""
+    """Bound bytes on disk; retain no profile handles or terminal fallback."""
     try:
-        key = str(home)
         with _lock:
-            handler = _handlers.get(key)
-            if handler is None:
-                path = Path(home) / 'logs/skill-catalog.log'
-                path.parent.mkdir(parents=True, exist_ok=True)
-                handler = _handlers[key] = RotatingFileHandler(path, maxBytes=262144, backupCount=1)
-            record = logging.LogRecord('skill-catalog', logging.INFO, '', 0,
-                                       redact_bounded(text, limit=2048), (), None)
-            handler.emit(record)
+            path = Path(home) / 'logs/skill-catalog.log'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = _Sink(path, maxBytes=262144, backupCount=1)
+            try:
+                record = logging.LogRecord('skill-catalog', logging.INFO, '', 0,
+                                           redact_bounded(text, limit=2048), (), None)
+                handler.emit(record)
+            finally:
+                handler.close()
     except OSError:
         return
 

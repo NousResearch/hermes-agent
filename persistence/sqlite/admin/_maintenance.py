@@ -416,11 +416,20 @@ class _FtsStorageOptimizer:
                 "AND sql LIKE 'CREATE VIRTUAL TABLE%' LIMIT 1"
             ).fetchone():
                 conn.execute("PRAGMA writable_schema=ON")
-                conn.execute(
-                    "DELETE FROM sqlite_master WHERE type = 'table' "
-                    "AND name IN ('messages_fts', 'messages_fts_trigram') AND sql LIKE 'CREATE VIRTUAL TABLE%'"
-                )
-                conn.execute("PRAGMA writable_schema=RESET")
+                delete_completed = False
+                try:
+                    conn.execute(
+                        "DELETE FROM sqlite_master WHERE type = 'table' "
+                        "AND name IN ('messages_fts', 'messages_fts_trigram') AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+                    )
+                    delete_completed = True
+                finally:
+                    try:
+                        conn.execute("PRAGMA writable_schema=RESET")
+                    except sqlite3.Error:
+                        if delete_completed:
+                            raise
+                        logger.warning("Failed to reset writable_schema after FTS demote", exc_info=True)
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "

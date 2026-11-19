@@ -59,6 +59,9 @@ def test_demote_resets_writable_schema_on_delete_error(tmp_path):
     try:
         conn = db._conn
         assert conn is not None
+        schema_query = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+        original_schema = conn.execute(schema_query).fetchone()[0]
+        original_version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
 
         schema_writable = False
 
@@ -77,8 +80,9 @@ def test_demote_resets_writable_schema_on_delete_error(tmp_path):
         finally:
             conn.set_authorizer(None)
 
-        value = conn.execute("PRAGMA writable_schema").fetchone()[0]
-        assert value in (0, None, False), f"writable_schema should be off after failed demote, got {value!r}"
+        assert conn.execute("PRAGMA writable_schema").fetchone()[0] == 0
+        assert conn.execute(schema_query).fetchone()[0] == original_schema
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == original_version
         assert conn.execute("SELECT 1").fetchone()[0] == 1
     finally:
         db.close()

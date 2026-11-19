@@ -438,12 +438,15 @@ class MCPServerRunMixin:
 
     async def _park_initial_failure(self, exc: Exception, revival_reason: str, budget: _RetryBudget,
                                     quiet: bool = False) -> bool:
-        """Publish ``exc`` to ``start()``, park, and on revival reset every counter. False on shutdown.
-        ``quiet=True`` parks without a timed self-probe (a provably unwinnable resource conflict)."""
+        """Publish ``exc`` to ``start()``, park, and on revival leave ONE attempt (like
+        :meth:`_park_and_rearm`). False on shutdown. ``quiet=True`` parks without a timed
+        self-probe (a provably unwinnable resource conflict)."""
         self._publish_error(exc)
         if await self._park(revival_reason, quiet=quiet):
             return False
-        budget.initial_retries = self._reconnect_retries = 0
+        # A full ladder per wake respawned a still-broken stdio child 4x every interval forever
+        # (each `npx` run leaving cache behind: hermes-official-plugins#401).
+        budget.initial_retries, self._reconnect_retries = _core._MAX_INITIAL_CONNECT_RETRIES, 0
         budget.backoff = 1.0
         self._error = None
         self._ready.clear()

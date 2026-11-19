@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from utils import read_json_or_empty
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -99,20 +101,12 @@ def _install_modal_test_modules(
         def __init__(self, exec_fn, cancel_fn=None):
             pass
 
-    def _load_json_store(path):
-        if path.exists():
-            try:
-                return json.loads(path.read_text())
-            except Exception:
-                pass
-        return {}
-
     def _save_json_store(path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2))
 
     def _update_json_store(path, update):
-        data = _load_json_store(path)
+        data = read_json_or_empty(path)
         update(data)
         _save_json_store(path, data)
 
@@ -126,7 +120,6 @@ def _install_modal_test_modules(
     sys.modules["tools.environments.base"] = types.SimpleNamespace(
         BaseEnvironment=_DummyBaseEnvironment,
         _ThreadedProcessHandle=_DummyThreadedProcessHandle,
-        _load_json_store=_load_json_store,
         _save_json_store=_save_json_store,
         _update_json_store=_update_json_store,
         _file_mtime_key=_file_mtime_key,
@@ -262,7 +255,7 @@ def test_concurrent_snapshot_stores_keep_both_tasks(tmp_path, monkeypatch):
     from tests.waiting import wait_until
 
     contended = watch_file_lock_contention(monkeypatch)
-    original_load = base_module._load_json_store
+    original_load = base_module.read_json_or_empty
     a_loaded = threading.Event()
     release_a = threading.Event()
 
@@ -273,8 +266,7 @@ def test_concurrent_snapshot_stores_keep_both_tasks(tmp_path, monkeypatch):
             release_a.wait(10)
         return data
 
-    monkeypatch.setattr(base_module, "_load_json_store", load_then_block_in_a)
-    monkeypatch.setattr(modal_module, "_load_json_store", load_then_block_in_a)
+    monkeypatch.setattr(base_module, "read_json_or_empty", load_then_block_in_a)
 
     cleanup_a = threading.Thread(
         target=modal_module._store_direct_snapshot, args=("task-A", "im-AAAA"), name="cleanup-A")

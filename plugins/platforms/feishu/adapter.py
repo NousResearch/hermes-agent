@@ -25,7 +25,6 @@ import collections
 import concurrent.futures
 import contextvars
 import hashlib
-import hmac
 import itertools
 import json
 import logging
@@ -103,7 +102,7 @@ from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    get_scoped_secret as _get_scoped_secret, secrets_match, send_error, timestamp_fresh
 )
 
 
@@ -2395,7 +2394,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                                                   actor_id=user_id or open_id, extra=self.config.extra)
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
+                count, state["session_key"], choice, user_id or open_id,
             )
             if not count and choice != "deny":
                 # The card already reads "Approved" (synchronous callback), but nothing was
@@ -2426,7 +2425,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             self._write_update_prompt_response(answer)
             logger.info(
                 "Feishu update prompt resolved for session %s (answer=%s, user=%s)",
-                state["session_key"], answer, user_name,
+                state["session_key"], answer, user_id or open_id,
             )
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
@@ -2590,9 +2589,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         chat_id = getattr(message, "chat_id", "") or ""
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text_len=%d media=%d",
             "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
-            "bot" if is_bot else "user", sender_primary, text[:120], len(media_urls),
+            "bot" if is_bot else "user", sender_primary, len(text), len(media_urls),
         )
 
         chat_info = await self.get_chat_info(chat_id)
@@ -2782,10 +2781,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         if self._verification_token:
             header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
-            # compare_digest as bytes — it raises TypeError on non-ASCII str, and the token is remote input.
-            if not incoming_token or not hmac.compare_digest(
-                incoming_token.encode(), self._verification_token.encode()
-            ):
+            if not secrets_match(incoming_token, self._verification_token):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
@@ -2836,7 +2832,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
     }
 
     def _is_webhook_signature_valid(self, headers: Any, body_bytes: bytes) -> bool:
-        """Timing-safe check of x-lark-signature == SHA256(timestamp + nonce + encrypt_key + body)."""
+        """Timing-safe check of x-lark-signature == SHA256(timestamp + nonce + encrypt_key + body), within the replay window."""
         timestamp, nonce, signature = (
             str(headers.get(name, "") or "")
             for name in ("x-lark-request-timestamp", "x-lark-request-nonce", "x-lark-signature")
@@ -2846,8 +2842,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         try:
             body_str = body_bytes.decode("utf-8", errors="replace")
             computed = hashlib.sha256(f"{timestamp}{nonce}{self._encrypt_key}{body_str}".encode()).hexdigest()
-            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the header is remote input.
-            return hmac.compare_digest(computed.encode(), signature.encode())
+            # The signature covers the timestamp, so a stale one is a captured request being replayed
+            # (the persisted message-id dedup only remembers 24 h).
+            return secrets_match(signature, computed) and timestamp_fresh(timestamp)
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)
             return False
@@ -3385,7 +3382,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         if text:
             self._warned_empty_allowlist_deny = True
-            logger.warning(text)
+            logger.warning(text)  # health: allow HX017 -- operator remedy text, built from config, no user content
 
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None
@@ -4256,7 +4253,7 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
 # migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
 # touchpoints (the Platform.FEISHU elif in gateway/run.py, the feishu_cfg YAML→env block +
 # _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
-# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
+# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in gateway/outbound/send.py).
 # ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

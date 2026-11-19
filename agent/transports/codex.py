@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, GPT62_MODEL_IDS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
@@ -19,6 +19,7 @@ from agent.reasoning_effort import (
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from agent.codex_headers import is_official_codex_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,13 @@ def _is_openai_api_origin(base_url: Any) -> bool:
 
 
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra on the canonical API origin only."""
+    """Strict Astra/GPT-6.2 API contract, plus GPT-6.2 on official Codex and residency hosts."""
+    from utils import base_url_hostname
+
+    bare = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    if bare in GPT62_MODEL_IDS:
+        return (_is_openai_api_origin(base_url) or is_official_codex_base_url(str(base_url or ""))
+                or base_url_hostname(str(base_url or "")) in {"us.api.openai.com", "eu.api.openai.com"})
     return is_astra_model(model) and _is_openai_api_origin(base_url)
 
 
@@ -407,10 +414,10 @@ def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: boo
 
 
 def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url: Any) -> None:
-    """Astra's official-API contract, applied AFTER ``request_overrides`` so an override can't put a
+    """Astra/GPT-6.2's official-API contract, applied AFTER overrides so they can't put a
     rejected field back on the wire: ``reasoning.effort`` is ``low..max`` only (``none``/``minimal``
-    400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side (the
-    pre-5.6 ``prompt_cache_retention`` knob is dropped here; ``prompt_cache_options`` is already
+    400), sampling and logprob knobs are rejected, and the legacy cache-retention knob is
+    dropped here; the SDK-unsupported top-level ``prompt_cache_options`` is already
     stripped on every route by ``build_kwargs``)."""
     if not _is_official_openai_responses_route(model, base_url):
         return

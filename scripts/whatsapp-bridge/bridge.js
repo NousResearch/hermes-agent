@@ -713,8 +713,10 @@ async function startSocket() {
             writeJsonLine({
               event: 'ignored',
               reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
+              // Every other chat on the owner's own account lands here: full ids would turn
+              // bridge.log into a contact and group list (#149860).
+              chatId: redactWhatsAppId(chatId),
+              senderId: redactWhatsAppId(senderId),
             });
           } catch {}
           continue;

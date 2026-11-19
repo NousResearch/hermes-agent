@@ -1,7 +1,7 @@
 """``/moa`` then ``/refine`` on a local session (T7).
 
-``/moa`` arms a one-shot model swap and drops the session's cached agent; when its turn settles the
-restore drops the MoA-built agent too. ``/refine`` used to read the conversation off the cached
+``/moa``'s turn runs on an agent built for the preset, and that agent is dropped when the turn
+settles, so no cached agent is left. ``/refine`` used to read the conversation off the cached
 agent, so straight after a ``/moa`` turn it answered "Nothing to refine yet". The conversation
 belongs to the session (its stored transcript), so ``/refine`` still finds it.
 
@@ -39,6 +39,9 @@ def test_local_refine_finds_the_conversation_after_a_moa_turn(tmp_path):
         'gateway': {'multiplex_profiles': False},
         'model': {'provider': 'custom', 'default': 'refine-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}},
+        # /moa runs the default preset: its references and aggregator stay on the loopback model.
+        'moa': {'presets': {'default': {'reference_models': [{'provider': 'custom', 'model': 'refine-model'}],
+                                        'aggregator': {'provider': 'custom', 'model': 'refine-model'}}}},
     }))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),

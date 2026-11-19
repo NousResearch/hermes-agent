@@ -958,25 +958,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if command_id and not text.startswith("/"):
                 text = f"/cmd_{command_id} {text}".strip()
 
-        media_urls: list[str] = []
-        media_types: list[str] = []
-        message_type = MessageType.TEXT
-        for att in msg.get("attachment") or []:
-            try:
-                local_path, mime = await self._download_attachment(att)
-            except Exception as exc:
-                logger.error("[GoogleChat] attachment download failed: %s", _exc_text(exc), exc_info=not _proxy_error(exc))
-                continue
-            if not local_path:
-                continue
-            media_urls.append(local_path)
-            media_types.append(mime or "application/octet-stream")
-            # Prefer the first-seen type for MessageType if no text present.
-            if message_type == MessageType.TEXT and not text:
-                message_type = _mime_for_message_type(mime or "")
-        if slash:
-            message_type = MessageType.COMMAND
-
         # PRE-increment count (persisted) drives the main-flow-vs-side-thread heuristic.
         prev_thread_count = self._thread_count_store.incr(space_name, thread_name) if thread_name and space_name else 0
         # DMs: prev_count == 0 → Chat auto-created this thread for a top-level message: share one
@@ -994,6 +975,31 @@ class GoogleChatAdapter(BasePlatformAdapter):
             session_thread_id = thread_name
             if thread_name and space_name:
                 self._last_inbound_thread[space_name] = thread_name
+
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        message_type = MessageType.TEXT
+        # The fetch spends the bot's credentials and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The message still dispatches so the runner applies denial/pairing.
+        attachments = msg.get("attachment") or []
+        if attachments and self._is_sender_authorized(sender_email or sender_name, chat_type, space_name,
+                                                      thread_id=session_thread_id) is not True:
+            attachments = []
+        for att in attachments:
+            try:
+                local_path, mime = await self._download_attachment(att)
+            except Exception as exc:
+                logger.error("[GoogleChat] attachment download failed: %s", _exc_text(exc), exc_info=not _proxy_error(exc))
+                continue
+            if not local_path:
+                continue
+            media_urls.append(local_path)
+            media_types.append(mime or "application/octet-stream")
+            # Prefer the first-seen type for MessageType if no text present.
+            if message_type == MessageType.TEXT and not text:
+                message_type = _mime_for_message_type(mime or "")
+        if slash:
+            message_type = MessageType.COMMAND
         source = self.build_source(
             chat_id=space_name, chat_name=space.get("displayName") or space.get("name") or "", chat_type=chat_type,
             # Email is the canonical id (allowlists use emails); the ``users/{id}``

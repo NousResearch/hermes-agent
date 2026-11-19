@@ -3,7 +3,8 @@
 from copy import deepcopy
 import json
 
-from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
+from agent.message_sanitization import deterministic_call_id, uniquify_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
 from agent.transports.types import ToolCall
 from tools.connectors import is_connector_name
 from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH

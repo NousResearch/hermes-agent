@@ -664,6 +664,10 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                    expected_config=expected_config, plugin=name if enable else None,
                                    settled=(name, *aliases))
+    entry = _find_plugin_entry(name)
+    if entry is not None and entry[3] != "bundled":
+        from hermes_cli.plugin_shell_commands import sync_plugin_commands
+        sync_plugin_commands(Path(entry[4]), console)
 
 
 def _refuse_recalled_entry(entry: Optional[tuple]) -> None:
@@ -1138,8 +1142,19 @@ def _action_idle_tasks(args):
     cmd_idle_tasks(args.name, pause=args.pause, resume=args.resume)
 
 
+def _action_run_shell(args):
+    from hermes_cli.plugin_shell_commands import run_command
+    try:
+        return run_command(args)
+    except (ValueError, OSError, ImportError) as exc:
+        from rich.markup import escape
+        _console().print(f"[red]Plugin command unavailable:[/red] {escape(str(exc))}")
+        return 1
+
+
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
 _PLUGIN_ACTIONS = {
+    "run-shell": _action_run_shell,
     "install": lambda args: cmd_install(
         args.identifier,
         force=getattr(args, "force", False),
@@ -1179,10 +1194,10 @@ _PLUGIN_ACTIONS = {
 }
 
 
-def plugins_command(args) -> None:
+def plugins_command(args) -> int | None:
     """Dispatch hermes plugins subcommands."""
     action = getattr(args, "plugins_action", None)
     handler = _PLUGIN_ACTIONS.get(action)
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
-    handler(args)
+    return handler(args)

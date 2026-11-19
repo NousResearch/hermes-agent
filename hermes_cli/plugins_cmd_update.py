@@ -37,6 +37,24 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
     # re-cloning new code, including subdirectory installs that carry no local .git directory.
     from hermes_cli import plugins_cmd_catalog as catalog
     catalog.refuse_if_installed_removed(target.name, target)
+    # Every custom-source path (including subdirectory re-clones and dashboard
+    # updates) must consent before transaction publication, not during launcher
+    # sync after the new declaration is already installed. Keep the existing
+    # unattended surface policy and PM's dependency consent independent.
+    installed_commands = catalog.plugin_surface(_pc()._read_manifest(target), target)["shell_commands"]
+    upstream_gate = surface_gate
+
+    def command_gate(manifest, tree):
+        if upstream_gate is not None:
+            upstream_gate(manifest, tree)
+        added = sorted(catalog.plugin_surface(manifest, tree)["shell_commands"] - installed_commands)
+        if not added:
+            return
+        console = _pc()._console()
+        console.print(f"[yellow]Update adds terminal commands: {', '.join(added)}[/yellow]")
+        if not (interactive and _pc()._is_tty() and _pc()._ask_yes("  Publish these terminal commands? [y/N]: ")):
+            raise catalog.RepinConsentRequired(target.name, "", {"shell_commands": added})
+
     if not (target / ".git").exists():
         source = install_record.get("source")
         if not isinstance(source, str) or not source:
@@ -44,14 +62,14 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
         if before_pull is not None:
             before_pull()
         return _reclone_plugin_update(target, source, install_record.get("revision"),
-                                      force=force, scan_decision_cb=scan_decision_cb, surface_gate=surface_gate,
+                                      force=force, scan_decision_cb=scan_decision_cb, surface_gate=command_gate,
                                       allow_removed=install_record.get("allow_removed") is True)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
 
     return update_plugin(target, interactive=interactive, force=force, scan_decision_cb=scan_decision_cb,
-                         **({"surface_gate": surface_gate} if surface_gate else {}))
+                         surface_gate=command_gate)
 
 
 def _reclone_plugin_update(target: Path, source: str, previous_revision: object, *, force: bool = False,
@@ -95,7 +113,10 @@ def update_one(name: str, target: Path, console, *, interactive: bool = True, fo
     from hermes_cli.plugins_auto_update import plugin_update_lock, unattended_gate
     with plugin_update_lock(target):
         gate = unattended_gate(name, target) if unattended else None
-        return _update_one_locked(name, target, console, interactive=interactive, force=force, surface_gate=gate)
+        moved = _update_one_locked(name, target, console, interactive=interactive, force=force, surface_gate=gate)
+        from hermes_cli.plugin_shell_commands import sync_plugin_commands
+        sync_plugin_commands(target, console)
+        return moved
 
 
 def _update_one_locked(name: str, target: Path, console, *, interactive: bool = True, force: bool = False,

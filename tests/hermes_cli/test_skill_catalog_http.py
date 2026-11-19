@@ -102,14 +102,16 @@ def test_official_and_sources_add_owner_qualified_source(client, catalog):
     assert sources['featured'] == []
 
 
-@pytest.mark.parametrize('route', ['review', 'confirm', 'operation'])
-def test_unregistered_extension_is_stock_404_before_validation(client, route):
-    if route == 'operation':
-        response = client.get('/api/skills/hub/' + route)
-    else:
-        response = client.post('/api/skills/hub/' + route, content='not json')
-    assert response.status_code == 404
-    assert response.json() == {'detail': 'Not Found'}
+def test_unregistered_extensions_match_frozen_pure_main_before_validation(client):
+    from pathlib import Path
+    fixture = Path(__file__).parents[1] / 'fixtures/skill_catalog/stock_extensions.json'
+    frozen = json.loads(fixture.read_text())
+    for case in frozen['requests']:
+        response = client.request(case['method'], case['path'],
+            **({'content': 'not json'} if case['method'] == 'POST' else {}))
+        assert response.status_code == case['status']
+        assert response.content == case['body'].encode()
+        assert dict(response.headers) == case['headers']
 
 
 @pytest.mark.parametrize('payload', [[], {'identifier': 'bad', 'action': 'install'},

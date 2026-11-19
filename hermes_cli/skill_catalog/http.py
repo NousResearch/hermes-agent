@@ -252,5 +252,7 @@ def _updates(service):
 
 
 async def missing_extension(request: Request):
-    """Unregistered extension fallback; disposition of stock 405 is tracked."""
-    raise HTTPException(status_code=404, detail='Not Found')
+    """Preserve the authenticated app's pre-extension fallback bytes and headers."""
+    if request.method == 'POST':
+        raise HTTPException(status_code=405, detail='Method Not Allowed', headers={'Allow': 'GET'})
+    return JSONResponse({'detail': f'No such API endpoint: {request.url.path}'}, status_code=404)

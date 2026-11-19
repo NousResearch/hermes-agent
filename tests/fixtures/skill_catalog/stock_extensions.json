@@ -1,0 +1,9 @@
+{
+  "base_sha": "31ce88f86e6cf4a66ef6aa315e4657a31bcf9915",
+  "source_module": "hermes_cli/web_routers/skills.py",
+  "requests": [
+    {"method":"POST","path":"/api/skills/hub/review","status":405,"body":"{\"detail\":\"Method Not Allowed\"}","headers":{"allow":"GET","content-length":"31","content-type":"application/json","vary":"Origin"}},
+    {"method":"POST","path":"/api/skills/hub/confirm","status":405,"body":"{\"detail\":\"Method Not Allowed\"}","headers":{"allow":"GET","content-length":"31","content-type":"application/json","vary":"Origin"}},
+    {"method":"GET","path":"/api/skills/hub/operation","status":404,"body":"{\"detail\":\"No such API endpoint: /api/skills/hub/operation\"}","headers":{"content-length":"60","content-type":"application/json","vary":"Origin"}}
+  ]
+}

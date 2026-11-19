@@ -49,7 +49,6 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -268,7 +267,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
         plugin_names = plugin_backend_names()
     except Exception:
         plugin_names = []
-    known = ", ".join(f"'{n}'" for n in _BUILTIN_BACKENDS.split(", ") + list(plugin_names))
+    known = ", ".join(f"'{n}'" for n in [*_ENV_BUILDERS, *plugin_names])
     from hermes_cli.left_core_migration import terminal_backend_install_hint
     raise ValueError(f"Unknown environment type: {env_type}. Use {known}{terminal_backend_install_hint(env_type)}")
 
@@ -419,7 +418,7 @@ def _check_plugin_requirements(config: dict[str, Any]) -> bool:
         ok = bool(provider.check_requirements(config))
         return ok or _reject(f"the {env_type!r} plugin backend reported its requirements are not met")
     from hermes_cli.left_core_migration import terminal_backend_install_hint
-    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered "
+    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {', '.join(_ENV_BUILDERS)}, or a plugin-registered "
                    f"backend{terminal_backend_install_hint(env_type)}")
 
 

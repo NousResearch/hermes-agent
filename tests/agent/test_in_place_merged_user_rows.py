@@ -12,8 +12,12 @@ import pytest
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.turn_context import build_api_messages
+from persistence.conversation.messages import ConversationRequest
 from tests.agent import test_in_place_preflight_rewind as _rewind
-from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _turn
+from tests.agent.test_in_place_preflight_rewind import _replies_displayed, _resume, _turn
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages
 
 session = _rewind.session  # shared fixture
 
@@ -45,13 +49,13 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
         _turn(db, agent, cli, surface, n, 5_000)
     rows, expected = KILLED_TURN_LEFT[left]
     for role, content, fields in rows:
-        db.append_message("sid", role, content, **fields)
+        seed_messages(db, "sid", {"role": role, "content": content, **fields})
     if surface == "cli":  # ACP and the classic CLI restore start from the repaired reload
-        cli.conversation_history = db.get_messages_as_conversation("sid", repair_alternation=True)
+        cli.conversation_history = conversation(db, "sid", ConversationRequest(repair_alternation=True))
     elif surface == "resume":  # --resume and the TUI load the same history with row ids
-        cli.conversation_history = db.get_resume_conversations("sid")[0]
+        cli.conversation_history = _resume(db)[0]
     # The repair's row counts ride on the live dicts for the commit; the request copy never carries them.
-    reload = db.get_messages_as_conversation("sid", repair_alternation=True)
+    reload = conversation(db, "sid", ConversationRequest(repair_alternation=True))
     request, _ = build_api_messages(
         agent, reload, current_turn_user_idx=len(reload) - 1,
         ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
@@ -63,15 +67,17 @@ def test_compaction_over_an_unanswered_prompt_keeps_one_copy_of_every_row(sessio
 
     assert getattr(agent, "_last_compaction_in_place", None) is True
     assert {f"A{n}" for n in range(1, 16)} <= _replies_displayed(db)
-    live = [m["content"] for m in db.get_messages_as_conversation("sid") if isinstance(m.get("content"), str)]
+    live = [m["content"] for m in conversation(db, "sid") if isinstance(m.get("content"), str)]
     # The rows the killed turn left are live exactly once (an unanswered prompt only as the merged carried copy).
     assert [c for c in live if "U12x" in c] == expected
-    recalled = [row["content"] for row in db._conn.execute(
-        "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall()]
+    with raw_holder(db)._read_ctx() as conn:
+        recalled = [row["content"] for row in conn.execute(
+            "SELECT content FROM messages WHERE session_id = 'sid' AND (active = 1 OR compacted = 1)").fetchall()]
+        live_tool_rows = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"
+            " AND (role = 'tool' OR tool_calls IS NOT NULL)").fetchone()[0]
     carried = live[next(i for i, c in enumerate(live) if "Numbered steps" in c) + 1:]
     assert [recalled.count(content) for content in carried] == [carried.count(content) for content in carried]
     # No turn here uses a tool, so a live tool row is the killed turn's, appended behind the running turn.
-    assert db._conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE session_id = 'sid' AND active = 1"
-        " AND (role = 'tool' OR tool_calls IS NOT NULL)").fetchone()[0] == 0
+    assert live_tool_rows == 0
     assert [c.split(" ")[0] for c in live[-2:]] == ["U15", "A15"]

@@ -222,7 +222,7 @@ class PendingApproval(OpenModel):
 
 
 class MessageReaction(OpenModel):
-    """One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is
+    """One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is
     stamped once announced."""
 
     emoji: str

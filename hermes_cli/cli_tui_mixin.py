@@ -1523,13 +1523,6 @@ class CLITuiMixin:
                 _cprint(f"  {_ACCENT}{t('cli.tui.redirected_turn', preview=preview)}{_RST}")
             else:
                 self._interrupt_queue.put(payload)
-                try:
-                    with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
-                        _f.write(
-                            f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                            f"agent_running={self._agent_running}\n")
-                except Exception:
-                    pass
         # First-touch onboarding: one-line tip about the /busy knob on the first busy-while-
         # running event for this install; the flag persists to config.yaml. Guarded so
         # onboarding can never break the input loop.

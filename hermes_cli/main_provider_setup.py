@@ -69,7 +69,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
-# child agents via tools/delegate_tool.py::_resolve_delegation_credentials(), which reads that
+# child agents via tools/delegate_tool_config.py::_resolve_delegation_credentials(), which reads that
 # section directly. "auto" means "inherit the parent agent" and is stored as empty strings —
 # never persist the literal "auto", or it would be resolved as a provider name.
 _DELEGATION_TASK_KEY = "delegation"
@@ -168,10 +168,13 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
+    from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+    clear_aux_credentials_on_route_change(entry, provider, base_url)
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
+    from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+    entry["api_key"] = secret_ref_for(aux_api_key_env(task), api_key or "")
     if task == "embedding":
         entry["input_type_handling"] = input_type_handling
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
@@ -181,7 +184,7 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
 
 def _aux_task_takes_reasoning(task: str) -> bool:
     """Whether the task's config block honours ``reasoning_effort``. MoA slots and
-    ``memory_query_rewrite`` omit the key by design (``config_defaults._aux``); ``review``
+    ``memory_query_rewrite`` omit the key by design (``config_defaults_auxiliary._aux``); ``review``
     routes through delegation which reads ``delegation.reasoning_effort``, not its own block."""
     if task == _DELEGATION_TASK_KEY:
         return True
@@ -216,6 +219,11 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
+        # The reset route's key pointers must not wait in the block for the next provider pick,
+        # which would hand them to that provider (#141832). api_key is reset with the fields below.
+        for field in ("key_env", "api_key_env", "api_mode"):
+            if entry.pop(field, None):
+                changed = True
         fields = ("model", "base_url", "api_key", "reasoning_effort")
         if task == "embedding":
             fields += ("dimensions", "input_type_handling")
@@ -459,7 +467,12 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     effort = (_prompt_aux_reasoning_effort(task, _aux_effort_word(task_cfg))
               if _aux_task_takes_reasoning(task) else None)
 
-    _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key, reasoning_effort=effort)
+    try:
+        _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key,
+                         reasoning_effort=effort)
+    except ValueError as exc:  # .env write-locked: the refusal names the variable, never the key
+        print(f"  ✗ {exc}")
+        return
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
           + (f" · reasoning {effort}" if effort else ""))
 
@@ -579,7 +592,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
                           key_env=""):
     """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
     existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    already wrote the key to ``.env``; the entry references it instead of inlining the secret. A
+    literal *api_key* for a NEW entry is written to ``.env`` under the endpoint's name and the entry
+    gets ``key_env`` (#77471); a ``${VAR}`` reference is kept as given and existing entries are
+    never migrated.
 
     See #69449.
     """
@@ -616,6 +632,9 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
     name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
+    if api_key and not key_env:
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
+        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:

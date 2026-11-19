@@ -33,6 +33,14 @@ def _template_regex(template: str) -> re.Pattern[str]:
     return re.compile("".join(fields.get(part) or re.escape(part) for part in parts))
 
 
+# The empty-response ladder's buffered lines (agent/turn_empty_response.py), flushed when the turn ends
+# empty: its final reply explains that, and "switching to fallback..." would otherwise be the chat's last
+# status even though the switch failed. Chat surfaces drop them like the retry counter.
+EMPTY_LADDER_STATUS_PATTERN = (
+    r"model\s+returning\s+empty\s+responses\s+[—-]+\s+switching\s+to\s+fallback"
+    r"|repeatedly\s+returning\s+empty\s+content\s+[—-]+\s+skipping\s+further\s+retries"
+)
+
 _DM_ONLY_STATUS_RES = (_template_regex(CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE),)
 
 

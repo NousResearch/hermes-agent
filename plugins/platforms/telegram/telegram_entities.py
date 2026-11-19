@@ -196,7 +196,24 @@ def expand_link_entities(message: Any) -> str:
     return expanded
 
 
+# The cron delivery header (``cron.wrap_response``); gateway/inbound_reply_context.py frames a
+# reply whose quote starts with it as a past report.
+_CRON_DELIVERY_PREFIX = "Cronjob Response: "
+
+
 def expand_quote_link_entities(quote: Any, replied: Any) -> str:
+    """A native partial quote, links inlined, led by the delivery's header line when the
+    replied-to message is a wrapped cron delivery: a selected line ("Deploy prod now") must keep
+    reading as part of a past report, not as the user's own request (#26714)."""
+    text = _expand_quote_links(quote, replied)
+    source = getattr(replied, "text", None) or getattr(replied, "caption", None) or ""
+    if (text and isinstance(source, str) and source.startswith(_CRON_DELIVERY_PREFIX)
+            and not text.startswith(_CRON_DELIVERY_PREFIX)):
+        return f"{source.splitlines()[0]}\n…\n{text}"
+    return text
+
+
+def _expand_quote_links(quote: Any, replied: Any) -> str:
     """A native partial quote's text with the replied-to message's hidden links inlined.
 
     Telegram keeps only formatting entities in a quote, never ``text_link``, so the links are

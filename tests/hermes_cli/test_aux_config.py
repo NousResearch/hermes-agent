@@ -91,13 +91,30 @@ def test_embedding_route_save_and_reset_preserve_capability_defaults(tmp_path, m
     assert cfg["model"] == DEFAULT_CONFIG["model"]
     assert "query/document shared" in setup._format_aux_current(cfg["auxiliary"]["embedding"])
 
-    cfg["auxiliary"]["embedding"]["dimensions"] = 512
+    setup._save_aux_choice(
+        "embedding", provider="openrouter", model="openai/text-embedding-3-small",
+        base_url="https://openrouter.ai/api/v1", api_key="embedding-test-key",
+        input_type_handling="shared",
+    )
+    home = tmp_path / ".hermes"
+    config_yaml = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "${AUXILIARY_EMBEDDING_API_KEY}" in config_yaml
+    assert "embedding-test-key" not in config_yaml
+    assert "embedding-test-key" in (home / ".env").read_text(encoding="utf-8")
+
+    cfg = load_config()
+    assert cfg["auxiliary"]["embedding"]["api_key"] == "embedding-test-key"
+    cfg["auxiliary"]["embedding"].update(
+        dimensions=512, key_env="LEGACY_EMBEDDING_KEY", api_mode="chat_completions",
+    )
     from hermes_cli.config import save_config
     save_config(cfg)
     assert _reset_aux_to_auto() >= 1
     reset = load_config()["auxiliary"]["embedding"]
     assert (reset["provider"], reset["model"], reset["dimensions"],
             reset["input_type_handling"]) == ("auto", "", None, None)
+    assert reset["api_key"] == ""
+    assert {"key_env", "api_mode"}.isdisjoint(reset)
 
 
 def test_embedding_picker_does_not_save_without_shared_space_confirmation(tmp_path, monkeypatch):
@@ -190,3 +207,19 @@ def test_delegation_cfg_as_task_projection():
     assert _format_aux_current(shaped) == "nous · Hermes-4.5"
     # Non-dict delegation section must not crash
     assert _format_aux_current(_delegation_cfg_as_task({"delegation": "bogus"})) == "auto"
+
+
+def test_picker_provider_switch_drops_old_endpoint_credentials(tmp_path, monkeypatch):
+    """Picking a new provider must not leave the old endpoint's key_env/api_mode behind: the aux
+    resolver hands them to whatever provider the block now names (#141832)."""
+    import hermes_yaml as yaml
+    from agent.auxiliary_client import _resolve_task_provider_model
+    _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("OLD_ENDPOINT_KEY", "sk-old-endpoint")
+    (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump({"auxiliary": {"vision": {
+        "provider": "custom", "base_url": "https://api.openai.com/v1",
+        "key_env": "OLD_ENDPOINT_KEY", "api_mode": "codex_responses"}}}))
+
+    _save_aux_choice("vision", provider="anthropic", model="claude-haiku-4-5")
+
+    assert _resolve_task_provider_model("vision") == ("anthropic", "claude-haiku-4-5", None, None, None)

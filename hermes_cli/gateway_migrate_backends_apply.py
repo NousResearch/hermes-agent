@@ -977,10 +977,15 @@ def _plan_changed(host, plan: BackendPlan, expected: str, *, as_json: bool, deta
     return EXIT_PLAN_CHANGED
 
 
-def _owner_blockers(host, plan: BackendPlan) -> None:
+def _owner_blockers(host, plan: BackendPlan, *, force_interrupt: bool = False) -> None:
     """Refusals the apply path adds to the plan before anything changes (shown by the dry run too)."""
     from hermes_cli.gateway_migrate_backends_plan import _NEVER_TOUCHED, _for_this_home
     rec, item = plan.rec, plan.item
+    if plan.running_turns is None and not force_interrupt and not plan.blockers:
+        # None is "cannot be read", never 0: stopping the old backend could cut off a reply being written.
+        plan.blockers.append("The old backend's running turns cannot be read, so this command cannot prove no "
+                             "reply is being written in it. Confirm it is idle, then re-run with "
+                             "--force-interrupt. Nothing changed.")
     others = [i for i in host.backends()
               if i.supervisor not in _NEVER_TOUCHED and _for_this_home(i, host)
               # a launchd job is listed only while it is loaded: idle or not, launchd may start it
@@ -1112,7 +1117,7 @@ def cmd_apply(host, args) -> int:
     plan = build_plan(host, address=address, keep_webapp=bool(getattr(args, "keep_webapp_address", False)),
                       force_interrupt=bool(getattr(args, "force_interrupt", False)))
     if plan.rec and not plan.unsupported:
-        _owner_blockers(host, plan)
+        _owner_blockers(host, plan, force_interrupt=bool(getattr(args, "force_interrupt", False)))
     dry_run = bool(getattr(args, "dry_run", False))
     if (expected := getattr(args, "expect", None)) and plan_token(plan) != expected:
         return _plan_changed(host, plan, expected, as_json=as_json, detached=detached)

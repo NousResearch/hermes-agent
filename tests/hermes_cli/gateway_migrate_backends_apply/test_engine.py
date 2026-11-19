@@ -1371,3 +1371,31 @@ def test_restore_of_unedited_files_still_restores(home):
     assert engine.restore(host, yes=True) == engine.EXIT_OK
     assert _config_files(home) == before and engine.read_manifest(home)["state"] == "restored"
 
+
+# --------------------------------------------------------------------------- unknown running turns are not 0
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_unknown_running_turns_block_like_a_running_turn(home, monkeypatch, force):
+    """A plan whose running_turns is None (activity unreadable) never counts as 0: without
+    --force-interrupt the apply refuses before any change; with it the move goes ahead."""
+    real = engine.build_plan
+
+    def unknown_turns(*a, **kw):
+        plan = real(*a, **kw)
+        plan.running_turns = None
+        return plan
+
+    monkeypatch.setattr(engine, "build_plan", unknown_turns)
+    host = FakeHost(home)
+    host.turns = 0
+    before = _config_files(home)
+
+    code = engine.cmd_apply(host, _args(force_interrupt=force))
+
+    if force:
+        assert code == engine.EXIT_OK
+    else:
+        assert code == engine.EXIT_BLOCKED
+        _nothing_applied(host, home, before)
+

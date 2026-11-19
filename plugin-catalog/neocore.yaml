@@ -1,9 +1,9 @@
 name: neocore
 title: NeoCore
 repo: https://github.com/VincentPorquet777/neocore
-sha: 18fd0ab26016cd5a41217bc62b73e88efdeb8823
+sha: 7491574e47f9c898295cabfff20a7594f5b46b9f
 subdir: integrations/hermes
-version: "0.3.0"
+version: "0.3.1"
 description: >-
   One memory for every AI harness you use: your own Hermes conversations (CLI, desktop, and
   direct messages from the ids in `owners`) share the NeoCore memory that Claude Code and Codex
@@ -31,12 +31,14 @@ description: >-
   from the NeoCore GitHub release, switched on only if a speed check passes; it runs a local
   scoring server on 127.0.0.1:8796 that keeps nothing. shared: off keeps Hermes on a memory of
   its own; neosift: off disables NeoSift. No telemetry. Subagent, cron and flush contexts never
-  write.
+  write. Programs it starts (the detached sync, the Codex or Claude Code CLI, the NeoSift
+  server) get a minimal environment without Hermes's provider keys; only a key the NeoCore config
+  itself names is passed.
 maintainer: VincentPorquet777
 tier: community
 category: memory
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/VincentPorquet777/neocore/blob/18fd0ab26016cd5a41217bc62b73e88efdeb8823/integrations/hermes/README.md
+docs_url: https://github.com/VincentPorquet777/neocore/blob/7491574e47f9c898295cabfff20a7594f5b46b9f/integrations/hermes/README.md
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -64,7 +64,7 @@ function PaginationPrevious({ className, ...props }: React.ComponentProps<'butto
       type="button"
       {...props}
     >
-      <Codicon name="chevron-left" size="0.75rem" />
+      <Codicon className="rtl:-scale-x-100" name="chevron-left" size="0.75rem" />
       <span>{t.ui.pagination.previous}</span>
     </button>
   )
@@ -85,7 +85,7 @@ function PaginationNext({ className, ...props }: React.ComponentProps<'button'>)
       {...props}
     >
       <span>{t.ui.pagination.next}</span>
-      <Codicon name="chevron-right" size="0.75rem" />
+      <Codicon className="rtl:-scale-x-100" name="chevron-right" size="0.75rem" />
     </button>
   )
 }

@@ -43,7 +43,7 @@ export function PluginPageAccess({ plugin, pluginName }: PluginPageAccessProps) 
         <span>{copy.previewScriptAccessNone}</span>
       ) : (
         origins.map(origin => (
-          <Pill className="gap-1 pr-0.5" key={origin}>
+          <Pill className="gap-1 pe-0.5" key={origin}>
             <span>{origin}</span>
             <button
               aria-label={copy.previewScriptRevoke(origin)}

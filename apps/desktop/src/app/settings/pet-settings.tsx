@@ -141,7 +141,7 @@ export function PetSettings() {
               />
               {/* Fixed-height scroll area so filtering never grows/shrinks the
                   page (no layout thrash); the grid scrolls inside it. */}
-              <div className="mt-3 h-72 overflow-y-auto pr-1">
+              <div className="mt-3 h-72 overflow-y-auto pe-1">
                 {status === 'loading' && pets.length === 0 ? (
                   // First load keeps the grid's shape rather than flashing the
                   // "unreachable" copy before the gallery has even arrived.
@@ -174,7 +174,7 @@ export function PetSettings() {
                         <div className="group relative" key={pet.slug}>
                           <button
                             className={cn(
-                              'flex w-full items-center gap-2.5 px-2.5 py-2 text-left disabled:opacity-50',
+                              'flex w-full items-center gap-2.5 px-2.5 py-2 text-start disabled:opacity-50',
                               selectableCardClass({ active: isActive, prominent: pet.installed })
                             )}
                             disabled={isBusy}
@@ -206,7 +206,7 @@ export function PetSettings() {
                             {isBusy && <Loader2 className="size-4 shrink-0 animate-spin text-(--ui-text-tertiary)" />}
                           </button>
                           {!isBusy && (pet.installed || pet.generated) && (
-                            <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                            <div className="absolute end-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
                               {pet.generated && (
                                 <PetAction
                                   icon={<Pencil className="size-3.5" />}
@@ -276,7 +276,7 @@ export function PetSettings() {
                   step={0.05}
                   value={scale}
                 />
-                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                <span className="w-9 text-end text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
                   {`${Math.round(scale * 100)}%`}
                 </span>
               </div>

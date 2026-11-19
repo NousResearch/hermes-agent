@@ -113,7 +113,7 @@ export function SidebarRowStack({ className, ...props }: React.ComponentProps<'d
 
 /** Nested rows (session previews, worktree bodies). */
 export function SidebarRowNest({ className, ...props }: React.ComponentProps<'div'>) {
-  return <SidebarRowStack className={cn('pb-1 pl-2', className)} {...props} />
+  return <SidebarRowStack className={cn('pb-1 ps-2', className)} {...props} />
 }
 
 /**
@@ -150,7 +150,10 @@ export function SidebarDateDivider({
         <button
           aria-expanded={toggle.open}
           aria-label={toggle.ariaLabel}
-          className={cn('flex min-w-0 flex-1 items-center gap-2 rounded-sm bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE)}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-2 rounded-sm bg-transparent text-start',
+            SIDEBAR_FOCUS_VISIBLE
+          )}
           onClick={toggle.onToggle}
           type="button"
         >
@@ -211,7 +214,12 @@ export function SidebarRowCluster({ className, ...props }: React.ComponentProps<
 
 /** Session row main tap target. */
 export function SidebarRowBody({ className, ...props }: React.ComponentProps<'button'>) {
-  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props} />
+  return (
+    <RowButton
+      className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-start', SIDEBAR_FOCUS_VISIBLE, className)}
+      {...props}
+    />
+  )
 }
 
 /** Tappable label — underline/truncate live on the inner span, not the button. */
@@ -222,7 +230,10 @@ export function SidebarRowLink({
   ...props
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
-    <RowButton className={cn('min-w-0 shrink rounded-sm bg-transparent p-0 text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props}>
+    <RowButton
+      className={cn('min-w-0 shrink rounded-sm bg-transparent p-0 text-start', SIDEBAR_FOCUS_VISIBLE, className)}
+      {...props}
+    >
       <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
     </RowButton>
   )
@@ -285,10 +296,10 @@ export function SidebarGroupRow({
         // group, never both at once.
         facts.length ? (
           <div className="group/group-actions relative flex items-center">
-            <span className="min-w-9 whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity group-hover/workspace:opacity-0 group-has-[:focus-visible]/group-actions:opacity-0 group-has-[[data-state=open]]/group-actions:opacity-0">
+            <span className="min-w-9 whitespace-nowrap text-end text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity group-hover/workspace:opacity-0 group-has-[:focus-visible]/group-actions:opacity-0 group-has-[[data-state=open]]/group-actions:opacity-0">
               {facts.join(' · ')}
             </span>
-            {actions ? <div className="absolute right-0 flex items-center">{actions}</div> : null}
+            {actions ? <div className="absolute end-0 flex items-center">{actions}</div> : null}
           </div>
         ) : (
           actions
@@ -305,7 +316,10 @@ export function SidebarGroupRow({
             <button
               aria-expanded={toggle.open}
               aria-label={toggle.ariaLabel}
-              className={cn('flex flex-1 items-center self-stretch rounded-sm bg-transparent p-0', SIDEBAR_FOCUS_VISIBLE)}
+              className={cn(
+                'flex flex-1 items-center self-stretch rounded-sm bg-transparent p-0',
+                SIDEBAR_FOCUS_VISIBLE
+              )}
               data-row-actions
               onClick={toggle.onToggle}
               type="button"

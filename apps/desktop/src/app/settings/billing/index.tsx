@@ -381,7 +381,7 @@ function UsageRow({ row }: { row: BillingUsageRowView }) {
         </div>
         <div
           className={cn(
-            'min-w-0 whitespace-nowrap text-[length:var(--conversation-text-font-size)] font-medium tabular-nums @2xl:w-[220px] @2xl:flex-none @2xl:text-right',
+            'min-w-0 whitespace-nowrap text-[length:var(--conversation-text-font-size)] font-medium tabular-nums @2xl:w-[220px] @2xl:flex-none @2xl:text-end',
             row.bar?.state === 'danger'
               ? 'text-destructive'
               : row.bar?.state === 'warn'

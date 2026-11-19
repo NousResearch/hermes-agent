@@ -7,7 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, Power, RefreshCw } from '@/lib/icons'
-import { platformStatusTone } from '@/lib/platform-status'
+import { platformStatusLabel, platformStatusTone } from '@/lib/platform-status'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import { reconnectGateway } from '@/store/gateway-reconnect'
@@ -125,7 +125,9 @@ export function GatewayMenuPanel({
     ? copy.connected
     : gatewayConnecting
       ? copy.connecting
-      : prettyState(gatewayState || copy.offline)
+      : gatewayState === 'closed' || !gatewayState
+        ? copy.offline
+        : prettyState(gatewayState)
 
   const inferenceLabel = gatewayOpen
     ? inferenceStatus?.ready
@@ -240,7 +242,7 @@ export function GatewayMenuPanel({
                 <span className="truncate capitalize">{name}</span>
                 <span className="flex items-center gap-1.5 text-[0.66rem] text-muted-foreground">
                   <StatusDot tone={platformStatusTone({ state: platform.state })} />
-                  {prettyState(platform.state)}
+                  {platformStatusLabel(platform.state, t.messaging)}
                 </span>
               </li>
             ))}

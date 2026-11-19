@@ -104,7 +104,7 @@ function DelegationRouteEditor({
         providers={displayProviders(providers, draft.provider)}
       />
       {showsModel && <ModelRow description={modelDescription} draft={draft} providers={providers} />}
-      <div className="grid justify-items-end gap-3 pb-3 text-right">
+      <div className="grid justify-items-end gap-3 pb-3 text-end">
         <RouteNotes draft={draft} />
         {query.isError && <CatalogRetry fetching={query.isFetching} onRetry={() => void query.refetch()} />}
         {draft.pending && <ApplyBar draft={draft} onApply={() => onChange(draft.value)} />}

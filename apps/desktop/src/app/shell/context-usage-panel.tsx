@@ -47,12 +47,12 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
       <div className="flex items-baseline justify-between gap-2">
         <p className="font-medium text-foreground">{copy.title}</p>
 
-        <span className="text-[0.6875rem] text-muted-foreground">
+        <bdi className="text-[0.6875rem] text-muted-foreground" dir="auto">
           {copy.tokenSummary(
             `${usage.context_estimated ? '~' : ''}${compactNumber(contextUsed)}`,
             compactNumber(contextMax)
           )}
-        </span>
+        </bdi>
       </div>
 
       <p className="flex items-center justify-between gap-2 text-[0.6875rem] text-foreground">
@@ -83,7 +83,9 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
               <span className="truncate text-muted-foreground">{category.label}</span>
             </span>
 
-            <span className="shrink-0 tabular-nums text-foreground">~{compactNumber(category.tokens)}</span>
+            <bdi className="shrink-0 tabular-nums text-foreground" dir="ltr">
+              ~{compactNumber(category.tokens)}
+            </bdi>
           </li>
         ))}
       </ul>

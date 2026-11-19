@@ -110,6 +110,15 @@ describe('ThreadTimeline in a background tab', () => {
 })
 
 describe('ThreadTimeline idle work', () => {
+  it('anchors the rail to inline-end rather than the physical right edge', () => {
+    messages = transcript(6)
+    renderTimeline()
+
+    const rail = screen.getByRole('navigation')
+    expect(rail.style.insetInlineEnd).toBe('0px')
+    expect(rail.style.right).toBe('')
+  })
+
   it('builds ticks without a separate popover or mounted labels', () => {
     messages = transcript(6)
 

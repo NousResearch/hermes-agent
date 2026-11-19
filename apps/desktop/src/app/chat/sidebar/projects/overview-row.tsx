@@ -72,7 +72,7 @@ export function ProjectBackRow({ label, onClick }: { label: string; onClick: () 
       >
         <SidebarRowLead>
           <SidebarRowLeadGlyph>
-            <Codicon name="arrow-left" size={SIDEBAR_LEAD_ICON_SIZE} />
+            <Codicon className="rtl:-scale-x-100" name="arrow-left" size={SIDEBAR_LEAD_ICON_SIZE} />
           </SidebarRowLeadGlyph>
         </SidebarRowLead>
         <SidebarRowLabel className="text-xs underline-offset-4 group-hover/back:underline">{label}</SidebarRowLabel>

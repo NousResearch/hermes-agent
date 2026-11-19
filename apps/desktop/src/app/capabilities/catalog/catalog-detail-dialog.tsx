@@ -44,14 +44,14 @@ export function CatalogDetailDialog({
       aria-label={delta < 0 ? t.ui.pagination.previous : t.ui.pagination.next}
       className={
         delta < 0
-          ? 'absolute -left-14 top-1/2 -translate-y-1/2 max-sm:left-2'
-          : 'absolute -right-14 top-1/2 -translate-y-1/2 max-sm:right-2'
+          ? 'absolute -start-14 top-1/2 -translate-y-1/2 max-sm:start-2'
+          : 'absolute -end-14 top-1/2 -translate-y-1/2 max-sm:end-2'
       }
       onClick={() => step(delta)}
       size="icon-lg"
       variant="ghost"
     >
-      <Codicon name={delta < 0 ? 'chevron-left' : 'chevron-right'} />
+      <Codicon className="rtl:-scale-x-100" name={delta < 0 ? 'chevron-left' : 'chevron-right'} />
     </Button>
   )
 

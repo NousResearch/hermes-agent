@@ -184,7 +184,7 @@ export function SidebarCronJobsSection({
     <SidebarGroup className="shrink-0 p-0 pb-1">
       <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
         <button
-          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
+          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-start leading-none"
           onClick={onToggle}
           type="button"
         >
@@ -454,13 +454,13 @@ function CronJobSidebarRuns({
   }, [changeEventsAvailable, cronChangeTick, jobId, visible])
 
   return (
-    <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
+    <div className="mb-1 ms-[1.375rem] flex flex-col gap-px">
       {runs === null ? (
-        <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+        <div className="flex items-center gap-1.5 py-1 ps-1 text-[0.6875rem] text-(--ui-text-tertiary)">
           <GlyphSpinner ariaLabel={c.loading} className="text-[0.75rem]" />
         </div>
       ) : runs.length === 0 ? (
-        <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>
+        <div className="py-1 ps-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>
       ) : (
         <>
           {runs.map(run =>
@@ -477,7 +477,7 @@ function CronJobSidebarRuns({
               // closed (watchdog kill / crash) opens view-only (#88443).
               <button
                 className={cn(
-                  'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40',
+                  'truncate rounded-md px-1.5 py-0.5 text-start text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40',
                   run.id === selectedSessionId
                     ? 'bg-(--ui-row-active-background) text-foreground'
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'

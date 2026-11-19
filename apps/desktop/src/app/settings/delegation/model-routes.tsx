@@ -115,7 +115,7 @@ function RouteRow({ route, isDefault, providerName, onEdit, onMakeDefault, onDel
 
   return (
     <li className="group flex items-start gap-3 border-t border-(--ui-stroke-tertiary) py-3 first:border-t-0">
-      <button className="grid min-w-0 flex-1 gap-1 text-left" onClick={onEdit} type="button">
+      <button className="grid min-w-0 flex-1 gap-1 text-start" onClick={onEdit} type="button">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate font-mono text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
             {route.name}

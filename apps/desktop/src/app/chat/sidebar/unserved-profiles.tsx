@@ -33,7 +33,9 @@ export function useUnservedProfiles(profiles: readonly ProfileInfo[]): ReadonlyS
       .then(({ agents, primaryConnectionId }) => {
         if (live) {
           const own = agents.filter(agent => agent.connectionId === primaryConnectionId)
-          setUnserved(new Set(own.filter(agent => agent.reachable === false).map(agent => normalizeProfileKey(agent.profile))))
+          setUnserved(
+            new Set(own.filter(agent => agent.reachable === false).map(agent => normalizeProfileKey(agent.profile)))
+          )
         }
       })
       .catch(() => undefined)
@@ -65,7 +67,7 @@ export function UnservedProfileNote() {
 
   return (
     <>
-      <span aria-hidden="true" className="ml-auto shrink-0 pl-2 text-[0.6875rem] text-(--ui-text-tertiary)">
+      <span aria-hidden="true" className="ms-auto shrink-0 ps-2 text-[0.6875rem] text-(--ui-text-tertiary)">
         {note}
       </span>
       <span className="sr-only">{`, ${note}`}</span>

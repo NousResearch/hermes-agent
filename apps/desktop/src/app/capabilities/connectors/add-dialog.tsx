@@ -109,7 +109,7 @@ export function AddServerDialog({ controller, onOpenChange, open, profile }: Add
                 {copy.editJson}
               </Button>
               <Button
-                className="ml-auto"
+                className="ms-auto"
                 disabled={saving || nameTaken || !isDraftComplete(draft) || controller.profilePending}
                 loading={saving}
                 onClick={() => void save()}

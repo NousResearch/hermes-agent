@@ -80,7 +80,7 @@ export function ComboboxInput({
             aria-controls={expanded ? listId : undefined}
             aria-expanded={expanded}
             aria-label={ariaLabel}
-            className="w-full pr-7"
+            className="w-full pe-7"
             disabled={disabled}
             onChange={e => {
               onChange(e.target.value)
@@ -118,7 +118,7 @@ export function ComboboxInput({
           />
           <button
             aria-label={t.settings.config.showOptions}
-            className="absolute inset-y-0 right-1.5 flex items-center text-(--ui-text-tertiary) disabled:opacity-50"
+            className="absolute inset-y-0 end-1.5 flex items-center text-(--ui-text-tertiary) disabled:opacity-50"
             disabled={disabled}
             onClick={() => {
               openList(!expanded)

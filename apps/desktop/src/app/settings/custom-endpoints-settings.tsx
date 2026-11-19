@@ -352,7 +352,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               endpoints.map(endpoint => (
                 <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center" key={endpoint.id}>
                   <button
-                    className="min-w-0 text-left"
+                    className="min-w-0 text-start"
                     onClick={() => {
                       setForm(formFromEndpoint(endpoint))
                       setDiscoveredModels(endpoint.models)

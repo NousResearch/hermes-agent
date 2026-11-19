@@ -107,7 +107,7 @@ export function CatalogFilters({
       <div className="flex h-7 shrink-0 items-center gap-2 pb-1">
         <SidebarPanelLabel meta={compactNumber(resultCount)}>{c.discover}</SidebarPanelLabel>
         {filtered && (
-          <Button aria-label={c.clearFilters} className="ml-auto" onClick={onClear} size="inline" variant="text">
+          <Button aria-label={c.clearFilters} className="ms-auto" onClick={onClear} size="inline" variant="text">
             {t.common.clear}
           </Button>
         )}

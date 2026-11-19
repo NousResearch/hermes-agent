@@ -100,7 +100,7 @@ export function ToolsFilterBar({
           ) : null}
 
           {quickActions.length > 0 ? (
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ms-auto flex items-center gap-1.5">
               {quickActions.map(action => (
                 <Button
                   aria-pressed={currentAction?.id === action.id}

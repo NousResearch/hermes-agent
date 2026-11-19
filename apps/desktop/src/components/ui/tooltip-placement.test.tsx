@@ -5,6 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip'
 
 const { contentProps } = vi.hoisted(() => ({ contentProps: vi.fn() }))
+const language = vi.hoisted(() => ({ locale: 'en' }))
+
+vi.mock('@/i18n', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+
+  return { ...actual, useI18n: () => ({ locale: language.locale }) }
+})
 
 vi.mock('radix-ui', async () => {
   const { cloneElement, createElement, forwardRef } = await import('react')
@@ -33,6 +40,7 @@ vi.mock('radix-ui', async () => {
 
 afterEach(() => {
   cleanup()
+  language.locale = 'en'
   contentProps.mockClear()
   vi.restoreAllMocks()
 })
@@ -40,6 +48,33 @@ afterEach(() => {
 const latestContent = () => contentProps.mock.calls.at(-1)?.[0]
 
 describe('tooltip placement', () => {
+  it.each(['en', 'ar'])(
+    'places row descriptions at inline-end in %s, preserving physical rails and overrides',
+    locale => {
+      language.locale = locale
+
+      const { rerender } = render(
+        <Tip label="Details" placement="row">
+          <button>Trigger</button>
+        </Tip>
+      )
+
+      expect(latestContent().side).toBe(locale === 'ar' ? 'left' : 'right')
+      rerender(
+        <Tip label="Details" placement="row" side="right">
+          <button>Trigger</button>
+        </Tip>
+      )
+      expect(latestContent().side).toBe('right')
+      rerender(
+        <Tip label="Details" placement="right-rail">
+          <button>Trigger</button>
+        </Tip>
+      )
+      expect(latestContent().side).toBe('left')
+    }
+  )
+
   it('uses the owning pane for a control without changing its trigger', () => {
     render(
       <div data-testid="pane" data-tree-group="test-pane">

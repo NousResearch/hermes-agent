@@ -51,7 +51,7 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
       >
         <CommandPrimitive.Input
           className={cn(
-            'h-4 w-full bg-transparent text-xs leading-none text-foreground focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
+            'h-4 min-w-0 flex-1 bg-transparent text-xs leading-none text-foreground focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-(--ui-text-tertiary) disabled:cursor-not-allowed disabled:opacity-50',
             className
           )}
           data-slot="command-input"
@@ -71,7 +71,7 @@ function CommandInput({ className, right, ...props }: CommandInputProps) {
       <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
       <CommandPrimitive.Input
         className={cn(
-          'flex h-10 w-full rounded-md bg-transparent py-3 text-sm focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+          'flex h-10 min-w-0 flex-1 rounded-md bg-transparent py-3 text-sm focus:outline-hidden forced-colors:focus:-outline-offset-2 placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
           className
         )}
         data-slot="command-input"
@@ -175,13 +175,13 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
 
 /** The trailing check a menu row wears when it's the current value — same glyph and spot as DropdownMenu/Select. */
 function CommandItemCheck({ checked }: { checked: boolean }) {
-  return checked ? <Codicon className="ml-auto pl-2 text-foreground" name="check" size="0.75rem" /> : null
+  return checked ? <Codicon className="ms-auto ps-2 text-foreground" name="check" size="0.75rem" /> : null
 }
 
 function CommandShortcut({ className, ...props }: React.ComponentProps<'span'>) {
   return (
     <span
-      className={cn('ml-auto text-xs tracking-widest text-muted-foreground', className)}
+      className={cn('ms-auto text-xs tracking-widest text-muted-foreground', className)}
       data-slot="command-shortcut"
       {...props}
     />

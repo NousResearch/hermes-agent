@@ -9,8 +9,8 @@ import sys
 
 import pytest
 
-from scripts.bundles.linux_appimage_acceptance import check_image
-from scripts.bundles.appimage_checks import check_execs, shipped_binary, trace_command, wait_window
+from scripts.bundles import appimage_checks
+from scripts.bundles.appimage_checks import check_execs, check_image, shipped_binary, trace_command, wait_window
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -30,6 +30,18 @@ def test_digest_and_format_bind_both_lanes_to_packaged_x64(tmp_path):
     image.write_bytes(header)
     with pytest.raises(ValueError, match="AppImage"):
         check_image(image, hashlib.sha256(header).hexdigest())
+
+
+def test_worker_main_verifies_image_before_extraction(tmp_path, monkeypatch):
+    bad = tmp_path / "not-an-appimage"
+    bad.write_bytes(b"not an elf appimage")
+    monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(appimage_checks.socket, "if_nameindex", lambda: [(1, "lo")])
+    extracted = []
+    monkeypatch.setattr(appimage_checks.subprocess, "run", lambda *a, **kw: extracted.append(a))
+    with pytest.raises(ValueError, match="type 2 AppImage"):
+        appimage_checks.main("22.04", hashlib.sha256(bad.read_bytes()).hexdigest(), image=bad)
+    assert not extracted
 
 
 def _engine(backend):

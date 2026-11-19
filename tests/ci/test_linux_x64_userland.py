@@ -49,3 +49,42 @@ def test_build_requires_a_real_bootstrap_before_launching_docker(tmp_path):
                                  "X64_BOOTSTRAP_PYTHON": str(tmp_path / "missing" / "python3")})
     assert result.returncode != 0
     assert "bootstrap" in result.stderr.lower()
+
+
+@pytest.mark.platforms("linux")
+def test_accept_forwards_appimage_digest_to_checks_worker(tmp_path):
+    import hashlib
+    import json
+    import sys
+
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/linux_x64_userland.sh"
+    release = tmp_path / "apps/desktop/release"
+    release.mkdir(parents=True)
+    appimage = release / "HermesBundled-0.1.0-linux-x64.AppImage"
+    payload = b"AppImage-fixture-bytes"
+    appimage.write_bytes(payload)
+    expected_digest = hashlib.sha256(payload).hexdigest()
+
+    log = tmp_path / "docker-calls.jsonl"
+    launcher = tmp_path / "docker"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['DOCKER_LOG'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    launcher.chmod(0o755)
+    result = subprocess.run(
+        ["bash", script, "accept"], capture_output=True, text=True, check=False,
+        env={"GITHUB_WORKSPACE": str(tmp_path), "PATH": f"{tmp_path}:/usr/bin:/bin",
+             "X64_FLOOR_IMAGE": "floor-img", "X64_GPU_IMAGE": "gpu-img",
+             "DOCKER_LOG": str(log)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 2
+    for call, ubuntu in zip(calls, ("22.04", "24.04")):
+        bash_idx = call.index("-ec")
+        inner_cmd = call[bash_idx + 1]
+        assert 'python3 -I /checks.py "$ubuntu" "$digest"' in inner_cmd
+        assert call[bash_idx + 2:bash_idx + 5] == ["bash", ubuntu, expected_digest]

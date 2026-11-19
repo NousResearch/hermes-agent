@@ -109,21 +109,42 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     return False
 
 
-def install_after_setup() -> None:
-    """``hermes gateway install --if-missing``, the installers' step after setup: setup's one
-    consent question, never a second install path. A recorded decline installs nothing, an
-    unanswered question is asked once, and a container or a host without a service manager gets
-    setup's guidance rather than a failed install."""
-    from hermes_cli import gateway as gw
+def _recorded_choice():
     from hermes_cli.config import load_config
+    return load_config().get("gateway", {}).get("service_install_choice")
+
+
+def _requests_install_options(args) -> bool:
+    """The user named how to install (``--system``, ``--no-start-now``, ...), not just whether."""
+    return (any(getattr(args, k, None) is not None for k in ("start_now", "start_on_login"))
+            or any(getattr(args, k, False) for k in ("system", "run_as_user", "force", "force_unit_path")))
+
+
+def install_after_setup(args) -> bool:
+    """``hermes gateway install --if-missing``, the installers' step after setup: setup's one
+    consent question, never a second install path. A recorded decline installs nothing; an
+    unanswered question is asked once; a container or a host without a service manager gets
+    setup's guidance. True hands an install the user spelled out with options to the explicit
+    install path, which honours them; a Yes whose install then fails exits 1 so the installer's
+    gateway stage reports it."""
+    from hermes_cli import gateway as gw
+    from hermes_constants import is_container
 
     if gw._is_service_installed():
         print("✓ Gateway service already installed")
-        return
-    if load_config().get("gateway", {}).get("service_install_choice") == "decline":
+        return False
+    if _recorded_choice() == "decline":
         gw.print_info("Gateway service skipped (declined in setup). Install it any time: hermes gateway install")
-        return
-    ensure_gateway_service(context="setup", interactive=True)
+        return False
+    if _requests_install_options(args):
+        return True
+    if ensure_gateway_service(context="setup", interactive=True):
+        return False
+    # Only a Yes leaves the choice unrecorded on a host that can run a service: its install failed.
+    attempted = sys.stdin.isatty() and not is_container() and gw._service_backend() is not None
+    if attempted and _recorded_choice() is None:
+        raise SystemExit(1)
+    return False
 
 
 def _wizard_install_service(backend: str) -> None:

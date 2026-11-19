@@ -1090,5 +1090,29 @@ def test_an_old_backend_without_api_health_says_to_restart_it_with_the_updated_h
 
     assert code == engine.EXIT_BLOCKED and out["plan"]["steps"] == []
     (blocker,) = [b for b in out["plan"]["blockers"] if "v2026.7.30" in b]
-    assert "Restart the old backend with the updated hermes" in blocker and hint in blocker
+    assert "restart the old backend with the updated hermes" in blocker and hint in blocker
     assert "re-run the dry run" in blocker
+
+
+# --- Bear round 2: a backend without /api/health may still be writing a reply
+
+
+@pytest.mark.parametrize(("turns", "expect"), [(2, "2 turn(s) are running on it now: let them finish"),
+                                                (0, "confirm no reply is being written in it"),
+                                                (OSError, "confirm no reply is being written in it")])
+def test_an_old_backend_without_api_health_is_not_restarted_mid_reply(home, capsys, monkeypatch, turns, expect):
+    host = FakeHost(home, host="127.0.0.1")
+    monkeypatch.setattr(host, "http_status", lambda h, p: {"health": "missing"})
+    if turns is OSError:
+        def unreadable(*a):
+            raise OSError("marker unreadable")
+        monkeypatch.setattr(host, "running_turns", unreadable)
+    else:
+        host.turns = turns
+
+    code, out = _plan(host, capsys)
+
+    (blocker,) = [b for b in out["plan"]["blockers"] if "v2026.7.30" in b]
+    assert code == engine.EXIT_BLOCKED and expect in blocker
+    assert "Restart the old backend" not in blocker and "restart the old backend with the updated hermes" in blocker
+    assert out["plan"]["running_turns"] == (turns if turns == 2 else None)

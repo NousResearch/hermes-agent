@@ -464,7 +464,7 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=False).items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
@@ -732,7 +732,7 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     environment and pins the backend. Without that pin the ``PermissionError`` propagates: the file may
     be the only place the backend is set, and skipping it would run terminal commands on the host."""
     try:
-        _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
+        _load_dotenv_with_fallback(path, override=False, load_pass=load_pass)
     except PermissionError:
         from hermes_cli import managed_scope
 
@@ -824,10 +824,10 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
         loaded.append(project_env_path)
 
-    # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
+    # The override=False loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
     # token) back over a value an external source resolved on an earlier call, and the source pass below is a
     # once-per-home no-op — so the clobber stuck for the life of the process (#74265). Re-assert only what the
-    # source is authoritative for; managed scope, applied last with override=True, still wins on purpose.
+    # source is authoritative for; managed scope, applied last with override=False, still wins on purpose.
     if _SECRET_SOURCE_RESTORE_BY_HOME:
         for name, value in _SECRET_SOURCE_RESTORE_BY_HOME.get(hermes_home_key(home_path), {}).items():
             if os.environ.get(name) != value:
@@ -840,7 +840,7 @@ def load_hermes_dotenv(
     from hermes_cli.config_backend import get_config_backend
 
     # The administrator-managed .env is part of the deployment the backend boots from (it may be
-    # where the selector, plane URL or instance id live). The override=True loads above may have
+    # where the selector, plane URL or instance id live). The override=False loads above may have
     # replaced those names with the home's values, so re-publish the deployment names (only those)
     # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
     # still applies once, last below, where it keeps its precedence over secret-source results.
@@ -864,11 +864,11 @@ def load_hermes_dotenv(
         _apply_external_secret_sources(home_path)
     _apply_managed_env(load_pass=load_pass)
 
-    # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
+    # config.yaml owns terminal.*, but the override=False loads above let a stale TERMINAL_ENV=docker in
     # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.
     # Re-apply the explicit terminal keys LAST, after the managed overlay, so the merged config lands.
     # config.yaml is the documented source of truth for terminal.* settings, but the dotenv loads above run
-    # with override=True — so a stale TERMINAL_ENV=docker left in ~/.hermes/.env (e.g. written by an older
+    # with override=False — so a stale TERMINAL_ENV=docker left in ~/.hermes/.env (e.g. written by an older
     # `hermes setup` before the user switched terminal.backend in config.yaml) silently wins again on every
     # reload. Startup launchers bridge config→env once, but long-lived processes (gateway per-turn reload,
     # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
@@ -907,7 +907,7 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
     if not managed_env.exists():
         return
     _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass, managed=True)
+    _load_dotenv_with_fallback(managed_env, override=False, load_pass=load_pass, managed=True)
 
 
 def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:

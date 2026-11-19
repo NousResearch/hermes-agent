@@ -9,6 +9,7 @@ import contextlib
 import functools
 import logging
 import os
+import random
 import sqlite3
 import stat
 import sys
@@ -37,6 +38,14 @@ logger = logging.getLogger("hermes_state")
 _WAL_INCOMPAT_MARKERS = ("locking protocol", "not authorized", "disk i/o error")
 # SQLite's default journal_size_limit is -1 (unlimited); see _apply_wal_size_limit.
 _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
+
+# A burst of fresh connections to a DELETE-mode database all run ``PRAGMA journal_mode=WAL``; only one wins the
+# exclusive header transition, and SQLite answers the losers with SQLITE_BUSY at once on that lock upgrade (the
+# connection's busy_timeout is not consulted). Give the winner a short bounded window to publish WAL, and let the
+# losers converge by re-probing the on-disk mode.
+_WAL_BUSY_CONVERGENCE_SECONDS = 1.0
+_WAL_BUSY_RETRY_MIN_SECONDS = 0.01
+_WAL_BUSY_RETRY_MAX_SECONDS = 0.05
 
 # Once-per-process-per-db_label dedup sets (kanban_db.connect() runs on every kanban operation, so an undeduped
 # line would repeat per connection). Tests clear these sets by name.
@@ -89,6 +98,45 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
         return str(mode).strip().lower() if mode is not None else None
     logger.debug("_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc)
     return None
+
+
+def _is_sqlite_busy(exc: sqlite3.OperationalError) -> bool:
+    """Return whether ``exc`` is SQLITE_BUSY (not SQLITE_LOCKED)."""
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        # Extended result codes keep the primary code in the low byte.
+        return error_code & 0xFF == sqlite3.SQLITE_BUSY
+    # Runtimes or test doubles without sqlite_errorcode.
+    return str(exc).strip().lower() in {"database is locked", "database is busy"}
+
+
+def _set_wal_with_busy_convergence(conn: sqlite3.Connection):
+    """Run ``PRAGMA journal_mode=WAL``, absorbing only the fresh-connection SQLITE_BUSY race; return its row.
+
+    A losing connection re-probes after BUSY: if a peer established WAL, that is success; otherwise it retries
+    until one monotonic deadline. Exhaustion re-raises SQLITE_BUSY. This never switches to DELETE and does not
+    retry SQLITE_LOCKED, WAL-incompatible storage errors or other faults, which keep their existing handling.
+    """
+    deadline = time.monotonic() + _WAL_BUSY_CONVERGENCE_SECONDS
+    last_busy: Optional[sqlite3.OperationalError] = None
+    while True:
+        try:
+            return conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_busy(exc):
+                raise
+            last_busy = exc
+        # Re-probe even if SQLite spent the budget waiting: a peer may have finished the WAL transition meanwhile.
+        if _on_disk_journal_mode(conn) == "wal":
+            return ("wal",)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # A peer may have committed WAL between the probe above and the deadline check; accept it first.
+            if _on_disk_journal_mode(conn) == "wal":
+                return ("wal",)
+            assert last_busy is not None
+            raise last_busy
+        time.sleep(min(remaining, random.uniform(_WAL_BUSY_RETRY_MIN_SECONDS, _WAL_BUSY_RETRY_MAX_SECONDS)))
 
 
 def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
@@ -452,7 +500,7 @@ def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, curr
     try:
         # ``PRAGMA journal_mode=WAL`` RETURNS the resulting mode: macOS NFS, SMB/CIFS and the AgentFS overlay
         # refuse WITHOUT raising. Trust the row, not the absence of an exception.
-        mode = _mode_from_row(conn.execute("PRAGMA journal_mode=WAL").fetchone())
+        mode = _mode_from_row(_set_wal_with_busy_convergence(conn))
         if mode == "wal":
             return _wal_activated()
         silent_exc = WalUnsupportedError(f"journal_mode=WAL refused without raising (still {mode!r})")

@@ -8,7 +8,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.23"
 docs_url: https://github.com/hi4c0ck/its-in-your-head#readme
-version: "0.1.29"
+version: "0.1.31"
 image: https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/77fa57958f36d99db7b0ea54941a4f427aa7fe07/assets/iyyh-banner.jpg
 screenshots:
   - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/77fa57958f36d99db7b0ea54941a4f427aa7fe07/assets/iyyh-main-view.jpg

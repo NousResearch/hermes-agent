@@ -119,3 +119,24 @@ def test_tools_action_accepts_deferred_plugin_without_materializing(action, caps
             assert ("web" in saved_tools) is (action == "enable")
     finally:
         platform_registry.unregister(platform)
+
+
+# ── Null/MCP entry regression ────────────────────────────────────────────────
+
+
+class TestToolsListNullMcpEntry:
+    def test_list_shows_null_mcp_server_as_not_configured(self, capsys):
+        """Regression: a bare YAML entry `nocodb:` (null value) must not crash."""
+        config = {
+            "mcp_servers": {
+                "nocodb": None,
+                "grafana": {"tools": {"exclude": ["tool1"]}},
+            },
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+        out = capsys.readouterr().out
+        assert "nocodb" in out
+        assert "not configured (null entry)" in out
+        assert "grafana" in out
+        assert "tool1" in out

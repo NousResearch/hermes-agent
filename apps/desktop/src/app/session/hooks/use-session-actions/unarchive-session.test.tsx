@@ -143,6 +143,22 @@ describe('unarchiveSession', () => {
     expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage')
   })
 
+  // An archived search hit is in no cache until the Archived view loads; the
+  // clicked row must still restore it rather than leave the RPC unsent.
+  it('restores a search-only hit from the clicked row when the archive cache is cold', async () => {
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() =>
+      handle.unarchiveSession('hit-1', archivedSession({ id: 'hit-1', profile: 'sage' } as Partial<SessionInfo>))
+    )
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('hit-1', false, 'sage')
+    expect($sessions.get().map(session => session.id)).toEqual(['hit-1'])
+    expect($sessions.get()[0]?.archived).toBe(false)
+  })
+
   it('keeps the archived row when the restore RPC fails', async () => {
     $archivedSessions.set([archivedSession()])
     vi.mocked(setSessionArchived).mockRejectedValue(new Error('backend down'))

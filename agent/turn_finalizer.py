@@ -446,15 +446,23 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             from agent.agent_init_session import agent_interface
             from persistence_assembly import store_location
             _store = agent_interface(agent)
+            # Name the rungs the fallback walk actually tried vs never reached (the base
+            # sentence alone read as "every provider failed over" even when the cap cut
+            # the walk short — 2026-11-10 incident).
+            _walk = getattr(agent, "_fallback_walk_summary", None) if str(_turn_exit_reason) == "rebuilt_restart_limit_exceeded" else None
             _explanation = agent._format_turn_completion_explanation(
                 _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
                 db_path=(store_location(_store.scope) if _store is not None
                          else getattr(getattr(agent, "_session_db", None), "db_path", None)),
                 model=str(getattr(agent, "model", "") or ""),
+                fallback_walk=_walk,
             )
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
                 final_response = _explanation if _is_empty_terminal else _stripped + "\n\n" + _explanation
+                # Remember the rendered explainer so cron's silence-suppression (which
+                # re-renders variants without agent state) can match the delivered text.
+                agent._last_turn_completion_explanation = _explanation
     except Exception as _exp_err:
         logger.debug("turn-completion explainer failed: %s", _exp_err)
     return final_response
@@ -820,6 +828,10 @@ def finalize_turn(
 
     result = {
         "final_response": final_response,
+        # Exact explainer text rendered this turn ("" when none): cron's silence-suppression
+        # compares delivered text against re-rendered variants, which cannot see agent state
+        # like the fallback-walk rung list.
+        "turn_completion_explanation": str(getattr(agent, "_last_turn_completion_explanation", "") or ""),
         "last_reasoning": _last_turn_reasoning(messages),
         "messages": messages,
         "api_calls": api_call_count,
@@ -927,4 +939,6 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+    agent._last_turn_completion_explanation = None
+    agent._fallback_walk_summary = None
     return result

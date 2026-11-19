@@ -1,15 +1,17 @@
-"""Frozen provider-plugin copies of exited processes are reclaimed, and live ones never are (#156493).
+"""Frozen provider-plugin copies of exited processes are reclaimed, and nothing else ever is (#156493).
 
-Copies live under ``<home>/runtime/provider-plugins`` for the life of their process, so a crashed or killed
+Copies live under ``<root>/runtime/provider-plugins`` for the life of their process, so a crashed or killed
 process would leave its copy forever. Each process holds a lock on ``owner.lock`` in its root; the next process
-to create a root reclaims those nobody holds.
+to create a root reclaims the owned roots nobody holds.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -29,29 +31,35 @@ def loader(tmp_path, monkeypatch):
         fn(*args)
 
 
-def _parent():
-    from hermes_constants import get_process_hermes_home
+def _parent() -> Path:
+    from hermes_constants import get_default_hermes_root
 
-    return get_process_hermes_home() / "runtime" / "provider-plugins"
+    return get_default_hermes_root() / "runtime" / "provider-plugins"
 
 
-def test_roots_of_exited_processes_are_reclaimed_and_everything_else_is_kept(loader):
-    reload, _hooks = loader
+def _seed(*roots: Path) -> None:
+    for root in roots:
+        (root / "pkg").mkdir(parents=True)
+
+
+def test_dead_owned_roots_are_reclaimed_and_everything_else_is_kept(loader):
     from pm.filesystem import lock_path
 
+    reload, _hooks = loader
     parent = _parent()
-    dead, never_locked, live = (parent / f"{reload._ROOT_PREFIX}{n}" for n in ("dead", "never-locked", "live"))
-    unrelated = parent / "not-a-snapshot"
-    for root in (dead, never_locked, live, unrelated):
-        (root / "pkg").mkdir(parents=True)
+    owned = reload._OWNED_PREFIX
+    dead, never_locked, live = (parent / f"{owned}{n}" for n in ("dead", "never-locked", "live"))
+    # A root from a release without owner locks (its process may still be running), a root made without the setup
+    # lock, a killed sweeper's claim lookalike that is not one, and plain user data: never ours to delete.
+    kept = [parent / n for n in ("hermes-provider-plugins-older", f"{reload._UNSWEPT_PREFIX}x", ".reaping-mine", "notes")]
+    _seed(dead, never_locked, live, *kept)
     (dead / reload._OWNER_LOCK).write_text("")
-    (unrelated / reload._OWNER_LOCK).write_text("")
     holder = lock_path(live / reload._OWNER_LOCK, timeout=0)
     assert holder is not None
     try:
         mine = reload._new_root()
-        assert mine.parent == parent
-        assert live.is_dir() and unrelated.is_dir()
+        assert mine.parent == parent and mine.name.startswith(owned)
+        assert live.is_dir() and all(k.is_dir() for k in kept)
         assert not dead.exists() and not never_locked.exists()
         assert not [e for e in parent.iterdir() if e.name.startswith(reload._REAPING_PREFIX)]
         # The next process to start leaves this one's root alone.
@@ -64,19 +72,48 @@ def test_roots_of_exited_processes_are_reclaimed_and_everything_else_is_kept(loa
 
 def test_a_sweeper_that_died_mid_delete_has_its_claims_finished(loader):
     reload, _hooks = loader
-    parent = _parent()
-    leftover = parent / f"{reload._REAPING_PREFIX}{reload._ROOT_PREFIX}gone"
-    (leftover / "pkg").mkdir(parents=True)
+    leftover = _parent() / f"{reload._REAPING_PREFIX}gone"
+    _seed(leftover)
 
     reload._new_root()
 
     assert not leftover.exists()
 
 
-def test_a_lock_failure_keeps_its_cause_and_leaves_no_root(loader, monkeypatch):
-    reload, _hooks = loader
+@pytest.mark.parametrize("failure", ["timeout", "foreign lock file"])
+def test_without_the_setup_lock_the_root_is_one_no_sweep_matches(loader, monkeypatch, failure):
     import pm.filesystem
 
+    reload, hooks = loader
+    real = pm.filesystem.lock_path
+    stray = _parent() / f"{reload._OWNED_PREFIX}dead"
+    _seed(stray)
+
+    def setup_unavailable(path, **kw):
+        if path.name == reload._SETUP_LOCK:
+            if failure == "timeout":
+                return None
+            raise PermissionError(13, "denied", str(path))
+        return real(path, **kw)
+
+    monkeypatch.setattr(pm.filesystem, "lock_path", setup_unavailable)
+    root = reload._new_root()
+    monkeypatch.setattr(pm.filesystem, "lock_path", real)
+
+    assert root.name.startswith(reload._UNSWEPT_PREFIX)
+    assert stray.is_dir()  # it reclaimed nothing without the lock
+    reload._snapshot_root = None
+    reload._new_root()  # a later sweep, holding the setup lock: never touches the unswept root
+    assert root.is_dir() and not stray.exists()
+    (release, args) = hooks[0]
+    release(*args)  # a normal exit still removes it
+    assert not root.exists()
+
+
+def test_a_lock_failure_keeps_its_cause_and_leaves_no_root(loader, monkeypatch):
+    import pm.filesystem
+
+    reload, _hooks = loader
     real = pm.filesystem.lock_path
 
     def refuse_owner(path, **kw):
@@ -87,7 +124,7 @@ def test_a_lock_failure_keeps_its_cause_and_leaves_no_root(loader, monkeypatch):
     monkeypatch.setattr(pm.filesystem, "lock_path", refuse_owner)
     with pytest.raises(PermissionError):
         reload._new_root()
-    assert not [e for e in _parent().iterdir() if e.name.startswith(reload._ROOT_PREFIX)]
+    assert not [e for e in _parent().iterdir() if e.name.startswith(reload._OWNED_PREFIX)]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs os.fork")
@@ -107,18 +144,37 @@ def test_a_forked_child_exiting_keeps_its_parents_copy(loader):
     assert root.is_dir()
 
 
-def test_backups_and_profile_clones_leave_the_snapshots_out(tmp_path):
-    from pathlib import Path
+def test_snapshots_live_under_the_root_even_for_a_named_profile(loader, tmp_path, monkeypatch):
+    # Deleting a named profile removes its whole home while a multiplexed gateway launched in it may keep serving
+    # other profiles; the copies that gateway imports from must not be inside that home.
+    reload, _hooks = loader
+    root_home = tmp_path / "home"
+    named = root_home / "profiles" / "work"
+    named.mkdir(parents=True)
+    (named / "config.yaml").write_text("")
+    monkeypatch.setenv("HERMES_HOME", str(named))
 
+    root = reload._new_root()
+
+    assert root.parent == root_home / "runtime" / "provider-plugins"
+
+
+def test_backups_and_profile_clones_leave_the_snapshots_out(tmp_path):
     from hermes_cli.backup import _should_exclude
-    from hermes_cli.home_data_layout import provider_plugin_snapshot_dir
+    from hermes_cli.profiles import _clone_all_copytree_ignore
 
     for rel in ("runtime/provider-plugins/x/owner.lock", "profiles/work/runtime/provider-plugins/x/a.py"):
         assert _should_exclude(Path(rel))
     assert not _should_exclude(Path("runtime/active_sessions.json"))
 
-    home = tmp_path / "home"
-    (home / "runtime" / "provider-plugins").mkdir(parents=True)
-    names = ["provider-plugins", "active_sessions.json"]
-    assert provider_plugin_snapshot_dir(str(home / "runtime"), names, home) == {"provider-plugins"}
-    assert provider_plugin_snapshot_dir(str(home / "skills" / "runtime"), names, home) == set()
+    source = tmp_path / "source"
+    (source / "runtime" / "provider-plugins" / "owned-x").mkdir(parents=True)
+    (source / "runtime" / "provider-plugins" / "owned-x" / "a.py").write_text("")
+    (source / "runtime" / "active_sessions.json").write_text("{}")
+    (source / "skills" / "runtime" / "provider-plugins").mkdir(parents=True)  # a skill's own data: copied
+    clone = tmp_path / "clone"
+    shutil.copytree(source, clone, ignore=_clone_all_copytree_ignore(source))
+
+    assert not (clone / "runtime" / "provider-plugins").exists()
+    assert (clone / "runtime" / "active_sessions.json").is_file()
+    assert (clone / "skills" / "runtime" / "provider-plugins").is_dir()

@@ -240,12 +240,15 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     # termux-main (official termux repo) python deb. The pool is rolling: a
     # rebuild deletes the previous archive, so this pin is what the pool
     # serves TODAY -- it is not derived from the node version, and pm update
-    # leaves it alone (no bionic resolver). When the pool retires it, the
-    # evidence is in `pm update --termux --check`.
+    # leaves it alone (no bionic resolver). When the pool retires it, run
+    # scripts/termux/refresh_bionic_pin.py: it resolves the archive the pool
+    # serves now from the pool index and rewrites this URL, the lock row, the
+    # wheel TARGET_ENV and the snapshot in one pass, so they cannot drift
+    # apart again.
     deb_package = "python"
     _BIONIC_URL = (
         "https://packages.termux.dev/apt/termux-main/pool/main/p/python/"
-        "python_3.14.8_aarch64.deb"
+        "python_3.14.10_aarch64.deb"
     )
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:

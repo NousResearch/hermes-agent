@@ -18,10 +18,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SNAPSHOT = REPO_ROOT / "tests" / "pm" / "fixtures" / "termux_main_python_bionic.json"
 
 _BIONIC_DEB = re.compile(
     r"/p/python/python_(?P<ver>[0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9]+)?_aarch64\.deb$"
@@ -79,3 +85,47 @@ def test_python_fetch_url_reproduces_the_pinned_row():
     row = lock["packages"]["python"]["artifacts"]["linux-arm64-bionic"]
     package = get_package("python")
     assert package.fetch_url(lock["packages"]["python"]["version"], "linux-arm64-bionic") == row["url"]
+
+
+def test_pinned_row_matches_the_pool_snapshot():
+    """The lock row is exactly the archive the pool served at the last refresh.
+
+    `scripts/termux/refresh_bionic_pin.py` writes the row, the class URL, the
+    wheel TARGET_ENV and this snapshot in one pass, so a hand-edit that moves
+    one of them and not the others is caught here rather than at install time.
+    """
+    snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+    lock = json.loads((REPO_ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
+    row = lock["packages"]["python"]["artifacts"]["linux-arm64-bionic"]
+
+    assert row["url"].endswith("/" + snapshot["filename"]), (
+        f"the lock row names {row['url'].rsplit('/', 1)[-1]}, "
+        f"the snapshot names {snapshot['filename']}"
+    )
+    assert row["sha256"] == snapshot["sha256"], "the lock row's digest is not the snapshot's"
+    assert _pinned_interpreter(REPO_ROOT / "pm" / "lock.json") == snapshot["version"]
+    assert snapshot["version"].startswith("3."), "the bionic pin is a 3.x archive"
+
+
+def test_the_pinned_archive_is_still_served():
+    """Opt-in network check: the pool rotates, and a dead pin 404s at install.
+
+    Skipped by default so the suite stays offline and deterministic. Run it
+    with HERMES_CHECK_POOL=1 from a scheduled job to make the next rotation
+    visible instead of discovering it on a device.
+    """
+    if os.environ.get("HERMES_CHECK_POOL") != "1":
+        pytest.skip("set HERMES_CHECK_POOL=1 to check the pool over the network")
+
+    lock = json.loads((REPO_ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
+    url = lock["packages"]["python"]["artifacts"]["linux-arm64-bionic"]["url"]
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "hermes-bionic-pin-check"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    assert status == 200, (
+        f"the pool no longer serves {url.rsplit('/', 1)[-1]} (HTTP {status}); "
+        "run scripts/termux/refresh_bionic_pin.py"
+    )

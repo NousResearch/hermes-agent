@@ -188,6 +188,9 @@ class TestReadBack:
         ("cc-exp", "07/29", "07/2029"),
         ("cc-exp", "07/29", "0730"),                               # separator dropped, another year
         ("tel", "48600100200", "(+48) 600 100 200"),               # a + the value never had
+        ("tel", "+48 600 100 200", "((+48) 600 100 200"),         # the + leads after one "(" at most
+        ("tel", "+48 600 100 200", "48 600 +100 200"),            # a + that no longer leads
+        ("tel", "48600100200", "4860010020+0"),                   # a + anywhere but the front
         ("tel", "user@example.com", ""),                           # not a number: exact only
         ("current-password", "12 34", "1234"),                     # passwords stay exact
         ("username", "a-b", "ab"),

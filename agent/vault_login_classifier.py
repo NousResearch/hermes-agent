@@ -546,13 +546,16 @@ __OPTION_MATCH__
   const groups = (v) => v.match(/\d+/g) || [];
   const sameDigits = (want, shown) => digits(want) === digits(shown);
   const international = (v) => /^\s*\(?\s*\+/.test(v);
+  // A + belongs to a number only as its leading character: one anywhere else is not formatting.
+  const plusOnlyLeads = (v) => (v.match(/\+/g) || []).length === (international(v) ? 1 : 0);
   // Per token: when a display mask's rewrite still says the same thing.
   const sameMeaning = {
     "cc-number": sameDigits,
     "postal-code": sameDigits,
     // The + is part of the number: 15551234567 dials somewhere else than +15551234567. A mask may
     // put the country code in parentheses, "(+48) 600 ...", so the + may follow one "(".
-    "tel": (want, shown) => international(want) === international(shown) && sameDigits(want, shown),
+    "tel": (want, shown) => plusOnlyLeads(want) && plusOnlyLeads(shown)
+      && international(want) === international(shown) && sameDigits(want, shown),
     // Month and year stay two numbers (1/203 is not 12/03); a mask may drop the month's leading
     // zero (7/29) or the separator (0729), never move a digit across it.
     "cc-exp": (want, shown) => {

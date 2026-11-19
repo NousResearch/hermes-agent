@@ -5,6 +5,23 @@ from __future__ import annotations
 # Dependency generations, downloaded tools, and partial transfers belong to this machine.
 PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache"})
 
+# Frozen copies of provider plugins that running processes import from (``providers.plugin_reload``), as path
+# parts relative to a home. Each belongs to one live process and is rebuilt from ``plugins/`` by the next one.
+PROVIDER_PLUGIN_SNAPSHOT_PARTS = ("runtime", "provider-plugins")
+
+
+def provider_plugin_snapshot_dir(directory: str, names, home) -> set[str]:
+    """For a copytree ignore walking the home *home*: the snapshot dir when *directory* is ``<home>/runtime``."""
+    from pathlib import Path
+
+    parent, leaf = PROVIDER_PLUGIN_SNAPSHOT_PARTS
+    if leaf not in names:
+        return set()
+    try:
+        return {leaf} if Path(directory).resolve() == Path(home).resolve() / parent else set()
+    except (OSError, ValueError):
+        return set()
+
 # Bitwarden / 1Password secret-value caches and the Photon sidecar auth token, as POSIX paths relative to
 # a home. They sit at its top, where a sandbox can hide a file by path (a writable folder above a hidden
 # file can be renamed). Hermes regenerates them on use, so backups leave them out.

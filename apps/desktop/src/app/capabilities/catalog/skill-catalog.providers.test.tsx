@@ -105,6 +105,38 @@ it('bootstraps descriptors without hub installs and keeps same-named public and 
   expect(api.mock.calls.filter(([request]) => request.path.startsWith('/api/skills/hub/search')).every(([request]) => request.connectionId === 'local' && request.profile === 'alice')).toBe(true)
 })
 
+it('keeps two owners with the same catalog name and item distinct', async () => {
+  const secondSource = { ...source, id: source.id.replace(source.id.split('.')[1], 'a'.repeat(64)), provider: { ...source.provider, plugin_id: 'other-owner' } }
+  const secondIdentifier = `${secondSource.id}:example-skill`
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.endsWith('/official')) { return Promise.resolve({ skills: [], provider_sources: [source, secondSource] }) }
+
+    if (request.path.includes('/search') && new URL(request.path, 'http://fixture').searchParams.get('source') === secondSource.id) {
+      return Promise.resolve({ results: [{ ...search.results[0], source: secondSource.id, identifier: secondIdentifier, provider: { ...search.results[0].provider, plugin_id: 'other-owner' } }], next_cursor: null })
+    }
+
+    return original(request)
+  })
+  setup()
+  await waitFor(() => expect(screen.getAllByRole('article').filter(article => article.textContent?.includes('Team skills'))).toHaveLength(2))
+  const teamRows = screen.getAllByRole('article').filter(article => article.textContent?.includes('Team skills'))
+  expect(teamRows).toHaveLength(2)
+  fireEvent.click(within(teamRows[1]).getByRole('button', { name: 'Install Example skill' }))
+  await waitFor(() => expect(api.mock.calls.find(([request]) => request.path.endsWith('/review'))?.[0].body.identifier).toBe(secondIdentifier))
+})
+
+it('renders a refused operation without offering another confirmation', async () => {
+  confirmResponse = { ...completed, state: 'failed', outcome: 'refused', message: 'Provider refused this operation.' }
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByText('Provider refused this operation.')
+  expect(screen.queryByRole('button', { name: 'Confirm install' })).toBeNull()
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/confirm'))).toHaveLength(1)
+})
+
 it('browses subsequent provider pages without hiding the later rows', async () => {
   setup()
   await teamCard()
@@ -206,6 +238,10 @@ it.each([
   { scan: { ...review.scan, complete: false } },
   { acknowledgements_required: ['unshown-finding'] },
   { review_token: null },
+  { confirmable: false },
+  { version: null },
+  { content_digest: null },
+  { policy_revision: null },
   { expires_at_ms: 1 }
 ])('does not confirm an incomplete or expired plan %j', async delta => {
   reviewResponse = { ...review, ...delta }

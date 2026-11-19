@@ -15,6 +15,7 @@ import pytest
 
 import cron.scheduler_delivery as sd
 from gateway import delivery_ledger as dl
+from persistence_assembly import profile_scope
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms._shared import NONE, PARTIAL, DeliveryOutcome, delivery_state, standalone_never_left
 
@@ -28,7 +29,7 @@ LOST = {"error": "Telegram send failed: Timed out", "delivery": "uncertain"}
 def _fresh_ledger(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
     monkeypatch.setattr(sd, "_maybe_mirror_cron_delivery", lambda *a, **k: None)
     monkeypatch.setattr(sd, "record_cron_delivery", lambda *a, **k: None)

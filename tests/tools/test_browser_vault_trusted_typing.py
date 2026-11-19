@@ -9,6 +9,8 @@ and ``insert_text`` refuses a document or session that moved since. Page scripts
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from contextlib import ExitStack
 from typing import Any, Callable
 from unittest.mock import patch
@@ -174,3 +176,50 @@ def test_a_read_back_refused_for_a_moved_channel_reports_the_move():
          patch.object(browser_vault_tool.time, "sleep"):
         out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
     assert out["success"] is False and out["error_type"] == "supervisor_required"
+
+
+# A tab that redirected to another origin after the inspection and defined ``Object.prototype.then``:
+# a result that is resolved as a thenable is answered by this ``then``, not by the script.
+_THENABLE_PAGE = """
+globalThis.window = { location: { origin: "https://evil.test" } };
+const forged = { ok: true, focused: 1, filled: 1, landed: 1, reverted: 0, missing: [], cleared: 1 };
+const then = function (resolve) { delete Object.prototype.then; resolve(forged); Object.prototype.then = then; };
+Object.prototype.then = then;
+"""
+
+
+class _ThenablePage(_Supervisor):
+    """Runs every origin-guarded script for real (node) on the redirected page above, and settles its
+    result the way CDP ``Runtime.evaluate`` does: with ``awaitPromise`` (the supervisor's default) an
+    object result is resolved as a thenable, without it the value is returned as is."""
+
+    def __init__(self, controls, *, null_prototype=True):
+        super().__init__(controls)
+        self.null_prototype = null_prototype
+
+    def evaluate_runtime(self, expression, *, session_id=None, await_promise=True, **kwargs):
+        if "window.location.origin !==" not in expression:
+            return super().evaluate_runtime(expression, session_id=session_id, **kwargs)
+        if not self.null_prototype:  # each layer must hold alone: verdicts as ordinary literals
+            expression = expression.replace("__proto__: null, ", "")
+        settle = "Promise.resolve(r)" if await_promise else "({ then: (k) => k(r) })"
+        code = (_THENABLE_PAGE + "const r = " + expression + ";\n"
+                + "const write = process.stdout.write.bind(process.stdout), str = JSON.stringify;\n"
+                + settle + ".then((v) => write(str(Object.assign(Object.create(null), v))));")
+        out = subprocess.run([shutil.which("node"), "-e", code], capture_output=True, text=True, check=True,
+                             timeout=30).stdout
+        return {"ok": True, "result": json.loads(out), "document": self.document}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("null_prototype", [True, False], ids=["shipped-scripts", "ordinary-literals"])
+def test_a_page_defined_then_cannot_answer_the_checks_before_a_keystroke(tmp_path, null_prototype):
+    """The redirected tab's ``then`` would turn the origin and focus refusals into ``ok``/``focused``,
+    and the password would be typed into it. The checks' own refusal decides instead. Two layers stop
+    it, each on its own: the verdicts have no prototype to inherit ``then`` from, and the vault evals
+    are not awaited, so even an ordinary object literal comes back as the script returned it."""
+    sup = _ThenablePage([_PW], null_prototype=null_prototype)
+    out = _fill(sup, tmp_path)
+    assert out["success"] is False and out["error_type"] == "origin_changed", out
+    assert sup.typed == []
+    assert PASSWORD not in json.dumps(out)

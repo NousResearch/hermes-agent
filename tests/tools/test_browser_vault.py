@@ -1007,7 +1007,7 @@ class TestBrowserVaultTools:
             def focus_page(self, origin, accept=None):
                 return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
 
-            def evaluate_runtime(self, expression, *, session_id=None):
+            def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
                 if "location.href" in expression:
                     return {"ok": True, "result": "https://example.com/login"}
                 if "s3cret-pw" not in expression:

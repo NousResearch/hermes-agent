@@ -56,7 +56,7 @@ class _FakePage:
     def current_page_session(self) -> str:
         return "S1"
 
-    def evaluate_runtime(self, expression: str, *, session_id=None) -> dict:
+    def evaluate_runtime(self, expression: str, *, session_id=None, **kwargs) -> dict:
         if expression.strip() == "window.location.href":
             return {"ok": True, "result": self.href}
         if "let filled = 0" in expression:  # the fill script (build_fill_js)

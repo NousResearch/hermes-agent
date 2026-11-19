@@ -144,7 +144,7 @@ def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypa
     evaluated = []
 
     class Sup:
-        def evaluate_runtime(self, expr, *, session_id=None):
+        def evaluate_runtime(self, expr, *, session_id=None, **kwargs):
             evaluated.append(expr)
             return {"ok": True, "result": "{}"}
 

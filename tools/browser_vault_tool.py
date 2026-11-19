@@ -64,6 +64,8 @@ def _check_vault_available() -> bool:
 # A secret-bearing script runs inside this wrapper on a page backend, so a page exception is answered
 # in-page and its message (which may quote the script) never reaches the backend's error path or logs.
 _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
+# Null-prototype like every vault verdict (see ``agent.vault_login_classifier._ORIGIN_GUARD_JS``).
+_PAGE_FILL_FAILED_JS = "{ __proto__: null, hermes_vault_eval_failed: true }"
 
 # Read-back pacing. A framework commits on its own schedule, so one read is a guess: 500 ms (~30
 # frames) is where a real commit has happened or is not coming. Polling beats a single sleep because a
@@ -73,7 +75,9 @@ _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 # would not close it: an input listener never fires on a programmatic revert, MutationObserver does not
 # see the value property, a value-setter hook fights React's own tracker on that property, and a script
 # that waits needs a backend that awaits promises (a plugin page backend's evaluate does not promise
-# to) and a page whose timers run (a background tab's run about once a second).
+# to) and a page whose timers run (a background tab's run about once a second). So every vault script
+# answers synchronously, and the supervisor runs them without ``awaitPromise``: an awaited result is
+# resolved through the page's own ``then``, which a page can define on ``Object.prototype``.
 _FILL_VERIFY_INTERVAL_S = 0.01
 _FILL_VERIFY_CEILING_S = 0.5
 # A value counts as kept only once every field has read back right for this long without a miss:
@@ -119,7 +123,7 @@ def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> 
     """Evaluate on a plugin page backend. On the secret path every failure gets fixed text."""
     if secret:
         expression = ("(() => { try { return (" + expression + "); } catch (_) { return "
-                      + json.dumps(_PAGE_FILL_FAILED) + "; } })()")
+                      + _PAGE_FILL_FAILED_JS + "; } })()")
     try:
         result = backend.evaluate(task_id, expression, secret=secret)
     except Exception as exc:  # health: allow BLE001 -- plugin failure becomes a typed refusal
@@ -203,7 +207,7 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     if supervisor is None:
         return {"success": False, "error": "no supervised browser session for this task; open the page with "
                                            "browser_exec first"}
-    sup = supervisor.evaluate_runtime(expression, session_id=session)
+    sup = supervisor.evaluate_runtime(expression, session_id=session, await_promise=False)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {"success": False, "error": str(sup.get("error") or "evaluate failed")}
@@ -272,7 +276,7 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     if page is not None:
         return _page_eval(page, task_id, expression, secret=True)
     try:
-        sup = supervisor.evaluate_runtime(expression, session_id=session)
+        sup = supervisor.evaluate_runtime(expression, session_id=session, await_promise=False)
     except Exception as exc:  # health: allow BLE001 -- its text can quote the expression, i.e. the secret
         logger.debug("vault fill: secret-bearing evaluate raised %s", type(exc).__name__)
         return {"success": False, "error_type": "eval_failed",

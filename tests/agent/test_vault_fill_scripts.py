@@ -2,7 +2,8 @@
 
 The scripts are what decides whether a secret is typed and whether a fill is reported as landed, so
 they are executed, not grepped: each test builds a page (stamped controls, optional open shadow
-roots, focus), evaluates the generated expression and reads its JSON verdict. No browser, no network.
+roots, focus), evaluates the generated expression and reads its verdict by value, after settling it
+as an awaiting transport would. No browser, no network.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from agent.vault_login_classifier import (
     build_fill_verify_js,
     build_focus_js,
     build_origin_check_js,
+    build_unstamp_js,
 )
 
 NODE = shutil.which("node")
@@ -34,7 +36,11 @@ _FAKE_DOM = r"""
 // The harness reads a script's answer the way CDP ``returnByValue`` does: natively, own data
 // properties only, never through the page's JSON, String, toJSON or prototype accessors. Captured
 // before any page setup runs, so a hostile page cannot answer for the harness either.
+// It also settles the answer the way an awaiting transport does (CDP ``awaitPromise``, a plugin
+// backend's evaluate): ``Promise.resolve`` treats any object with a ``then`` as a thenable and adopts
+// whatever that ``then`` resolves, so a verdict that inherits a page-defined ``then`` is replaced.
 const __str = JSON.stringify, __own = Object.getOwnPropertyNames, __isArray = Array.isArray;
+const __settle = Promise.resolve.bind(Promise), __write = process.stdout.write.bind(process.stdout);
 function __byValue(v) {
   if (v === undefined) return "null";
   if (v === null || typeof v !== "object") return __str(v);
@@ -124,7 +130,7 @@ def _verdict(raw: str):
 
 def _node(setup: str, expression: str) -> str:
     code = (_FAKE_DOM.replace("__NONCE__", NONCE) + setup
-            + "\nprocess.stdout.write(__byValue(" + expression + "));")
+            + "\n__settle(" + expression + ").then((v) => __write(__byValue(v)));")
     return subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True, timeout=30).stdout
 
 
@@ -322,6 +328,18 @@ _LYING_PAGES = {
       Object.prototype.toJSON = function () { return JSON.parse('__FORGED__'); };
     """.replace("__FORGED__", _FORGED),
 }
+# A ``then`` on a prototype every plain object (or array) inherits. An awaiting transport hands the
+# verdict to it, and it resolves the forged answer instead: the reviewer's real-Chromium repro. It
+# steps aside while resolving so the forged answer is not itself a thenable.
+_THENABLE = """
+  const forged = JSON.parse('__FORGED__');
+  const then = function (resolve) { delete __PROTO__.then; resolve(forged); __PROTO__.then = then; };
+  __PROTO__.then = then;
+""".replace("__FORGED__", _FORGED)
+_LYING_PAGES.update({
+    "object-then": _THENABLE.replace("__PROTO__", "Object.prototype"),
+    "array-then": _THENABLE.replace("__PROTO__", "Array.prototype"),
+})
 
 _GUARDED_SCRIPTS = {
     "origin-check": lambda: build_origin_check_js(ORIGIN),
@@ -329,6 +347,20 @@ _GUARDED_SCRIPTS = {
     "clear": lambda: build_clear_js([{"index": 1}], nonce=NONCE, expected_origin=ORIGIN),
     "fill": lambda: _secret_scripts()["fill"],
     "read-back": lambda: _secret_scripts()["read-back"],
+}
+
+
+# Lying pages that leave the scripts' own machinery (``String``) alone, so on the checked origin each
+# script can still compute its answer.
+_ANSWERING_PAGES = ["json-stringify", "to-json", "object-then", "array-then"]
+
+_OWN_VERDICTS = {
+    "origin-check": (_GUARDED_SCRIPTS["origin-check"], {"ok": True}),
+    "focus": (_GUARDED_SCRIPTS["focus"], {"focused": 1}),
+    "clear": (_GUARDED_SCRIPTS["clear"], {"cleared": 1}),
+    "fill": (_GUARDED_SCRIPTS["fill"], {"filled": 1}),
+    "read-back": (_GUARDED_SCRIPTS["read-back"], {"landed": 1, "reverted": 0, "missing": []}),
+    "unstamp": (lambda: build_unstamp_js(NONCE), {"unstamped": True}),
 }
 
 
@@ -358,7 +390,7 @@ class TestForgedVerdicts:
         out = _run(setup, _GUARDED_SCRIPTS[script]())
         assert isinstance(out, dict) and "refused" not in out, out
 
-    @pytest.mark.parametrize("page", ["json-stringify", "everything"])
+    @pytest.mark.parametrize("page", ["json-stringify", "everything", "object-then", "array-then"])
     def test_a_page_cannot_claim_a_focus_it_does_not_hold(self, page):
         """On the checked origin too, the focus verdict is the script's own: focus held by another
         element (an iframe's host, a decoy input) reads as lost whatever the page's JSON says."""
@@ -369,3 +401,33 @@ class TestForgedVerdicts:
         """ + _LYING_PAGES[page]
         out = _run(setup, _GUARDED_SCRIPTS["focus"]())
         assert isinstance(out, dict) and out.get("refused") == "focus_lost", out
+
+    @pytest.mark.parametrize("page", _ANSWERING_PAGES)
+    def test_a_read_back_of_a_rerendered_field_is_not_landed(self, page):
+        """On the checked origin the read-back's counts are the script's own: a field that lost its
+        stamp (re-rendered) is missing, not landed, whatever JSON or ``then`` the page defined."""
+        setup = 'add(document, "input", { type: "password", value: "" });' + _LYING_PAGES[page]
+        assert _run(setup, _secret_scripts()["read-back"]) == {"landed": 0, "reverted": 0, "missing": [1]}
+
+    @pytest.mark.parametrize("page", _ANSWERING_PAGES)
+    @pytest.mark.parametrize("script", sorted(_OWN_VERDICTS))
+    def test_on_the_checked_origin_every_answer_is_the_scripts_own(self, script, page):
+        """A page that keeps its origin still cannot put words in a script's mouth: each script's
+        answer is exactly what it computed, not the page's JSON or ``then``."""
+        setup = f"""
+          const pw = stamp(add(document, "input", {{ type: "password", value: "{_SENTINEL}" }}), 1);
+          pw.focus();
+        """ + _LYING_PAGES[page]
+        build, expected = _OWN_VERDICTS[script]
+        assert _run(setup, build()) == expected
+
+    @pytest.mark.parametrize("page", _ANSWERING_PAGES)
+    @pytest.mark.parametrize(("fills", "control", "refused"), [
+        ([], "password", "not_found"),                     # no field to check
+        ([{"index": 1, "token": "current-password"}], "", "not_found"),  # the stamp is gone
+        ([{"index": 1, "token": "current-password"}], "text", "not_password"),
+    ], ids=["no-field", "stamp-gone", "not-a-password-box"])
+    def test_a_focus_refusal_is_not_turned_into_focus(self, fills, control, refused, page):
+        setup = ((f'stamp(add(document, "input", {{ type: "{control}" }}), 1).focus();' if control
+                  else 'add(document, "input", { type: "password" }).focus();') + _LYING_PAGES[page])
+        assert _run(setup, build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN)) == {"refused": refused}

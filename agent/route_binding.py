@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from functools import wraps
 from contextlib import contextmanager
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
@@ -32,6 +33,63 @@ def internal_reasoning_assignment(agent):
             state.pop("_internal_reasoning_assignment", None)
         else:
             state["_internal_reasoning_assignment"] = previous
+
+
+def _turn_reasoning_edited(agent, state):
+    current = agent.reasoning_config
+    return (state.get("edited", False) or type(current) is not type(state["marker"])
+            or current != state["marker"])
+
+
+@contextmanager
+def turn_reasoning_override(agent, override):
+    """Install a one-turn choice without converting it into a session edit.
+
+    The agent is often a cached fallback agent whose marker
+    (``_fallback_reasoning_at_bind``) makes every plain assignment a session edit.
+    A ``/model --once --reasoning`` or API ``reasoning_effort`` is not one: it is
+    route-owned, so it is assigned with the edit tracking disabled and put back
+    afterwards unless the user changed it during the turn. Route transitions run
+    against the session value (``_with_underlying_reasoning``), so a fallback or
+    primary restore decided inside the turn cannot record the override.
+    """
+    state = {"underlying": copy.deepcopy(agent.reasoning_config), "marker": copy.deepcopy(override)}
+    agent._turn_reasoning_override = state
+    with internal_reasoning_assignment(agent):
+        agent.reasoning_config = copy.deepcopy(override)
+    try:
+        yield
+    finally:
+        edited = _turn_reasoning_edited(agent, state)
+        vars(agent).pop("_turn_reasoning_override", None)
+        # An explicit mid-turn edit is authoritative and stays; an untouched
+        # override never outlives its turn.
+        if not edited:
+            with internal_reasoning_assignment(agent):
+                agent.reasoning_config = state["underlying"]
+
+
+def _with_underlying_reasoning(fn):
+    """Route transitions track the session value while the turn uses its override.
+
+    The transition's own reasoning notifications go to the agent's markers; the
+    override is installed back so the turn continues with the level it asked for.
+    """
+    @wraps(fn)
+    def wrapped(agent, *args, **kwargs):
+        state = vars(agent).get("_turn_reasoning_override")
+        if state is None or _turn_reasoning_edited(agent, state):
+            return fn(agent, *args, **kwargs)
+        override = agent.reasoning_config
+        with internal_reasoning_assignment(agent):
+            agent.reasoning_config = state["underlying"]
+        try:
+            return fn(agent, *args, **kwargs)
+        finally:
+            state["underlying"] = copy.deepcopy(agent.reasoning_config)
+            with internal_reasoning_assignment(agent):
+                agent.reasoning_config = override
+    return wrapped
 
 
 class RouteEntryClient(NamedTuple):
@@ -79,6 +137,7 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     return RouteEntryClient(client, model, api_mode_explicit, api_mode, choice if client is not None else None)
 
 
+@_with_underlying_reasoning
 def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
                      commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
@@ -223,6 +282,7 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
 
 
+@_with_underlying_reasoning
 def reinstall_primary_runtime(
     agent: Any, rt: dict[str, Any], primary_provider: str, primary_model: str, matches_primary,
     load_primary_pool, prefetched_pool=None, prefetched: bool = False,

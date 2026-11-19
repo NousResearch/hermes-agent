@@ -1463,6 +1463,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
         reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key, model=model) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
+        # The session's own value, kept apart from this admission's one-turn
+        # (`--once --reasoning`) or API request override: only the former may be
+        # assigned to a cached agent as a session edit.
+        session_reasoning_config = reasoning_config
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
         service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
@@ -1482,7 +1486,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            turn_route, platform_key, combined_ephemeral, max_iterations, session_reasoning_config, pr,
         )
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
@@ -1491,10 +1495,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from agent.primary_auth_fallback import attach_primary_auth_failure
         attach_primary_auth_failure(agent, pending_primary_auth)
         self._wire_turn_agent_callbacks(
-            agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim,
+            agent, turn_route, session_reasoning_config, stream_delta_cb, interim_cb, want_interim,
             # Gateway policy/one-turn/API resolvers encode explicit "none" as a
             # dict; a None here is an unset profile, not a new session edit.
-            profile_reasoning_unset=reasoning_config is None,
+            profile_reasoning_unset=session_reasoning_config is None,
         )
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
@@ -1504,6 +1508,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             local_sinks = local_viewer_events.wire(self, agent)
             from gateway.session_usage import TURN_BASE_ATTR
             setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
+        from contextlib import nullcontext
+        from agent.route_binding import turn_reasoning_override
+        # A one-turn level is scoped to this execution, not written onto the cached
+        # agent as a session edit (which would outlive the turn on a fallback route).
+        reasoning_scope = (turn_reasoning_override(agent, reasoning_config)
+                           if reasoning_config is not session_reasoning_config else nullcontext())
+        reasoning_scope.__enter__()
         try:
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
@@ -1516,6 +1527,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
                     agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
+            reasoning_scope.__exit__(None, None, None)
             if local_sinks is not None:
                 from gateway import local_viewer_events
                 local_viewer_events.restore(agent, local_sinks)

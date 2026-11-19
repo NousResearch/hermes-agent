@@ -236,6 +236,11 @@ class AIAgent(
         # Record a SNAPSHOT, never the caller's object: a caller that keeps mutating
         # the dict it assigned would otherwise rewrite the recorded edit in place.
         if not self.__dict__.get("_internal_reasoning_assignment", False):
+            turn_override = self.__dict__.get("_turn_reasoning_override")
+            if turn_override is not None:
+                # Someone assigned during a one-turn override: a real edit that
+                # must outlive the turn, not the route-owned override itself.
+                turn_override["edited"] = True
             # A new assignment replaces the restored pin, even when an unset
             # profile baseline is also None. Edits on a fallback are recorded below.
             self.__dict__.pop("_reasoning_explicit_none", None)

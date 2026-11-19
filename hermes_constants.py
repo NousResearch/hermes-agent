@@ -510,7 +510,7 @@ def _mkdir_below_home(home: Path, path: Path) -> None:
         if path.parent == home:
             raise
         _mkdir_below_home(home, path.parent)
-        if not path.exists():  # else an alias (``missing/..``) of a dir this walk already handled
+        if path.name != "..":  # ``missing/..`` is the dir this walk just reached, already handled
             make_user_dir(path, exist_ok=True)
 
 

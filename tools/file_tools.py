@@ -120,10 +120,6 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
 # Above this size, a wide read (limit > 200) gets a hint toward targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000
 
-# A gutter line ``_add_line_numbers`` clamped: ``<n>|<first max_line_length chars>... [truncated]``.
-_CLIPPED_LINE_RE = re.compile(r'^(\d+)\|.*\.\.\. \[truncated\]$', re.MULTILINE)
-
-
 def _clipped_line_hint(content: str, path: str) -> "str | None":
     """Where the rest of a clamped long line is, or None when no line was clamped.
 
@@ -131,28 +127,44 @@ def _clipped_line_hint(content: str, path: str) -> "str | None":
     LINE, so it never reaches past the clamp) or gives up on minified/JSONL files. The command reads
     one character range of one line, so the model can walk a long line chunk by chunk. Inspired by
     Muse Code 1.4.15 ("Read long text lines in full when they fit the output limit, with byte-range
-    guidance for larger lines")."""
-    clipped = [int(m) for m in _CLIPPED_LINE_RE.findall(content or "")]
-    if not clipped:
-        return None
+    guidance for larger lines").
+
+    A line counts as clamped only when exactly ``max_line_length`` characters precede the marker (a
+    source line that merely ends in the marker text does not). GNU ``cut -c`` counts bytes, which
+    equal characters only while the visible prefix is ASCII; otherwise the command slices decoded
+    characters with Python, decoding the way read_file does (UTF-8, BOM-tolerant, LF-delimited lines). *path* is
+    the path the backend read; a leading ``~/`` stays unquoted so the backend's shell expands it."""
     from tools.tool_output_limits import get_max_line_length
     width = get_max_line_length()
-    shown = ", ".join(map(str, clipped[:5])) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
+    clipped = [(int(n), prefix) for n, prefix in re.findall(
+        r'^(\d+)\|(.{' + str(width) + r'})\.\.\. \[truncated\]$', content or "", re.MULTILINE)]
+    if not clipped:
+        return None
+    shown = ", ".join(str(n) for n, _ in clipped[:5]) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
+    line, prefix = clipped[0]
+    quoted = "~/" + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(path)
+    if prefix.isascii():
+        command = f"sed -n '{line}p' {quoted} | cut -c{width + 1}-{2 * width}"
+    else:
+        script = (f"import sys; print(open(sys.argv[1], encoding='utf-8-sig', errors='replace', newline='')"
+                  f".read().split(chr(10))[{line - 1}][{width}:{2 * width}])")
+        command = f'python3 -c "{script}" {quoted}'
     return (f"Line(s) {shown} were cut at {width:,} characters. read_file pages by line, so offset cannot "
-            f"reach the rest; read the next part of a line with the terminal: "
-            f"sed -n '{clipped[0]}p' {shlex.quote(path)} | cut -c{width + 1}-{2 * width}")
+            f"reach the rest; read the next part of a line with the terminal: {command}")
 
 
 def _add_read_size_hint(result_dict: dict, content: str, path: str, file_size: int, limit: int) -> None:
     """At most one ``_hint`` about size (an earlier hint, e.g. merge conflicts, wins): a wide page of a
-    large file, else a line clamped at ``max_line_length``."""
+    large file, else a line clamped at ``max_line_length``. A transcoded (UTF-16) read gets no slice
+    command: its bytes on disk are not the text the model saw."""
     if (file_size and file_size > _LARGE_FILE_HINT_BYTES
             and limit > 200 and result_dict.get("truncated")):
         result_dict.setdefault("_hint", (
             f"This file is large ({file_size:,} bytes). "
             "Consider reading only the section you need with offset and limit "
             "to keep context usage efficient."))
-    elif result_dict.get("truncated_lines") and (clip_hint := _clipped_line_hint(content, path)):
+    elif (result_dict.get("truncated_lines") and not str(result_dict.get("hint") or "").startswith("Transcoded")
+            and (clip_hint := _clipped_line_hint(content, path))):
         result_dict.setdefault("_hint", clip_hint)
 
 
@@ -738,7 +750,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        read_path = resolved_str if _file_ops_uses_host_paths(file_ops) else path
+        result = file_ops.read_file(read_path, offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -775,7 +788,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                     f"{conflicts} unresolved git merge-conflict block(s) (<<<<<<< / ======= / >>>>>>>) in this "
                     "range. Resolve them (keep one side or combine, delete the markers) before editing around them.")
 
-        _add_read_size_hint(result_dict, result.content, path, file_size, limit)
+        _add_read_size_hint(result_dict, result.content, read_path, file_size, limit)
 
         total_lines = result_dict.get("total_lines")
         if result_dict.get("truncated_by") == "bytes":

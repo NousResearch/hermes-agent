@@ -8,12 +8,12 @@ category: memory
 docs_url: https://github.com/D0xedDevi0/hermes-neural-mesh
 requires_hermes: ">=0.22.0"
 version: "0.45.0"
-image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
 screenshots:
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959/docs/screenshots/cold-recall.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959/docs/screenshots/point-in-time.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959/docs/screenshots/measured.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/the-difference.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/cold-recall.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/point-in-time.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/281b7b381b6869327c2dd77f36335836d127b959/docs/screenshots/measured.png
 readme: true
 title: "NEURAL_MESH"
 known_issues:

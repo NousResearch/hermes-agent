@@ -11,6 +11,7 @@ only HERMES_HOME. And the launch-profile asymmetry: a default-member hosted-room
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from pathlib import Path
@@ -378,7 +379,7 @@ def _prompt_building_session(profile_home, key):
     from types import SimpleNamespace
     agent = SimpleNamespace(
         _memory_manager=_MemoryManager(), _cached_system_prompt="", session_id=key, model="m", tools=[],
-        _session_db=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+        _session_db=SimpleNamespace())
     agent._build_system_prompt = lambda system_message=None: agent._memory_manager.build_system_prompt()
     return {"agent": agent, "history": [], "history_lock": threading.Lock(), "history_version": 0,
             "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
@@ -400,6 +401,8 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     monkeypatch.setattr("agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
     sessions = {"sa": _prompt_building_session(None, "sess-a"), "sb": _prompt_building_session(str(b), "sess-b")}
     monkeypatch.setattr(server, "_sessions", sessions)
+    persistence = SimpleNamespace(sessions=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+    monkeypatch.setattr(server, "_persistence_for", lambda db: contextlib.nullcontext(persistence))
     assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting
 
     for sid, home, key in (("sa", root, "launch-mem-key"), ("sb", b, "b-mem-key"), ("sa", root, "launch-mem-key")):

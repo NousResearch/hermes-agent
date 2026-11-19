@@ -283,7 +283,8 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
 
 def _load_package(provider_dir: Path, name: str):
     """Import the provider package at *provider_dir* under the module name the loader owns
-    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
+    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None when refused,
+    the package's own exception when it fails to import."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
         parents=(__package__.rpartition(".")[0], __package__),
@@ -305,7 +306,10 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
     provider_dir = find_provider_dir(name)
     if provider_dir is None:
         raise ImportError(f"memory provider {name!r} is not installed")
-    package = _load_package(provider_dir, name)
+    try:
+        package = _load_package(provider_dir, name)
+    except Exception as exc:
+        raise ImportError(f"memory provider {name!r} failed to import: {exc}") from exc
     if package is None:
         raise ImportError(f"memory provider {name!r} failed to import")
     return importlib.import_module(f"{package.__name__}.{submodule}") if submodule else package

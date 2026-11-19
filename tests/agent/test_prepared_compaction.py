@@ -29,6 +29,9 @@ from agent import prepared_compaction as pc
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.prepared_compaction import PreparedCompaction
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import wait_until
 
 
@@ -395,14 +398,12 @@ def test_prune_and_blank_echo_drop_do_not_invalidate_the_candidate():
 
 
 def test_identity_survives_a_session_db_round_trip_and_catches_a_rewind(tmp_path):
-    from hermes_state import SessionDB
-
     msgs = _messages(20)
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("S1", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "S1", "cli")
     for m in msgs[1:]:
-        db.append_message("S1", role=m["role"], content=m["content"])
-    replayed = [msgs[0]] + db.get_messages_as_conversation("S1")
+        seed_messages(db, "S1", {"role": m["role"], "content": m["content"]})
+    replayed = [msgs[0]] + conversation(db, "S1")
     window = pc._Window("S1", 4, 15, pc.prefix_identities(replayed, 15))
     assert pc._mismatch(window, msgs, "S1", 4) is None, "the live dicts before their first persist"
     assert pc._mismatch(window, replayed, "S1", 4) is None
@@ -573,13 +574,12 @@ def test_a_held_candidate_starts_no_further_pass_however_far_the_prompt_grows(mo
 
 
 def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
     import agent.context_compressor as module
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("S1", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "S1", "cli")
     cc = _compressor()
-    cc.bind_session_state(db, "S1")
+    cc.bind_session_state(db, "S1", persistence=db)
     msgs = _messages(30)
 
     monkeypatch.setattr(_StubCompressor, "_generate_summary", module.ContextCompressor._generate_summary)
@@ -591,7 +591,7 @@ def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, mon
     assert call.call_count == 1
     assert cc.prepared_compaction._entry is None
     assert cc._summary_failure_cooldown_until == 0.0 and cc._last_summary_error is None
-    assert db.get_compression_failure_cooldown("S1") is None
+    assert db.messages.read_compression_cooldown("S1", time.time()) is None
     assert pc.maybe_prepare(_agent(cc), msgs, origin="test") is None, "backs off"
     assert call.call_count == 1
 

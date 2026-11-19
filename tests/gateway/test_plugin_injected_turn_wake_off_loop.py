@@ -11,22 +11,26 @@ import pytest
 
 from tests.waiting import async_wait_until
 
-_PERSON_QUEUED = {"status": "queued", "principal_id": "messaging:42", "payload": {}}
+
+def _person_queued():
+    from persistence.authority.admissions import AdmissionRecord
+    return AdmissionRecord(seq=1, admission_id="a1", request_id="r1", principal_id="messaging:42",
+                           target_session_id="sid", payload={}, intent="queue", status="queued", outcome=None,
+                           owner_epoch=None, generation=None)
 
 
 def _waiting_session(monkeypatch):
-    import hermes_state_runtime
     from gateway.session_contract import SessionRef
 
     readers = []
 
-    def list_session_admissions(db, *, session_id):
+    def list_admissions(*, session_id, pending_only=True):
         readers.append(threading.current_thread())
-        return [_PERSON_QUEUED]
+        return [_person_queued()]
 
-    monkeypatch.setattr(hermes_state_runtime, "list_session_admissions", list_session_admissions)
     live = SimpleNamespace(background_wait=threading.Event())
-    authority = SimpleNamespace(sessions={"sid": live}, db=object())
+    authority = SimpleNamespace(sessions={"sid": live},
+                                persistence=SimpleNamespace(admissions=SimpleNamespace(list=list_admissions)))
     return authority, SessionRef("default", "sid"), live.background_wait, readers
 
 

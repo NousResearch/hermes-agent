@@ -7,24 +7,26 @@ from types import SimpleNamespace
 import pytest
 from websockets.sync.server import serve
 
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_session
+
 
 @pytest.fixture
 def receipt_owner(monkeypatch, tmp_path):
     from hermes_cli import gateway_client, gateway_runtime
     import hermes_cli.gateway_runtime_discovery as discovery
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, register_worker_execution
-
-    db = SessionDB(tmp_path / 'state.db')
-    epoch = begin_runtime_epoch(db, instance_id='test-owner')
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
+    epoch = db.runtime.begin_epoch(instance_id='test-owner')
     scopes = []
     for index in range(6):
         session_id = f'session-{index}'
         execution_id = f'execution-{index}'
-        db.create_session(session_id, source='cli')
+        seed_session(db, session_id, 'cli')
         scope = {'epoch': epoch, 'execution_id': execution_id,
                  'session_id': session_id, 'generation': 0}
-        register_worker_execution(db, **scope, kind='compute', adoption_secret=f'secret-{index}')
+        db.worker_executions.register(**scope, kind='compute', adoption_secret=f'secret-{index}')
         scopes.append(scope)
 
     lock = threading.Lock()
@@ -45,8 +47,7 @@ def receipt_owner(monkeypatch, tmp_path):
                 seen.add(key)
                 retry_event = state.retry_seen.setdefault(key, threading.Event())
             try:
-                from hermes_state_runtime import mutate_worker_execution
-                result = mutate_worker_execution(db, **request['params'])
+                result = db.worker_executions.persist_operation(**request['params'])
             except Exception as exc:
                 ws.send(json.dumps({'jsonrpc': '2.0', 'id': request['id'],
                                     'error': {'code': -32000, 'message': str(exc)}}))
@@ -119,13 +120,13 @@ def test_six_workers_reconcile_lost_ack_without_duplicate_usage_or_transcript(
         assert len(state.requests) == 12  # each durable sequence was applied, then exact-receipt read
         assert all(not store.journal['pending'] and store.failure is None for store in stores)
         for index in range(6):
-            row = db.get_session(scopes[index]['session_id'])
+            row = session_row(db, scopes[index]['session_id'])
             if index % 2:
                 assert (row['input_tokens'], row['output_tokens'], row['api_call_count']) == (5, 2, 1)
             else:
-                messages = db.get_messages(scopes[index]['session_id'])
+                messages = transcript_rows(db, scopes[index]['session_id'])
                 assert [message['content'] for message in messages] == [f'once-{index}']
-        with db._read_ctx() as conn:
+        with raw_holder(db)._read_ctx() as conn:
             assert conn.execute('SELECT COUNT(*) FROM worker_receipts').fetchone()[0] == 6
     finally:
         for store in stores:
@@ -150,8 +151,8 @@ def test_second_lost_ack_keeps_outcome_unknown_and_the_exact_entry_pending(
         assert store.failure == 'worker_receipt_timeout'
         assert store.journal['pending'] == [{'sequence': 1, 'operation': 'usage.main',
                                              'payload': {'input_tokens': 5}}]
-        assert db.get_session(scope['session_id'])['input_tokens'] == 5
-        with db._read_ctx() as conn:
+        assert session_row(db, scope['session_id'])['input_tokens'] == 5
+        with raw_holder(db)._read_ctx() as conn:
             assert conn.execute('SELECT COUNT(*) FROM worker_receipts').fetchone()[0] == 1
     finally:
         store._outbox_owner.close()
@@ -175,7 +176,7 @@ def test_owner_fences_do_not_become_ambiguous_receipt_retries(
             store.queue_token_counts(scope['session_id'], input_tokens=5)
         assert len(state.requests) == 1
         assert len(store.journal['pending']) == 1
-        assert db.get_session(scope['session_id'])['input_tokens'] == 0
+        assert session_row(db, scope['session_id'])['input_tokens'] == 0
     finally:
         store._outbox_owner.close()
         store.rpc.close()

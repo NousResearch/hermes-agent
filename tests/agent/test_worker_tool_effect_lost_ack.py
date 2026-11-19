@@ -14,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from tests.agent.test_worker_rpc_lost_ack_recovery import _fast_receipts
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 pytest_plugins = ("tests.agent.test_worker_rpc_lost_ack_recovery",)
 
@@ -52,11 +55,9 @@ def _execute_effect(store, db, scope, name):
             "function": {"name": name, "arguments": "{}"}}
     # A real tool-result row needs its assistant-call antecedent. Seed that
     # separately so only the result is written through this worker receipt.
-    db.append_messages_batch(scope["session_id"], [
-        {"role": "assistant", "content": None, "tool_calls": [call]},
-    ])
-    messages = db.get_messages_as_conversation(scope["session_id"])
-    initial_rows = len(db.get_messages(scope["session_id"]))
+    seed_messages(db, scope["session_id"], {"role": "assistant", "content": None, "tool_calls": [call]})
+    messages = conversation(db, scope["session_id"])
+    initial_rows = len(transcript_rows(db, scope["session_id"]))
     assert initial_rows == 1
 
     # Construction is real but has no store: setup cannot consume a receipt.
@@ -71,9 +72,10 @@ def _execute_effect(store, db, scope, name):
     )
     # Start with a genuinely persisted recent activity heartbeat. Otherwise the
     # executor emits an unrelated session.activity receipt before the result.
-    db.touch_session_activity(scope["session_id"])
+    db.sessions.touch_activity(scope["session_id"])
     agent._session_activity_last_persist_mono = time.monotonic()
     agent._session_db = store
+    agent.persistence = None
     agent._session_db_created = True
     assistant = SimpleNamespace(tool_calls=[SimpleNamespace(
         id=call["id"], type="function", function=SimpleNamespace(**call["function"]),
@@ -115,14 +117,14 @@ def test_lost_ack_reconciles_tool_result_without_reexecuting_tool(
         assert requests[0]["params"]["operation"] == "transcript.append"
         sequence = requests[0]["params"]["sequence"]
         assert state.retry_seen[(scope["execution_id"], sequence)].is_set()
-        rows = db.get_messages(scope["session_id"])
+        rows = transcript_rows(db, scope["session_id"])
         assert len(rows) == 2  # one seeded assistant call plus one newly durable result
         results = [row for row in rows if row["role"] == "tool"]
         assert len(results) == 1
         assert results[0]["tool_call_id"] == "receipt-effect-call"
         assert json.loads(results[0]["content"]) == {"appended": True}
         assert len([row for row in messages if row["role"] == "tool"]) == 1
-        with db._read_ctx() as conn:
+        with raw_holder(db)._read_ctx() as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM worker_receipts WHERE execution_id=? AND sequence=?",
                 (scope["execution_id"], sequence),
@@ -154,9 +156,9 @@ def test_stale_generation_refuses_tool_result_without_retry_or_reexecution(
         assert store.failure == "stale_generation"
         assert len(store.journal["pending"]) == 1
         assert len([row for row in messages if row["role"] == "tool"]) == 1
-        rows = db.get_messages(scope["session_id"])
+        rows = transcript_rows(db, scope["session_id"])
         assert len(rows) == 1 and rows[0]["role"] == "assistant"
-        with db._read_ctx() as conn:
+        with raw_holder(db)._read_ctx() as conn:
             assert conn.execute("SELECT COUNT(*) FROM worker_receipts").fetchone()[0] == 0
     finally:
         store._outbox_owner.close()

@@ -174,7 +174,9 @@ def _cron_default_profile() -> str:
 
 def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME). A profile a plugin runs
-    elsewhere answers 409: this host neither reads nor runs its jobs, sessions or files."""
+    elsewhere answers 409 to every request that resolves its profile here: each cron request (an
+    omitted profile is the backend's own), and a session or file request that names the profile.
+    A session or file request with no profile uses the backend's own home and does not ask here."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:

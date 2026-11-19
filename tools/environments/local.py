@@ -1147,7 +1147,8 @@ class LocalEnvironment(BaseEnvironment):
         no ``pass_fds``, so Git Bash keeps the on-disk snapshot as it was."""
         if _IS_WINDOWS or getattr(self, "_secret_handoff", None) is None:
             return {}
-        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": profile_secret_names()}
+        names = (*profile_secret_names(), *self._secret_handoff.names())
+        return {"secret_fd": _secret_fd_token(self._session_id), "secret_names": names}
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP

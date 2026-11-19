@@ -99,6 +99,12 @@ class SecretHandoff:
             with self._lock:
                 self._by_snapshot[snapshot_path] = values
 
+    def names(self) -> set[str]:
+        """Every name any snapshot's record holds: once a value travelled in memory it stays a
+        secret for the environment's lifetime, even after the name leaves ``.env``."""
+        with self._lock:
+            return {name for values in self._by_snapshot.values() for name in values}
+
     def forget(self) -> None:
         with self._lock:
             self._by_snapshot.clear()

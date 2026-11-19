@@ -6,6 +6,8 @@ comes from bounded local installed reads, not a remote inspect/search per skill.
 import time
 from pathlib import Path
 
+from pm.filesystem import is_junction
+
 from hermes_constants import get_hermes_home
 from hermes_cli.skill_catalog.registry import snapshot
 from hermes_cli.skill_catalog.validation import CatalogError
@@ -25,7 +27,7 @@ def target_path(home: Path, relative: str) -> Path:
             if part.startswith("."):
                 raise ValueError("Reserved target")
             current = current / part
-            if current.is_symlink() or current.is_junction():
+            if current.is_symlink() or is_junction(current):
                 raise ValueError("Redirected target")
         if not current.resolve().is_relative_to(root.resolve()):
             raise ValueError("Target outside skills root")

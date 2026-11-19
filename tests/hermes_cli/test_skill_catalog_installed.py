@@ -127,6 +127,19 @@ def test_installed_row_reports_reconciling_local_commit(_isolate_hermes_home):
         manager.unload()
 
 
+def test_local_target_resolution_without_new_pathlib_api(_isolate_hermes_home, monkeypatch):
+    from pathlib import Path
+    from hermes_cli.skill_catalog.installed import target_path
+
+    home = get_hermes_home()
+    _skill(home, 'nested/folder', 'shown-name')
+    # Python 3.11 is supported and has no Path.is_junction.
+    with monkeypatch.context() as patch:
+        patch.delattr(Path, 'is_junction', raising=False)
+        resolved = target_path(home, 'nested/folder')
+    assert resolved == home / 'skills/nested/folder'
+
+
 def test_empty_registry_does_not_call_provider_worker(_isolate_hermes_home, monkeypatch):
     from hermes_cli.skill_catalog import worker
     from hermes_cli.web_routers.skills import get_skills

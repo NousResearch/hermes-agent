@@ -36,8 +36,8 @@ class ServingCredential:
     api_key: Optional[str]
 
     @classmethod
-    def of(cls, client: Any) -> Optional["ServingCredential"]:
-        """The *client*'s credential, None when it exposes no URL or no readable key."""
+    def of(cls, client: Any) -> Optional[ServingCredential]:
+        """The *client*'s credential, None without a client, a URL or a readable key."""
         base_url = str(getattr(client, "base_url", "") or "")
         if not base_url:
             return None

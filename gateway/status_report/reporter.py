@@ -185,8 +185,14 @@ class StatusReporter:
         died is replaced on a later poll, and so is a lock directory that was repaired. Confirming
         it each time matters because a stopped owner counts as gone: a sender that resumes after
         another gateway took its lock stands by instead of reporting beside it."""
+        taking = self._submit(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
         try:
-            acquired, _holder = await self._off_loop(acquire_scoped_lock, _LOCK_SCOPE, self._target.url)
+            acquired, _holder = await asyncio.shield(asyncio.wrap_future(taking))
+        except asyncio.CancelledError:
+            # The watcher was cancelled (a gateway shutdown) while the thread was still taking the
+            # lock: run()'s cleanup ran before it was ours, so give it back once the thread is done.
+            taking.add_done_callback(self._give_back_if_taken)
+            raise
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
             # full disk, a file where the directory goes. One fixed reason: the error's text is a path.
@@ -201,6 +207,11 @@ class StatusReporter:
         else:
             self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired
+
+    def _give_back_if_taken(self, taking: concurrent.futures.Future) -> None:
+        """On the reporter's thread, as soon as a lock taken after a cancel is in hand."""
+        if not taking.cancelled() and taking.exception() is None and taking.result()[0]:
+            release_scoped_lock(_LOCK_SCOPE, self._target.url)
 
     def _stand_by(self, level: int, why: str) -> None:
         """Say why this gateway is not the sender once per reason, not on every poll."""

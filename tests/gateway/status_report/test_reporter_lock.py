@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,35 @@ async def test_a_sender_that_lost_its_lock_stands_by_at_the_told_interval(clock,
     clock.advance(after - before)
     await reporter.poll()
     assert len(tries) == 3, "the lock was not tried at the told interval"
+
+async def test_a_watcher_cancelled_while_it_takes_the_lock_leaves_no_lock_held(clock, monkeypatch):
+    """A gateway shutdown can cancel the watcher while its thread is still taking the lock. The
+    thread takes it after the cancel, and a lock held by a process that lives on keeps every
+    other gateway of the machine standing by until that process exits."""
+    entered, release, taken = threading.Event(), threading.Event(), []
+
+    def take_the_lock_slowly(scope, identity):
+        entered.set()
+        release.wait(timeout=5)
+        result = gateway_status.acquire_scoped_lock(scope, identity)
+        taken.append(result[0])
+        return result
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock_slowly)
+    receiver = Receiver()
+    watcher = asyncio.create_task(make_reporter(receiver).run(lambda: True, tick=0.01))
+    await async_wait_until(entered.is_set, timeout=5, what="the lock being taken")
+
+    watcher.cancel()
+    await asyncio.wait({watcher}, timeout=5)
+    release.set()
+    await async_wait_until(lambda: taken, timeout=5, what="the lock taken after the cancel")
+
+    assert watcher.cancelled() and taken == [True]
+    await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
+                           what="a cancelled watcher to give back the lock it took")
+    assert receiver.requests == []
+
 
 async def test_the_lock_is_released_when_the_watcher_stops(clock):
     receiver = Receiver()

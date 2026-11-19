@@ -127,7 +127,7 @@ def _runs_dflash(entry) -> Path | None:
 
 def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | None, *,
                  fixed_overhead: int, requested_window: int | None, engine_tag: str | None,
-                 window_without: int, residents: int = 1):
+                 window_without: int, residents: int = 1, context_window: int | None = None):
     """The launch plan with the entry's DFlash draft in place of MTP, or None.
 
     The draft runs on one slot: each slot keeps a recurrent-state copy per draft position, and
@@ -144,7 +144,10 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
         return None
     lean = replace(profile, kv_scale=1.0)
     overhead = fixed_overhead + _dflash_extra_bytes(entry, lean)
-    plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window)
+    requested_window = min(requested_window, context_window) if (
+        requested_window and context_window) else requested_window
+    plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window,
+                       context_window=context_window)
     if live is not None and live.commit_room_bytes is not None:
         from hermes_cli.local_runtime.hardware import usable_beside_prompt_cache
 
@@ -152,7 +155,7 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
     if live is not None:
         # fit_to_free_memory holds a too-busy card at the floor rather than move weights off it on a
         # live reading. The draft never rides on that hold: it runs only where it fits now.
-        now = plan_launch(lean, live, fixed_overhead=overhead)
+        now = plan_launch(lean, live, fixed_overhead=overhead, context_window=context_window)
         if isinstance(now.decision, PhysicsRefusal) or now.decision.spilled:
             return None
         plan = fit_to_free_memory(plan, lean, live, mtp_capable=False, fixed_overhead=overhead)
@@ -170,7 +173,8 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
                      mtp_capable: set[str], *, requested_window: int | None = None,
                      live: HardwareBudget | None = None, residents: int = 1,
-                     engine_tag: str | None = None) -> PresetEntry | None:
+                     engine_tag: str | None = None,
+                     context_window: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable.
 
     ``budget`` is the card's capacity; ``live`` (from ``hardware.launch_budget``) narrows the
@@ -196,7 +200,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id) if requested_window is None else requested_window
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
-                       requested_window=requested)
+                       requested_window=requested, context_window=context_window)
     if live is not None:
         plan = fit_to_free_memory(plan, profile, live, mtp_capable=is_mtp,
                                   fixed_overhead=fixed_overhead)
@@ -206,7 +210,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
 
     dflash = None if decision.spilled else _dflash_plan(
         entry, profile, budget, live, fixed_overhead=fixed_overhead, requested_window=requested,
-        engine_tag=engine_tag, window_without=decision.window, residents=residents)
+        engine_tag=engine_tag, window_without=decision.window, residents=residents,
+        context_window=context_window)
     if dflash is not None:
         plan, decision = dflash, dflash.decision
     # Router discovery is preset-only: refused files must never autoload with stock fit.
@@ -285,7 +290,8 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *, draft
     return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
 
-def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None = None) -> int | None:
+def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None = None,
+                      context_window: int | None = None) -> int | None:
     """Estimated resident bytes for one staged model at the window this policy grants it, or None
     when it cannot be priced: an unreadable header, or a model the physics check refuses outright
     (it never loads, so it must not shrink the residency cap)."""
@@ -303,7 +309,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id)
     plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
-                       fixed_overhead=fixed_overhead, requested_window=requested)
+                       fixed_overhead=fixed_overhead, requested_window=requested,
+                       context_window=context_window)
     if isinstance(plan.decision, PhysicsRefusal):
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
@@ -313,7 +320,7 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None
     # larger of the two launches, never both.
     dflash = None if plan.decision.spilled else _dflash_plan(
         entry, profile, budget, None, fixed_overhead=fixed_overhead, requested_window=requested,
-        engine_tag=engine_tag, window_without=plan.decision.window)
+        engine_tag=engine_tag, window_without=plan.decision.window, context_window=context_window)
     if dflash is not None:
         price = max(price, footprint_bytes(dflash.profile, dflash.decision.window,
                                            overhead_bytes=dflash.overhead_bytes))
@@ -321,7 +328,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None
 
 
 def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
-                             live: HardwareBudget | None = None, engine_tag: str | None = None) -> int:
+                             live: HardwareBudget | None = None, engine_tag: str | None = None,
+                             context_window: int | None = None) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -343,7 +351,7 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
         return configured
     largest = 0
     for gguf in staged_in(models_dir):
-        need = _launch_footprint(gguf, budget, engine_tag)
+        need = _launch_footprint(gguf, budget, engine_tag, context_window)
         if need:
             largest = max(largest, need)
     if largest <= 0:
@@ -356,12 +364,13 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
 
 def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str] | None = None,
                  *, live: HardwareBudget | None = None, residents: int = 1,
-                 engine_tag: str | None = None) -> list[PresetEntry]:
+                 engine_tag: str | None = None,
+                 context_window: int | None = None) -> list[PresetEntry]:
     """The launch decision for every staged model; unreadable headers are skipped."""
     from hermes_cli.local_runtime.bootstrap import staged_in
 
     entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live, residents=residents,
-                                engine_tag=engine_tag)
+                                engine_tag=engine_tag, context_window=context_window)
                for gguf in staged_in(models_dir))
     return [entry for entry in entries if entry is not None]
 
@@ -369,11 +378,12 @@ def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str]
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None, *,
                      live: HardwareBudget | None = None, residents: int = 1,
-                     engine_tag: str | None = None) -> list[PresetEntry]:
+                     engine_tag: str | None = None,
+                     context_window: int | None = None) -> list[PresetEntry]:
     """Plan every staged model and write one INI. Refused models get no section (the picker
     surfaces the refusal from the returned entries)."""
     entries = plan_presets(models_dir, budget, mtp_capable, live=live, residents=residents,
-                           engine_tag=engine_tag)
+                           engine_tag=engine_tag, context_window=context_window)
     write_presets(entries, preset_path)
     return entries
 

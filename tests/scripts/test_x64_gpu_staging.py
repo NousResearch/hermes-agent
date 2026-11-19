@@ -43,3 +43,28 @@ def test_compatible_builder_keeps_native_verification_for_every_tool(tmp_path, m
     for name in names:
         monkeypatch.setattr(get_package(name), 'native_abi_reason', lambda target: None)
     assert native._tools_for_builder(names, tmp_path, 'linux-x64') == names
+
+
+def test_floor_builder_derives_pre_staged_tools_from_package_minimum_glibc(tmp_path, monkeypatch):
+    target = 'linux-x64'
+    lock = native._lockfile()
+    package = get_package('llamacpp-vulkan')
+    monkeypatch.setattr(package, 'minimum_glibc', {target: (2, 38)})
+    monkeypatch.setattr(package, 'native_abi_reason', lambda t: package.host_abi_reason(t, (2, 35)))
+    version = lock.version('llamacpp-vulkan')
+    assert version is not None
+    store = tmp_path / 'tools'
+    entry = store / package.store_entry(version, target)
+    entry.mkdir(parents=True)
+    binary = package.binary(entry, target)
+    assert binary is not None
+    binary.write_bytes(b'inert pinned fixture')
+    Facts(store / 'facts.json').record(
+        'llamacpp-vulkan', version, entry.name, package.env(entry, target), store,
+        target=target, artifacts=[a['sha256'] for a in lock.artifacts('llamacpp-vulkan', target)],
+        digest=tree_digest(entry),
+    )
+    assert native._tools_for_builder(['llamacpp-cpu', 'llamacpp-vulkan'], store, target) == ['llamacpp-cpu']
+    from scripts.bundles.stage_x64_gpu import _x64_gpu_tools
+
+    assert 'llamacpp-vulkan' in _x64_gpu_tools()

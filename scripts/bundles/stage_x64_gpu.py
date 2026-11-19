@@ -4,7 +4,16 @@ import platform
 
 import pm
 from pm.build_operations import verified_tools
+from scripts.bundles.native import _bundle_package_names
 from scripts.ci.setup_toolchain import file_commands
+
+
+def _x64_gpu_tools() -> list[str]:
+    names = [name for name in _bundle_package_names("linux-x64")
+             if pm.get_package(name).minimum_glibc.get("linux-x64") is not None]
+    if not names:
+        raise ValueError("no linux-x64 packages declare a glibc floor above the builder")
+    return names
 
 
 def main() -> None:
@@ -16,7 +25,7 @@ def main() -> None:
     for store in (root, bootstrap):
         if store != store.resolve() or store.exists():
             raise ValueError(f"x64 preparation requires a fresh job-local store: {store}")
-    pm.prepare_tools(["llamacpp-cuda", "llamacpp-hip"], out=root, target="linux-x64")
+    pm.prepare_tools(_x64_gpu_tools(), out=root, target="linux-x64")
     # Jammy's system Python cannot apply PM's tar extraction filter to its own replacement.
     pm.prepare_tools(["python"], out=bootstrap, target="linux-x64")
     python = verified_tools(["python"], source_store=bootstrap, target="linux-x64").entries["python"].binary

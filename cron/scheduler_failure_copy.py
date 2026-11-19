@@ -117,6 +117,17 @@ def provider_failure_notice(
     )
 
 
+def store_busy_notice(job_name: str, job_id: str) -> str:
+    """The profile's own state.db write lock was held past its patience — not a provider fault."""
+    return (
+        f"⚠️ Cron '{job_name}' failed: another Hermes operation held this profile's state.db write "
+        f"lock past its patience, so the job's own bookkeeping write was refused. No model call is "
+        f"implicated and the database is healthy — this is local write contention, not a provider "
+        f"problem. Run it again with `hermes cron run {job_id}`; if it repeats, the stalling writer "
+        f"is named in the gateway log (`writer mutex unavailable … held by thread … held for Ns`)."
+    )
+
+
 def generic_failure_notice(job_name: str, job_id: str, cleaned_error: str) -> str:
     """Unclassified failure: the cleaned error text plus where to look and what to do."""
     return (

@@ -258,6 +258,15 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     return skew
 
 
+# The persistence holder's own write-lock refusal texts, in either shape: the in-process mutex
+# patience ("WriterMutexTimeout: database is locked (in-process state.db writer mutex exceeded write
+# patience)") and the cross-process SQLite lock ("database is locked (another Hermes process held the
+# state.db write lock for over Ns …)"). Both are local contention; neither names a provider.
+LOCAL_STORE_BUSY_TEXT = re.compile(
+    r"writer\s*mutex\s*timeout|in-process\s+state\.db\s+writer\s+mutex|held\s+the\s+state\.db\s+write\s+lock",
+    re.IGNORECASE)
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """One-line failure notice for chat delivery (full details stay in the run output).
 
@@ -266,7 +275,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ``classify_api_error`` verdict and the copy table in ``scheduler_failure_copy``."""
     from cron.scheduler_failure_copy import (
         classify_cron_failure_reason, generic_failure_notice, inactivity_notice,
-        provider_failure_notice, script_timeout_notice)
+        provider_failure_notice, script_timeout_notice, store_busy_notice)
 
     job_name = job.get("name") or job.get("id") or "cron job"
     job_id = job.get("id") or job_name
@@ -285,6 +294,14 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # provider and the operator debugged the wrong system).
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
         return inactivity_notice(job_name, job_id)
+
+    # This profile's own state.db writer was occupied past its patience: "WriterMutexTimeout: …
+    # in-process state.db writer mutex …" (raised by the persistence holder) or "database is locked
+    # (another Hermes process held the state.db write lock …)". No provider is involved, but the
+    # classifier's Timeout ladder reads the exception type as a provider timeout and advises
+    # unpinning a model that never answered — recognise the local store before classifying.
+    if LOCAL_STORE_BUSY_TEXT.search(text):
+        return store_busy_notice(job_name, job_id)
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would

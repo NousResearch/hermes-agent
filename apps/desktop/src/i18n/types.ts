@@ -3198,6 +3198,7 @@ export interface Translations extends NoticeTranslations {
       clearComments: string
       removeComment: string
       sendComments: string
+      editCommentsInComposer: string
       newBranch: string
       branchOffFrom: (base: string) => string
       switchTo: (branch: string) => string

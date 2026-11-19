@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerSubmit } from '@/app/chat/composer/focus'
+import { type DiffLine, diffLineKey } from '@/components/chat/diff-lines'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Textarea } from '@/components/ui/textarea'
@@ -19,10 +20,47 @@ import {
   cancelReviewCommentDraft,
   clearReviewComments,
   formatReviewCommentsPrompt,
-  removeReviewComment
+  removeReviewComment,
+  startReviewComment
 } from '@/store/review'
 
 const ICON = '0.85rem'
+
+/** Diff-row wiring for the review pane: which rows of the selected file carry
+ *  a comment (marker), which row the draft sits on, and the click that starts
+ *  a draft. Null without a selected file so the panel stays inert. */
+export function useReviewCommentLines(selectedPath: null | string) {
+  const comments = useStore($reviewComments)
+  const draft = useStore($reviewCommentDraft)
+
+  return useMemo(() => {
+    if (!selectedPath) {
+      return undefined
+    }
+
+    const commented = new Set(
+      comments.filter(comment => comment.path === selectedPath).map(comment => `${comment.side}:${comment.line}`)
+    )
+
+    const selectedKey = draft && draft.path === selectedPath ? `${draft.side}:${draft.line}` : null
+
+    const onLineClick = (line: DiffLine) => {
+      if (!diffLineKey(line)) {
+        return
+      }
+
+      startReviewComment({
+        kind: line.kind,
+        line: line.newNo ?? line.oldNo ?? 0,
+        path: selectedPath,
+        side: line.newNo != null ? 'new' : 'old',
+        snippet: line.text
+      })
+    }
+
+    return { commented, onLineClick, selectedKey }
+  }, [comments, draft, selectedPath])
+}
 
 /** Line comments under the selected file's diff: the draft editor for the
  *  clicked diff row, the running list across files, and the one-click hand-off
@@ -64,8 +102,23 @@ export function ReviewComments() {
     clearReviewComments()
   }
 
+  // Same prompt, dropped into the owning chat's draft instead of sent, so the
+  // user can add context before the agent sees it.
+  const editInComposer = () => {
+    if (comments.length === 0) {
+      return
+    }
+
+    requestComposerInsert(formatReviewCommentsPrompt(comments), { mode: 'block', target: scopeTarget })
+    requestComposerFocus(scopeTarget)
+    clearReviewComments()
+  }
+
   return (
-    <div className="flex shrink-0 flex-col gap-1.5 border-t border-(--ui-stroke-secondary) p-2" data-suppress-pane-reveal-side="">
+    <div
+      className="flex shrink-0 flex-col gap-1.5 border-t border-(--ui-stroke-secondary) p-2"
+      data-suppress-pane-reveal-side=""
+    >
       {draft && (
         <div className="flex flex-col gap-1">
           <div className="truncate font-mono text-[0.64rem] text-(--ui-text-tertiary)" title={draft.snippet}>
@@ -152,14 +205,27 @@ export function ReviewComments() {
               </div>
             ))}
           </div>
-          <Button
-            className="justify-center text-[0.7rem] text-muted-foreground/85 hover:text-foreground"
-            onClick={sendToAgent}
-            size="sm"
-            variant="ghost"
-          >
-            <span className="truncate underline underline-offset-2">{c.sendComments}</span>
-          </Button>
+          <div className="flex items-center justify-center gap-1">
+            <Button
+              className="min-w-0 justify-center text-[0.7rem] text-muted-foreground/85 hover:text-foreground"
+              onClick={sendToAgent}
+              size="sm"
+              variant="ghost"
+            >
+              <span className="truncate underline underline-offset-2">{c.sendComments}</span>
+            </Button>
+            <Tip label={c.editCommentsInComposer}>
+              <Button
+                aria-label={c.editCommentsInComposer}
+                className="size-6 shrink-0"
+                onClick={editInComposer}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="edit" size={ICON} />
+              </Button>
+            </Tip>
+          </div>
         </>
       )}
     </div>

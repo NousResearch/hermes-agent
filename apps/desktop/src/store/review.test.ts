@@ -749,11 +749,27 @@ describe('review line comments', () => {
     addReviewComment({ body: 'one', kind: 'remove', line: 2, path: 'b.ts', side: 'old', snippet: 'old' })
     clearReviewComments()
     expect($reviewComments.get()).toEqual([])
+
+    // Comments belong to the repo they were written against: re-homing an
+    // open pane to another worktree must not carry them into its prompt.
+    openReview('/repo-a', 'tile:a')
+    addReviewComment({ body: 'keep', kind: 'add', line: 1, path: 'a.ts', side: 'new', snippet: 'x' })
+    revealReview('/repo-a', 'tile:a')
+    expect($reviewComments.get()).toHaveLength(1)
+    revealReview('/repo-b', 'tile:b')
+    expect($reviewComments.get()).toEqual([])
   })
 
   it('formats the agent prompt with file/line anchors and diff snippets', () => {
     addReviewComment({ body: 'rename this', kind: 'add', line: 3, path: 'a.ts', side: 'new', snippet: 'const x = 1' })
-    addReviewComment({ body: 'why removed?', kind: 'remove', line: 2, path: 'a.ts', side: 'old', snippet: 'const y = 2' })
+    addReviewComment({
+      body: 'why removed?',
+      kind: 'remove',
+      line: 2,
+      path: 'a.ts',
+      side: 'old',
+      snippet: 'const y = 2'
+    })
 
     const prompt = formatReviewCommentsPrompt($reviewComments.get())
 

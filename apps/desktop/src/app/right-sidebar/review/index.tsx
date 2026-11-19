@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
 
-import { diffLineKey, FileDiffPanel } from '@/components/chat/diff-lines'
+import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DiffSkeleton, TreeSkeleton } from '@/components/chat/skeletons'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -15,8 +14,6 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
-  $reviewCommentDraft,
-  $reviewComments,
   $reviewDiff,
   $reviewDiffLoading,
   $reviewFiles,
@@ -33,7 +30,6 @@ import {
   refreshReview,
   requestRevert,
   stageReviewFile,
-  startReviewComment,
   toggleReviewTreeMode,
   unstageReviewFile
 } from '@/store/review'
@@ -42,7 +38,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
-import { ReviewComments } from './review-comments'
+import { ReviewComments, useReviewCommentLines } from './review-comments'
 import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
@@ -63,26 +59,11 @@ export function ReviewPane() {
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
   const scope = useStore($reviewScope)
-  const comments = useStore($reviewComments)
-  const commentDraft = useStore($reviewCommentDraft)
-  // Stage / unstage / revert and the ship bar act on the working tree, so they
-  // only apply to the uncommitted scope; branch / last-turn are read-only.
   const isUncommitted = scope === 'uncommitted'
 
   const selectedFile = files.find(file => file.path === selectedPath)
 
-  // Line-comment state for the selected file's diff: which rows already
-  // carry a comment (marker) and which row the draft is composed on.
-  const commentedLineKeys = useMemo(
-    () =>
-      new Set(
-        comments.filter(comment => comment.path === selectedPath).map(comment => `${comment.side}:${comment.line}`)
-      ),
-    [comments, selectedPath]
-  )
-
-  const draftLineKey =
-    commentDraft && commentDraft.path === selectedPath ? `${commentDraft.side}:${commentDraft.line}` : null
+  const interactiveLines = useReviewCommentLines(selectedPath)
 
   const hasFiles = files.length > 0
   // A repo (or a load that may reveal one) gets the header + scope chrome.
@@ -183,7 +164,7 @@ export function ReviewPane() {
 
       {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div className="flex h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
@@ -228,23 +209,7 @@ export function ReviewPane() {
               <FileDiffPanel
                 className="mx-0 mb-0 h-full max-h-none"
                 diff={diff}
-                interactiveLines={{
-                  commented: commentedLineKeys,
-                  onLineClick: line => {
-                    if (!selectedPath || !diffLineKey(line)) {
-                      return
-                    }
-
-                    startReviewComment({
-                      kind: line.kind,
-                      line: line.newNo ?? line.oldNo ?? 0,
-                      path: selectedPath,
-                      side: line.newNo != null ? 'new' : 'old',
-                      snippet: line.text
-                    })
-                  },
-                  selectedKey: draftLineKey
-                }}
+                interactiveLines={interactiveLines}
                 path={selectedFile.path}
                 virtualized
               />

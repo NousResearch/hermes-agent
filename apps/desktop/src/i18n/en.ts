@@ -3716,6 +3716,7 @@ export const en: Translations = {
       clearComments: 'Clear comments',
       removeComment: 'Remove comment',
       sendComments: 'Send comments to Hermes',
+      editCommentsInComposer: 'Edit in composer instead of sending',
       newBranch: 'New branch',
       branchOffFrom: base => `New branch from ${base}`,
       switchTo: branch => `Switch to ${branch}`,

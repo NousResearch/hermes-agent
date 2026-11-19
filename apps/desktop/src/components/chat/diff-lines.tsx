@@ -360,7 +360,7 @@ function PreviewDiffRows({
                   DIFF_KIND_TINT[line.kind],
                   interactive && 'border-l-2',
                   clickable && 'cursor-pointer hover:bg-(--ui-control-hover-background)',
-                  lineKey && interactive?.selectedKey === lineKey && 'bg-(--ui-control-hover-background)',
+                  lineKey && interactive?.selectedKey === lineKey && 'ring-1 ring-(--ui-accent) ring-inset',
                   commented && 'shadow-[inset_0.375rem_0_0_var(--ui-accent)]'
                 )}
                 data-review-line={interactive ? (lineKey ?? undefined) : undefined}

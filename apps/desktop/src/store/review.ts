@@ -513,6 +513,8 @@ export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main
     // Already open but on another worktree's diff — re-home it. The scope
     // subscription below clears the stale list and re-probes. Keep the
     // originating composer target alongside the cwd for the agent-ship action.
+    // Comments were written against the old repo's lines: drop them too.
+    clearReviewComments()
     $reviewScopeCwd.set(scopeCwd?.trim() || null)
     $reviewScopeTarget.set(target)
   }

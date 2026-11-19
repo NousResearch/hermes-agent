@@ -35,6 +35,29 @@
   padding: calc(var(--titlebar-height) + var(--portal-page-top)) var(--page-content-inset) 0;
 }
 
+/* The page header ends in the page's own gap to its content (24 under tabs, 32 without), so a
+   Capabilities tab's search row, the first thing under it, adds no top padding of its own (classic
+   keeps it). Its scrollers end in the page end space, as every page scroller does, and run to the
+   stage's floor to do it. */
+.page-redesigned .catalog-search-header {
+  padding-top: 0;
+}
+
+.page-redesigned .capabilities-page {
+  padding-block: 0;
+}
+
+/* The tab's rows keep the page's side inset at every width (16 on a phone), where classic's own
+   narrow rule (capabilities/ui/page.css) drops to 12. */
+.page-redesigned
+  :is(.capabilities-page, .catalog-search-header, .catalog-filter-bar, .catalog-filtered-results, .catalog-discovery) {
+  padding-inline: var(--page-content-inset);
+}
+
+.page-redesigned :is(.catalog-discovery, .capabilities-sections) {
+  padding-bottom: var(--portal-page-end-space);
+}
+
 /* A header search (Messaging) keeps its field width at the H1 row's end. */
 .page-header-search {
   width: 24rem;

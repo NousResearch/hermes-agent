@@ -10,6 +10,7 @@ import {
   type SharedMetricsConsent,
   sharedMetricsOfferPending
 } from '@/store/shared-metrics'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
 
@@ -39,11 +40,14 @@ function backend(initial: SharedMetricsConsent) {
 const initialOnboarding = $desktopOnboarding.get()
 
 beforeEach(() => {
+  // Classic's long dialog; the redesign's short one is usage-stats-offer.test.tsx's.
+  $shellChoice.set(false)
   $desktopOnboarding.set({ ...initialOnboarding, configured: true })
 })
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   $desktopOnboarding.set(initialOnboarding)
   $sharedMetricsConsent.set(null)
   $sharedMetricsDetailsOpen.set(false)

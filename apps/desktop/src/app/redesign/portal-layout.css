@@ -17,6 +17,11 @@
   padding-inline: var(--portal-settings-inset);
 }
 
+/* The scroller ends in the page end space, as every page scroller does (classic keeps its own). */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > [data-slot='settings-content'] > div {
+  padding-bottom: var(--portal-page-end-space);
+}
+
 /* Navigation folded away: the column centres in the whole stage, not the empty nav track. */
 @media (min-width: 47.5rem) {
   :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'].hidden ~ [data-slot='overlay-main'] {

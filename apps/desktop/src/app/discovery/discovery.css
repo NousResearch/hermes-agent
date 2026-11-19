@@ -645,3 +645,15 @@
 :root[data-shell='portal'] .discovery-tray-card-action {
   margin-block-start: 0.25rem;
 }
+
+/* An item that can leave the tray carries an × at its top end; the text keeps clear of it. */
+:root[data-shell='portal'] .discovery-tray-card:has(> .discovery-tray-card-clear) {
+  position: relative;
+  padding-inline-end: 2.25rem;
+}
+
+:root[data-shell='portal'] .discovery-tray-card-clear {
+  position: absolute;
+  inset-block-start: 0.5rem;
+  inset-inline-end: 0.5rem;
+}

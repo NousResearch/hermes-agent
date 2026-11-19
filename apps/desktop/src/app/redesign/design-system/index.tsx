@@ -132,23 +132,25 @@ function DesignSystemPage() {
 
       <div className="ds-stage page-stage" data-scrolls="" ref={stage}>
         <PageHeader description={copy.description} title={copy.title} />
-        <PreviewControls copy={copy} />
+        <div className="ds-body">
+          <PreviewControls copy={copy} />
 
-        <h2 className="ds-part-title">{copy.tokens}</h2>
-        <p className="ds-about">{copy.tokensIntro}</p>
-        <TokensSection copy={copy} families={FAMILIES} />
+          <h2 className="ds-part-title">{copy.tokens}</h2>
+          <p className="ds-about">{copy.tokensIntro}</p>
+          <TokensSection copy={copy} families={FAMILIES} />
 
-        <h2 className="ds-part-title">{copy.components}</h2>
-        <p className="ds-about">{copy.componentsIntro}</p>
-        <ComponentsSection copy={copy} />
+          <h2 className="ds-part-title">{copy.components}</h2>
+          <p className="ds-about">{copy.componentsIntro}</p>
+          <ComponentsSection copy={copy} />
 
-        <section aria-labelledby={`${UNIFY_ID}-title`} className="ds-family" id={UNIFY_ID}>
-          <h2 className="ds-part-title" id={`${UNIFY_ID}-title`}>
-            {copy.stillToUnify}
-          </h2>
-          <p className="ds-about">{copy.stillToUnifyIntro}</p>
-          <UnifySection blocks={STILL_TO_UNIFY} />
-        </section>
+          <section aria-labelledby={`${UNIFY_ID}-title`} className="ds-family" id={UNIFY_ID}>
+            <h2 className="ds-part-title" id={`${UNIFY_ID}-title`}>
+              {copy.stillToUnify}
+            </h2>
+            <p className="ds-about">{copy.stillToUnifyIntro}</p>
+            <UnifySection blocks={STILL_TO_UNIFY} />
+          </section>
+        </div>
       </div>
     </section>
   )

@@ -4,7 +4,7 @@
 
 /* ── Page frame: the panel at the stage's leading edge, the column at the frame inset past it ── */
 
-/* The stage owns the top padding, so the breadcrumb can ride it without being clipped by its scroll. */
+/* The stage owns the top padding: it scrolls at its own edge, so its first row clears that edge. */
 [data-page-surface] .management-panel.routines-page {
   max-width: none;
   padding: 0;
@@ -295,13 +295,13 @@ button.routines-banner-title:focus-visible {
 
 /* ── Detail (R2) ── */
 
-/* The breadcrumb rides the column's top band, so the H1 lands where every page's does. */
+/* The breadcrumb is the column's first row: it starts at the page top every page's first row does
+   (the stage's padding), never in the inset above it, and the heading follows it. */
 .routines-breadcrumb {
   display: flex;
-  height: var(--portal-page-top);
   align-items: center;
   gap: 0.375rem;
-  margin-top: calc(-1 * var(--portal-page-top));
+  margin-bottom: 0.75rem;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-meta-size);
   line-height: 1.4;
@@ -370,12 +370,6 @@ button.routines-banner-title:focus-visible {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-inline-start: auto;
-}
-
-.routines-detail:has(> .routines-embedded-head) .routines-breadcrumb {
-  height: auto;
-  margin-top: 0;
-  margin-bottom: 0.75rem;
 }
 
 /* ── The editor (R3 → R4): a 640px dialog, full screen with a pinned footer on compact ── */

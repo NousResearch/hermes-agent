@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useId, useMemo, useState } from 'react'
 
+import { UsageStatsDialog } from '@/app/discovery/usage-stats-dialog'
 import { DocsLink } from '@/components/onboarding/flow'
 import { Button } from '@/components/ui/button'
 import {
@@ -22,6 +23,7 @@ import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
   answerSharedMetricsOffer,
+  closeSharedMetricsDetails,
   readSharedMetricsConsent,
   SHARED_METRICS_DOCS_URL,
   type SharedMetricsChoice,
@@ -29,6 +31,7 @@ import {
   sharedMetricsProfileRequester,
   type SharedMetricsRequester
 } from '@/store/shared-metrics'
+import { usePortalShell } from '@/store/shell-variant'
 
 interface SharedMetricsConsentDialogProps {
   /** The focused gateway is open. */
@@ -62,6 +65,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
+  const portal = usePortalShell()
 
   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
@@ -112,6 +116,13 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     } finally {
       setSaving(false)
     }
+  }
+
+  // The redesign asks in the chat sidebar and explains in its own short dialog; the rules above hold.
+  if (portal) {
+    const reask = consent?.reask === true
+
+    return <UsageStatsDialog choose={choose} onClose={closeSharedMetricsDetails} reask={reask} saving={saving} />
   }
 
   return (

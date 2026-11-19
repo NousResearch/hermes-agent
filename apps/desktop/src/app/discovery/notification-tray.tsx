@@ -90,7 +90,7 @@ export function NotificationBell() {
           <ul className="discovery-tray-items">
             {listed.map(({ Card, id }) => (
               <li key={id}>
-                <Card close={handOff} unseen={newOnOpen.has(id)} />
+                <Card close={handOff} dismiss={() => setOpen(false)} unseen={newOnOpen.has(id)} />
               </li>
             ))}
           </ul>

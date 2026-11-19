@@ -138,6 +138,24 @@
   /* The Agents count: a brand-tinted pill (147:6260), lighter on light. */
   --portal-sidebar-count-fill: var(--portal-raw-brand-25);
   --portal-sidebar-count-radius: 10px;
+  /* The usage-stats offer (1370:34567): the agent card's light/5, radius and drop on the sidebar's
+     opaque fill, so rows never show through; 16px pads, the text on the list's 32px inset past the
+     lattice art, which lightens in at Figma's .8 (light multiplies it in, inverted, so the streak
+     reads dark on white). */
+  --portal-sidebar-offer-fill: var(--portal-sidebar-card);
+  --portal-sidebar-offer-ground: var(--portal-sidebar-background);
+  --portal-sidebar-offer-radius: var(--portal-sidebar-agent-radius);
+  --portal-sidebar-offer-shadow: var(--portal-sidebar-agent-shadow);
+  --portal-sidebar-offer-pad: 1rem;
+  --portal-sidebar-offer-gap: 0.75rem;
+  --portal-sidebar-offer-text-gap: 0.375rem;
+  --portal-sidebar-offer-title-ink: var(--ui-text-primary);
+  --portal-sidebar-offer-body-ink: var(--portal-sidebar-meta);
+  --portal-sidebar-offer-share-ink: var(--ui-text-primary);
+  --portal-sidebar-offer-decline-ink: var(--portal-sidebar-meta);
+  --portal-sidebar-offer-art-blend: lighten;
+  --portal-sidebar-offer-art-filter: none;
+  --portal-sidebar-offer-art-opacity: 0.8;
 }
 
 :root[data-shell='portal']:not(.dark) {
@@ -153,6 +171,8 @@
   --portal-sidebar-agent-texture-opacity: 0.9;
   --portal-sidebar-agent-subtitle-open: var(--ui-text-quaternary);
   --portal-sidebar-count-fill: var(--portal-raw-brand-10);
+  --portal-sidebar-offer-art-blend: multiply;
+  --portal-sidebar-offer-art-filter: invert(1) hue-rotate(180deg);
 }
 
 :root.dark[data-shell='portal'] {

@@ -473,11 +473,12 @@ def assert_named_profile_home_live(path: str | Path) -> None:
 def mkdir_under_hermes_home(path: str | Path) -> Path:
     """Create *path*, but never materialize a deleted/missing named profile.
 
-    Under a named profile home the home itself is never created: a delete or rename that removes it
-    after the liveness check makes the write fail (``FileNotFoundError``) instead of re-creating the
-    home (a config save then left a live duplicate of a renamed profile under its old name). The home
-    as *path* is only ACL-repaired; below it, see :func:`_mkdir_below_home`. The default home and
-    custom homes keep ``parents=True``.
+    A named home itself is never created. If it disappears after the liveness check, creating a
+    descendant raises ``FileNotFoundError`` rather than re-creating the home. When *path* is the home,
+    only its ACL is repaired: a missing home is left missing without raising here, so a subsequent
+    caller write fails. This prevents a late config save from creating a live duplicate under a
+    renamed profile's old name. Below the home, see :func:`_mkdir_below_home`; default and custom
+    homes keep ``parents=True``.
     """
     target = Path(path)
     assert_named_profile_home_live(target)

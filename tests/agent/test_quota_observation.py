@@ -184,6 +184,40 @@ class TestObservation:
         assert observation["rate_limit"]["tokens_min"]["limit"] is None
         assert observation["rate_limit"]["tokens_min"]["remaining"] == 12
 
+    @pytest.mark.parametrize("invalid", ("nan", "inf", "-inf", "1e309", "-2", "1.5"))
+    def test_untrusted_rate_limit_counts_are_unknown_without_dropping_observation(self, invalid):
+        """Malformed provider counters never raise, truncate, or erase sound fields."""
+        agent = _Agent(_pool(), "entry-a", _TOKEN_A)
+        capture_attempt_credential_scope(agent, "req-bad-count")
+        observed = build_quota_observation(agent, http_response=_response(429, {
+            "x-ratelimit-limit-requests": invalid,
+            "x-ratelimit-remaining-requests": invalid,
+            "x-ratelimit-reset-requests": "22",
+            "x-ratelimit-remaining-tokens": "10",
+        }), api_request_id="req-bad-count")
+        assert observed["outcome"] == OUTCOME_RATE_LIMITED
+        assert observed["credential_scope_id"] == _SCOPE_A
+        assert observed["rate_limit"]["requests_min"] == {
+            "limit": None, "remaining": None, "reset_seconds": 22.0,
+        }
+        assert observed["rate_limit"]["tokens_min"]["remaining"] == 10
+
+    @pytest.mark.parametrize("invalid", ("nan", "inf", "-inf", "1e309", "-5"))
+    def test_untrusted_reset_and_retry_after_are_unknown(self, invalid):
+        """A malformed wait never becomes a fabricated timeout or skips the hook."""
+        agent = _Agent(_pool(), "entry-a", _TOKEN_A)
+        observed = build_quota_observation(agent, http_response=_response(429, {
+            "x-ratelimit-limit-requests": "100",
+            "x-ratelimit-remaining-requests": "20",
+            "x-ratelimit-reset-requests": invalid,
+            "Retry-After": invalid,
+        }))
+        assert observed["outcome"] == OUTCOME_RATE_LIMITED
+        assert observed["rate_limit"]["requests_min"] == {
+            "limit": 100, "remaining": 20, "reset_seconds": None,
+        }
+        assert observed["retry_after_seconds"] is None
+
     def test_provider_errors_and_timeout(self):
         pool = _pool()
         agent = _Agent(pool, "entry-a", _TOKEN_A)

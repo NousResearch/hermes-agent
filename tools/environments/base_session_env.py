@@ -118,36 +118,52 @@ def _cwd_marker_printf(marker: str) -> str:
     return f"printf '\\n{marker}%s{marker}\\n' \"$(pwd -P)\""
 
 
-def _both_cases(globs: Iterable[str]) -> tuple[str, ...]:
-    """Each glob as written and lower-cased. ``nocasematch`` makes the match case-insensitive on
-    bash 4+, but bash 3.2's ``compgen -X`` ignores it, so ``github_token`` still has to match there."""
-    return tuple(dict.fromkeys(g for glob in globs for g in (glob, glob.lower())))
+def _any_case(glob: str) -> str:
+    """*glob* with every letter as a ``[Xx]`` class, so it matches a name in any case
+    (``GitHub_Token``) with no ``nocasematch``: bash 3.2's ``compgen -X`` ignores that option."""
+    return "".join(f"[{c.upper()}{c.lower()}]" if c.isalpha() else c for c in glob)
 
 
 def _secret_handoff_snippet(secret_fd: str, secret_names: Iterable[str]) -> str:
     """Dump-subshell lines that write each secret export to fd *secret_fd* (``NAME=value\\0``
-    records, then one empty record) and drop it, so the ``export -p`` after them never puts the
-    value in the file on disk; the backend hands the values back to the next command's process
-    env. A secret is a name the profile's ``.env``/secret sources define (*secret_names*), a
-    credential-shaped name (``_SECRET_SHAPED_NAME_GLOBS``) or a URL-shaped name whose value holds
-    ``user:pass@``. One ``compgen -X`` picks the candidates inside bash, so the shell loops over a
-    handful of names, not every export: the per-name ``tr`` subshell of #148406 made every command
-    ~25x slower. ``export -n`` also clears a readonly export, which ``unset`` refuses; a failed
-    write still drops the value (fail closed: lost, never on disk). Builtins only, and IFS / ``set
-    -e`` are pinned: the user's command may have changed either, or shadowed a command name."""
+    records) and drop it, so the ``export -p`` after them never puts the value in the file on disk;
+    the backend hands the values back to the next command's process env once the dump that sent
+    them is published (``_secret_handoff_commit``). A secret is a name the profile's ``.env``/secret
+    sources define or the session already holds (*secret_names*), a credential-shaped name
+    (``_SECRET_SHAPED_NAME_GLOBS``, any case) or a URL-shaped name whose value holds ``user:pass@``.
+    One ``compgen -X`` picks the candidates inside bash, so the shell loops over a handful of names,
+    not every export: the per-name ``tr`` subshell of #148406 made every command ~25x slower. A
+    secret's attributes other than export (``readonly``, ``integer``…) go into the file as a
+    value-less ``declare -<flags> NAME``, which re-applies them to the env value on the next
+    ``source``. ``export -n`` also clears a readonly export, which ``unset`` refuses; a failed write
+    still drops the value (fail closed: lost, never on disk). Builtins only, and IFS / ``set -e``
+    are pinned: the user's command may have changed either, or shadowed a command name."""
     names = sorted({n for n in secret_names if isinstance(n, str) and _SHELL_ENV_NAME_RE.fullmatch(n)})
-    secret = "|".join((*_both_cases(_SECRET_SHAPED_NAME_GLOBS), *names))
-    candidates = "|".join((secret, *_both_cases(_URL_SHAPED_NAME_GLOBS)))
+    secret = "|".join((*map(_any_case, _SECRET_SHAPED_NAME_GLOBS), *names))
+    candidates = "|".join((secret, *map(_any_case, _URL_SHAPED_NAME_GLOBS)))
     return (
-        "builtin set +e; builtin trap '' PIPE; builtin shopt -s nocasematch extglob; "
+        "builtin set +e; builtin trap '' PIPE; builtin shopt -s extglob; "
         "__hermes_ifs=${IFS-}; IFS=$'\\n'; "
         f"for __hermes_v in $(builtin compgen -A export -X '!@({candidates})'); do "
         f'case "$__hermes_v" in {secret}) ;; '
         '*) case "${!__hermes_v-}" in *://*:*@*) ;; *) continue ;; esac ;; esac; '
-        f"builtin printf '%s=%s\\0' \"$__hermes_v\" \"${{!__hermes_v-}}\" >&{secret_fd} 2>/dev/null; "
+        f"builtin printf '%s=%s\\0' \"$__hermes_v\" \"${{!__hermes_v-}}\" >&{secret_fd} 2>/dev/null || {{ "
+        'builtin export -n "$__hermes_v"; builtin unset "$__hermes_v" 2>/dev/null; continue; }; '
+        # ``${v@a}`` is bash 4.4+; 3.2 reads the flags off ``declare -p`` (a fork per secret only).
+        "if ((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404)); then "
+        'eval "__hermes_f=\\${$__hermes_v@a}"; '
+        'else __hermes_f=$(builtin declare -p "$__hermes_v" 2>/dev/null); __hermes_f=${__hermes_f#declare -}; '
+        "__hermes_f=${__hermes_f%% *}; fi; __hermes_f=${__hermes_f//[!ilru]/}; "
+        '[ -n "$__hermes_f" ] && builtin printf \'declare -%sx %s\\n\' "$__hermes_f" "$__hermes_v"; '
         'builtin export -n "$__hermes_v"; builtin unset "$__hermes_v" 2>/dev/null; done; '
-        f"builtin printf '\\0' >&{secret_fd} 2>/dev/null; IFS=$__hermes_ifs; "
-        "builtin unset __hermes_v __hermes_ifs; ")
+        "IFS=$__hermes_ifs; builtin unset __hermes_v __hermes_f __hermes_ifs; ")
+
+
+def _secret_handoff_commit(secret_fd: str) -> str:
+    """Close the dump's record set, run only after its snapshot file was published: a dump whose
+    publish failed leaves no closing record, so the backend keeps the previous secrets beside the
+    previous file and the two halves of the shell state never come from different dumps."""
+    return f" && {{ builtin printf '\\0' >&{secret_fd}; }} 2>/dev/null" if secret_fd else ""
 
 
 def _export_dump_excluding_session_vars(
@@ -216,7 +232,7 @@ def _snapshot_bootstrap_script(
         f"echo 'set +e' >> {_SNAP_TMP}\n"
         f"echo 'set +u' >> {_SNAP_TMP}\n"
         # Publish only if assembly succeeded; otherwise drop the partial temp.
-        f"mv -f {_SNAP_TMP} {quoted_snap} || rm -f {_SNAP_TMP}\n"
+        f"mv -f {_SNAP_TMP} {quoted_snap}{_secret_handoff_commit(secret_fd)} || rm -f {_SNAP_TMP}\n"
         f"builtin cd -- {quoted_cwd} 2>/dev/null || true\n"
         f"{_cwd_marker_printf(cwd_marker)}\n")
 
@@ -284,7 +300,7 @@ def _wrap_command_script(
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {dump} "
-            f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
+            f"&& mv -f {_SNAP_TMP} {quoted_snap}{_secret_handoff_commit(secret_fd)}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
     if capture:
         parts.append(_pipe_marker_printf(pipe_marker))

@@ -2050,3 +2050,23 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+class TestCamelCaseContextWindow:
+    """Providers that publish camelCase metadata (``contextWindow`` / ``contextLength``)."""
+
+    def test_flat_payload_camel_case_context_window(self):
+        from agent.model_metadata import _context_length_from_model_payload
+        assert _context_length_from_model_payload({"id": "m", "contextWindow": 200000, "max_tokens": 8192}) == 200000
+
+    def test_flat_payload_camel_case_context_length(self):
+        from agent.model_metadata import _context_length_from_model_payload
+        assert _context_length_from_model_payload({"id": "m", "contextLength": 131072}) == 131072
+
+    def test_nested_payload_camel_case_context_window(self):
+        from agent.model_metadata import _CONTEXT_LENGTH_KEYS, _extract_first_int
+        assert _extract_first_int({"capabilities": {"contextWindow": 64000}}, _CONTEXT_LENGTH_KEYS) == 64000
+
+    def test_snake_case_still_preferred_order(self):
+        from agent.model_metadata import _context_length_from_model_payload
+        assert _context_length_from_model_payload({"context_length": 32768, "contextWindow": 200000}) == 32768

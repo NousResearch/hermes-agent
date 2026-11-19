@@ -230,7 +230,7 @@ terminal:
   container_persistent: true       # 快照/恢复文件系统
 ```
 
-**必需：** `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` 环境变量，或 `~/.modal.toml` 配置文件。
+**必需：** `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` 环境变量，或 `~/.modal.toml` 配置文件。`~/.modal.toml` 登录仅用于单 profile 的 Hermes：在多路复用的 gateway 上，每个被路由的 profile 都需要在自己的 `.env`（或密钥来源）中同时设置 `MODAL_TOKEN_ID` 和 `MODAL_TOKEN_SECRET`，否则会被拒绝。
 
 **持久化：** 启用后，沙箱文件系统在清理时快照，并在下次会话时恢复。快照在 `~/.hermes/modal_snapshots.json` 中跟踪。这保留文件系统状态，而非活跃进程、PID 空间或后台任务。
 
@@ -326,7 +326,7 @@ terminal:
 - **Local** —— 无特殊要求。入门时最安全的默认选项。
 - **Docker** —— 运行 `docker version` 验证 Docker 是否正常工作。如果失败，修复 Docker 或执行 `hermes config set terminal.backend local`。
 - **SSH** —— `TERMINAL_SSH_HOST` 和 `TERMINAL_SSH_USER` 都必须设置。如果缺少任一项，Hermes 会记录清晰的错误。
-- **Modal** —— 需要 `MODAL_TOKEN_ID` 环境变量或 `~/.modal.toml`。运行 `hermes doctor` 检查。
+- **Modal** —— 需要 `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`，或单 profile Hermes 的 `~/.modal.toml`。多路复用 gateway 上被路由的 profile 需要在自己的 `.env` 中设置这两个 token。运行 `hermes doctor` 检查。
 - **Daytona** —— 需要 `DAYTONA_API_KEY`。Daytona SDK 处理服务器 URL 配置。
 - **Singularity** —— 需要 `$PATH` 中有 `apptainer` 或 `singularity`。HPC 集群上常见。
 

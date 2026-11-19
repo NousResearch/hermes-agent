@@ -77,3 +77,24 @@ def test_native_xai_grok_420_upgrade_discards_legacy_2m_cache(tmp_path, monkeypa
     reseller = "https://openrouter.ai/api/v1"
     mm.save_context_length("grok-4.20", reseller, 2_000_000)
     assert mm.get_model_context_length("grok-4.20", base_url=reseller, provider="openrouter") == 2_000_000
+
+
+def test_nanogpt_window_comes_from_its_detailed_catalog(monkeypatch):
+    """NanoGPT's plain /models omits windows; ``?detailed=true`` publishes them, and they beat the
+    vendor-doc table both ways (GLM-5.3 1,048,576; Grok 4.20 2M there, though xAI serves 1M)."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    import agent.model_metadata as mm
+
+    windows = {"z-ai/glm-5.3:thinking": 1_048_576, "x-ai/grok-4.20": 2_000_000}
+
+    @contextmanager
+    def stream(url, *, params=None, **_):
+        detailed = (params or {}).get("detailed") == "true"
+        data = [{"id": m, **({"context_length": w} if detailed else {})} for m, w in windows.items()]
+        yield SimpleNamespace(status_code=200, raise_for_status=lambda: None, read=lambda: b"", json=lambda: {"data": data})
+
+    monkeypatch.setattr(mm.model_metadata_http, "stream", stream)
+    for model, window in windows.items():
+        assert mm.get_model_context_length(model, base_url="https://nano-gpt.com/api/v1", provider="custom") == window

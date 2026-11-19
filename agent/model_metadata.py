@@ -420,10 +420,10 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
-_CONTEXT_LENGTH_KEYS = (
-    "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
-    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
-)
+_CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
+    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size")
+# Hosts whose plain /models omits every window but publishes it on request (NanoGPT: ?detailed=true).
+_MODELS_QUERY_BY_HOST = {"nano-gpt.com": {"detailed": "true"}}
 _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_tokens")
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 # Docker / Podman / Lima DNS names that resolve to the host machine
@@ -1054,11 +1054,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         # A connect timeout condemns the host, not the path.
         if _endpoint_blackholed(normalized):
             break
-        # Cache keys stay unrewritten; only the outbound target is IPv4-resolved.
-        request_candidate = _localhost_to_ipv4(candidate)
+        request_candidate = _localhost_to_ipv4(candidate)  # cache keys stay unrewritten; only the target is IPv4
         url = request_candidate.rstrip("/") + "/models"
         try:
-            with model_metadata_http.stream(url, headers=headers, timeout=(5, 10), verify=verify) as response:
+            params = _MODELS_QUERY_BY_HOST.get(base_url_hostname(normalized))
+            with model_metadata_http.stream(url, headers=headers, params=params, timeout=(5, 10), verify=verify) as response:
                 if response.status_code in (401, 403):
                     logger.debug("Model metadata probe received HTTP %s from %s; stopping candidate probing", response.status_code, url)
                     break

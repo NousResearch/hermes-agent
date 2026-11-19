@@ -15,7 +15,7 @@ from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC041
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
-from scripts.releases import lanes as lane_set
+from scripts.releases import desktop_targets, lanes as lane_set
 from scripts.releases.stable import (
     check_claim, ensure_final_tag, gate_expectations, plan_receipt_transitions, plan_transitions, read_manifest,
     require_stable_identity, require_success, validate_candidates, validate_receipt,
@@ -35,19 +35,16 @@ def candidates(tag, commit, digest, archive=None):
                          + timedelta(seconds=second)).timestamp())
     native_version = f"2026.5761.{second}.0"
     ref = archive or tag
-    for platform in ("windows", "macos"):
-        for arch in ("x64", "arm64"):
-            if (platform, arch) == ("macos", "x64"):
-                continue  # no Intel macOS package
-            packages.append({
-                "platform": platform, "arch": arch, "tag": tag, "commit": commit,
-                "identity": "test.application",
-                "version": native_version if platform == "windows" else tag[1:],
-                **({"executableVersion": native_version} if platform == "windows" else {}),
-                **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
-                "artifact": {"sha256": digest,
-                             "url": f"{BASE}/releases/tag/{ref}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
-            })
+    for platform, arch in desktop_targets.MANIFEST_TARGETS:
+        packages.append({
+            "platform": platform, "arch": arch, "tag": tag, "commit": commit,
+            "identity": "test.application",
+            "version": native_version if platform == "windows" else tag[1:],
+            **({"executableVersion": native_version} if platform == "windows" else {}),
+            **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
+            "artifact": {"sha256": digest,
+                         "url": f"{BASE}/releases/tag/{ref}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
+        })
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
             "archive": ref,
             "packages": packages,
@@ -270,24 +267,25 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
                for row in transitions)
     # A target the new release did not build has nothing to upgrade to.
     missing = copy.deepcopy(new)
-    missing["packages"].pop()
+    missing["packages"] = [row for row in missing["packages"] if row["platform"] != "macos"]
     missing["smoke_results"]["smoke-darwin-arm64"] = {"result": "skipped"}
     assert {row["target"] for row in plan_transitions(old, missing, BASE)} == \
         {"windows-x64", "windows-arm64"}
     with pytest.raises(ValueError, match="identity"):
         validate_candidates(new, new["tag"], old["commit"], BASE, archive=new["archive"])
+    windows = next(i for i, row in enumerate(new["packages"]) if row["platform"] == "windows")
     for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other"), ("version", "9.9.9.0")]:
         changed = copy.deepcopy(new)
-        changed["packages"][0][key] = value
+        changed["packages"][windows][key] = value
         with pytest.raises(ValueError):
             plan_transitions(old, changed, BASE)
     mutable = copy.deepcopy(new)
-    mutable["packages"][0]["artifact"]["url"] = f"{BASE}/releases/win32/stable/current.msixbundle"
+    mutable["packages"][windows]["artifact"]["url"] = f"{BASE}/releases/win32/stable/current.msixbundle"
     with pytest.raises(ValueError, match="immutable"):
         plan_transitions(old, mutable, BASE)
     for suffix in ("../other.zip", "%2e%2e/other.zip", "%252e%252e/other.zip"):
         traversal = copy.deepcopy(new)
-        traversal["packages"][0]["artifact"]["url"] = f"{BASE}/releases/tag/{new['tag']}/{suffix}"
+        traversal["packages"][windows]["artifact"]["url"] = f"{BASE}/releases/tag/{new['tag']}/{suffix}"
         with pytest.raises(ValueError, match="path encoding"):
             plan_transitions(old, traversal, BASE)
     with pytest.raises(ValueError, match="increase"):
@@ -523,7 +521,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     both = {**old, "includeMacosIntel": False, "includeTermux": True}
     assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
     # macOS Intel is no longer built: a claim that opted into it cannot be honoured.
-    with pytest.raises(ValueError, match="metadata is invalid"):
+    with pytest.raises(ValueError, match="metadata is invalid: it opts into macOS Intel"):
         validate_claim({**old, "includeMacosIntel": True}, version="0.21.7", attempt=11, commit=commit)
     untested = {**old, "skipTests": True}
     assert validate_claim(untested, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(

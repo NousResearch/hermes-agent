@@ -217,7 +217,8 @@ def claim_lanes(metadata: Mapping) -> frozenset[str]:
            for key in ("skipBundles", "skipTests", *(k for k in _LEGACY_OPTIONAL if k in metadata))):
         raise ValueError("Stable claim metadata is invalid")
     if metadata.get("includeMacosIntel"):
-        raise ValueError("Stable claim metadata is invalid")
+        raise ValueError("Stable claim metadata is invalid: it opts into macOS Intel (includeMacosIntel), "
+                         "which is no longer built")
     lanes = set(NAMES) - {"termux"}
     if metadata.get("includeTermux"):
         lanes.add("termux")

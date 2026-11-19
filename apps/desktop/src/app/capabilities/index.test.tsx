@@ -131,6 +131,22 @@ afterEach(() => {
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
+  it('renders when the browser has no idle callback APIs', async () => {
+    vi.stubGlobal('requestIdleCallback', undefined)
+    vi.stubGlobal('cancelIdleCallback', undefined)
+    const prefetchSpy = vi.spyOn(queryClient, 'prefetchQuery').mockResolvedValue(undefined)
+
+    try {
+      await renderSkills()
+
+      expect(await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })).toBeTruthy()
+    } finally {
+      cleanup()
+      prefetchSpy.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 

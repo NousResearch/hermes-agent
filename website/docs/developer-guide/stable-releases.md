@@ -280,10 +280,15 @@ attempt installed from it is not upgrade-safe: every attempt of a version has
 the same package version, so the published build never replaces it. The Docker
 image is pushed early under the attempt ref; the `stable` and `latest` aliases
 move with the feed in the publication pass. The Store build follows the same
-rule: the green run commits it held (auto-publish off), so certification runs
-before the gate, and the publication pass switches that submission to
-auto-publish. If the submission API refuses the switch, the pass warns: select
-Publish now in Partner Center once the build is certified. A submission that
+rule: the green run uploads it as an uncommitted draft set to auto-publish, and
+only the publication pass commits it, so it goes live by itself once it passes
+certification. Partner Center refuses to change a committed submission, so the
+draft cannot be committed held earlier and released later. To keep a release's
+Store build back for a manual release, set the repository variable
+`MS_STORE_HOLD` to `true` before the publication pass: the draft is then
+committed with auto-publish off, and once it is certified someone selects
+Publish now in Partner Center. A submission committed held before this change
+also gets that Publish now warning. A submission that
 does not carry the release's Store bundle is left alone while the pass checks
 older published releases for its owner. Store reconciliation runs even when
 the feeds and aliases are already current, so interrupted publication can be
@@ -302,8 +307,9 @@ retain no downloadable job artifacts.
 
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`, `linux-arm64`, and
-`termux`. Stable calls it once per group, except the linux groups, which wait
-for a real Linux build, and the `termux` and any other group whose lane the
+`termux`. Stable calls it once per group, except the linux groups, whose
+diagnostic AppImage builds no lane selects yet, and the `termux` and any other
+group whose lane the
 claim leaves out, which it does not call. The Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
@@ -348,6 +354,16 @@ protected canary head receipts that tag.
 The protected publication controller verifies that exact annotated tag object
 before it flips the GitHub prerelease from draft to public, reads both states back,
 and only then advances the R2 head.
+
+Pull requests and pushes to `main` run no E2E suite. After each successful
+`Canary Release`, `Canary E2E` (`canary-e2e.yml`) runs a claim's E2E calls (full
+CI with `release: true`, install/update E2E, Windows live E2E) on the commit that
+canary tagged, so an E2E regression shows up within a day of landing rather than
+at the next claim. A commit an automatic run already passed is not run again
+(a canary with no new commits resumes its last tag). It only reports: the
+canary does not wait for it, and
+`install-e2e-red.yml` keeps one `install-e2e-red` issue open while the latest run
+is red.
 
 ## Canary and one-off desktop identities
 
@@ -508,7 +524,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required
   scanner execution failures are failures, not advisory findings.
-- Disabled Linux desktop packaging is not claimed as shipped. Native Linux
+- Linux desktop AppImages, diagnostic canary builds, are not claimed as
+  shipped. Native Linux
   PM bundles, Docker, Nix and install/update checks remain required.
 - Housekeeping, autofix, comment and skills-index/deploy workflows are not
   release acceptance suites.

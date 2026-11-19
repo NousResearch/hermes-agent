@@ -83,14 +83,13 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
     artifact URLs into the immutable per-release tag namespace. `archive` keys
     that namespace (the attempt ref for stable attempts); `tag` stays the
     version identity."""
-    arches = ARCHES
     import hermes_yaml as yaml  # lazy
 
     version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
     if not is_release_version(version):
         raise ValueError("Invalid macOS release tag")
     selection = _darwin_feed("canary" if is_canary_tag(tag) else "stable", light)
-    expected = [f"{arch}-{selection['fileName']}" for arch in arches]
+    expected = [f"{arch}-{selection['fileName']}" for arch in ARCHES]
     if sorted(legs.keys()) != sorted(expected):
         raise ValueError("Expected exactly one ARM64 macOS feed")
     files: dict[str, dict[str, Any]] = {}
@@ -99,9 +98,9 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
         leg = parse_mac_feed(legs[name])
         if str(leg.get("version")) != version:
             raise ValueError(f"Feed version does not match {tag}")
-        prefix = f"{'HermesLight' if light else 'HermesBundled'}-{version}-mac-{arches[index]}"
+        prefix = f"{'HermesLight' if light else 'HermesBundled'}-{version}-mac-{ARCHES[index]}"
         if not any(f.get("url") == f"{prefix}.zip" for f in leg["files"]):
-            raise ValueError(f"Missing native ZIP for {arches[index]}")
+            raise ValueError(f"Missing native ZIP for {ARCHES[index]}")
         for file_entry in leg["files"]:
             if file_entry.get("url") not in (f"{prefix}.zip", f"{prefix}.dmg"):
                 raise ValueError(f"Wrong variant or architecture: {file_entry.get('url')}")

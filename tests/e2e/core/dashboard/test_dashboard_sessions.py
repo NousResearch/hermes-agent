@@ -3,7 +3,7 @@
 Users hit this as "the Sessions page 500s / shows 'database is locked' while a chat is running" or
 "the session count jumps backwards / double-counts" (the dashboard reads the same SQLite file the
 agent, gateway and cron write). Harness: the real ``hermes dashboard`` process and a real writer
-process (``hermes_state.SessionDB``, the agent's own persistence layer) appending sessions and
+process (the store through ``open_persistence``, the agent's own persistence layer) appending sessions and
 messages as fast as it can. Readers hammer the list, stats, detail and messages routes in parallel.
 
 Invariants while the writer runs: every read is a 200 (never a lock/busy error), the list total
@@ -35,15 +35,16 @@ WRITE_SECONDS = 8.0
 # every session so the harness knows an upper bound at any instant.
 _WRITER = r"""
 import sys, time
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 deadline = time.monotonic() + float(sys.argv[1])
-db = SessionDB()
+db = open_persistence(profile_scope())
 n = 0
 while time.monotonic() < deadline:
     sid = f"live-{n:05d}"
-    db.create_session(sid, source="cli", model="writer")
+    seed_session(db, sid, "cli", model="writer")
     for j in range(3):
-        db.append_message(sid, "user" if j % 2 == 0 else "assistant", f"{sid} message {j}")
+        seed_messages(db, sid, {"role": "user" if j % 2 == 0 else "assistant", "content": f"{sid} message {j}"})
     n += 1
     print(n, flush=True)
 db.close()

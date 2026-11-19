@@ -95,17 +95,17 @@ $script:UvPinFiles = @{
     }
 }
 
-$script:GitPinVersion = "2.53.0+3"
+$script:GitPinVersion = "2.56.1+1"
 $script:GitPinFiles = @{
     "win32-x64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
-        Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/PortableGit-2.56.1-64-bit.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/9dd04a608ceb5f6ab32a73709e0ecb159d211da71b697c45ff81f6dd0c6b49c7"
+        Sha256 = "9dd04a608ceb5f6ab32a73709e0ecb159d211da71b697c45ff81f6dd0c6b49c7"
     }
     "win32-arm64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
-        Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/PortableGit-2.56.1-arm64.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0dca0d9f760924a7e6752235d7dd6eb1a9b508ee714b6ed15d89252e5a58c5c9"
+        Sha256 = "0dca0d9f760924a7e6752235d7dd6eb1a9b508ee714b6ed15d89252e5a58c5c9"
     }
 }
 # --- END GENERATED: bootstrap pins ---
@@ -1032,6 +1032,40 @@ function Confirm-StableUnreachable([string]$What) {
     Fail "$What$(Get-NativeDetail). Rerun the installer to retry, or pass -Channel main to install main's tip" git_fetch_failed
 }
 
+# Variables that point git at a repository other than the -C directory it is given.
+$script:GitLocationEnv = @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE')
+
+function Invoke-WithoutGitLocationEnv([scriptblock]$Body) {
+    # An inherited GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets every
+    # `git -C $InstallDir` at the user's other repo, and a rerun's stash/reset would act on it
+    # (#146032). Restored afterwards: under iex this is the user's own session.
+    $saved = @{}
+    foreach ($name in $script:GitLocationEnv) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        # Not SetEnvironmentVariable($name, $null): PowerShell passes $null as '', which .NET 9+
+        # (pwsh 7.5+) stores as an empty variable, and git reads GIT_DIR= as a path.
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+    }
+    try { & $Body } finally {
+        foreach ($name in $saved.Keys) { if ($null -ne $saved[$name]) { Set-Item -LiteralPath "Env:$name" -Value $saved[$name] } }
+    }
+}
+
+function Get-RealDirectoryPath([string]$Path) {
+    # $Path as a full path without a trailing separator (Split-Path -Parent of 'x\' is 'x'), with
+    # a junction/symlink at its last component followed. A linked ancestor needs no resolving:
+    # git resolves the ceiling entry itself.
+    $real = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path).TrimEnd('\', '/')
+    for ($hop = 0; $hop -lt 8; $hop++) {
+        $item = Get-Item -LiteralPath $real -Force -ErrorAction SilentlyContinue
+        $target = if ($item -and $item.LinkType) { @($item.Target)[0] }
+        if (-not $target) { break }
+        $real = [IO.Path]::GetFullPath([IO.Path]::Combine((Split-Path -Parent $real), $target)).TrimEnd('\', '/')
+    }
+    return $real
+}
+
 function Stage-Repository {
     $pinned = $false
     # Not $channel: variables are case-insensitive, and the helpers below read the -Channel
@@ -1055,9 +1089,19 @@ function Stage-Repository {
     # rejects outright (empty HEAD, a gitdir: file pointing nowhere), where
     # `hermes update` cannot fetch. Move it aside -- never delete it, it may
     # hold something the user wants -- and clone fresh below.
+    # A .git git cannot read makes it search the parent directories, and a
+    # git-managed home would pass the probe and get the stash/reset below
+    # (#146032): the ceiling keeps the probe to $InstallDir's own .git.
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
-        if ($LASTEXITCODE) {
+        $ceiling = $env:GIT_CEILING_DIRECTORIES
+        # git compares the ceiling with the real path of the directory it probes, so a junction
+        # or symlinked $InstallDir needs its target's parent, not the link's.
+        $env:GIT_CEILING_DIRECTORIES = Split-Path -Parent (Get-RealDirectoryPath $InstallDir)
+        try {
+            Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
+            $unusable = $LASTEXITCODE
+        } finally { $env:GIT_CEILING_DIRECTORIES = $ceiling }
+        if ($unusable) {
             $broken = "$InstallDir.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             Write-Warn "$InstallDir is not a usable git checkout (interrupted clone or damaged .git); moving it aside to $broken"
             Move-Item -LiteralPath $InstallDir -Destination $broken
@@ -1645,7 +1689,7 @@ function New-DesktopShortcuts {
 function Invoke-StageByName([string]$name) {
     switch ($name) {
         "prerequisites" { Stage-Prerequisites }
-        "repository" { Stage-Repository }
+        "repository" { Invoke-WithoutGitLocationEnv { Stage-Repository } }
         "venv" { Stage-Venv }
         "python-deps" { Stage-PythonDeps }
         "products" { Stage-Products }
@@ -1653,7 +1697,7 @@ function Invoke-StageByName([string]$name) {
         "setup" { Stage-Setup }
         "gateway" { Stage-Gateway }
         "desktop" { Stage-Desktop }
-        "complete" { Stage-Complete }
+        "complete" { Invoke-WithoutGitLocationEnv { Stage-Complete } }
         default { Write-Error "unknown stage: $name"; exit 2 }
     }
 }

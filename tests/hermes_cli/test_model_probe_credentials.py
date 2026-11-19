@@ -355,3 +355,32 @@ def test_the_vision_probe_sends_no_placeholder_inline_key(monkeypatch, provider)
     cfg = load_config()
     assert image_routing._resolve_inference_base_url(cfg, provider) == BASE
     assert image_routing._resolve_inference_api_key(cfg, provider) == ""
+
+
+def test_model_info_probes_a_named_profile_with_that_profiles_key(tmp_path, monkeypatch):
+    """The key lookup runs on the probe worker; it reads the requested profile's ``.env`` and config,
+    not the dashboard process's."""
+    import json
+
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import models as route
+    from hermes_constants import get_hermes_home
+
+    root = get_hermes_home()
+    studio = root / "profiles" / "studio"
+    studio.mkdir(parents=True)
+    (studio / "config.yaml").write_text(json.dumps({"model": dict(MODEL_BLOCK)}), encoding="utf-8")  # JSON is YAML
+    (studio / ".env").write_text("LAB_LLAMA_KEY=studio-key\n", encoding="utf-8")
+    monkeypatch.delenv("LAB_LLAMA_KEY", raising=False)
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy as lpp
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(lpp, "_snapshot", None)
+
+    seen = {}
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length",
+                        lambda **kwargs: seen.update(kwargs) or 4096)
+    info = route.get_model_info(profile="studio")
+    assert seen["api_key"] == "studio-key" and info["auto_context_length"] == 4096

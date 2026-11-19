@@ -6,6 +6,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 from typing import Optional
 
@@ -61,20 +62,41 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 _MODEL_INFO_PROBE_BUDGET_S = 5.0
 
 
-def _bounded_context_length_probe(model: str, base_url: str, provider: str, api_key: str = "") -> int:
-    """``get_model_context_length`` with the route's blocking budget.
+def _context_length_with_endpoint_key(model: str, model_cfg, base_url: str, provider: str,
+                                      profile: Optional[str]) -> int:
+    """The auto context length, probed with the key the runtime sends to ``model.base_url``.
+
+    Runs on the probe worker, so it binds the request's profile itself: ``key_env`` reads that
+    profile's secrets and the credential pools live in its ``auth.json``.
+    """
+    from agent.model_metadata import get_model_context_length
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+
+    with _config_profile_scope(profile):
+        api_key = main_endpoint_key_for(model_cfg, base_url)
+        return get_model_context_length(model=model, base_url=base_url, provider=provider, api_key=api_key,
+                                        config_context_length=None)
+
+
+def _bounded_context_length_probe(model: str, model_cfg, base_url: str, provider: str,
+                                  profile: Optional[str]) -> int:
+    """:func:`_context_length_with_endpoint_key` with the route's blocking budget.
+
+    The key lookup is inside the budget: loading a credential pool can persist ``auth.json``
+    and wait up to ``AUTH_LOCK_TIMEOUT_SECONDS`` for its lock, which an OAuth refresh holds
+    across its network call.
 
     On timeout the abandoned probe keeps running in its worker thread (bounded
     by its own per-request timeouts) while the response degrades to
     ``auto_context_length = 0`` ("auto-detected: unknown").
     """
-    from agent.model_metadata import get_model_context_length
-
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
     try:
+        # copy_context: an unnamed profile is the request's effective home, which may be a
+        # task-local override the bare worker thread would not see.
         return pool.submit(
-            get_model_context_length, model=model, base_url=base_url, provider=provider,
-            api_key=api_key, config_context_length=None
+            contextvars.copy_context().run, _context_length_with_endpoint_key, model, model_cfg, base_url,
+            provider, profile,
         ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
     except concurrent.futures.TimeoutError:
         _log.warning(
@@ -106,10 +128,7 @@ def get_model_info(profile: Optional[str] = None):
             # config_context_length=None: ignore the override — we want the auto value.
             # Bounded: the resolver's provider probes can hang for tens of seconds
             # when model.base_url is unreachable (#63214).
-            from hermes_cli.runtime_provider_custom import main_endpoint_key_for
-            with _config_profile_scope(profile):  # key_env reads the profile's own secrets
-                api_key = main_endpoint_key_for(model_cfg, base_url)
-            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider, api_key)
+            auto_ctx = _bounded_context_length_probe(model_name, model_cfg, base_url, provider, profile)
         except Exception:
             auto_ctx = 0
 

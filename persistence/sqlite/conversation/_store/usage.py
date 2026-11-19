@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite.conversation._store.sessions import _insert_session_row, _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip
+from persistence.sqlite.conversation._store.sessions import _is_explicit_branch_session, _own_profile_name, _session_lineage_root_to_tip
 
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
@@ -122,8 +122,13 @@ def update_token_counts(
     # writer it must carry the agent's real source: the turn lease treats an existing row as
     # proof the create already happened, so the creator never returns to repair an anonymous
     # ``unknown`` placeholder and the session stays a phantom for life (#111999).
-    _insert_session_row(holder, session_id, source or "unknown", model=model)
-    holder._execute_write(lambda conn: _update_token_counts_in_transaction(holder, conn, session_id, **values))
+    from persistence.sqlite.conversation._store.worker_lifecycle import insert_session_row_in_transaction
+
+    def write(conn):
+        insert_session_row_in_transaction(holder, conn, session_id, source or "unknown", model=model)
+        _update_token_counts_in_transaction(holder, conn, session_id, **values)
+
+    holder._execute_write(write)
 
 
 def _update_token_counts_in_transaction(

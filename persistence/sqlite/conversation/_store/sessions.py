@@ -396,8 +396,11 @@ def _insert_session_row(
                   parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
                   git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
                   transport_profile=transport_profile)
-    holder._execute_write(lambda conn: insert_session_row_in_transaction(holder, conn, **params),
-                        patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        holder._execute_write(lambda conn: insert_session_row_in_transaction(holder, conn, **params),
+                              patience_s=remaining)
 
 
 def create_session(holder: StoreHolder, session_id: str, source: str, **kwargs) -> str:

@@ -359,12 +359,16 @@ def publish_compression_child(
     See #75316.
     ``None`` = unbounded (no internal flush happened). See #47202.
     """
-    _execute_transcript_write(holder, lambda conn: _publish_compression_child_on_conn(holder,
-        conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
-        messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
-        cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
-        require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
-        lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling), messages)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, (parent_session_id, child_session_id)) as remaining:
+        _execute_transcript_write(holder, lambda conn: _publish_compression_child_on_conn(holder,
+            conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
+            messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
+            cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
+            require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
+            lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling),
+            messages, patience_s=remaining)
 
 
 def _publish_compression_child_on_conn(

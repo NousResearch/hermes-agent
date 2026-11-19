@@ -569,3 +569,55 @@ def test_stored_session_route_heals_an_empty_provider_row_unless_the_main_slot_s
     assert stored_session_route(stamped, current_model="claude-opus-5-5", current_provider="anthropic")[:4] == (
         "GLM-5.3", "custom:glm", None, None)
     assert stored_session_route(_row(model="claude-opus-5-5"), current_model="x", current_provider="anthropic")[1] is None
+
+
+def test_same_model_provider_restores_saved_endpoint_and_wire(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {
+                            "api_key": "resolved", "base_url": "https://saved.invalid/v1"})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://ambient.invalid/v1", api_mode="chat_completions")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert (stub.model, stub.provider, stub.base_url, stub.api_mode) == (
+        "same", "custom:feather", "https://saved.invalid/v1", "anthropic_messages")
+    assert calls and stub.api_key == "resolved"
+
+
+def test_same_provider_explicit_launch_endpoint_still_wins(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://explicit.invalid/v1", api_mode="chat_completions",
+                      _explicit_base_url="https://explicit.invalid/v1")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert stub.base_url == "https://explicit.invalid/v1"
+    assert stub.api_mode == "chat_completions"
+    assert calls == []
+
+
+def test_resume_custom_route_never_uses_credentials_resolved_for_another_endpoint(monkeypatch):
+    from hermes_cli import runtime_provider
+    from hermes_cli import runtime_provider_custom
+
+    endpoint = "https://saved.invalid/v1"
+    monkeypatch.setattr(runtime_provider_custom, "_endpoint_identity", lambda base_url: None)
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kwargs: {
+        "api_key": "different-endpoint-key",
+        "base_url": "https://unrelated.invalid/v1",
+        "credential_pool": object(),
+    })
+    cli = _make_stub(model="same", provider="custom", _credential_pool=object())
+    cli._restore_session_model(_row("same", {"gateway_runtime": {
+        "model": "same", "provider": "custom", "base_url": endpoint, "api_mode": "chat_completions",
+    }}))
+
+    assert cli.provider == "custom"
+    assert cli.base_url == endpoint
+    assert cli.api_key is None
+    assert cli._credential_pool is None

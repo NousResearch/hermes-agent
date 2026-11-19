@@ -198,6 +198,25 @@ def gateway_runtime(
     return _route(runtime, keep_falsy=True)
 
 
+def complete_runtime_route(config: Optional[Mapping[str, JsonValue]]) -> tuple[str, GatewayRuntime] | None:
+    """Read a complete saved route, preferring nested gateway values to the TUI snapshot."""
+    if not config:
+        return None
+    nested = config.get("gateway_runtime")
+    for source in (nested, config):
+        if not isinstance(source, Mapping):
+            continue
+        model = source.get("model")
+        route = _route(source, keep_falsy=False)
+        if isinstance(model, str) and model.strip() and route.provider and route.provider.strip():
+            return model.strip(), GatewayRuntime(
+                provider=route.provider.strip(),
+                base_url=(route.base_url or "").strip() or None,
+                api_mode=(route.api_mode or "").strip() or None,
+            )
+    return None
+
+
 def resume_route(
     model_config: Mapping[str, JsonValue] | str | None,
     *,
@@ -218,6 +237,9 @@ def resume_route(
         config = parsed if isinstance(parsed, Mapping) else {}
     elif isinstance(model_config, Mapping):
         config = model_config
+    complete = complete_runtime_route(config)
+    if complete is not None:
+        return complete
     column = (model or "").strip()
     picked = str(config.get("model") or "").strip()
     nested, lock = config.get("gateway_runtime"), config.get("browser_model_lock")

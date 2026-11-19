@@ -49,25 +49,33 @@ def _resolve_cli_reasoning(cli) -> None:
     cli._reasoning_user_set = False
 
 
-def stored_session_route(session_meta, *, current_model, current_provider):
-    """The route a resumed session should run on, or ``None`` when the stored one is absent or
-    already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
-    canonical row reader is ``gateway_runtime`` (``model_config.gateway_runtime``,
-    else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
-    hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
+_ROUTE_UNSET = object()
+
+
+def stored_session_route(session_meta, *, current_model, current_provider,
+                         current_base_url=_ROUTE_UNSET, current_api_mode=_ROUTE_UNSET):
+    """Restore the saved model and route when any part differs from the active route."""
     from persistence.conversation.sessions import parse_model_config
-    from persistence.gateway.routing import resume_route
-    stored_model, runtime = resume_route(parse_model_config(session_meta.get("model_config")),
-                                         model=session_meta.get("model"),
-                                         billing_provider=str(session_meta.get("billing_provider") or ""),
-                                         billing_base_url=str(session_meta.get("billing_base_url") or ""))
+    from persistence.gateway.routing import complete_runtime_route, resume_route
+
+    session_meta = session_meta or {}
+    config = parse_model_config(session_meta.get("model_config"))
+    saved = complete_runtime_route(config)
+    stored_model, runtime = saved or resume_route(
+        config, model=session_meta.get("model"),
+        billing_provider=str(session_meta.get("billing_provider") or ""),
+        billing_base_url=str(session_meta.get("billing_base_url") or ""))
     if not stored_model:
         return None
     base_url = runtime.base_url or None
     api_mode = runtime.api_mode or None
     stored_provider = runtime.provider or None
-    provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
-    if provider != stored_provider:
+    if saved is not None and stored_provider == "custom" and base_url:
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        provider = session_provider_identity(stored_provider, None, base_url)
+    else:
+        provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
+    if saved is None and provider != stored_provider:
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
         base_url = None
@@ -75,8 +83,6 @@ def stored_session_route(session_meta, *, current_model, current_provider):
             # An empty provider's saved wire came from turns that went to the wrong provider (#132648).
             api_mode = None
     provider_changed = bool(provider) and provider != current_provider
-    if stored_model == current_model and not provider_changed:
-        return None
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
@@ -91,6 +97,12 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         from hermes_cli.models import normalize_opencode_base_url
         api_mode = derived
         base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
+    endpoint_changed = (current_base_url is not _ROUTE_UNSET and base_url is not None
+                        and base_url != (current_base_url or None))
+    mode_changed = (current_api_mode is not _ROUTE_UNSET and api_mode is not None
+                    and api_mode != (current_api_mode or None))
+    if stored_model == current_model and not provider_changed and not endpoint_changed and not mode_changed:
+        return None
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
@@ -433,6 +445,38 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         custom_provs=ctx.custom_providers if ctx is not None else None)
 
 
+def _restore_session_credentials(cli, provider, base_url, api_mode, *, managed, provider_changed, endpoint_changed):
+    """Resolve credentials only for the restored provider and its selected endpoint."""
+    from cli import logger
+
+    explicit_base = getattr(cli, "_explicit_base_url", None)
+    if managed and explicit_base and not provider_changed:
+        return
+    if not (managed or provider_changed or endpoint_changed):
+        return
+    cli.api_key = None
+    cli._credential_pool = None
+    cli._explicit_api_key = None
+    # The managed supervisor owns the live endpoint, including ephemeral ports after restart.
+    cli._explicit_base_url = None if managed else base_url
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        resolved = resolve_runtime_provider(requested=provider, target_model=cli.model or None)
+    except Exception:
+        if managed and base_url:
+            cli.base_url = base_url
+        logger.debug("Credential re-resolution for resumed session provider %s failed", provider, exc_info=True)
+        return
+    resolved_url = resolved.get("base_url")
+    if resolved.get("api_key") and (managed or not base_url or resolved_url == base_url):
+        cli.api_key = resolved["api_key"]
+        cli._credential_pool = resolved.get("credential_pool")
+    if resolved_url and (managed or not base_url):
+        cli.base_url = resolved_url
+    if not api_mode and resolved.get("api_mode"):
+        cli.api_mode = resolved["api_mode"]
+
+
 class CLIModelSwitchMixin:
     """Model picker, /model switch application, runtime snapshot/restore, and codex runtime handling for the interactive CLI"""
 
@@ -570,18 +614,24 @@ class CLIModelSwitchMixin:
     def _restore_session_model(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Restore model/provider from the session DB row on every resume path.
 
-        Skips when no model is recorded or the CLI got an explicit ``-m`` (user intent wins).
-        A different stored provider gets its credentials re-resolved — the ambient ``api_key``
-        must not be sent to the session's endpoint; on failure the ambient credentials are kept
-        so the session still opens (the first turn surfaces the auth error).
+        An explicit ``-m`` or launch endpoint for the same provider keeps precedence.
+        Provider or endpoint changes clear the old credentials before re-resolution.
         """
         from cli import logger
-        if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
+        if getattr(self, "_explicit_model_override", False):
             return
-        route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
+        explicit_base = getattr(self, "_explicit_base_url", None)
+        route = stored_session_route(
+            session_meta, current_model=self.model, current_provider=self.provider,
+            current_base_url=_ROUTE_UNSET if explicit_base else self.base_url,
+            current_api_mode=_ROUTE_UNSET if explicit_base else self.api_mode)
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+        endpoint_changed = bool(stored_base_url and stored_base_url != self.base_url and
+                                (provider_changed or not explicit_base))
+        if explicit_base and not provider_changed and stored_base_url != explicit_base:
+            stored_base_url = stored_api_mode = None
         from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
         managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
@@ -592,50 +642,9 @@ class CLIModelSwitchMixin:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
-        if managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed):
-            # The supervisor owns the live port: last boot's loopback URL (an ephemeral fallback when
-            # 18434 was busy) must not pin the resume onto a dead endpoint. A launch-time --base-url
-            # for this same provider is user intent and keeps winning.
-            self._explicit_api_key = None
-            self._explicit_base_url = None
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
-            except Exception:
-                if stored_base_url:
-                    self.base_url = stored_base_url
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
-        elif provider_changed:
-            # Launch-time explicit overrides belong to the AMBIENT provider and would poison
-            # _ensure_runtime_credentials for the restored one. api_key is never persisted to
-            # the session DB — runtime provider resolution owns credentials.
-            self._explicit_api_key = None
-            self._explicit_base_url = stored_base_url
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if not stored_base_url and resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
-            except Exception:
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
+        _restore_session_credentials(self, stored_provider, stored_base_url, stored_api_mode,
+                                     managed=managed, provider_changed=provider_changed,
+                                     endpoint_changed=endpoint_changed)
         _resolve_cli_reasoning(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider / self.reasoning_config.

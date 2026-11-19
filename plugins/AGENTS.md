@@ -184,7 +184,9 @@ count sticks. Never run it just to turn CI green.
 PR #102117 moved internals into `<stem>_<topic>` siblings. The temporary compat layer that kept the
 old import paths alive for external plugins was removed after its 2026-09-14 window; an old path now
 raises `ImportError`, surfaced as the plugin's load error in `hermes plugins list`. Plugins build on
-`ctx` and the documented ABCs. Never add re-export shims for an internal move. `hermes_cli/plugin_compat.py`
+`ctx` and the documented ABCs. Never add re-export shims for an internal move; the one exception
+is the listed turn helpers pinned catalog plugins import (plugin guide § Turn helpers kept for pinned
+catalog plugins, removed with the `hermes_state` stand-in in v0.27.0). `hermes_cli/plugin_compat.py`
 survives only as three inert stubs that already-running pre-removal updaters import.
 
 ## Tests

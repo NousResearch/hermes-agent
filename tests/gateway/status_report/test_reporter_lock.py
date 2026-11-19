@@ -319,6 +319,36 @@ async def test_a_watcher_cancelled_while_it_takes_the_lock_leaves_no_lock_held(c
     assert receiver.requests == []
 
 
+async def test_a_sender_cancelled_while_it_confirms_its_lock_leaves_no_lock_held(clock, monkeypatch):
+    """The same for a sender confirming the lock it holds: run()'s cleanup releases it, and the
+    thread still confirming then takes it again, after the cleanup."""
+    confirming, release, taken = threading.Event(), threading.Event(), []
+
+    def take_the_lock(scope, identity):
+        if taken:  # the second beat's confirmation: this gateway is the sender by now
+            confirming.set()
+            release.wait(timeout=5)
+        result = gateway_status.acquire_scoped_lock(scope, identity)
+        taken.append(result[0])
+        return result
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    watcher = asyncio.create_task(make_reporter(receiver).run(lambda: True, tick=0.01))
+    await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="the first beat")
+    clock.advance(AFTER_INTERVAL_S)
+    await async_wait_until(confirming.is_set, timeout=5, what="the second beat confirming the lock")
+
+    watcher.cancel()
+    await asyncio.wait({watcher}, timeout=5)
+    release.set()
+    await async_wait_until(lambda: len(taken) == 2, timeout=5, what="the confirmation after the cancel")
+
+    assert watcher.cancelled() and taken == [True, True]
+    await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
+                           what="a cancelled sender to give back the lock its confirmation took again")
+
+
 async def test_a_goodbye_cancelled_while_it_confirms_the_lock_leaves_the_sender_holding_it(clock, monkeypatch):
     """The goodbye confirms the lock too. Cancelled there (the loop closing under it), it must not
     give back a lock the watcher still reports under."""

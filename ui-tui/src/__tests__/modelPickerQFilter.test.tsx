@@ -122,7 +122,7 @@ describe('ModelPicker q is filter text on list stages (#157542)', () => {
   it('typing q while entering an API key does not close the picker', async () => {
     // Sibling path: the key stage is not a list stage, so the shared overlay
     // q-handler used to stay active and quit mid-key-entry (#157542).
-    const request = vi.fn(async (method: string) => {
+    const h = harness(async (method: string) => {
       if (method !== 'model.options') {
         throw new Error('invalid_params')
       }
@@ -143,61 +143,28 @@ describe('ModelPicker q is filter text on list stages (#157542)', () => {
       }
     })
 
-    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn(), ref: vi.fn(), unref: vi.fn() })
-    let output = ''
-    const stdout = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: false })
-    stdout.on('data', chunk => {
-      output += chunk.toString()
-    })
-
-    const take = () => {
-      const frame = output
-      output = ''
-
-      return frame
-    }
-
-    const onCancel = vi.fn()
-
-    const element = (
-      <ModelPicker
-        gw={{ request } as any}
-        onCancel={onCancel}
-        onSelect={vi.fn()}
-        sessionId={null}
-        t={DEFAULT_THEME}
-      />
-    )
-
-    const instance = renderSync(element, {
-      stdin: stdin as any,
-      stdout: stdout as any,
-      stderr: new PassThrough() as any,
-      patchConsole: false
-    })
-
     try {
       await flush()
-      instance.rerender(element)
+      h.instance.rerender(h.element)
       await flush()
       // Enter on the unconfigured api_key provider opens the key-entry stage.
-      stdin.write('\r')
+      h.stdin.write('\r')
       await flush()
-      expect(take()).toContain('NOUS_API_KEY')
+      expect(h.take()).toContain('NOUS_API_KEY')
 
-      stdin.write('q')
+      h.stdin.write('q')
       await flush()
-      expect(onCancel).not.toHaveBeenCalled()
+      expect(h.onCancel).not.toHaveBeenCalled()
       // The 'q' landed in the key input (one masked bullet), not a quit.
-      expect(take()).toContain('•')
+      expect(h.take()).toContain('•')
 
       // Esc still backs out of key entry to the provider list.
-      stdin.write('\x1b')
+      h.stdin.write('\x1b')
       await flushEsc()
-      expect(onCancel).not.toHaveBeenCalled()
-      expect(take()).toContain('Select provider')
+      expect(h.onCancel).not.toHaveBeenCalled()
+      expect(h.take()).toContain('Select provider')
     } finally {
-      instance.unmount()
+      h.instance.unmount()
     }
   })
 })

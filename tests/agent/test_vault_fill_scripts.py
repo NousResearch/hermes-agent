@@ -274,24 +274,15 @@ class TestReadBack:
 _SENTINEL = "PW-SENTINEL-42"
 
 # Pages that try to read a script's values with nothing but their own JavaScript: a replaced global
-# that records its arguments, and one that walks ``caller`` up to the evaluated function and reads
-# its source (in sloppy mode that is the whole script, literal values included).
+# that records its arguments. (The caller walk is below: on another origin no page function runs
+# before the refusal, so it is only reachable on the bound origin.)
 _SPY_PAGES = {
     "argument-spy": """
       globalThis.__seen = [];
       const RealString = String;
       globalThis.String = function (v) { __seen.push(RealString(v)); return RealString(v); };
     """,
-    "caller-walk": """
-      globalThis.__seen = [];
-      const realStringify = JSON.stringify;
-      JSON.stringify = function spy(v) {
-        if (spy.caller) __seen.push(Function.prototype.toString.call(spy.caller));
-        return realStringify(v);
-      };
-    """,
 }
-
 
 def _secret_scripts():
     fills = [{"index": 1, "token": "current-password", "value": _SENTINEL}]
@@ -316,6 +307,34 @@ class TestOriginGuard:
                 + _SENTINEL + "')) }; })()")
         out = json.loads(_node(setup, expr))
         assert _verdict(__import__("json").dumps(out["r"]))["refused"] == "origin_changed"
+        assert out["saw"] is False
+
+    @pytest.mark.parametrize("script", ["fill", "read-back"])
+    def test_a_page_function_the_script_calls_cannot_walk_up_to_its_source(self, script):
+        """On the bound origin the scripts call page-reachable functions (an input's ``focus``, its
+        ``value``, ``dispatchEvent``). A sloppy-mode script is reachable from them through ``caller``,
+        and its source holds every value of the fill. Here the page swapped the password control for a
+        text box, so the password is refused (never written) — yet a ``focus`` hook on the identifier
+        box would read it from the source unless the script runs in strict mode."""
+        setup = """
+          globalThis.__seen = [];
+          const id = stamp(add(document, "input", { type: "text", value: "user@example.com" }), 0);
+          const swapped = stamp(add(document, "input", { type: "text", value: "" }), 1);
+          // Each hook reads ITS OWN caller: that is the vault script that called it.
+          const walk = (hook) => { __seen.push(hook.caller ? Function.prototype.toString.call(hook.caller) : ""); };
+          id.focus = function focus() { walk(focus); focusOn(this); };
+          id.dispatchEvent = function dispatchEvent() { walk(dispatchEvent); return true; };
+          Object.defineProperty(id, "value", { get: function value() { walk(value); return "user@example.com"; },
+                                               configurable: true });
+        """
+        fills = [{"index": 0, "token": "username", "value": "user@example.com"},
+                 {"index": 1, "token": "current-password", "value": _SENTINEL}]
+        js = {"fill": build_fill_js(fills, expected_origin=ORIGIN, nonce=NONCE),
+              "read-back": build_fill_verify_js(fills, nonce=NONCE, expected_origin=ORIGIN)}[script]
+        expr = ("(() => { const r = " + js + "; return { r, called: __seen.length, saw: __seen.some((s) => s.includes('"
+                + _SENTINEL + "')), written: swapped.value }; })()")
+        out = json.loads(_node(setup, expr))
+        assert out["written"] == "" and out["called"] > 0  # the hook ran: the walk was really attempted
         assert out["saw"] is False
 
     def test_the_same_page_still_reads_back(self):

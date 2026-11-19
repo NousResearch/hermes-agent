@@ -168,7 +168,10 @@ def _stamps_removed(task_id: str, nonce: str) -> Iterator[None]:
 
     Each operation stamps under its own attribute name, so nothing else ever removes them, and a
     stamp left behind lets a later read address the control the vault targeted. Runs inside the
-    pinned block, on the channel the operation checked; a failed removal leaves the result as is.
+    pinned block, on the channel the operation checked; a failed or refused removal leaves the
+    result as is. After a channel move the removal is refused by design (sending it to the new
+    channel would act on a page the operation never inspected), so the old page keeps its stamps.
+    It still runs while a human holds the Bot Desktop screen (see ``_fenced_page_op``).
     """
     from agent.vault_login_classifier import build_unstamp_js
     try:
@@ -1266,7 +1269,11 @@ def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
 def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
     browser_exec; they must honour the Bot Desktop lease like every other page access, or a human
-    typing a credential on the taken-over screen could be read or written to."""
+    typing a credential on the taken-over screen could be read or written to.
+
+    One exception: removing an operation's own stamps (``_stamps_removed``) still runs after a
+    takeover. It reads and writes no value, moves no focus and fires no event, and the stamps carry
+    a per-operation name that nothing else would ever remove."""
     from tools.browser_session import run_fenced, session_for_task
 
     res = run_fenced(session_for_task(task_id), lambda: {"raw": fn()})

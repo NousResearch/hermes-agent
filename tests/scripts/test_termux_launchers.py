@@ -1,6 +1,7 @@
 """Run generated launchers with a real interpreter and captured entrypoint."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import subprocess
 import sys
 
 import pytest
+
+from tests.waiting import pid_gone
 
 from scripts.build.launchers import write_launchers
 
@@ -94,11 +97,12 @@ def test_verifier_stops_detached_descendants_before_cleanup(tmp_path):
     try:
         stop_child_tree(child)
         assert child.poll() is not None
-        assert not descendant.is_running() or descendant.status() == psutil.STATUS_ZOMBIE
+        assert pid_gone(descendant)
     finally:
         if child.poll() is None:
             child.kill()
-        if descendant.is_running() and descendant.status() != psutil.STATUS_ZOMBIE:
-            descendant.kill()
+        if not pid_gone(descendant):
+            with contextlib.suppress(psutil.NoSuchProcess):
+                descendant.kill()
         child.wait(timeout=10)
         child.stdout.close()

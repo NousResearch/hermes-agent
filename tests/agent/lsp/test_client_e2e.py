@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.waiting import pid_gone
+
 from agent.lsp.client import _STREAM_LIMIT, LSPClient
 from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
@@ -212,7 +214,7 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
             await asyncio.wait_for(start, timeout=0.05)
 
         deadline = asyncio.get_running_loop().time() + 15.0
-        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+        while not pid_gone(child):
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
         assert client.state == "error"

@@ -22,7 +22,10 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    import psutil
 
 T = TypeVar("T")
 
@@ -78,3 +81,28 @@ async def async_wait_until(predicate: Callable[[], T | Awaitable[T]], timeout: f
         if time.monotonic() >= deadline:
             raise _timed_out(what, timeout)
         await asyncio.sleep(interval)
+
+
+def pid_gone(target: int | psutil.Process) -> bool:
+    """True once ``target`` (a pid or a ``psutil.Process``) has exited: gone, or a zombie nobody reaped yet.
+
+    ``is_running() and status()`` / ``pid_exists(pid) and Process(pid)...`` are check-then-act races: an
+    exited child's zombie can be reaped between the two calls, and the second raises ``NoSuchProcess``.
+    """
+    import psutil
+
+    try:
+        proc = target if isinstance(target, psutil.Process) else psutil.Process(target)
+        return not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def kill_if_alive(pid: int) -> None:
+    """SIGKILL ``pid`` for test cleanup; a process that exited (or was reaped) meanwhile is fine."""
+    import psutil
+
+    try:
+        psutil.Process(pid).kill()
+    except psutil.NoSuchProcess:
+        pass

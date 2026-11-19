@@ -1,6 +1,6 @@
 name: hermes-make-it-smart
 repo: https://github.com/tesla963/hermes-make-it-smart
-sha: b005782c69f3c9ec48201ebb8e2700ec79208283
+sha: f06d4ecba73a0ba1a92ebeb0108e1368532bee59
 description: >-
   Canonical catalog over every Hermes profile. Reads the local state.db files, names each session
   "NNN [Subject] MMM [Tag] [Tag] Description · Verb", and exposes faceted filters (subject, maker,

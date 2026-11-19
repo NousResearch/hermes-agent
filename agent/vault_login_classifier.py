@@ -96,23 +96,29 @@ class ClassifiedLoginControl:
     token: str
 
 
+def is_excluded_login_control(control: LoginControl) -> bool:
+    """The hard exclusions: a control that is never a login fill target, whatever else it says
+    (autocomplete ``new-password`` / ``one-time-code``, a new/confirm/create/repeat password label).
+    Any fallback that picks a login control without classifying it must honour these too."""
+    if any(t in _EXCLUDED_AUTOCOMPLETE for t in control.autocomplete.lower().split()):
+        return True
+    return bool(_RE_EXCLUDED_PASSWORD.search(_searchable(control)))
+
+
+def _searchable(control: LoginControl) -> str:
+    return _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+
+
 def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control, or return None if it is not a login fill target."""
-    autocomplete_tokens = [
-        t for t in control.autocomplete.lower().split() if t
-    ]
-    if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
+    if is_excluded_login_control(control):
         return None
-
+    autocomplete_tokens = control.autocomplete.lower().split()
     for token in LOGIN_AUTOFILL_TOKENS:
         if token in autocomplete_tokens:
             return ClassifiedLoginControl(control, 100, token)
 
-    searchable = _normalize_text(
-        " ".join(part for part in (control.name, control.label) if part)
-    )
-    if _RE_EXCLUDED_PASSWORD.search(searchable):
-        return None
+    searchable = _searchable(control)
     if control.type == "password":
         return ClassifiedLoginControl(control, 90, "current-password")
     if control.type == "email":

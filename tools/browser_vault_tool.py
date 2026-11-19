@@ -685,7 +685,7 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
 
     Prefers a classified control in the password field's form; on an identifier-only step (no
     password field yet) it is the whole fill. When nothing was classified, falls back to the single
-    other text box in the password's form — a phone entry on a framework form often carries no
+    other text box in the password's form that the classifier does not exclude outright — a phone entry on a framework form often carries no
     autocomplete, name, id or placeholder at all, so there is nothing to score.
     """
     if not identifier:
@@ -701,7 +701,7 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
         best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
         return [{"index": best.control.index, "token": best.token, "value": identifier}]
 
-    from agent.vault_login_classifier import LoginControl
+    from agent.vault_login_classifier import LoginControl, is_excluded_login_control
 
     taken = {f["index"] for f in password_fill}
     candidates = []
@@ -714,7 +714,8 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
             continue
         if control.index in taken or control.type not in ("text", "tel", "email"):
             continue
-        if control.form_index != form:
+        # A one-time-code or new-password box is never the identifier, classified or not.
+        if control.form_index != form or is_excluded_login_control(control):
             continue
         candidates.append(control)
     if len(candidates) != 1:  # ambiguous: fill nothing rather than guess

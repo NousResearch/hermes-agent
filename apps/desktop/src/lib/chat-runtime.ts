@@ -600,6 +600,10 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
           ? cached.merged
           : {
               ...prev,
+              // The folded bubble is where the reply ends now, so a stop there is the reply's stop. It is not
+              // lost when the bubble above was never stopped, and not hidden by that bubble's `continued`
+              // (the reply went on after an earlier stop).
+              ...(message.interrupted ? { interrupted: true, continued: message.continued } : {}),
               completedAt: [prev.completedAt, message.completedAt, ...message.parts.map(part => part.completedAt)]
                 .filter((value): value is number => value !== undefined)
                 .reduce<number | undefined>(

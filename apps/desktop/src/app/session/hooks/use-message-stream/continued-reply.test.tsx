@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { finalizeStoppedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
 import type { SessionMessage } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -60,6 +60,20 @@ const continuedRows: SessionMessage[] = [
   { id: 8, role: 'assistant', content: 'Here is example.com.', timestamp: 8 }
 ]
 
+// The continuation was itself stopped during its first tool run, by the user this time.
+const stoppedContinuationRows: SessionMessage[] = [
+  ...continuedRows.slice(0, 6),
+  { id: 7, role: 'tool', content: '[Command interrupted]', tool_call_id: 'call-2', timestamp: 7 },
+  {
+    id: 8,
+    role: 'assistant',
+    content: '',
+    display_kind: 'hidden',
+    timestamp: 8,
+    display_metadata: '{"interrupted": true}'
+  }
+]
+
 let stream: MessageStreamHarness
 
 const emit = (event: Omit<GatewayEvent, 'session_id'>) => act(() => stream.handleEvent({ ...event, session_id: SID }))
@@ -80,6 +94,27 @@ const readStored = (rows: SessionMessage[]) =>
 const drawnStopped = (message: ChatMessage) => toRuntimeMessage(message).metadata?.custom?.interrupted === true
 
 const replies = () => stream.state().messages.filter(message => message.role === 'assistant' && !message.hidden)
+
+// The replies as the thread draws them: a settled tool-only bubble joins the reply above it (runtime-repository.ts).
+const drawnReplies = () =>
+  coalesceToolOnlyAssistants(stream.state().messages, createToolMergeCache()).filter(
+    message => message.role === 'assistant' && !message.hidden
+  )
+
+// The user's Stop as cancelRun applies it to the live turn (use-prompt-actions/index.ts).
+const clickStop = () =>
+  act(() => {
+    const state = stream.state()
+    stream.states.set(SID, {
+      ...state,
+      messages: finalizeStoppedMessages(state.messages, state.streamId),
+      busy: false,
+      awaitingResponse: false,
+      streamId: null,
+      interrupted: true,
+      turnLive: false
+    })
+  })
 
 async function mountStoppedByPlugin() {
   vi.useFakeTimers()
@@ -165,5 +200,43 @@ describe('a reply that went on after a pause is not drawn as stopped', () => {
 
     readStored(stoppedRows)
     expect(replies().map(drawnStopped)).toEqual([true])
+  })
+
+  // The continuation's first tool call is a tool-only bubble, so once it settles the thread draws it as
+  // part of the paused reply above it. That reply went on, but this Stop is where it ended.
+  it('keeps the mark of a Stop that lands in the continuation before it wrote any text', async () => {
+    await mountStoppedByPlugin()
+    emit({ payload: {}, type: 'message.start' })
+    emit({ payload: { args: { urls: ['example.com'] }, name: 'web_extract', tool_id: 'call-2' }, type: 'tool.start' })
+    expect(drawnReplies().some(drawnStopped)).toBe(false)
+
+    clickStop()
+    emit({ payload: { status: 'interrupted', text: '' }, type: 'message.complete' })
+
+    // One reply on screen, holding both calls, and it reads as stopped.
+    expect(drawnReplies().map(drawnStopped)).toEqual([true])
+    expect(drawnReplies()[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
+  })
+
+  // The same turn read back from the store (the read after the turn, a reload): the first stop's mark came
+  // off because the reply went on, and the second stop's mark sits on the tool-only bubble that is folded.
+  it('keeps that mark after the stored read', async () => {
+    await mountStoppedByPlugin()
+
+    readStored(stoppedContinuationRows)
+
+    expect(drawnReplies().map(drawnStopped)).toEqual([true])
+    expect(drawnReplies()[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
+  })
+
+  it('keeps the mark off when the continuation is paused and continued a second time', async () => {
+    await mountStoppedByPlugin()
+    emit({ payload: {}, type: 'message.start' })
+    emit({ payload: { args: { urls: ['example.com'] }, name: 'web_extract', tool_id: 'call-2' }, type: 'tool.start' })
+    // The plugin pauses the continuation as well, and goes on with it again.
+    emit({ payload: { paused: true, status: 'interrupted', text: '' }, type: 'message.complete' })
+    emit({ payload: {}, type: 'message.start' })
+
+    expect(drawnReplies().some(drawnStopped)).toBe(false)
   })
 })

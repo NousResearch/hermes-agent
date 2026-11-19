@@ -1,0 +1,18 @@
+name: wigoo
+title: Wigoo
+repo: https://github.com/youssbim/wigoo-mcp
+sha: 6f4af05c8d9d3c8bd7c8a7aada1538ebcfe7170d
+version: "1.0.0"
+description: "Gives the agent Wigoo's travel eSIM catalog through its hosted MCP server (Streamable HTTP at https://api.getwigoo.com/api/mcp, no sign-in, no keys in config): find which of 190+ countries and regions are covered, read the networks, data sizes, validity and day passes of each plan, and quote a plan's price in the traveler's currency with a link to buy it on getwigoo.com. Bundles one skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to api.getwigoo.com with the destination, plan and currency asked for. All four tools are read-only and none places an order: the traveler buys on the website. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: youssbim
+tier: community
+category: tools
+docs_url: https://docs.getwigoo.com/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

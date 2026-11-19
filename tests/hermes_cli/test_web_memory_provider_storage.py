@@ -227,7 +227,8 @@ def test_a_parked_provider_says_plugins_disabled_turned_it_off(client):
 
     assert resp.status_code == 503
     detail = resp.json()["detail"]
-    assert "plugins.disabled" in detail and "`hermes plugins enable ownprov`" in detail, detail
+    assert "plugins.disabled" in detail, detail
+    assert f"`hermes -p default plugins enable ownprov` with HERMES_HOME set to {get_hermes_home()}." in detail, detail
     assert "external memory is off" in detail, detail
 
 
@@ -265,7 +266,8 @@ def test_a_secondary_profile_panel_names_that_profile_and_its_refused_save_chang
 
     assert got.status_code == put.status_code == 503, (got.text, put.text)
     for detail in (got.json()["detail"], put.json()["detail"]):
-        assert "`hermes -p work plugins enable ownprov`" in detail and "external memory is off" not in detail, detail
+        assert f"`hermes plugins enable ownprov` with HERMES_HOME set to {work_home}." in detail, detail
+        assert "external memory is off" not in detail, detail
     assert (work_home / "config.yaml").read_bytes() == work_config  # no switch to ownprov
     assert (work_home / "ownprov.json").read_text(encoding="utf-8") == "{}"
     for home in (work_home, default_home):
@@ -274,8 +276,20 @@ def test_a_secondary_profile_panel_names_that_profile_and_its_refused_save_chang
             if (default_home / "config.yaml").exists() else None) == default_config
 
 
-def test_a_default_home_panel_under_a_sticky_secondary_names_default_and_its_command_enables_default(
-        client, monkeypatch):
+_NATIVE, _NATIVE_WORK, _CUSTOM, _CUSTOM_WORK, _LOOSE = (
+    ".hermes", ".hermes/profiles/work", "custom", "custom/profiles/work", ".hermes/loose-home")
+
+
+@pytest.mark.parametrize(("inspected", "launch", "shell", "sticky"), [
+    (_NATIVE, _NATIVE_WORK, _NATIVE_WORK, None),  # a named launch inspecting default
+    (_NATIVE, _NATIVE, None, "work"),  # default home under a sticky secondary
+    (_NATIVE_WORK, _NATIVE, None, None),
+    (_CUSTOM, _CUSTOM, None, None),  # a custom root's notice run from a shell with HERMES_HOME unset
+    (_CUSTOM_WORK, _CUSTOM, _NATIVE, "work"),
+    (_LOOSE, _NATIVE, _NATIVE, "work"),  # a home that is no profile
+])
+def test_the_enable_command_run_from_another_shell_enables_only_the_inspected_home(
+        tmp_path, monkeypatch, inspected, launch, shell, sticky):
     import os
     import re
     import subprocess
@@ -283,59 +297,42 @@ def test_a_default_home_panel_under_a_sticky_secondary_names_default_and_its_com
     from pathlib import Path
 
     import hermes_yaml as yaml
-    from hermes_cli import profiles
-    from hermes_constants import get_hermes_home
-
-    default_home = get_hermes_home()
-    work_home = default_home / "profiles" / "work"
-    work_home.mkdir(parents=True)
-    (work_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"disabled": ["ownprov"]}}), encoding="utf-8")
-    (default_home / "active_profile").write_text("work\n", encoding="utf-8")  # the shell's sticky profile
-    (default_home / "plugins" / "ownprov" / "plugin.yaml").write_text("name: ownprov\n", encoding="utf-8")
-    _park(default_home, "ownprov", provider="ownprov")
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: default_home / "profiles")
-    work_config = (work_home / "config.yaml").read_bytes()
-
-    url = f"{_URL}&profile=default"
-    got = client.get(url)
-    put = client.put(url, json={"values": {"workspace": "w", "apiKey": "default-key"}})
-
-    assert got.status_code == put.status_code == 503, (got.text, put.text)
-    for detail in (got.json()["detail"], put.json()["detail"]):
-        assert "`hermes -p default plugins enable ownprov`" in detail and "external memory is off" in detail, detail
-    assert not (default_home / "ownprov.json").exists()
-    for home in (work_home, default_home):
-        assert "default-key" not in ((home / ".env").read_text(encoding="utf-8") if (home / ".env").exists() else "")
-
-    # Run the suggested command as a shell under the sticky profile would: same root, no -p of its own.
-    command = re.search(r"`hermes (.+?)`", got.json()["detail"]).group(1).split()
-    repo = Path(__file__).resolve().parents[2]
-    env = {**os.environ, "HERMES_HOME": str(default_home), "PYTHONPATH": str(repo)}
-    run = subprocess.run([sys.executable, "-m", "hermes_cli.main", *command], cwd=repo, env=env,
-                         capture_output=True, text=True, timeout=120, check=False)
-
-    assert run.returncode == 0, (run.stdout, run.stderr)
-    default_plugins = yaml.safe_load((default_home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
-    assert "ownprov" not in (default_plugins.get("disabled") or ()), default_plugins
-    assert (work_home / "config.yaml").read_bytes() == work_config  # the sticky profile is untouched
-
-
-def test_a_home_that_is_no_profile_names_its_home_with_the_enable_command(client):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from plugins.memory import parked_provider_notice
 
-    custom = get_hermes_home() / "custom-home"
-    plugin_dir = custom / "plugins" / "ownprov"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "__init__.py").write_text(_INIT, encoding="utf-8")
-    (plugin_dir / "config_schema.py").write_text(_SCHEMA, encoding="utf-8")
-    _park(custom, "ownprov", provider="ownprov")
-
-    token = set_hermes_home_override(custom)
+    homes = [tmp_path / rel for rel in (_NATIVE, _NATIVE_WORK, _CUSTOM, _CUSTOM_WORK, _LOOSE)]
+    for home in homes:
+        plugin_dir = home / "plugins" / "ownprov"
+        plugin_dir.mkdir(parents=True)
+        for file, text in (("__init__.py", _INIT), ("config_schema.py", _SCHEMA), ("plugin.yaml", "name: ownprov\n")):
+            (plugin_dir / file).write_text(text, encoding="utf-8")
+        _park(home, "ownprov", provider="ownprov")
+        (home / ".env").write_text(f"OWNPROV_API_KEY={home.name}-key\n", encoding="utf-8")
+    if sticky:
+        for root in (_NATIVE, _CUSTOM):
+            (tmp_path / root / "active_profile").write_text(f"{sticky}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / launch))
+    token = set_hermes_home_override(tmp_path / inspected)
     try:
         notice = parked_provider_notice("ownprov")
     finally:
         reset_hermes_home_override(token)
+    assert "external memory is off" in notice, notice
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
-    assert f"`hermes -p default plugins enable ownprov` run with HERMES_HOME set to {custom}" in notice, notice
+    # A shell somewhere else follows the notice: its own HERMES_HOME (or none), with HERMES_HOME set when told to.
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
+    env.update(HOME=str(tmp_path), PYTHONPATH=str(repo), **({"HERMES_HOME": str(tmp_path / shell)} if shell else {}))
+    told = re.search(r"with HERMES_HOME set to (.+)\.$", notice)
+    if told:
+        env["HERMES_HOME"] = told.group(1)
+    command = re.search(r"`hermes (.+?)`", notice).group(1).split()
+    run = subprocess.run([sys.executable, "-m", "hermes_cli.main", *command], cwd=repo, env=env,
+                         capture_output=True, text=True, timeout=120, check=False)
+
+    assert run.returncode == 0, (notice, run.stdout, run.stderr)
+    target = tmp_path / inspected / "config.yaml"
+    assert "ownprov" not in (yaml.safe_load(target.read_text(encoding="utf-8"))["plugins"].get("disabled") or ()), notice
+    assert {p: data for p, data in before.items() if p != target} == {
+        p: p.read_bytes() for p in before if p != target}, notice  # every other config, secret and sticky file

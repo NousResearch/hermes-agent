@@ -67,6 +67,12 @@ def test_page_allows_its_scripts_and_chunks_but_locks_privileged_execution(page,
     scripts = policy["script-src"].split()
     assert "'self'" in scripts  # the bundle and every relative import() chunk
     assert "blob:" in scripts  # runtime-loader's local plugin modules (#145072)
+    # Clerk loads its browser SDK and bot-protection scripts after the app mounts.
+    assert {
+        "https://clerk.unitalk.ai",
+        "https://challenges.cloudflare.com",
+        "https://*.protect.clerk.com",
+    } <= set(scripts)
     assert not {"'unsafe-inline'", "'unsafe-eval'", "https:", "http:", "*"}.intersection(scripts)
     parsed = Scripts(response.text)
     assert parsed.external == ["/hermes/assets/app.js"]

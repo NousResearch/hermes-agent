@@ -7,6 +7,12 @@ from html.parser import HTMLParser
 from fastapi import Request
 
 
+# Clerk's browser SDK also loads bot and abuse protection scripts.
+_CLERK_SCRIPT_SOURCES = (
+    "https://clerk.unitalk.ai https://challenges.cloudflare.com https://*.protect.clerk.com"
+)
+
+
 class _ScriptHashes(HTMLParser):
     """Hash the trusted build's inline scripts and the server's bootstrap verbatim."""
 
@@ -40,7 +46,7 @@ def page_headers(request: Request, html: str, headers: dict) -> dict:
     # and local servers or sockets behind a Host-rewriting proxy.
     policy = "; ".join((
         "default-src 'none'",
-        f"script-src 'self' blob: 'wasm-unsafe-eval' {hashes}",
+        f"script-src 'self' blob: 'wasm-unsafe-eval' {hashes} {_CLERK_SCRIPT_SOURCES}",
         "script-src-attr 'none'",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src 'self' data: https://fonts.gstatic.com",

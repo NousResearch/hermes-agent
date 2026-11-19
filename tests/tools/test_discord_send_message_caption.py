@@ -13,6 +13,10 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+pytest.importorskip("aiohttp")
+
 from plugins.platforms.discord.adapter import _remember_channel_is_forum, _standalone_send
 
 

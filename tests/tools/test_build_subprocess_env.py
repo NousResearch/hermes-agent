@@ -48,17 +48,23 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
 
     Exercises the REAL factory and the REAL bin-dir resolver — no mocks of the
     helpers. cron/scheduler._run_job_script builds its child env via exactly
-    this call (``build_subprocess_env()`` with scrub on).
+    this call (``build_subprocess_env()`` with scrub on). The install it
+    resolves is a seeded fixture, never the developer's real one.
     """
     import shutil
 
     from tools.environments import local as local_mod
 
+    install_bin = tmp_path / "hermes-install-bin"
+    install_bin.mkdir()
+    shim = install_bin / ("hermes.exe" if os.name == "nt" else "hermes")
+    shim.write_bytes(b"")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", str(install_bin))
+    monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR", local_mod._SENTINEL)
+    monkeypatch.setattr(local_mod, "_HERMES_BIN_DIR_IS_PAYLOAD", False)
     bin_dir = local_mod._resolve_hermes_bin_dir()
-    if not bin_dir or not os.path.isfile(
-        os.path.join(bin_dir, "hermes.exe" if os.name == "nt" else "hermes")
-    ):
-        pytest.skip("no real hermes console-script install available")
+    assert bin_dir == str(install_bin)
 
     # Simulate the service-manager minimal PATH: hermes dir absent. An empty directory, not
     # /usr/bin:/bin — a distro-packaged hermes (/usr/bin/hermes) would already be on those.

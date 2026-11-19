@@ -78,7 +78,7 @@ class BackendPlan:
     gateway: dict = field(default_factory=dict)
     linger: Optional[bool] = None
     bundle_missing: Optional[str] = None
-    running_turns: int = 0
+    running_turns: Optional[int] = 0  # None: the old backend's activity cannot be read
     blockers: list[str] = field(default_factory=list)
     unsupported: list[tuple[Optional[BackendItem], str, list[str]]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
@@ -716,15 +716,33 @@ def _restart_hint(plan: BackendPlan) -> str:
     return "stop it and start it again the way it was started"
 
 
+def _turns_before_restart(plan: BackendPlan, host) -> Optional[int]:
+    """Turns found running on a backend whose health cannot be read; None when none can be shown (no pid,
+    an unreadable marker, or none found: a Hermes before v2026.7.30 writes no turn markers)."""
+    if not (plan.item and plan.item.pid):
+        return None
+    try:
+        return host.running_turns(plan.item.pid, plan.rec.get("start_time")) or None
+    except OSError:
+        return None
+
+
 def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if not plan.rec["was_active"]:
         return
     status = host.http_status(plan.old_probe_host, plan.old_port)
     if status is not None and status.get("health") == "missing":
+        plan.running_turns = _turns_before_restart(plan, host)
+        if plan.running_turns:
+            first = (f"{plan.running_turns} turn(s) are running on it now: let them finish before you restart it, "
+                     f"or the reply being written is cut off. Then restart")
+        else:  # a Hermes this old writes no turn markers, so none found is not proof that it is idle
+            first = ("Its activity cannot be read: confirm no reply is being written in it (it is idle) before "
+                     "you restart it. Then restart")
         plan.blockers.append(
             f"The old backend on {format_address(plan.old_probe_host, plan.old_port)} runs a Hermes older than "
             f"v2026.7.30: it has no GET /api/health, so its sign-in state and running turns cannot be read "
-            f"without changing files. Restart the old backend with the updated hermes "
+            f"without changing files. {first} the old backend with the updated hermes "
             f"({_restart_hint(plan)}), then re-run the dry run. Nothing changed.")
         return
     if status is None:
@@ -881,7 +899,7 @@ def _plan_body(plan: BackendPlan) -> list[str]:
         lines.append(f"  public URL:    copy to webapp.public_url: {plan.public_url}")
     lines += [f"  gateway:       {_gateway_line(plan)}",
               f"  webapp bundle: {'missing → build it first' if plan.bundle_missing else 'present'}",
-              f"  running turns: {plan.running_turns}"]
+              f"  running turns: {'unknown' if plan.running_turns is None else plan.running_turns}"]
     if plan.shows_steps:
         steps = [s["title"] for s in plan.step_titles() if s["name"] != "preflight"]
         lines += ["", "  Steps:", *[f"    {n}. {s}" for n, s in enumerate(steps, 1)]]

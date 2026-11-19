@@ -309,3 +309,30 @@ def test_seed_bytes_count_a_link_that_leaves_the_cache(payload_cache):
     assert packages.uv_cache_seed_bytes() == 3 * 4096  # module.py, and core.py's 5000 bytes
     packages.uv_cache_dir()
     assert packages.uv_cache_seed_bytes() == 0
+
+
+def test_seed_bytes_skip_what_a_killed_seed_already_copied_whole(payload_cache):
+    """A retry after a seed died part-way copies only the rest, so only the rest is counted."""
+    cache = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    (cache / "big.py").write_bytes(b"x" * 9000)
+    done = payload_cache / "archive-v0" / "bucket"
+    done.mkdir(parents=True)
+    (done / "module.py").write_text("seeded = True\n", encoding="utf-8")
+
+    assert packages.uv_cache_seed_bytes() == 3 * 4096  # big.py only
+
+
+def test_seed_bytes_skip_a_file_link_inside_the_cache(payload_cache):
+    """A link that stays in the cache is recreated as a link: it takes no blocks."""
+    bucket = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    _symlink_or_skip("module.py", bucket / "alias.py")
+
+    assert packages.uv_cache_seed_bytes() == 4096  # module.py only
+
+
+def test_seed_bytes_skip_a_dangling_link(payload_cache):
+    """Sizing must not raise where the target is gone: the refresh would fall back for no reason."""
+    bucket = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket"
+    _symlink_or_skip("../../../venv/gone.py", bucket / "gone.py")
+
+    assert packages.uv_cache_seed_bytes() == 4096  # module.py only

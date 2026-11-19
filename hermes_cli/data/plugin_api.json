@@ -199,6 +199,12 @@
       ]
     },
     {
+      "source": "skill-catalog-provider.md (experimental, including registration and mutation handle shapes)",
+      "entries": [
+        "hermes_cli.skill_catalog:SkillCatalogProvider"
+      ]
+    },
+    {
       "source": "plugins/index.md § platform plugins: read session identity through the task-local context",
       "entries": [
         "gateway.session_context:get_session_env"

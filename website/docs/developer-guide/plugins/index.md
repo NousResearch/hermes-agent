@@ -35,6 +35,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks) — declare under `hooks:` in `config.yaml` |
 | **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](../../user-guide/features/skills.md) — `hermes skills tap add <repo>` · [Publishing a tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
+| A **plugin-served skill catalog** with provider-owned review and installation | [Skill catalog providers](../skill-catalog-provider.md), experimental `ctx.register_skill_catalog` and its [contract appendix](../skill-catalog-provider-contract.md) |
 | A first-class **core** inference provider (not a plugin) | [Adding Providers](../adding-providers.md) |
 
 See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.

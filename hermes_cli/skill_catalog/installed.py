@@ -54,12 +54,15 @@ def installed_records(entry, *, deadline=None):
 
 def extend_installed_rows(rows):
     """Add D4 flat fields by actual path while retaining stock row names/order."""
+    home = get_hermes_home()
+    from hermes_cli.skill_catalog.projection import Projection
+    projection = Projection(home).read()
     entries = snapshot()
     if not entries:
+        if projection['registrations']:
+            raise CatalogError('ownership_state_unavailable', 'Catalog owner is in another serving process.')
         return rows
     from tools.skills_tool import _skill_catalog
-
-    home = get_hermes_home()
     paths = {}
     for skill in _skill_catalog(skip_disabled=True):
         path = skill["path"].parent
@@ -77,7 +80,10 @@ def extend_installed_rows(rows):
         try:
             records = installed_records(entry)
         except CatalogError:
-            continue
+            raise CatalogError('ownership_state_unavailable', 'Catalog installed records are unavailable.') from None
+        owner = projection['registrations'].get(entry.registration_id)
+        if owner is None or owner['state'] != 'ready':
+            raise CatalogError('ownership_state_unavailable', 'Catalog ownership is not ready.')
         for record in records:
             relative = record["target_relative_path"]
             try:
@@ -97,7 +103,11 @@ def extend_installed_rows(rows):
         if entry.stopped or not entry.authorized():
             continue
         row.update({key: value for key, value in record.items() if key != "name"})
-        row.update(provenance="provider", settlement="settled", provider={
+        settlement = 'reconciling' if any(
+            reservation['registration_id'] == entry.registration_id
+            and reservation['target_relative_path'] == relative
+            for reservation in projection['reservations'].values()) else 'settled'
+        row.update(provenance="provider", settlement=settlement, provider={
             "id": entry.descriptor.name, "plugin_id": entry.plugin_key, "label": entry.descriptor.label,
             "version": record["installed_version"], "author": None,
             "managed_state": record["managed_state"], "scan_verdict": "unknown", "actions": record["actions"]})

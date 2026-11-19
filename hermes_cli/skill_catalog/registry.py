@@ -30,6 +30,9 @@ class Entry:
     generation: str = field(default_factory=lambda: uuid.uuid4().hex)
     ready: bool = False
     stopped: bool = False
+    mutations: object = None
+    projection_handle: object = None
+    initialization: object = None
 
     def authorized(self) -> bool:
         try:
@@ -94,8 +97,14 @@ def restore_registration(name, current, previous, *, scope=None):
         if entry is None or entry.provider is not current:
             return False
         entry.stopped = True
-        rows.pop(name)
-        return True
+    if entry.projection_handle is not None:
+        entry.projection_handle.close()
+    if entry.mutations is not None:
+        entry.mutations.close()
+    with _lock:
+        if rows.get(name) is entry:
+            rows.pop(name)
+    return True
 
 
 def snapshot(*, scope=None) -> tuple[Entry, ...]:
@@ -105,9 +114,22 @@ def snapshot(*, scope=None) -> tuple[Entry, ...]:
 
 
 def publish(key, *, scope=None):
+    from hermes_cli.skill_catalog.projection import Projection
+    from hermes_cli.skill_catalog.mutations import Mutations
+    from hermes_cli.skill_catalog.installed import installed_records
+    from hermes_cli.skill_catalog.validation import CatalogError
+
     with _lock:
         row = _entries[hermes_home_key(scope)][key]
-        row.ready = True
+    projection = Projection(Path(row.scope))
+    row.projection_handle = projection.start(row)
+    row.mutations = Mutations(row, projection)
+    row.ready = True
+    try:
+        projection.publish(row, installed_records(row))
+    except CatalogError:
+        # Keep the live reconciling lease: unknown ownership must not become local.
+        return
 
 
 def admission_error(manifest) -> str:

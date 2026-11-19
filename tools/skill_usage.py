@@ -623,14 +623,21 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
         _ledger_before = _ledger.capture_before(src, **capture_kwargs)
     except Exception:
         _ledger = _ledger_before = None  # type: ignore[assignment]
+    from hermes_cli.skill_catalog import admission
     try:
-        src.rename(dest)
-    except OSError:
-        import shutil
-        try:
-            shutil.move(str(src), str(dest))
-        except Exception as e:
-            return False, f"failed to {action}: {e}"
+        with admission.generic(src, dest):  # both endpoints; the live one is checked against provider claims
+            if dest.exists():
+                return False, f"destination already exists: {dest}"
+            try:
+                src.rename(dest)
+            except OSError:
+                import shutil
+                try:
+                    shutil.move(str(src), str(dest))
+                except Exception as e:
+                    return False, f"failed to {action}: {e}"
+    except admission.CatalogError as exc:
+        return False, admission.refusal(exc)
     archiving = action == "archive"
     if archiving:
         # `curator purge` ages archives by mtime; a move keeps the skill's last-edit mtime, so an

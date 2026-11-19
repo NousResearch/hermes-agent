@@ -22,7 +22,9 @@ def projection(home):
 
 
 def entry(home, key="owner"):
-    return SimpleNamespace(source_id=source_id(key, "team"), plugin_key=key,
+    class Owner(SimpleNamespace):
+        pass
+    return Owner(source_id=source_id(key, "team"), plugin_key=key,
         descriptor=Descriptor(1, "team", "Team", "impl-1"), scope=str(home),
         registration_id=uuid.uuid4().hex, generation=uuid.uuid4().hex,
         stopped=False, ready=False, authorized=lambda: True)

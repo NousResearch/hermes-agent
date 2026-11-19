@@ -55,7 +55,12 @@ def test_catalog_loads_with_owner_qualified_identity_and_unloads(tmp_path):
         assert [row.source_id for row in rows] == [expected]
         assert rows[0].plugin_key == "fixture-catalog"
         assert rows[0].descriptor.label == "Team skills"
+        from hermes_cli.skill_catalog.projection import Projection
+        live = Projection(tmp_path).read()
+        assert live['registrations'][rows[0].registration_id]['state'] == 'ready'
+        assert rows[0].mutations is not None
         manager.unload("fixture-catalog")
+        assert Projection(tmp_path).read()['registrations'] == {}
         assert snapshot(scope=manager.scope_key) == ()
     finally:
         manager.unload()

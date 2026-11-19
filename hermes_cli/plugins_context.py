@@ -94,6 +94,12 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         return _facade().PluginState(self.plugin_id, self.manifest.data_namespace)
 
     @cached_property
+    def skill_catalog_mutations(self):
+        """Experimental profile-scoped catalog filesystem admission facade."""
+        from hermes_cli.skill_catalog.facade import ContextMutations
+        return ContextMutations(self)
+
+    @cached_property
     def platform_actions(self):
         """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call
         re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,

@@ -88,6 +88,18 @@ class RemoteFacade:
         return remote
 
 
+class RemoteCatalogMutations(RemoteFacade):
+    """Keep the context manager and writer-owned OS descriptors in this child."""
+
+    def commit(self, admission, operation_id):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.skill_catalog.writer import commit
+        payload = {key: admission[key] for key in ('registration_id', 'reservation_id',
+            'expected_path_revision', 'expected_installation_revision')}
+        acquired = self.acquire(dict(payload, operation_id=operation_id))
+        return commit(self, get_hermes_home(), admission, operation_id, acquired)
+
+
 class RemotePluginContext:
     """What ``register(ctx)`` receives inside the host. Mirrors ``PluginContext``'s public surface as
     announced by Hermes at load, so ``hasattr(ctx, "register_x")`` answers the same as in-process."""
@@ -117,7 +129,8 @@ class RemotePluginContext:
                                self.manifest.name, name, HOST_SKIPPED_CTX_METHODS[name])
             return skipped
         if name in HOST_REMOTE_FACADES:
-            return self._facades.setdefault(name, RemoteFacade(self._runtime, self._plugin_key, name))
+            factory = RemoteCatalogMutations if name == 'skill_catalog_mutations' else RemoteFacade
+            return self._facades.setdefault(name, factory(self._runtime, self._plugin_key, name))
         if name not in self._methods:
             raise AttributeError(f"'PluginContext' object has no attribute {name!r}")
         return functools.partial(self._runtime.ctx_call, self._plugin_key, name)

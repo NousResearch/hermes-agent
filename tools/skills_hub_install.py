@@ -178,6 +178,22 @@ def _check_install_target(install_dir: Path) -> None:
                              f"Use a different --name or install into a subcategory.")
 
 
+def _replace_install_dir(quarantine_path: Path, install_dir: Path) -> None:
+    """Replace the target under the shared catalog gate: a live provider claim or reservation on
+    the target, an ancestor or a descendant refuses (ValueError, the caller's invalid-path branch)
+    before the old tree is removed. The target is rechecked inside the hold."""
+    from hermes_cli.skill_catalog import admission
+    try:
+        with admission.generic(install_dir):
+            _check_install_target(install_dir)
+            if install_dir.exists():
+                shutil.rmtree(install_dir)
+            install_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(quarantine_path), str(install_dir))
+    except admission.CatalogError as exc:
+        raise ValueError(admission.refusal(exc)) from None
+
+
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[dict[str, Any]] = None,
@@ -195,8 +211,6 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -220,8 +234,7 @@ def install_from_quarantine(
                 rel = entry
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    _replace_install_dir(quarantine_path, install_dir)
     if quarantine_path.parent.resolve() != _quarantine_dir().resolve():
         with suppress(OSError):
             quarantine_path.parent.rmdir()

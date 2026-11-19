@@ -54,6 +54,7 @@ function mountRestore() {
     useDesktopIntegrations({
       activeProfile: 'default',
       chatOpen: false,
+      focusedTileStoredSessionId: null,
       hasPreview: false,
       locationPathname: '/',
       navigate,

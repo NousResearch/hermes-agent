@@ -156,6 +156,8 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 ):
                     continue
                 callback = dispatcher.callback
+                manager_ref = dispatcher.manager_ref
+                manager = manager_ref() if manager_ref is not None else None
             payload = dict(item.payload)
             if item.retained_text is not None:
                 payload["final_text"] = item.retained_text.text
@@ -179,15 +181,18 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                         )
                     # Fires once per streaming delta: a mis-declared callback fails identically every
                     # time, so it goes through the manager's warn-once reporter (#111922).
-                    from hermes_cli.plugins import get_plugin_manager
-
-                    # Context.run restores the worker's context when the callback raises.
-                    # Resolve the reporter inside the event's owning profile as well.
-                    manager = item.context.run(get_plugin_manager)
-                    item.context.run(
-                        manager._report_hook_failure,
-                        dispatcher.hook_name, callback, payload, exc,
-                    )
+                    # Keep the admitting generation's reporter even if the worker is reused.
+                    # Non-weakrefable legacy managers retain the previous lookup behavior.
+                    if manager is None and manager_ref is None:
+                        from hermes_cli.plugins import get_plugin_manager
+                        current = item.context.run(get_plugin_manager)
+                        if _active_manager_scope(current) is item.scope_key:
+                            manager = current
+                    if manager is not None and _active_manager_scope(manager) is item.scope_key:
+                        item.context.run(
+                            manager._report_hook_failure,
+                            dispatcher.hook_name, callback, payload, exc,
+                        )
                 except BaseException:  # health: allow BLE001 -- reporter failures must not kill the worker
                     try:
                         logger.debug(
@@ -197,6 +202,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                     except BaseException:  # health: allow BLE001 -- logging failure must not kill the worker
                         continue
         finally:
+            manager = None
             if payload is not None:
                 payload.clear()
             _release_queued_text(item)

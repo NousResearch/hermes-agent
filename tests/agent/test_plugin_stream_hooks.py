@@ -1949,3 +1949,33 @@ def test_replacement_observer_does_not_inherit_unrelated_blocked_worker(monkeypa
         release.set()
         manager.unload()
         psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_inflight_failure_reports_to_admitting_manager(monkeypatch):
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook, shutdown_plugin_observer_dispatcher
+    from hermes_cli import plugins
+
+    shutdown_plugin_observer_dispatcher()
+    started, release, reported = threading.Event(), threading.Event(), threading.Event()
+    old, new = plugins.PluginManager(), plugins.PluginManager()
+    reports = []
+    def failing(**kwargs):
+        started.set()
+        assert release.wait(5)
+        raise ValueError("old generation")
+    old._discovered = new._discovered = True
+    old._hooks["memory_prefetch"] = [failing]
+    old._report_hook_failure = lambda *args: (reports.append("old"), reported.set())
+    new._report_hook_failure = lambda *args: (reports.append("new"), reported.set())
+    current = [old]
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: current[0])
+    try:
+        assert enqueue_plugin_observer_hook("memory_prefetch", event_id="old")
+        assert started.wait(5)
+        current[0] = new
+        release.set()
+        assert reported.wait(5)
+        assert reports == ["old"]
+    finally:
+        release.set()
+        shutdown_plugin_observer_dispatcher()

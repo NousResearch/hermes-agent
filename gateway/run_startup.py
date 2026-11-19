@@ -492,15 +492,41 @@ class GatewayStartupMixin:
             adapter = await self._obligation_adapter(row)
             if adapter is None:
                 continue
-            content = row["content"]
-            if row.get("needs_marker"):
-                content = row.get("marker", RECOVERED_MARKER) + content
             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
-            try:
-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
-            except Exception as send_err:
-                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
-                result = None
+            media_path = row.get("media_path")
+            if media_path:
+                if not os.path.isfile(media_path):
+                    logger.warning(
+                        "obligation %s: media file missing at redelivery: %s", row["obligation_id"], media_path)
+                    await asyncio.to_thread(mark_failed, row["obligation_id"], "media file missing")
+                    continue
+                caption = row.get("marker", RECOVERED_MARKER) if row.get("needs_marker") else None
+                kind = (row.get("media_kind") or "document").strip().lower()
+                try:
+                    if kind == "voice":
+                        result = await adapter.send_voice(
+                            chat_id=row["chat_id"], audio_path=media_path, caption=caption, metadata=metadata)
+                    elif kind == "video":
+                        result = await adapter.send_video(
+                            chat_id=row["chat_id"], video_path=media_path, caption=caption, metadata=metadata)
+                    elif kind == "image":
+                        result = await adapter.send_image_file(
+                            chat_id=row["chat_id"], image_path=media_path, caption=caption, metadata=metadata)
+                    else:
+                        result = await adapter.send_document(
+                            chat_id=row["chat_id"], file_path=media_path, caption=caption, metadata=metadata)
+                except Exception as send_err:
+                    logger.warning("obligation %s: media redelivery raised: %s", row["obligation_id"], send_err)
+                    result = None
+            else:
+                content = row["content"]
+                if row.get("needs_marker"):
+                    content = row.get("marker", RECOVERED_MARKER) + content
+                try:
+                    result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                except Exception as send_err:
+                    logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
+                    result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
                 if result is not None and getattr(result, "success", False):
                     await asyncio.to_thread(mark_delivered, row["obligation_id"])

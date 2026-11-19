@@ -5,8 +5,9 @@ payload) declares the GLIBC_* and GLIBCXX_* symbol versions it needs in its
 ``.gnu.version_r`` section. The loader refuses to start a binary whose host
 lacks one of them, so a single newer requirement drops a whole distribution.
 
-Floors: x64 runs on Ubuntu 22.04 and Debian 12, arm64 on Ubuntu 24.04 and
-Debian 13.
+Floors: x64 runs on Ubuntu 22.04 and Debian 12 (GLIBC 2.35), arm64 on
+Ubuntu 24.04 and Debian 13 (GLIBC 2.39). ``EXCEPTIONS`` allows the upstream
+x64 CUDA and ROCm llama.cpp engines up to GLIBC 2.38 / GLIBCXX 3.4.32.
 
     python -m scripts.bundles.glibc_floor --arch x64 apps/desktop/release/linux-unpacked
 """
@@ -28,8 +29,8 @@ FLOORS: dict[str, dict[str, Version]] = {
     "arm64": {"GLIBC": (2, 39), "GLIBCXX": (3, 4, 33)},
 }
 
-# Upstream builds the x64 CUDA and ROCm llama.cpp engines on Ubuntu 24.04, so
-# those engines run only on 24.04 and newer; every other file keeps the floor.
+# Upstream builds the x64 CUDA and ROCm llama.cpp engines against glibc 2.38,
+# so those engines require glibc >= 2.38; every other file keeps the arch floor.
 EXCEPTIONS: dict[str, tuple[tuple[re.Pattern[str], dict[str, Version]], ...]] = {
     "x64": ((re.compile(r"(^|/)agent-payload/tools/llamacpp-(cuda|hip)-[^/]+-linux-x64/"),
              {"GLIBC": (2, 38), "GLIBCXX": (3, 4, 32)}),),

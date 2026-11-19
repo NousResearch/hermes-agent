@@ -1215,7 +1215,9 @@ jobs:
   # them. The container image is the oldest userland the arch supports, so
   # source-built extensions link against that glibc: x64 builds on Ubuntu
   # 22.04, arm64 on 24.04, and glibc_floor.py fails the build if anything
-  # packaged needs more. Nothing gates on these jobs
+  # packaged needs more (except the x64 CUDA and ROCm llama.cpp engines,
+  # which glibc_floor.EXCEPTIONS allows up to GLIBC 2.38 / GLIBCXX 3.4.32).
+  # Nothing gates on these jobs
   # (scripts.releases.job_groups.DIAGNOSTIC_JOBS) and no Linux feed is
   # written: the AppImage and electron-builder's feed yml stage to the tag
   # archive only.

@@ -352,6 +352,90 @@ class TestDiscoveryShape:
         assert any(message["role"] == "tool" and marker in message["content"] for message in hit["messages"])
 
 
+def _emitted_session_search_kwargs(pointer: str, query: str) -> dict:
+    """The keyword arguments of the ``session_search(...)`` call a recovery pointer tells the model to
+    make, with its placeholder query (``'<keywords>'`` or ``...``) filled in."""
+    import ast
+
+    start = pointer.index("session_search(")
+    depth, end = 0, None
+    for i, ch in enumerate(pointer[start:], start):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == ")" and depth == 0:
+            end = i + 1
+            break
+    call = ast.parse(pointer[start:end], mode="eval").body
+    kwargs = {kw.arg: kw.value.value for kw in call.keywords}
+    if kwargs.get("query") in (Ellipsis, "<keywords>"):
+        kwargs["query"] = query
+    return kwargs
+
+
+class TestCompactionRecoveryPointersRecover:
+    """The call each compaction recovery pointer emits must actually return the compacted detail when the
+    model makes it verbatim, under the runtime's own ``current_session_id`` (#99568). Asserting on the
+    pointer text alone let a pointer that selects READ mode, which ignores the query, pass review.
+    Newer sessions matching the same keywords, and live rows of the session itself, compete for the
+    results; several archived values must all come back, not just the best-ranked one."""
+
+    def _compacted_session(self, db):
+        sid = "s_recover"
+        seed_session(db, sid, "cli")
+        seed_messages(db, sid, {"role": "user", "content": "Remember the port: PORTMARK_7741"},
+                      {"role": "assistant", "content": "Noted the port."},
+                      {"role": "tool", "content": "build log\n" * 200 + "fatal: TOOLMARK_0923", "tool_name": "terminal"},
+                      {"role": "tool", "content": "relay TOOLMARK_0923 second value 2222", "tool_name": "terminal"})
+        db.messages.compact(sid, [NewMessage.from_live(m) for m in [
+            {"role": "user", "content": "[CONTEXT COMPACTION] earlier turns summarized"},
+            {"role": "assistant", "content": "Summary: a port was noted and a build failed."},
+        ]])
+        for i in range(320):  # live rows of the same session ranking above the archive
+            seed_messages(db, sid, {"role": "assistant", "content": f"PORTMARK_7741 step {i} PORTMARK_7741"})
+        for i in range(6):
+            other = f"s_other{i}"
+            seed_session(db, other, "cli")
+            seed_messages(db, other, {"role": "user", "content": "PORTMARK_7741 " * 20},
+                          {"role": "tool", "content": "TOOLMARK_0923 " * 20, "tool_name": "terminal"})
+        return sid
+
+    @staticmethod
+    def _recovered(result: dict, sid: str, marker: str) -> bool:
+        return any(hit["session_id"] == sid and marker in json.dumps(hit) for hit in result.get("results", []))
+
+    def test_the_summary_footer_call_recovers_compacted_turns_and_tool_output(self, db, persistence):
+        from agent.context_compressor import _build_recovery_footer
+
+        sid = self._compacted_session(db)
+        footer = _build_recovery_footer(sid, region_len=10)
+        for query, marker in (("PORTMARK_7741", "Remember the port: PORTMARK_7741"),
+                              ("TOOLMARK_0923", "fatal: TOOLMARK_0923"), ("TOOLMARK_0923", "second value 2222")):
+            kwargs = _emitted_session_search_kwargs(footer, query)
+            result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
+            assert self._recovered(result, sid, marker), (marker, result)
+            assert {r["session_id"] for r in result["results"]} == {sid}
+
+    def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db, persistence):
+        """Lean demotion stubs a CARRIED-TAIL tool result: the live copy is the stub (same message_uid) and the
+        only full text is the superseded original (active=0, compacted=0), not a compacted=1 row."""
+        from agent.context_compressor import _rewritten
+        from agent.context_compressor_tail import _lean_recovery_stub
+        from persistence.conversation.messages import ConversationRequest
+
+        sid = "s_tail"
+        seed_session(db, sid, "cli")
+        seed_messages(db, sid, {"role": "user", "content": "deploy it"},
+                      {"role": "tool", "content": "deploy log\n" * 200 + "fatal: TAILMARK_3141", "tool_name": "terminal"})
+        live = [m.as_openai_message() for m in db.messages.read_conversation(sid, ConversationRequest(include_row_ids=True))]
+        stub = _lean_recovery_stub("terminal", 3200, sid)
+        db.messages.compact(sid, [NewMessage.from_live(m) for m in [
+            {"role": "user", "content": "[CONTEXT COMPACTION] s"}, *live[:-1], _rewritten(live[-1], stub)]],
+            carried_tail_count=len(live))
+        kwargs = _emitted_session_search_kwargs(stub, "TAILMARK_3141")
+        result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
+        assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db, persistence):
         _seed_modpack_sessions(db)

@@ -377,6 +377,7 @@ class _Row:
     tool_calls: Optional[str]
     visibility: RowVisibility
     display_kind: Optional[str]
+    message_uid: Optional[str] = None
 
     def word_columns(self) -> list[str]:
         content = (self.content or "")[:FTS_TOOL_CONTENT_PREFIX_CHARS] if self.role == "tool" else self.content or ""
@@ -462,7 +463,8 @@ class InMemorySessionSearch:
                 stored.id, sessions[sid], stored.message.role, _stored_text(stored.message.content), stored.message.content,
                 stored.epoch, stored.message.tool_name,
                 json.dumps(list(stored.message.tool_calls)) if stored.message.tool_calls else None,
-                stored.visibility, stored.message.display_kind) for stored in transcript.rows), key=lambda r: (r.timestamp, r.id))
+                stored.visibility, stored.message.display_kind, stored.message.message_uid)
+                for stored in transcript.rows), key=lambda r: (r.timestamp, r.id))
         return out
 
     def _rebuild_authority(self, scope: ProfileScope) -> threading.Lock:
@@ -481,7 +483,8 @@ class InMemorySessionSearch:
 
     def seed_message(self, session_id: str, role: str, content: Any, *, timestamp: float,
                      tool_name: Optional[str] = None, tool_calls: Sequence[Mapping[str, Any]] = (),
-                     display_kind: Optional[str] = None, visibility: RowVisibility = RowVisibility.ACTIVE) -> MessageId:
+                     display_kind: Optional[str] = None, visibility: RowVisibility = RowVisibility.ACTIVE,
+                     message_uid: Optional[str] = None) -> MessageId:
         """Store one transcript row of a recorded session through the transcript store, in the given visibility."""
         scope = self._backend.scope
         from persistence.conversation.messages import NewMessage
@@ -492,7 +495,8 @@ class InMemorySessionSearch:
             raise ValueError(f"seed_message before seed_session for {session_id!r}")
         namespace = _messages_namespace(self._backend, scope)
         transcript = namespace["transcripts"].setdefault(session_id, _Transcript())
-        message = NewMessage(role, content, float(timestamp), tool_name=tool_name, tool_calls=tuple(tool_calls), display_kind=display_kind)
+        message = NewMessage(role, content, float(timestamp), tool_name=tool_name, tool_calls=tuple(tool_calls), display_kind=display_kind,
+                             message_uid=message_uid)
         row = insert_rows(namespace, transcript, [message])[0]
         row.visibility = visibility
         return MessageId(row.id)
@@ -534,7 +538,8 @@ class InMemorySessionSearch:
                         exclude_sources: Optional[Sequence[str]] = None, role_filter: Optional[Sequence[str]] = None,
                         limit: int = 20, offset: int = 0, sort: SearchSort = SearchSort.RELEVANCE, include_inactive: bool = False,
                         fields: Optional[Collection[str]] = None, after_ts: Optional[int] = None,
-                        before_ts: Optional[int] = None, session_ids: Optional[Sequence[str]] = None) -> tuple[SearchHit, ...]:
+                        before_ts: Optional[int] = None, session_ids: Optional[Sequence[str]] = None,
+                        compacted_in_session: Optional[str] = None) -> tuple[SearchHit, ...]:
         scope = self._backend.scope
         projection = _search_fields(fields)
         if not query or not query.strip():
@@ -543,9 +548,11 @@ class InMemorySessionSearch:
         if not text:
             return ()
         transcripts = self._transcript_rows(scope)
+        left_live = None if compacted_in_session is None else _left_live(transcripts.get(compacted_in_session, []))
         pool = [row for rows in transcripts.values() for row in rows if _eligible(
-            row, include_inactive=include_inactive, source_filter=source_filter, exclude_sources=exclude_sources,
-            role_filter=role_filter, after_ts=after_ts, before_ts=before_ts, session_ids=session_ids)]
+            row, include_inactive=include_inactive or left_live is not None, source_filter=source_filter,
+            exclude_sources=exclude_sources, role_filter=role_filter, after_ts=after_ts, before_ts=before_ts,
+            session_ids=session_ids) and (left_live is None or row.id in left_live)]
         tool_route = bool(role_filter) and "tool" in (role_filter or ())
         if tool_route:
             found = _tool_route(pool, text, sort, limit, offset)
@@ -566,6 +573,18 @@ class InMemorySessionSearch:
                 except QuerySyntaxError:
                     found = []
         return tuple(_hit(row, snippet, transcripts, projection) for row, snippet in found)
+
+
+def _left_live(rows: list[_Row]) -> set[int]:
+    """Ids of one session's rows that left its live transcript: compaction-archived rows, and a superseded
+    original whose active copy (same ``message_uid``) holds different content."""
+    active = {}
+    for row in rows:
+        if row.visibility is RowVisibility.ACTIVE and row.message_uid:
+            active.setdefault(row.message_uid, []).append(row.content)
+    return {row.id for row in rows if row.visibility is RowVisibility.COMPACTION_ARCHIVED or (
+        row.visibility is RowVisibility.REWOUND and row.message_uid
+        and any(content != row.content for content in active.get(row.message_uid, ())))}
 
 
 def _eligible(row: _Row, *, include_inactive: bool, source_filter: Optional[Sequence[str]], exclude_sources: Optional[Sequence[str]],

@@ -224,6 +224,30 @@ def test_visibility_hides_rewound_and_hidden_rows(backend, scope_a):
     assert ids(backend, scope_a, "hidden", include_inactive=True, role_filter=["tool", "user"]) == []
 
 
+def test_session_scope_and_rows_that_left_one_session(backend, scope_a):
+    store_a = backend.open(scope_a)
+    seed = store_a.search.seed_message
+    for sid in ("own", "near"):
+        store_a.search.seed_session(sid, source="cli", started_at=T0)
+    archived = seed("own", "user", "scopeterm archived", timestamp=T0 + 1, visibility=RowVisibility.COMPACTION_ARCHIVED)
+    seed("own", "assistant", "scopeterm undone", timestamp=T0 + 2, visibility=RowVisibility.REWOUND)
+    original = seed("own", "tool", "scopeterm full body", timestamp=T0 + 3, tool_name="terminal",
+                    visibility=RowVisibility.REWOUND, message_uid="u-tail")
+    seed("own", "tool", "scopeterm demoted stub", timestamp=T0 + 4, tool_name="terminal", message_uid="u-tail")
+    seed("own", "user", "scopeterm verbatim", timestamp=T0 + 5, visibility=RowVisibility.REWOUND, message_uid="u-same")
+    live = seed("own", "user", "scopeterm verbatim", timestamp=T0 + 6, message_uid="u-same")
+    near = seed("near", "user", "scopeterm elsewhere", timestamp=T0 + 7)
+    # CONTRACT: session_ids keeps rows of those sessions (an empty sequence keeps none).
+    assert ids(backend, scope_a, "scopeterm", session_ids=["near"]) == [near]
+    assert ids(backend, scope_a, "scopeterm", session_ids=[]) == []
+    # CONTRACT: compacted_in_session keeps that session's archived rows and a rewound original whose active
+    # copy (same message_uid) holds different content; rewound rows otherwise, live rows and other sessions never.
+    rows = {"user": [archived], "tool": [original]}
+    for roles, expected in ((["user", "assistant"], rows["user"]), (["tool"], rows["tool"])):
+        assert set(ids(backend, scope_a, "scopeterm", role_filter=roles, compacted_in_session="own")) == set(expected)
+    assert live not in ids(backend, scope_a, "scopeterm", role_filter=["user"], compacted_in_session="own")
+
+
 def test_source_role_and_session_start_filters(backend, scope_a):
     found = {source: seed_rows(backend, scope_a, f"s-{source}", [("user", "sourced needle row")], source=source, start=i,
                                started_at=T0 + 100 * (i + 2))[0] for i, source in enumerate(("cron", "subagent", "telegram"))}

@@ -215,6 +215,19 @@ def free_inference_active(state: Any = None) -> bool:
     return is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
 
 
+def own_trial_active(profile_only: bool = False) -> bool:
+    """:func:`free_inference_active` for readiness checks. ``profile_only`` reads this profile's own
+    auth.json only: a named profile must not look ready on the default profile's trial
+    (``current_nous_state`` falls back to the root store)."""
+    if not profile_only:
+        return free_inference_active()
+    from hermes_cli.auth import _load_auth_store, _provider_state_in
+    try:
+        return free_inference_active(_provider_state_in(_load_auth_store(), "nous") or {})
+    except OSError:  # unreadable store: ``_load_auth_store`` already logged it
+        return False
+
+
 def trial_model() -> str:
     """The last rung of model resolution, below every model the user named (``model.default``, a cron
     or task pin): ``nous/welcome`` while the welcome trial carries inference, else ''. Never written to

@@ -983,9 +983,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    from hermes_cli.anon_auth import free_inference_active
-    if free_inference_active() or _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY,
-                                                        strict_profile_scope):
+    from hermes_cli.anon_auth import own_trial_active
+    if own_trial_active(strict_profile_scope) or _auth_store_logged_in(
+            get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh

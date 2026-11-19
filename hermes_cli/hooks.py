@@ -144,6 +144,8 @@ _DEFAULT_PAYLOADS = {
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
         "usage": {"input_tokens": 2048, "output_tokens": 512}, "context_length": 200000,
+        # Optional gateway-reported energy/emissions for this call; None when the provider sends none.
+        "impact": None,
         "assistant_content_chars": 1200, "assistant_tool_call_count": 0,
         # Per-advisor metrics on a MoA turn, None otherwise: MoA returns only the aggregator's
         # response, so without this an observer cannot see or price the fan-out.
@@ -164,7 +166,7 @@ _DEFAULT_PAYLOADS = {
         "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
         "api_call_count": 1, "retry_count": 0, "streaming": False, "api_duration": 0.42,
         "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
-        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
+        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12}, "impact": None,
         "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
     },
     "post_curator_run": {

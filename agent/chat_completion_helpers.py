@@ -2975,6 +2975,7 @@ class _StreamingCall(StreamingWaitMonitor):
         carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
+        impact = None  # optional gateway energy/emissions object; rides the final usage chunk
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -3035,6 +3036,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 continue
             model_name, response_id, upstream_provider = self._chunk_identity(
                 _diag, chunk, model_name, response_id, upstream_provider)
+            _chunk_impact = getattr(chunk, "impact", None)
+            if isinstance(_chunk_impact, dict) and _chunk_impact:
+                impact = _chunk_impact
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
@@ -3146,6 +3150,8 @@ class _StreamingCall(StreamingWaitMonitor):
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        if impact is not None:
+            response.impact = impact
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.

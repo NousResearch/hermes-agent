@@ -776,11 +776,19 @@ def _record_argv() -> list[str]:
     return argv
 
 
+def _live_boot_id() -> Optional[str]:
+    """Kernel id of the running boot (Linux), or None. ``start_time`` is ticks since boot, so it only
+    identifies a process within the boot that recorded it; early-boot services and a restarted
+    gateway get the same PID at a similar tick after a reboot."""
+    from hermes_cli.process_identity import _live_boot_id as live_boot_id
+    return live_boot_id()
+
+
 def _build_pid_record() -> dict:
     from process_identity import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
-        "start_time": _get_process_start_time(os.getpid()),
+        "start_time": _get_process_start_time(os.getpid()), "boot_id": _live_boot_id(),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())), "pidns": pid_namespace_id(),
@@ -881,8 +889,19 @@ def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
     pid = _pid_from_record(record)
     if pid is None or not _pid_exists(pid):
         return None
+    # A record written in an earlier boot names nothing alive now: the PID was reissued, whatever
+    # its start-time ticks read. Never trusted across a reboot (stale gateway.pid/lock/state files).
+    recorded_boot, live_boot = record.get("boot_id"), _live_boot_id()
+    if isinstance(recorded_boot, str) and live_boot is not None and recorded_boot != live_boot:
+        return None
     if _start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
         return None
+    # A legacy record carries neither boot_id nor start_time, so nothing ties the PID to the process
+    # that wrote it: the live command line must still be a gateway's (cmdline unreadable -> trust).
+    if record.get("start_time") is None and not isinstance(recorded_boot, str):
+        cmdline = _read_process_cmdline(pid)
+        if cmdline and not looks_like_gateway_runtime_command_line(cmdline):
+            return None
     return pid
 
 

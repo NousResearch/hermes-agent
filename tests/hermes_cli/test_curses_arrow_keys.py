@@ -46,6 +46,7 @@ class FakeStdscr:
         self.keys = list(keys)
         self.timeouts = []
         self.writes = []
+        self.moves = []
 
     def getch(self):
         return self.keys.pop(0) if self.keys else -1
@@ -61,6 +62,9 @@ class FakeStdscr:
 
     def addnstr(self, *args):
         self.writes.append(args)
+
+    def move(self, y, x):
+        self.moves.append((y, x))
 
     def refresh(self):
         pass

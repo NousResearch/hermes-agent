@@ -447,7 +447,12 @@ _RESOLVING = frozenset({NAV_SELECT, NAV_TOGGLE, NAV_CANCEL, NAV_INTERRUPT, NAV_B
 
 
 def _init_colors(curses, extra_color_pairs: bool) -> None:
-    curses.curs_set(0)
+    # Keep the terminal cursor visible: braille displays and screen readers follow the cursor
+    # position, not colour, so hiding it leaves them without positional feedback in the menus.
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
     if curses.has_colors():
         curses.start_color()
         curses.use_default_colors()
@@ -556,13 +561,25 @@ def _run_curses_menu(
                     scroll_offset, cursor_pos, visible_rows, len(filtered))
                 if use_search and search.query and not nav:
                     _addnstr(stdscr, items_start, 0, "  No matches", max_x - 1, curses.A_DIM)
+                cursor_y = None
                 for draw_i, i in enumerate(filtered[scroll_offset : scroll_offset + visible_rows]):
                     y = draw_i + items_start
                     if y >= max_y - reserve_bottom:
                         break
+                    if i == cursor:
+                        cursor_y = y
                     draw_row(stdscr, y, i, i == cursor, max_x)
                 if draw_footer is not None:
                     draw_footer(stdscr, max_y, max_x)
+                # Park the cursor on the current row: braille displays and screen readers follow
+                # the cursor, not colour. When no row is current (empty filter result) fall back
+                # to the row the "No matches" notice is drawn on.
+                try:
+                    stdscr.move(
+                        max(0, min(cursor_y if cursor_y is not None else items_start,
+                                   max_y - reserve_bottom - 1)), 0)
+                except curses.error:
+                    pass
                 stdscr.refresh()
                 action, changed = _route_key(curses, stdscr, stdscr.getch(), search, use_search)
                 if changed:

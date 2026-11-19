@@ -39,9 +39,23 @@ __all__ = [
     "store_exists",
     "store_location",
     "store_owner_name",
+    "transcript_write_patience_s",
 ]
 
 _KNOWN_PROVIDERS = ("sqlite",)
+
+
+def transcript_write_patience_s() -> float:
+    """The store's own transcript-writer lock patience, in seconds: the longest legitimate
+    server-side answer time for a persisted write.
+
+    Application code issuing a request whose server-side handling includes such a write
+    must derive its reply deadline from this value, never hardcode one, or the client
+    deadline can silently fall below the store's own budget and book a successful commit
+    as failed (the #145022 worker-persist signature; see
+    ``agent.runtime_session_store._worker_rpc_patience_s``)."""
+    from persistence.sqlite._holder import StoreHolder
+    return StoreHolder._TRANSCRIPT_WRITE_PATIENCE_S
 
 # The names a handle forwards to its bound store: the storage interface's attributes and the eager open.
 _FORWARDED = frozenset(inspect.get_annotations(PersistenceStore)) | {"ready"}

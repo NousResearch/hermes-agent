@@ -816,7 +816,12 @@ class SessionAuthority:
 
     async def receipt(self, actor, ref, admission_id):
         self.authorize(actor, ref, 'session:submit')
-        row = admission_row(authority_persistence(self).admissions.get(admission_id=admission_id))
+        # The admission read goes off the owner loop, exactly as cancel (:870) and the claim
+        # paths (:1157/:1184) already do: Kanban workers poll this route at high frequency,
+        # and the synchronous read was captured in watchdog stacks stalling the shared loop
+        # into exit-75 self-kills under fleet load (#145022 field data).
+        store = authority_persistence(self)
+        row = admission_row(await asyncio.to_thread(store.admissions.get, admission_id=admission_id))
         if row is None or row['target_session_id'] != ref.session_id:
             raise AuthorityRefusal('not_found')
         from gateway.owner_identity import same_owner

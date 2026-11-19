@@ -30,7 +30,9 @@ from agent.vault_login_classifier import (
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    build_inspection_js,
     classify_login_control,
+    classify_otp_controls,
     select_password_fill,
 )
 from agent.vault_store import (
@@ -237,6 +239,22 @@ class TestClassifier:
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+
+    def test_inspection_reads_the_autocomplete_attribute_when_the_property_is_empty(self):
+        # Firefox (Camofox) returns "" from element.autocomplete for one-time-code; the inspection
+        # must fall back to the attribute or the OTP field is never classified (#148940).
+        js = build_inspection_js("n")
+        assert 'element.autocomplete || element.getAttribute("autocomplete") || ""' in js
+
+    def test_otp_field_with_unmatched_label_classifies_by_autocomplete_token(self):
+        # "Enter Code" / name "twofactorcode" don't match the label heuristic, so the autocomplete
+        # token the inspection now reports is the only signal for this common 2FA markup.
+        ctrl = LoginControl.from_dict({"autocomplete": "one-time-code", "index": 0, "label": "Enter Code",
+                                       "name": "twofactorcode twofactorcode", "type": "text", "formIndex": 0})
+        assert [c.token for c in classify_otp_controls([ctrl])] == ["one-time-code"]
+        bare = LoginControl.from_dict({"autocomplete": "", "index": 0, "label": "Enter Code",
+                                       "name": "twofactorcode twofactorcode", "type": "text", "formIndex": 0})
+        assert classify_otp_controls([bare]) == []
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before

@@ -9,7 +9,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
-import { CanonicalGroupMemberEditor } from './canonical-group-member-editor'
+import { useCanonicalGroupMemberEditor } from './canonical-group-member-editor'
 import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
@@ -144,8 +144,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const draftThread = useRef<string | undefined>(undefined)
   const composerInput = useRef<HTMLTextAreaElement>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const [memberDraft, setMemberDraft] = useState<CanonicalRoom | null>(null)
-  const memberEditorTrigger = useRef<HTMLElement | null>(null)
   const scroller = useStickToBottom()
   // An intent handed back for editing (nothing of it admitted): the next Send replaces it.
   const editing = useRef<string | null>(null)
@@ -679,11 +677,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 
   const canSend = canSendNow({ restored, busy, stopping, uploading, pending: !!pending, draft, attachments: attachments.length, driver: !!driver })
 
-  const openMembers = methods?.has('groups.members.update') && state?.room.revision !== undefined
-    ? (trigger: HTMLElement) => {
-      memberEditorTrigger.current = trigger
-      setMemberDraft(state.room)
-    } : undefined
+  const { memberEditor, openMembers } = useCanonicalGroupMemberEditor({
+    binding, methods, onSaved: refreshAfterChange, room: state?.room, visible
+  })
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -743,7 +739,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       onClose={() => setDetailsOpen(false)} onManageMembers={openMembers} room={state.room} statuses={statuses}>
       <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refreshAfterChange} />
     </CanonicalGroupDetails>}
-    {memberDraft && visible && <CanonicalGroupMemberEditor binding={binding} onClose={() => setMemberDraft(null)}
-      onSaved={refreshAfterChange} returnFocus={memberEditorTrigger.current} room={memberDraft} />}
+    {memberEditor}
   </section>
 }

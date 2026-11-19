@@ -1,7 +1,7 @@
 import { Button, Checkbox, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, randomUuid, SearchField, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
-import { groupSeatableProfiles } from './canonical-group-capabilities'
+import { type GroupMethods, groupSeatableProfiles } from './canonical-group-capabilities'
 import { type CanonicalGroupBinding, canonicalGroupRequest, canonicalLocalGroupMember, type CanonicalRoom, onCanonicalConnection } from './canonical-groups'
 import { $botMeta, $lastRoster } from './data'
 import { GROUP_CHAT_MAX_MEMBERS } from './group-chat'
@@ -16,6 +16,29 @@ interface EditorProps {
   onSaved: () => Promise<void>
   returnFocus?: HTMLElement | null
   room: CanonicalRoom
+}
+
+export function useCanonicalGroupMemberEditor({ binding, methods, onSaved, room, visible }: {
+  binding: CanonicalGroupBinding
+  methods: GroupMethods
+  onSaved: EditorProps['onSaved']
+  room?: CanonicalRoom
+  visible: boolean
+}) {
+  const [draft, setDraft] = useState<CanonicalRoom | null>(null)
+  const triggerRef = useRef<HTMLElement | null>(null)
+
+  const openMembers = methods?.has('groups.members.update') && room?.revision !== undefined
+    ? (trigger: HTMLElement) => {
+      triggerRef.current = trigger
+      setDraft(room)
+    } : undefined
+
+  const memberEditor = draft && visible
+    ? <CanonicalGroupMemberEditor binding={binding} onClose={() => setDraft(null)}
+      onSaved={onSaved} returnFocus={triggerRef.current} room={draft} /> : null
+
+  return { memberEditor, openMembers }
 }
 
 export function CanonicalGroupMemberEditor({ binding, onClose, onSaved, returnFocus, room }: EditorProps) {

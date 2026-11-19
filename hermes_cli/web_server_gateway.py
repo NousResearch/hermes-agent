@@ -345,12 +345,14 @@ def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
 
 
 def _starts_a_gateway(subcommand: list[str]) -> bool:
-    """True for a gateway verb that runs a gateway process: ``start``, ``restart`` or ``run``."""
+    """True for a gateway verb that runs a gateway process: ``start``, ``restart`` or ``run``. The
+    leading profile selector is skipped first: a profile may be called ``gateway``."""
     args = list(subcommand)
-    if "gateway" not in args:
-        return False
-    rest = args[args.index("gateway") + 1:]
-    return bool(rest) and rest[0] in {"start", "restart", "run"}
+    if args and args[0] in {"-p", "--profile"}:
+        args = args[2:]
+    elif args and str(args[0]).startswith("--profile="):
+        args = args[1:]
+    return len(args) >= 2 and args[0] == "gateway" and args[1] in {"start", "restart", "run"}
 
 
 def _is_host_gateway_spawn(subcommand: list[str]) -> bool:

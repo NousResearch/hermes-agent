@@ -101,4 +101,7 @@ def test_a_dashboard_gateway_action_for_another_profile_keeps_them_and_other_act
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: other)
 
     assert _stamps(_profile_action_environment(["-p", "other", "gateway", "restart"])) == stamped
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda name: name in {"other", "gateway"})
+    # A profile may be called like the command: only the selector's value is skipped.
+    assert _stamps(_profile_action_environment(["-p", "gateway", "gateway", "restart"])) == stamped
     assert _stamps(_profile_action_environment(["-p", "other", "skills", "install", "x", "--yes"])) == dict.fromkeys(STAMPS)

@@ -995,3 +995,78 @@ def api_turn_gate(authority, session_id, payload) -> None:
                           "tier": f"skipped_{reason}"})
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# TUI-gateway turn gate (cycle 1d-r2, 19 Nov 2026)
+#
+# Empirical trace (log capture during a live turn) proved the Desktop
+# app's chats are driven by the serve's in-process ``tui_gateway``:
+# "tui turn finished: ui_session=... agent_session_id=..." with ZERO
+# admission rows anywhere (925-db forensic) - neither the gateway
+# submit seam, the CLI chat seam, nor the API admission door. This is
+# seam 4: ``tui_gateway/prompt_turn._run_prompt_submit``, the
+# ownership/liveness choke point every TUI turn source crosses.
+
+
+def tui_turn_gate(sid: str, session, text) -> str | None:
+    """Screen one Desktop/TUI prompt turn BEFORE ``_admit_prompt_turn``;
+    returns the hold notice text when held (the caller emits it as the
+    turn error and runs nothing), None when the turn may proceed.
+    Synthesized turns (auto-continue, wake-ups) also cross here - their
+    text is machine-produced, and the session-row scope (frozen launch
+    source) decides, same as every seam. NEVER raises; every skip
+    writes a reason-only record (subject ``desktop-tui``)."""
+    reason = None
+    try:
+        if not desktop_screen_enabled():
+            reason = "disabled"
+            return None
+        session = session if isinstance(session, dict) else {}
+        agent = session.get("agent")
+        session_id = str(getattr(agent, "session_id", "")
+                         or session.get("session_key") or sid or "")
+        if not session_id:
+            reason = "no_session"
+            return None
+        label = _source_from_db(session_id)
+        if not label:
+            label = _source_from_store(
+                getattr(agent, "_session_db", None), session_id)
+        if not label:
+            if _flag("HERMES_DESKTOP").lower() in ("1", "true", "yes", "on"):
+                label = "desktop"  # process scope: this IS the app backend
+            else:
+                reason = "out_of_scope"
+                return None
+        if label not in _scoped_sources():
+            reason = "out_of_scope"
+            return None
+        texts = _parts_texts(text)
+        if not texts:
+            reason = "no_text"
+            return None
+        held, reasons = _screen_texts_sync("desktop-tui", session_id, texts)
+        if not held:
+            return None
+        shown = "; ".join(reasons[:3]) if reasons else "block tier"
+        return f"{_hold_notice()} [{shown}]"
+    except Exception:
+        logger.warning("desktop_screen: tui turn gate failed; proceeding",
+                       exc_info=True)
+        reason = "error"
+        return None
+    finally:
+        if reason is not None:
+            try:
+                global _DISABLED_LOGGED
+                emit = True
+                if reason == "disabled":
+                    emit = not _DISABLED_LOGGED
+                    _DISABLED_LOGGED = True
+                if emit:
+                    _log({"subject": "desktop-tui",
+                          "session": str(sid or ""),
+                          "tier": f"skipped_{reason}"})
+            except Exception:
+                pass

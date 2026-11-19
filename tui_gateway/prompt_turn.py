@@ -1133,6 +1133,20 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+    # W1 cycle 1d-r2: the Desktop app's turns run through THIS in-process
+    # tui_gateway choke point (proven by live trace + the 925-db forensic:
+    # no admission rows anywhere). Screen the turn's text before anything
+    # runs; a hold emits the notice as the turn error and runs nothing.
+    # See gateway/desktop_screen.tui_turn_gate (never raises).
+    try:
+        from gateway.desktop_screen import tui_turn_gate
+        held_notice = tui_turn_gate(sid, session, text)
+    except Exception:
+        held_notice = None
+    if held_notice:
+        logger.info("tui prompt held by desktop screen: ui_session=%s", sid)
+        _emit("error", sid, {"message": held_notice})
+        return False
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
         report_ownership_refusal=report_ownership_refusal)

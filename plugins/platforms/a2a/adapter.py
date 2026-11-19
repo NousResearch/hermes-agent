@@ -101,6 +101,14 @@ def _join_url(base: str, prefix: str) -> str:
     return urllib.parse.urljoin(base, prefix + "/") if prefix else base
 
 
+def _hermes_version() -> str:
+    """The running Hermes release for the Agent Card ``version``: the same base version the API
+    server reports, without commit or dirty-tree suffixes. Read per card, never at import."""
+    from hermes_cli.version_info import get_version_info
+    version = get_version_info().base_version
+    return version if version and version != "unknown" else protocol.FALLBACK_AGENT_VERSION
+
+
 def _active_profile_name() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -486,6 +494,7 @@ class A2AAdapter(BasePlatformAdapter):
             description=agent.get("description") or _DEFAULT_DESCRIPTION, skills=self._advertised_skills(agent),
             streaming=bool(agent.get("local", True)), push_notifications=True,
             auth_required=not self._security_context.localhost_only(), tenant=str(agent.get("tenant") or ""),
+            version=_hermes_version(),
         )
 
     def _advertised_skills(self, agent: Optional[dict] = None) -> list[dict]:

@@ -318,6 +318,39 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_compacted_tool_output_requires_tool_role_and_full_detail(self, db, persistence):
+        """Recovery discovery must be able to return an archived tool row.
+
+        The normal discovery default intentionally excludes tool output, so a
+        compaction-era recovery pointer must opt into the tool role. The
+        current-session guard still permits the archived row because it has
+        left live context.
+        """
+        session_id = "s_compacted_tool"
+        marker = "EXACT_TOOL_RECOVERY_MARKER /tmp/output.txt"
+        seed_session(db, session_id, "cli")
+        seed_messages(db, session_id, {"role": "user", "content": "Run the command"})
+        tool_id = seed_messages(db, session_id, {"role": "tool", "content": marker, "tool_name": "terminal"})[0]
+        db.messages.compact(session_id, [NewMessage.from_live(m) for m in [
+            {"role": "user", "content": "[CONTEXT COMPACTION] command summary"},
+            {"role": "assistant", "content": "The command was compacted."},
+        ]])
+        assert _is_compacted_message(persistence, tool_id) is True
+
+        default = json.loads(session_search(
+            query="EXACT_TOOL_RECOVERY_MARKER", persistence=persistence, current_session_id=session_id))
+        assert default["count"] == 0
+
+        recovered = json.loads(session_search(
+            query="EXACT_TOOL_RECOVERY_MARKER", role_filter="tool", detail="full",
+            persistence=persistence, current_session_id=session_id))
+        assert recovered["count"] == 1
+        hit = recovered["results"][0]
+        assert hit["session_id"] == session_id
+        assert hit["matched_role"] == "tool"
+        assert hit["detail"] == "full"
+        assert any(message["role"] == "tool" and marker in message["content"] for message in hit["messages"])
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db, persistence):
@@ -1560,7 +1593,7 @@ class TestSearchWithinSession:
                       {"role": "assistant", "content": "umber gateway port noted"})
         _compact(db, "s_foot", {"role": "user", "content": "summary"})
         footer = _build_recovery_footer("s_foot", 2)
-        sid = re.search(r"session_search\(query='<keywords>', session_id='([^']+)'\)", footer).group(1)
+        sid = re.search(r"session_search\(query='<keywords>', session_id='([^']+)'", footer).group(1)
         result = json.loads(session_search(
             query="umber gateway", session_id=sid, current_session_id="s_foot", persistence=persistence))
         assert result["mode"] == "discover"

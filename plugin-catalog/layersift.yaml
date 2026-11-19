@@ -11,7 +11,8 @@ description: >-
   the final filesystem size, bytes still shipped after a later layer deletes or
   overwrites them (which layer added them, which removed them), caches and
   archives left behind (apt lists, apk/yum/dnf, pip/uv/npm/yarn, Go and Cargo
-  caches, /tmp, .git, compilers) with the fix, and the biggest directories and
+  caches, temp directories, .git, compilers) with the fix, and the biggest
+  directories and
   files; image_layer opens one layer; image_compare compares two images before
   and after a Dockerfile change. Standard library only: no network, never runs
   docker or contacts a registry, no credentials, no subprocess, never extracts

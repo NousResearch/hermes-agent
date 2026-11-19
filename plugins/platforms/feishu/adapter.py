@@ -93,8 +93,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
+from .cards import map_chat_type, pop_validated_prompt_state, resolve_source_chat_type, validate_card_action
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
-from plugins.platforms.feishu.adapter_card_authz import FeishuCardAuthzMixin
 from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -1288,7 +1288,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlatformAdapter):
+class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -2015,7 +2015,7 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
             raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
-                "type": self._map_chat_type(raw_chat_mode), "raw_type": raw_chat_type or None,
+                "type": map_chat_type(raw_chat_mode), "raw_type": raw_chat_type or None,
                 "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
@@ -2268,7 +2268,7 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return self._card_response()
         choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
-        checked = self._validate_card_action(event=event, state=state, label="approval", ident=approval_id)
+        checked = validate_card_action(self, event=event, state=state, label="approval", ident=approval_id)
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
@@ -2296,7 +2296,7 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
         if answer not in {"y", "n"}:
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
             return self._card_response()
-        checked = self._validate_card_action(event=event, state=state, label="update prompt", ident=prompt_id)
+        checked = validate_card_action(self, event=event, state=state, label="update prompt", ident=prompt_id)
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
@@ -2312,8 +2312,8 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
         user_id: str = "", union_id: str = "",
     ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
-        state = self._pop_validated_prompt_state(
-            states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
+        state = pop_validated_prompt_state(
+            self, states=self._approval_state, ident=approval_id, label="Approval", open_id=open_id, chat_id=chat_id,
             unauthorized_fmt="[Feishu] Unauthorized approval click by %s for approval %s",
             operator_repr=open_id or "<unknown>", user_id=user_id, union_id=union_id,
         )
@@ -2345,8 +2345,8 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
         user_id: str = "", union_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
-        state = self._pop_validated_prompt_state(
-            states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
+        state = pop_validated_prompt_state(
+            self, states=self._update_prompt_state, ident=prompt_id, label="Update prompt", open_id=open_id,
             chat_id=chat_id, unauthorized_fmt="[Feishu] Unauthorized update prompt click by %s for prompt %s",
             operator_repr=open_id, user_id=user_id, union_id=union_id,
         )
@@ -2530,7 +2530,7 @@ class FeishuAdapter(FeishuCardAuthzMixin, FeishuChoiceCardsMixin, FeishuSyntheti
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,

@@ -2,8 +2,8 @@
 
 Mixed into ``FeishuAdapter``: the ``send_clarify`` / ``retire_clarify_card`` / ``send_choice_picker``
 capabilities from ``BasePlatformAdapter`` plus their card-action handlers. The card builders,
-``_send_interactive_card`` and ``_card_response`` live on the facade and ``_validate_card_action``
-in ``adapter_card_authz``, so every click passes the same operator authorization and chat check as
+``_send_interactive_card`` and ``_card_response`` live on the facade and ``validate_card_action``
+in ``cards.authz``, so every click passes the same operator authorization and chat check as
 an exec-approval click before it answers anything.
 """
 
@@ -16,6 +16,8 @@ from typing import Any, Optional
 from agent.i18n import t
 from gateway.platforms.helpers import prompt_id_counter
 from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
+
+from .cards import validate_card_action
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +101,7 @@ class FeishuChoiceCardsMixin:
         if not state:
             logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id or "<missing>")
             return self._card_response()
-        checked = self._validate_card_action(event=event, state=state, label="clarify", ident=clarify_id)
+        checked = validate_card_action(self, event=event, state=state, label="clarify", ident=clarify_id)
         if checked is None:
             return self._card_response()
         open_id, _chat_id, user_name, user_id, _union_id = checked
@@ -196,7 +198,7 @@ class FeishuChoiceCardsMixin:
         if not state:
             logger.debug("[Feishu] Choice picker %s already resolved or unknown", picker_id)
             return self._card_response()
-        checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
+        checked = validate_card_action(self, event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
         from gateway.approval_actor import picker_refusal, refusal_text

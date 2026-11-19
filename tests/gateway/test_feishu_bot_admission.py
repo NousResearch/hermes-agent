@@ -679,11 +679,11 @@ def test_get_chat_info_type_follows_chat_mode_not_visibility(chat_mode, event_ch
     """chat.get reports visibility ("private") in chat_type; the session's chat type comes from chat_mode."""
     import asyncio
 
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from plugins.platforms.feishu.cards import resolve_source_chat_type
 
     info = asyncio.run(_chat_get_info("oc_x", chat_mode)("oc_x"))
     assert info["type"] == expected
-    assert FeishuAdapter._resolve_source_chat_type(chat_info=info, event_chat_type=event_chat_type) == expected
+    assert resolve_source_chat_type(chat_info=info, event_chat_type=event_chat_type) == expected
 
 
 def _reaction_adapter(**kwargs):

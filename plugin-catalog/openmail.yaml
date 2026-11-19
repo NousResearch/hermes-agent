@@ -1,10 +1,10 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: 0906f5e299a3c5c64581ca62ad1f46cc3b8ad010
-version: "0.3.0"
+sha: e9edceb6f1928625bc982ef5c53691dd58703738
+version: "0.3.1"
 description: Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket,
-  and replies stay in-thread. Agents can read and send mail, create and review inbox drafts,
-  send approved drafts, and provision inboxes.
+  and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts,
+  send approved drafts, delete unsent drafts, and provision inboxes.
 maintainer: openmailsh
 tier: community
 category: platform
@@ -18,7 +18,9 @@ capabilities:
   - openmail_create_draft
   - openmail_list_drafts
   - openmail_get_draft
+  - openmail_edit_draft
   - openmail_send_draft
+  - openmail_delete_draft
   - openmail_reply
   - openmail_list_threads
   - openmail_read_thread

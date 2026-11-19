@@ -1,12 +1,12 @@
 """A Feishu plugin load must run the card helpers from the plugin directory it loads.
 
 The directory loader imports a plugin as ``hermes_plugins.<slug>`` and evicts that namespace on
-reload; a helper imported by absolute path lands under ``plugins.platforms.feishu.*`` instead, so
-neither a reload nor a plugin copy elsewhere ever reaches its code.
+reload; a module imported by absolute path lands under ``plugins.platforms.feishu.*`` instead, so
+neither a reload nor a plugin copy elsewhere ever reaches its code. Every lane that calls the
+``cards`` helpers (the adapter itself, clarify/choice cards, synthetic events) is checked.
 """
 
 import asyncio
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -19,8 +19,26 @@ from hermes_cli.plugins_loader import _evict_modules
 from hermes_cli.plugins_manifest import PluginManifest
 
 _FEISHU_DIR = Path(__file__).resolve().parents[4] / "plugins" / "platforms" / "feishu"
-# The p2p branch of the chat_mode -> chat type mapping, wherever the plugin keeps it.
-_P2P_BRANCH = re.compile(r'(if normalized == "p2p":\n\s+return )"dm"')
+# Appended to the copy's cards/authz.py: later definitions win, so the reloaded helpers answer
+# "edited" and record which lane reached them.
+_OVERRIDES = '''
+
+RELOADED_CALLS = []
+
+
+def map_chat_type(raw_chat_type):
+    return "edited"
+
+
+def resolve_source_chat_type(*, chat_info, event_chat_type):
+    RELOADED_CALLS.append("synthetic")
+    return "edited"
+
+
+def validate_card_action(adapter, *, event, state, label, ident):
+    RELOADED_CALLS.append(label)
+    return None
+'''
 
 
 @pytest.fixture
@@ -35,16 +53,25 @@ def plugin_copy(tmp_path):
     def load():
         module = manager._load_directory_module(manifest)
         loaded.add(module.__name__)
-        return sys.modules[f"{module.__name__}.adapter"]
+        return module.__name__
 
-    yield plugin_dir, load
+    def edit():
+        authz_py = plugin_dir / "cards" / "authz.py"
+        authz_py.write_text(authz_py.read_text(encoding="utf-8") + _OVERRIDES, encoding="utf-8")
+
+    yield load, edit
     for name in loaded:
         _evict_modules(name)
 
 
-def _chat_type_for_p2p(adapter_module) -> str:
-    adapter = object.__new__(adapter_module.FeishuAdapter)
+def _adapter(package: str):
+    adapter = object.__new__(sys.modules[f"{package}.adapter"].FeishuAdapter)
     adapter._chat_info_cache = {}
+    return adapter
+
+
+def _chat_type_for_p2p(package: str) -> str:
+    adapter = _adapter(package)
     adapter._build_get_chat_request = lambda _cid: object()
     data = SimpleNamespace(name="Chat", chat_type="private", chat_mode="p2p")
     adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(chat=SimpleNamespace(
@@ -57,17 +84,46 @@ def _chat_type_for_p2p(adapter_module) -> str:
     return asyncio.run(adapter.get_chat_info("oc_x"))["type"]
 
 
-def test_reload_runs_the_edited_chat_type_helper(plugin_copy):
-    plugin_dir, load = plugin_copy
+def _click_clarify(package: str) -> None:
+    adapter = _adapter(package)
+    adapter._clarify_state = {"c1": {"chat_id": "oc_x"}}
+    adapter._card_response = lambda *args: None
+    adapter._handle_clarify_card_action(event=None, action_value={"clarify_id": "c1"}, loop=None)
+
+
+def _dispatch_synthetic(package: str) -> str:
+    adapter = _adapter(package)
+    seen = {}
+
+    async def _profile(_sender):
+        return {"user_id": "u", "user_name": "U", "user_id_alt": None}
+
+    async def _chat_info(_chat_id):
+        return {"name": "Chat", "raw_mode": "p2p"}
+
+    async def _guarded(event):
+        seen["chat_type"] = event.source.chat_type
+
+    adapter._resolve_sender_profile = _profile
+    adapter.get_chat_info = _chat_info
+    adapter.build_source = lambda **kwargs: SimpleNamespace(**kwargs)
+    adapter._resolve_channel_prompt = lambda _chat_id: None
+    adapter._handle_message_with_guards = _guarded
+    message_type = sys.modules[f"{package}.adapter"].MessageType.TEXT
+    asyncio.run(adapter._dispatch_synthetic_event(
+        text="x", message_type=message_type, chat_id="oc_x", sender_id=None, event_chat_type="p2p",
+        raw_message=None, message_id="m1"))
+    return seen["chat_type"]
+
+
+def test_reload_runs_the_edited_card_helpers_on_every_lane(plugin_copy):
+    load, edit = plugin_copy
     assert _chat_type_for_p2p(load()) == "dm"
 
-    edited = 0
-    for path in plugin_dir.rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        new_source, count = _P2P_BRANCH.subn(r'\1"edited"', source)
-        if count:
-            path.write_text(new_source, encoding="utf-8")
-            edited += count
-    assert edited == 1
-
-    assert _chat_type_for_p2p(load()) == "edited"
+    edit()
+    package = load()
+    calls = sys.modules[f"{package}.cards.authz"].RELOADED_CALLS
+    assert _chat_type_for_p2p(package) == "edited"
+    _click_clarify(package)
+    assert _dispatch_synthetic(package) == "edited"
+    assert calls == ["clarify", "synthetic"]

@@ -94,8 +94,8 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from .cards import map_chat_type, pop_validated_prompt_state, resolve_source_chat_type, validate_card_action
-from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
-from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
+from .adapter_choice_cards import FeishuChoiceCardsMixin
+from .adapter_synthetic_events import FeishuSyntheticEventsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home

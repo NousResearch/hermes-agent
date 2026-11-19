@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
-from hermes_cli.model_catalog import extend_context_lengths
+from hermes_cli.model_catalog import extend_context_lengths, in_model_set, manifest_additions, note_supplied
 from agent.tool_history_as_text import tool_history_for_request
 
 logger = logging.getLogger(__name__)
@@ -215,7 +215,8 @@ def parse_bedrock_openai_model_id(model_id: str) -> Optional[tuple[str, str]]:
         normalized = rest
     else:
         prefix = ""
-    return (normalized, prefix) if normalized in _BEDROCK_OPENAI_MODEL_IDS_LOWER else None
+    known = in_model_set("bedrock_openai_responses", _BEDROCK_OPENAI_MODEL_IDS_LOWER, normalized)
+    return (normalized, prefix) if known else None
 
 
 def is_openai_bedrock_model(model_id: str) -> bool:
@@ -234,7 +235,12 @@ def merge_bedrock_openai_model_ids(model_ids: list[str]) -> list[str]:
     """Append Mantle-only OpenAI models, which control-plane discovery never lists."""
     merged = list(model_ids or [])
     seen = {str(m).lower() for m in merged}
-    return merged + [m for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS if m.lower() not in seen]
+    # Including the ones the model catalog publishes, once their id is in the Mantle set as well.
+    added = manifest_additions("bedrock", BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
+    published = [m for m in added if bedrock_openai_uses_mantle(m)]
+    note_supplied(published)  # rows the manifest put in, for the provider-model cache
+    mantle_ids = (*BEDROCK_OPENAI_RESPONSES_MODEL_IDS, *published)
+    return merged + [m for m in mantle_ids if m.lower() not in seen]
 
 
 def bedrock_openai_base_url(region: str) -> str:

@@ -27,7 +27,7 @@ from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
-from hermes_cli.model_catalog import extend_context_lengths
+from hermes_cli.model_catalog import extend_context_lengths, in_model_set
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
@@ -418,7 +418,7 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     ``...-fast`` ids select fast inference through the model field and are not in the list."""
     name = str(model or "").strip().lower().split(":", 1)[0].rsplit("/", 1)[-1]
     name = re.sub(r"(\d)\.(\d)", r"\1-\2", name)
-    return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
+    return in_model_set("anthropic_fast_mode", _ANTHROPIC_FAST_MODE_MODELS, re.sub(r"-\d{8}$", "", name))
 
 
 _CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",

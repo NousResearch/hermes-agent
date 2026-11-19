@@ -99,10 +99,10 @@ def _finalize_codex_models(model_ids: list[str]) -> list[str]:
 
 def codex_model_requires_account_discovery(model: str) -> bool:
     """Whether a Codex model is only advertised after account discovery."""
-    from agent.reasoning_effort import GPT62_MODEL_IDS, is_astra_model
+    from agent.reasoning_effort import is_astra_model, on_gpt62_contract
     from hermes_cli.model_normalize import normalize_model_for_provider
 
-    return is_astra_model(model) or normalize_model_for_provider(model, "openai-codex") in GPT62_MODEL_IDS
+    return is_astra_model(model) or on_gpt62_contract(normalize_model_for_provider(model, "openai-codex").lower())
 
 
 def model_requires_account_discovery(provider: str, model: str) -> bool:

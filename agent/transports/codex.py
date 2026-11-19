@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, GPT62_MODEL_IDS,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, on_gpt62_contract,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
@@ -388,7 +388,7 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
     from utils import base_url_hostname
 
     bare = str(model or "").strip().lower().rsplit("/", 1)[-1]
-    if bare in GPT62_MODEL_IDS:
+    if on_gpt62_contract(bare):
         return (_is_openai_api_origin(base_url) or is_official_codex_base_url(str(base_url or ""))
                 or base_url_hostname(str(base_url or "")) in {"us.api.openai.com", "eu.api.openai.com"})
     return is_astra_model(model) and _is_openai_api_origin(base_url)

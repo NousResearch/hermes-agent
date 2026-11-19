@@ -133,6 +133,8 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     if package.internal:
         raise ValueError(f"{name} is internal PM tooling, not an application package")
     target = current_target()
+    if package.native_abi_reason(target):
+        return None
     location = _installed_location(package, _lockfile(), target, allow_outdated=allow_outdated)
     if location is None:
         return None
@@ -211,7 +213,8 @@ def enabled_extras() -> list[str]:
 
 
 def is_installed(name: str) -> bool:
-    return _installed_location(get_package(name), _lockfile(), current_target()) is not None
+    package, target = get_package(name), current_target()
+    return package.native_abi_reason(target) is None and _installed_location(package, _lockfile(), target) is not None
 
 
 def sealed() -> bool:
@@ -478,7 +481,7 @@ def _install(
             package.name, "not in the lockfile", "add it with `hermes pm lock --bump`"
         )
 
-    reason = package.missing_reason(target)
+    reason = package.missing_reason(target) or package.native_abi_reason(target)
     if reason is not None:
         raise InstallError(package.name, f"unavailable on {target}: {reason}", "none")
 
@@ -634,6 +637,8 @@ def ensure(
         _operation.lock()
     missing = []
     for package in chain:
+        if reason := package.native_abi_reason(target):
+            raise InstallError(package.name, reason, "select a compatible package")
         identity = (package.name, lockfile.version(package.name), target,
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:

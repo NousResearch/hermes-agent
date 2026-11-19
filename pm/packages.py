@@ -96,7 +96,7 @@ class BinaryPackage(Package):
         binary = self.binary(entry, target)
         if binary is None:
             return "no binary_rel for this target"
-        reason = self._binary_reason(binary, entry, target)
+        reason = self._binary_reason(binary, entry, target) or self.native_abi_reason(target)
         if reason:
             return reason
         if not self.probe_version or target != current_target():
@@ -1418,6 +1418,7 @@ class LlamaCppCuda(LlamaCpp):
 
     name = "llamacpp-cuda"
     backend = "cuda"
+    minimum_glibc = {"linux-x64": (2, 38)}
     assets = {
         "win32-x64": "win-cuda-{toolkit}-x64",
         "win32-arm64": "win-cuda-{toolkit}-arm64",
@@ -1467,6 +1468,7 @@ class LlamaCppVulkan(LlamaCpp):
 class LlamaCppHip(LlamaCpp):
     name = "llamacpp-hip"
     backend = "hip"
+    minimum_glibc = {"linux-x64": (2, 38)}
     # Upstream renamed the ROCm archives to 10.0 at b10767 (cff184438e).
     assets = {
         "win32-x64": "win-rocm-10.0-x64",

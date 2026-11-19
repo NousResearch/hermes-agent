@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { load } from 'js-yaml'
 import { expect, it } from 'vitest'
 
@@ -131,8 +132,13 @@ it.each([
     expect(build.run).not.toContain('--prepare-only')
   }
   expect(restore.with.producer).toBe(producer)
-  // Inside a job container github.workspace names the host path, so those legs pass the checkout relatively.
-  expect(restore.with.source).toBe(job.container ? '.' : '${{ github.workspace }}')
+  // The cache action must see the checkout in its own filesystem. On the host
+  // both the relative checkout and github.workspace work; in a job container
+  // the latter names a host path that isn't mounted there (actions/runner#2185).
+  const hostCheckout = '/runner/work/project/project'
+  const checkout = job.container ? '/__w/project/project' : hostCheckout
+  const source = restore.with.source.replace('${{ github.workspace }}', hostCheckout)
+  expect(posix.resolve(checkout, source)).toBe(checkout)
   expect(upload.with).toEqual({
     ...restore.with,
     phase: 'save',

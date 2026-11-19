@@ -623,7 +623,10 @@ def old_backend_answers(host, m: dict) -> Optional[str]:
     dial, port = _old_host(m), m["dial"]["old_port"]
     status = host.http_status(dial, port)
     if status is None:
-        return f"no HTTP 200 on {format_address(dial, port)}/api/status"
+        return f"no HTTP 200 on {format_address(dial, port)}/api/health"
+    if status.get("health") == "missing":  # 401/403/404: something answers, but not a backend's health proof
+        return (f"{format_address(dial, port)}/api/health answered without a health result (401, 403 or 404), "
+                f"so it is not proven to be the old backend")
     gw_pid = host.gateway_pid()
     if gw_pid is not None and host.pid_listens_on(gw_pid, port):
         return f"port {port} is answered by the gateway, not the old backend"

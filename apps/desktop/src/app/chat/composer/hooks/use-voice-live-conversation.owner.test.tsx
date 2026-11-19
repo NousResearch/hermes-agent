@@ -25,14 +25,19 @@ vi.mock('@/lib/voice-live', async importOriginal => {
     VoiceLiveSession: class {
       close = vi.fn()
 
-      constructor(
-        _handlers: VoiceLiveHandlers,
-        owner: null | { connectionId?: null | string; profile?: null | string } = null
-      ) {
-        constructed.owners.push(owner)
-      }
+      constructor(_handlers: VoiceLiveHandlers) {}
 
-      async start(): Promise<void> {}
+      // The call pins the owner it resolved at start (capture and delegation
+      // must stay on that chat's owner for the whole call).
+      async start(
+        _history: unknown,
+        _storedSessionId: unknown,
+        owner: null | { connectionId?: null | string; profile?: null | string } = null
+      ): Promise<'unavailable'> {
+        constructed.owners.push(owner)
+
+        return 'unavailable'
+      }
     }
   }
 })
@@ -53,14 +58,16 @@ function mountLive(wrapper?: ({ children }: { children: ReactNode }) => ReactNod
         enabled: true,
         onSubmit: vi.fn(),
         pendingResponse: () => null,
-        seedHistory: () => []
+        seedHistory: () => [],
+        // A call records into a saved chat; one without a destination does not start.
+        storedSessionId: 'bot-chat'
       }),
     wrapper ? { wrapper } : undefined
   )
 }
 
 describe('useVoiceLiveConversation — owner-routed session', () => {
-  it('constructs the session with the composer scope owner (connection, profile)', async () => {
+  it('starts the session on the composer scope owner (connection, profile)', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <ComposerScopeProvider
         value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'gw-bots', profile: 'bot-adam', target: 'tile:bot' }}
@@ -75,6 +82,6 @@ describe('useVoiceLiveConversation — owner-routed session', () => {
       await hook.result.current.start()
     })
 
-    expect(constructed.owners).toEqual([{ connectionId: 'gw-bots', profile: 'bot-adam' }])
+    expect(constructed.owners).toEqual([expect.objectContaining({ connectionId: 'gw-bots', profile: 'bot-adam' })])
   })
 })

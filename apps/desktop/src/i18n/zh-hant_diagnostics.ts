@@ -55,6 +55,8 @@ export const zhHantDiagnostics = {
       microphoneInUse: '麥克風正被其他應用程式使用中。',
       microphoneNeedsHttps: '麥克風需要安全連線。請透過 HTTPS 或到 127.0.0.1 的 SSH 通道開啟 Webapp 後使用。',
       microphonePermissionDenied: '麥克風權限被拒絕。',
+      liveCaptureUnavailable: '本次即時通話的逐字稿不會儲存到聊天中。',
+      liveCaptureIncomplete: '本次即時通話的逐字稿可能不完整。',
       microphoneStartFailed: '無法開始麥克風錄音。',
       microphoneUnsupported: '目前執行環境不支援麥克風錄音。',
       noMicrophone: '找不到麥克風。',

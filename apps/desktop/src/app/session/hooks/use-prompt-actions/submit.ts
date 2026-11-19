@@ -203,6 +203,46 @@ type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
 }
 
 /** A refusal the backend issued before admitting anything, so an identityless retry cannot duplicate a turn. */
+/**
+ * Freeze `@terminal:` chips into transport text before send. Queue drains
+ * already carry frozen transport (tokens stripped at enqueue) — never
+ * re-resolve against the live selection map, or a later Cmd+L that reused
+ * the same shell:row label silently injects unrelated output (#77078).
+ * A recorded voice claim is sent exactly as the owner saved it. Null when a
+ * chip's selection is gone (the user is told).
+ */
+function freezeSubmitText(
+  rawText: string,
+  options?: SubmitTextOptions
+): null | { bubbleOverride?: string; transportRaw: string; visibleText: string } {
+  let transportRaw = rawText
+  let bubbleOverride = options?.displayText
+
+  if (!options?.fromQueue && !options?.voiceClaim) {
+    const frozen = freezeComposerTransportPayload(rawText)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return null
+    }
+
+    transportRaw = frozen.transportText
+
+    if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+      bubbleOverride = frozen.displayText
+    }
+  }
+
+  const visibleText = options?.voiceClaim ? transportRaw : sanitizeComposerInput(transportRaw).trim()
+
+  return { bubbleOverride, transportRaw, visibleText }
+}
+
 function isPreAdmissionRefusal(error: unknown): boolean {
   if (!error || typeof error !== 'object' || !('code' in error)) {
     return false
@@ -249,34 +289,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
       )?.titlePreview
 
-      // Freeze `@terminal:` chips into transport text before send. Queue drains
-      // already carry frozen transport (tokens stripped at enqueue) — never
-      // re-resolve against the live selection map, or a later Cmd+L that reused
-      // the same shell:row label silently injects unrelated output (#77078).
-      let transportRaw = rawText
-      let bubbleOverride = options?.displayText
+      const frozenText = freezeSubmitText(rawText, options)
 
-      if (!options?.fromQueue) {
-        const frozen = freezeComposerTransportPayload(rawText)
-
-        if (frozen.missingLabels.length > 0) {
-          notify({
-            kind: 'warning',
-            title: translateNow('composer.terminalSelectionMissingTitle'),
-            message: translateNow('composer.terminalSelectionMissingBody')
-          })
-
-          return false
-        }
-
-        transportRaw = frozen.transportText
-
-        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
-          bubbleOverride = frozen.displayText
-        }
+      if (!frozenText) {
+        return false
       }
 
-      const visibleText = sanitizeComposerInput(transportRaw).trim()
+      const { bubbleOverride, transportRaw, visibleText } = frozenText
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -643,6 +662,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             pendingBranchGroup: null,
             sawAssistantPayload: false,
             streamId: null,
+            voiceClaimSubmissionId: options?.voiceClaim ? submissionId : null,
             // Fresh submit = new turn — clear any leftover interrupt flag, else
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).
@@ -703,6 +723,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             busy: false,
             awaitingResponse: false,
             pendingBranchGroup: null,
+            // The withdrawn bubble was this voice claim's: it is no longer pending here.
+            ...(state.voiceClaimSubmissionId === submissionId ? { voiceClaimSubmissionId: null } : {}),
             // Retire the submit-time clock seed with the turn it belonged to —
             // only when no live stream claimed it (a queued send aborting must
             // not wipe a running turn's clock).
@@ -1098,6 +1120,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // will be spoken by the voice model. Wins over HUD for this turn.
           ...(options?.surface && { surface: options.surface }),
           ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
+          ...(options?.voiceClaim && { voice_claim: options.voiceClaim }),
           ...(options?.voiceTurn && { voice_turn: true }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
@@ -1170,7 +1193,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   // key (version skew) before any handler ran. Both are pre-admission and
                   // safe to retry identityless. Never downgrade on a timeout, malformed
                   // ACK or an ambiguous retry.
-                  if (!isPreAdmissionRefusal(error) || prepared.legacyAttempted) {
+                  if (params.voice_claim || !isPreAdmissionRefusal(error) || prepared.legacyAttempted) {
                     throw error
                   }
 
@@ -1193,6 +1216,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               requestGateway,
               driftReason: sessionDriftReason,
               onRecovered: recoveredId => {
+                // The retried voice claim's refusal arrives on the recovered runtime. The old
+                // runtime keeps its marker too: its optimistic row stays there, and its silence
+                // watchdog must not offer a plain-text Retry for this claim either.
+                if (options?.voiceClaim) {
+                  updateSessionState(recoveredId, state => ({ ...state, voiceClaimSubmissionId: submissionId }), recoverStoredSessionId)
+                }
+
                 if (onRuntimeRecovered) {
                   onRuntimeRecovered(recoveredId)
                 } else {
@@ -1264,6 +1294,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   state => ({
                     ...state,
                     messages: result.status === 'unknown' ? state.messages : state.messages.filter(message => message.id !== optimisticId),
+                    // A removed bubble no longer shows this voice claim's words.
+                    ...(result.status === 'terminal' && state.voiceClaimSubmissionId === submissionId
+                      ? { voiceClaimSubmissionId: null }
+                      : {}),
                     ...(!state.turnLive &&
                       !state.streamId &&
                       !state.sawAssistantPayload && {

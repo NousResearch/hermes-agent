@@ -28,6 +28,7 @@ export type SidebarActions = Pick<
 /** The ChatView handlers the controller owns — forwarded verbatim. */
 export type ChatActions = Pick<
   ComponentProps<typeof ChatView>,
+  | 'createVoiceDraftSession'
   | 'onAddContextRef'
   | 'onAddUrl'
   | 'onAttachDroppedItems'

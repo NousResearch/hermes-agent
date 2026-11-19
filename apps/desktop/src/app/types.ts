@@ -194,6 +194,9 @@ export interface ClientSessionState {
   /** The owner admission the live turn executes, from its frames' execution stamp (`admission_id`). The in-flight
    *  journal stores it so a reopen can ask the owner whether that exact execution is still pending. */
   turnAdmissionId?: null | string
+  /** Submission id of the recorded GPT-Live claim this window sent for the pending turn. Only its own refusal
+   *  may settle the turn, and the silence watchdog offers no plain-text Retry for it. */
+  voiceClaimSubmissionId?: null | string
   /** Newest row on screen when that message.start arrived: rows above it are
    *  earlier turns, even when an interim seal left them marked `interim`. */
   turnAnchorId?: null | string

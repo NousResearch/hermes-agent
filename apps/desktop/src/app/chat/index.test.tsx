@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
@@ -49,7 +49,18 @@ vi.mock('@/lib/model-options', () => ({
 }))
 vi.mock('./chat-drop-overlay', () => ({ ChatDropOverlay: () => null }))
 vi.mock('./chat-swap-overlay', () => ({ ChatSwapOverlay: () => null, ChatSyncBadge: () => null }))
-vi.mock('./composer', () => ({ ChatBar: () => null, ChatBarFallback: () => null }))
+vi.mock('./composer', async () => {
+  const { useVoiceCallTarget } = await import('./composer/voice-call-target')
+
+  return {
+    ChatBar: () => {
+      const { createDraftSession, storedSessionId } = useVoiceCallTarget()
+
+      return <div data-can-create={Boolean(createDraftSession)} data-stored-id={storedSessionId ?? undefined} data-testid="composer" />
+    },
+    ChatBarFallback: () => null
+  }
+})
 vi.mock('./hooks/use-file-drop-zone', () => ({
   useFileDropZone: () => ({ dragKind: null, dropHandlers: {} })
 }))
@@ -63,6 +74,31 @@ vi.mock('./sidebar/session-actions-menu', async () => {
 })
 
 const { ChatView } = await import('./index')
+
+const chatProps = {
+  gateway: null,
+  maxVoiceRecordingSeconds: 120,
+  onAddContextRef: vi.fn(),
+  onAddUrl: vi.fn(),
+  onAttachDroppedItems: vi.fn(),
+  onAttachImageBlob: vi.fn(),
+  onBranchInNewChat: vi.fn(),
+  onCancel: vi.fn(),
+  onDeleteSelectedSession: vi.fn(),
+  onEdit: vi.fn(),
+  onPasteClipboardImage: vi.fn(),
+  onPickFiles: vi.fn(),
+  onPickFolders: vi.fn(),
+  onPickImages: vi.fn(),
+  onReload: vi.fn(),
+  onRemoveAttachment: vi.fn(),
+  onRetryResume: vi.fn(),
+  onSteer: vi.fn(),
+  onSubmit: vi.fn(),
+  onThreadMessagesChange: vi.fn(),
+  onToggleSelectedPin: vi.fn(),
+  onTranscribeAudio: vi.fn()
+}
 
 function assistantMessage(id: string, text: string): ChatMessage {
   return {
@@ -107,31 +143,6 @@ describe('ChatView render isolation', () => {
   })
 
   it('does not re-render chat history when an unrelated parent idle tick updates', () => {
-    const props = {
-      gateway: null,
-      maxVoiceRecordingSeconds: 120,
-      onAddContextRef: vi.fn(),
-      onAddUrl: vi.fn(),
-      onAttachDroppedItems: vi.fn(),
-      onAttachImageBlob: vi.fn(),
-      onBranchInNewChat: vi.fn(),
-      onCancel: vi.fn(),
-      onDeleteSelectedSession: vi.fn(),
-      onEdit: vi.fn(),
-      onPasteClipboardImage: vi.fn(),
-      onPickFiles: vi.fn(),
-      onPickFolders: vi.fn(),
-      onPickImages: vi.fn(),
-      onReload: vi.fn(),
-      onRemoveAttachment: vi.fn(),
-      onRetryResume: vi.fn(),
-      onSteer: vi.fn(),
-      onSubmit: vi.fn(),
-      onThreadMessagesChange: vi.fn(),
-      onToggleSelectedPin: vi.fn(),
-      onTranscribeAudio: vi.fn()
-    }
-
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } }
     })
@@ -145,7 +156,7 @@ describe('ChatView render isolation', () => {
             <button onClick={() => setTick(value => value + 1)} type="button">
               parent tick {tick}
             </button>
-            <ChatView {...props} />
+            <ChatView {...chatProps} />
           </MemoryRouter>
         </QueryClientProvider>
       )
@@ -161,5 +172,52 @@ describe('ChatView render isolation', () => {
     // memo(ChatView) with stable props must absorb the parent's idle tick —
     // the transcript (Thread) must not re-render. This is PR #38470's contract.
     expect(threadRenderCount.current).toBe(1)
+  })
+
+  it('keeps the primary composer mounted when a voice draft gets a stored route', () => {
+    $freshDraftReady.set(true)
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $messages.set([])
+    $sessions.set([])
+
+    function RoutesHarness() {
+      const navigate = useNavigate()
+      const chat = <ChatView {...chatProps} createVoiceDraftSession={async () => null} />
+
+      return (
+        <>
+          <button
+            onClick={() => {
+              navigate('/voice-chat', { replace: true })
+              $freshDraftReady.set(false)
+              $activeSessionId.set('voice-runtime')
+              $selectedStoredSessionId.set('voice-chat')
+            }}
+            type="button"
+          >
+            Assign voice chat
+          </button>
+          <Routes>
+            <Route element={chat} index />
+            <Route element={chat} path=":sessionId" />
+          </Routes>
+        </>
+      )
+    }
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <RoutesHarness />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const composer = screen.getByTestId('composer')
+    expect(composer.dataset.canCreate).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Assign voice chat' }))
+    expect(screen.getByTestId('composer')).toBe(composer)
+    expect(composer.dataset.canCreate).toBe('false')
+    expect(composer.dataset.storedId).toBe('voice-chat')
   })
 })

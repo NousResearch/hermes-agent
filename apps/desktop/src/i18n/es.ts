@@ -490,6 +490,8 @@ export const esOverrides = {
       tryRecordingAgain: 'Prueba a grabar de nuevo.',
       unavailable: 'Voz no disponible',
       liveEnded: 'Sesión de voz en vivo finalizada',
+      liveCaptureUnavailable: 'La transcripción de esta llamada en vivo no se guardará en el chat.',
+      liveCaptureIncomplete: 'La transcripción de esta llamada en vivo puede estar incompleta.',
       liveEndedConnectionLost: 'La sesión de voz en vivo perdió la conexión.',
       liveEndedClosed: 'El servicio cerró la sesión de voz en vivo.',
       liveError: 'Voz en vivo',

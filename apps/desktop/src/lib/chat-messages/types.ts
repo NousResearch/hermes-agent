@@ -93,6 +93,9 @@ export type ChatMessage = {
    *  bubble and never the model's reply. `notice` is absent on older backends;
    *  the renderer falls back to an i18n string. */
   contentRefused?: { notice?: string }
+  /** A saved GPT-Live speaker run (`display_metadata.voice_live`): its first provider event
+   *  and call-relative timing (null when the provider omitted it). */
+  voiceLive?: { callKey?: string; endMs: null | number; firstEventId?: string; startMs: null | number }
 }
 
 export type GatewayEventPayload = {

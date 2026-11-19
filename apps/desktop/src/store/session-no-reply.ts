@@ -26,13 +26,16 @@ export function turnHasReply(messages: ChatMessage[]): boolean {
   return false
 }
 
-export function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+/** `retryable` is false for a recorded voice claim: resubmitting its words as
+ *  plain text would bypass the owner's exact-speech check. */
+export function withNoReplyNotice(messages: ChatMessage[], retryable = true): ChatMessage[] {
+  const errorSurface = retryable ? NO_REPLY_SURFACE : { ...NO_REPLY_SURFACE, retryable: false }
   const last = messages.findLast(message => !message.hidden)
 
   // A turn that ran tools but never wrote text carries the notice on its own bubble.
   if (last?.role === 'assistant') {
     return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
+      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface } : message
     )
   }
 
@@ -43,7 +46,7 @@ export function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
     {
       completedAt: occurredAt,
       error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
+      errorSurface,
       id: `assistant-no-reply-${Date.now()}`,
       parts: [],
       pending: false,

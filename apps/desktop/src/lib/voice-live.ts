@@ -1,4 +1,4 @@
-import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
+import { hermesApiAs, type OwnerScope, profileScoped, type ResolvedOwner, resolveOwnerNow } from '@/api/client'
 import { hermesApi } from '@/hermes'
 
 /**
@@ -20,6 +20,7 @@ import { hermesApi } from '@/hermes'
  */
 
 export type VoiceChatMode = 'chained' | 'gpt-live'
+export type VoiceLiveCaptureStatus = 'recording' | 'unavailable'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
@@ -50,16 +51,19 @@ interface LiveServerEvent {
 }
 
 export interface LiveTranscriptFragment {
+  event_id?: string
   speaker: 'assistant' | 'user'
   text: string
   startMs: number
   endMs: number
+  /** At least one endpoint was missing on the wire; fallback zero is not a timestamp. */
+  timingMissing?: true
 }
 
 export interface VoiceLiveHandlers {
   /** GPT-Live asked the backend (Hermes) for help. `context` is the recent
    *  transcript window, newest last — the delegation itself carries no text. */
-  onDelegation: (delegationId: string, context: LiveTranscriptFragment[]) => void
+  onDelegation: (delegationId: string, context: LiveTranscriptFragment[], submissionId: string, recordedCallId?: string) => void
   /** Vendor-side error. `fatal` when the session is gone. */
   onError: (message: string, fatal: boolean) => void
   /** `session.closed` arrived (or the transport dropped without it). */
@@ -224,7 +228,10 @@ export class VoiceLiveSession {
   private closeTimer: null | number = null
   private finalized = false
   private started = false
+  private recording = false
   private eventCounter = 0
+  private readonly seenDelegations = new Set<string>()
+  private readonly seenTranscriptEvents = new Set<string>()
   private transcript: LiveTranscriptFragment[] = []
   private speakingProbe: null | number = null
   private analyser: null | AnalyserNode = null
@@ -275,7 +282,11 @@ export class VoiceLiveSession {
     return this.transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
   }
 
-  async start(history: LiveHistoryMessage[]): Promise<void> {
+  async start(
+    history: LiveHistoryMessage[],
+    storedSessionId?: null | string,
+    pinnedOwner?: ResolvedOwner
+  ): Promise<VoiceLiveCaptureStatus> {
     if (this.peer) {
       throw new Error('GPT-Live session already started')
     }
@@ -287,6 +298,7 @@ export class VoiceLiveSession {
       throw new DOMException('Microphone capture is unavailable here', 'NotSupportedError')
     }
 
+    const owner = pinnedOwner ?? resolveOwnerNow(this.owner ?? undefined)
     const connection = new RTCPeerConnection()
     this.peer = connection
 
@@ -302,9 +314,17 @@ export class VoiceLiveSession {
       }
     })
 
-    this.microphone = await navigator.mediaDevices.getUserMedia({
+    const microphone = await navigator.mediaDevices.getUserMedia({
       audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true }
     })
+
+    if (this.finalized) {
+      microphone.getTracks().forEach(track => track.stop())
+
+      return 'unavailable'
+    }
+
+    this.microphone = microphone
 
     for (const track of this.microphone.getAudioTracks()) {
       connection.addTrack(track, this.microphone)
@@ -330,24 +350,35 @@ export class VoiceLiveSession {
       throw new Error('Missing local SDP offer')
     }
 
-    const response = await hermesApi<{
+    if (this.finalized) {
+      return 'unavailable'
+    }
+
+    const response = await hermesApiAs<{
       ok: boolean
+      capture_status?: VoiceLiveCaptureStatus
       session?: { id: string }
       transport?: { sdp: string; type: string }
-    }>({
-      ...ownerScoped(this.owner ?? undefined),
-      body: { history, sdp },
+    }>(owner, {
+      body: { history, sdp, ...(storedSessionId ? { session_id: storedSessionId } : {}) },
       method: 'POST',
       path: '/api/audio/voice-live/session',
       timeoutMs: 45_000
     })
+
+    if (this.finalized) {
+      return 'unavailable'
+    }
 
     if (!response?.ok || !response.transport?.sdp) {
       throw new Error('GPT-Live session creation failed')
     }
 
     this.sessionId = response.session?.id ?? null
+    this.recording = Boolean(storedSessionId && response.capture_status === 'recording' && this.sessionId)
     await connection.setRemoteDescription({ sdp: response.transport.sdp, type: 'answer' })
+
+    return this.recording ? 'recording' : 'unavailable'
   }
 
   private armSpeakingProbe(stream: MediaStream): void {
@@ -396,41 +427,21 @@ export class VoiceLiveSession {
     switch (event.type) {
       case 'session.started':
         this.started = true
-        this.sessionId = event.session?.id ?? this.sessionId
+        this.sessionId ??= event.session?.id ?? null
 
         return
 
       case 'session.input_transcript.delta':
-      case 'session.output_transcript.delta': {
-        const fragment: LiveTranscriptFragment = {
-          endMs: event.end_ms ?? 0,
-          speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
-          startMs: event.start_ms ?? 0,
-          text: event.delta ?? ''
-        }
 
-        this.transcript.push(fragment)
-
-        if (this.transcript.length > 2_000) {
-          this.transcript.splice(0, this.transcript.length - 1_500)
-        }
-
-        this.handlers.onTranscript?.(fragment)
+      case 'session.output_transcript.delta':
+        this.handleTranscriptDelta(event)
 
         return
-      }
 
-      case 'session.delegation.created': {
-        const id = event.delegation?.id
-
-        if (id) {
-          this.activeDelegationId = id
-          this.handlers.onDelegation(id, this.contextWindow())
-        }
+      case 'session.delegation.created':
+        this.handleDelegation(event.delegation?.id)
 
         return
-      }
-
       case 'error': {
         const code = event.error?.code ?? ''
 
@@ -451,6 +462,46 @@ export class VoiceLiveSession {
 
       default:
         return
+    }
+  }
+
+  private handleTranscriptDelta(event: LiveServerEvent): void {
+    // Keep the call's receipts even after the context window trims the
+    // text. No-ID deltas still represent separate speech occurrences.
+    const eventId = typeof event.event_id === 'string' ? event.event_id : ''
+
+    if (eventId) {
+      if (this.seenTranscriptEvents.has(eventId)) {
+        return
+      }
+
+      this.seenTranscriptEvents.add(eventId)
+    }
+
+    const fragment: LiveTranscriptFragment = {
+      endMs: event.end_ms ?? 0,
+      ...(eventId ? { event_id: eventId } : {}),
+      speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
+      startMs: event.start_ms ?? 0,
+      text: event.delta ?? '',
+      ...(event.start_ms == null || event.end_ms == null ? { timingMissing: true } : {})
+    }
+
+    this.transcript.push(fragment)
+
+    if (this.transcript.length > 2_000) {
+      this.transcript.splice(0, this.transcript.length - 1_500)
+    }
+
+    this.handlers.onTranscript?.(fragment)
+  }
+
+  private handleDelegation(id: string | undefined): void {
+    if (id && this.sessionId && !this.seenDelegations.has(id)) {
+      this.seenDelegations.add(id)
+      this.activeDelegationId = id
+      const submissionId = `voice-live:${JSON.stringify([this.sessionId, id])}`
+      this.handlers.onDelegation(id, this.contextWindow(), submissionId, this.recording ? this.sessionId : undefined)
     }
   }
 
@@ -507,7 +558,7 @@ export class VoiceLiveSession {
 
   /** Graceful close: ask for `session.closed`, tear down after it (or a timeout). */
   close(): void {
-    if (this.finalized) {
+    if (this.finalized || this.closeTimer !== null) {
       return
     }
 

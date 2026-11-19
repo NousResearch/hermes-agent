@@ -487,6 +487,8 @@ export const deOverrides = {
       tryRecordingAgain: 'Versuchen Sie die Aufnahme erneut.',
       unavailable: 'Sprache nicht verfügbar',
       liveEnded: 'Live-Sprach-Session beendet',
+      liveCaptureUnavailable: 'Das Transkript dieses Live-Anrufs wird nicht im Chat gespeichert.',
+      liveCaptureIncomplete: 'Das Transkript dieses Live-Anrufs ist möglicherweise unvollständig.',
       liveEndedConnectionLost: 'Die Live-Sprach-Session hat die Verbindung verloren.',
       liveEndedClosed: 'Die Live-Sprach-Session wurde vom Dienst geschlossen.',
       liveError: 'Live-Sprache',

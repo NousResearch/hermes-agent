@@ -268,7 +268,8 @@ def restore_api_session(authority, session_id):
         raise AuthorityRefusal('not_found')
     entry = SessionEntry.from_dict(receipt.entry)
     source = entry.origin
-    if receipt.profile_id != authority.profile_id and (source is None or source.profile != _served_profile(authority)):
+    from hermes_constants import same_profile_id
+    if not same_profile_id(receipt.profile_id, authority.profile_id) and (source is None or source.profile != _served_profile(authority)):
         # Minted under an older home of this store (it moved with its profile): the stored origin
         # still places the turn's runtime scope (``bind_api_session``), so it must name this profile.
         raise AuthorityRefusal('profile_mismatch')

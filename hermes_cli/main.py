@@ -934,14 +934,12 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable. Never creates one: a claimed Nous welcome
+    trial counts (``anon_auth.free_inference_active``) even when nothing selects ``nous`` yet.
 
-    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
-    secret scope and wants an answer for that profile only — launch-process
-    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
-    make it appear ready. Unscoped callers keep the legacy behavior.
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and secret scope and wants
+    an answer for that profile only — launch-process env and host-wide fallbacks (gh auth, Claude
+    Code credentials) must not make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
@@ -985,7 +983,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    from hermes_cli.anon_auth import free_inference_active
+    if free_inference_active() or _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY,
+                                                        strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh

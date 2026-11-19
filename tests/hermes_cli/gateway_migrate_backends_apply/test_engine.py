@@ -814,7 +814,10 @@ def test_the_background_run_keeps_this_profile_over_a_sticky_one(tmp_path, monke
             ack(argv)
             self.pid = 4321
 
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    from types import SimpleNamespace
+
+    from hermes_platform import resolver
+    monkeypatch.setattr(resolver, "locate_command", lambda name, *a, **kw: SimpleNamespace(command="/usr/bin/" + name))
     monkeypatch.setattr(host_module.subprocess, "run", run)
     monkeypatch.setattr(host_module.subprocess, "Popen", Child)
     monkeypatch.setattr(host_module.SystemHost, "backends", lambda self: [])  # the caller's read-only pre-check

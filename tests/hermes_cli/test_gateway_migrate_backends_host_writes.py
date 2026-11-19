@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -147,12 +148,38 @@ def test_a_detached_run_is_never_started_inside_the_callers_unit(tmp_path, monke
     def popen(*a, **kw):
         raise AssertionError("fell back to a new session inside the caller's unit")
 
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    _located_systemd_run(monkeypatch)
     monkeypatch.setattr(host_module.subprocess, "run", failing_systemd_run)
     monkeypatch.setattr(host_module.subprocess, "Popen", popen)
 
     with pytest.raises(RuntimeError, match="outside hermes-dashboard.service"):
         _InsideUnitHost(tmp_path).spawn_detached(["gateway", "migrate", "--backends", "--apply"], tmp_path / "log")
+
+
+def _located_systemd_run(monkeypatch, path="/opt/managed/bin/systemd-run"):
+    from hermes_platform import resolver
+    monkeypatch.setattr(resolver, "locate_command",
+                        lambda name, *a, **kw: SimpleNamespace(command=path if name == "systemd-run" else None))
+
+
+def test_a_detached_run_uses_the_managed_systemd_run_and_the_shared_child_env(tmp_path, monkeypatch):
+    """The transient unit is started with the resolver's systemd-run (not a bare PATH lookup), and its env
+    comes from build_subprocess_env, pinned to this home."""
+    from tools.environments import local
+    _located_systemd_run(monkeypatch)
+    built: list[dict] = []
+    real_build = local.build_subprocess_env
+    monkeypatch.setattr(local, "build_subprocess_env", lambda *a, **kw: (built.append(kw), real_build(*a, **kw))[1])
+    ran: list[list[str]] = []
+    monkeypatch.setattr(host_module.subprocess, "run",
+                        lambda cmd, **kw: (ran.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1])
+
+    out = _InsideUnitHost(tmp_path).spawn_detached(["gateway", "migrate", "--backends", "--apply"], tmp_path / "log")
+
+    assert out["unit"].startswith("hermes-backend-migration-")
+    assert ran[0][0] == "/opt/managed/bin/systemd-run"
+    assert f"--setenv=HERMES_HOME={tmp_path}" in ran[0]
+    assert built == [{"scrub_secrets": False, "inherit_profile_home": False, "extra": {"HERMES_HOME": str(tmp_path)}}]
 
 
 def test_existing_env_is_private_before_the_first_secret_is_written(tmp_path, monkeypatch):

@@ -49,14 +49,13 @@ _CHILD = textwrap.dedent('''
     # Exit as /exit does, once the lookup's git and its helper are both running and the lookup is
     # waiting on them (its group handed to the owner-death supervisor): the marker lands from the
     # fake git before the spawning thread registers, so exiting on the marker alone races that.
-    import pathlib, time
+    import pathlib
     from hermes_cli import process_identity
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and len(pathlib.Path(marker).read_text().split()) < 2:
-        time.sleep(0.05)
-    pgid = int(pathlib.Path(marker).read_text().split()[0])
-    while time.monotonic() < deadline and pgid not in process_identity._supervised_pgids:
-        time.sleep(0.05)
+    from tests.waiting import wait_until
+    pids = wait_until(lambda: (lambda p: len(p) >= 2 and p)(pathlib.Path(marker).read_text().split()),
+                      timeout=30, what="the fake git and its helper to start")
+    wait_until(lambda: int(pids[0]) in process_identity._supervised_pgids, timeout=30,
+               what="the lookup's git group to be handed to the owner-death supervisor")
     with process_identity._supervisor_lock:  # the register line is written under this lock
         pass
 ''').replace("@SHA@", SHA)

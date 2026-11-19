@@ -20,7 +20,7 @@ the "job timezone east of the profile timezone silently never fires" failure. Se
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -187,7 +187,33 @@ def repeated_hour_folds(expr: str) -> tuple[int, ...]:
     base inside the second pass (a run that ended there, a recompute from "now") must not
     schedule the same wall clock again that night.
     """
+    return (0, 1) if _runs_both_passes(expr) else (0,)
+
+
+def _runs_both_passes(expr: str) -> bool:
+    """cronie's MIN_STAR/HR_STAR rule: ``*`` leads the minute or hour field, or ``@hourly``."""
     fields = str(expr).lower().split()
-    if fields == ["@hourly"] or any(field.startswith("*") for field in fields[:2]):
-        return (0, 1)
-    return (0,)
+    return fields == ["@hourly"] or any(field.startswith("*") for field in fields[:2])
+
+
+def repeated_hour_second_pass(croniter: Any, expr: str, base_local: datetime, zone: Any) -> Optional[datetime]:
+    """Earliest second-pass (fold=1) occurrence of the repeated fall-back hour a FIRST-pass base
+    sits in, or None.
+
+    croniter walks naive wall clocks, so from 01:30 EDT the next wall clock for ``*/30`` is 02:00
+    and the strictly-later 01:00/01:30 EST instants were never candidates (a 90-minute silent gap).
+    Only a job that runs both passes (``_runs_both_passes``) gets one; a fixed-time job such as
+    ``30 1 * * *`` fires once. *croniter* is passed in because ``cron.jobs`` imports it lazily.
+    """
+    shift = base_local.utcoffset() - base_local.replace(fold=1).utcoffset()
+    if base_local.fold or shift <= timedelta(0) or not _runs_both_passes(expr):
+        return None  # the wall clock is not repeated, the base is already in the second pass, or a fixed time
+    base_wall = base_local.replace(tzinfo=None)
+    it = croniter(expr, base_wall - shift)  # every wall clock of the repeated span up to the base
+    wall = it.get_next(datetime)
+    while wall <= base_wall:
+        candidate = wall.replace(tzinfo=zone, fold=1)
+        if candidate.timestamp() > base_local.timestamp():
+            return candidate
+        wall = it.get_next(datetime)
+    return None

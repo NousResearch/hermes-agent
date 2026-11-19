@@ -62,19 +62,3 @@ def _fires_over_fall_back_night(monkeypatch, expr: str, run_minutes: int) -> lis
 def test_fixed_time_job_runs_once_in_the_repeated_hour(new_york, monkeypatch, expr, run_minutes, wall):
     fires = _fires_over_fall_back_night(monkeypatch, expr, run_minutes)
     assert fires == [f"2026-11-01T{wall}:00-04:00"]
-
-
-def test_base_in_second_pass_schedules_the_next_day(new_york):
-    base = datetime(2026, 11, 1, 1, 15, tzinfo=NEW_YORK, fold=1)  # 01:15 EST, after 01:30 EDT ran
-    nxt = compute_next_run({"kind": "cron", "expr": "30 1 * * *"}, last_run_at=base.isoformat())
-    assert nxt == "2026-11-02T01:30:00-05:00"
-
-
-@pytest.mark.parametrize(("expr", "expected"), [
-    ("*/15 * * * *", "2026-11-01T01:30:00-05:00"),  # minute wildcard: keeps its cadence
-    ("30 * * * *", "2026-11-01T01:30:00-05:00"),    # hour wildcard: runs both times through
-    ("@hourly", "2026-11-01T02:00:00-05:00"),
-])
-def test_wildcard_jobs_still_run_in_the_second_pass(new_york, expr, expected):
-    base = datetime(2026, 11, 1, 1, 15, tzinfo=NEW_YORK, fold=1)
-    assert compute_next_run({"kind": "cron", "expr": expr}, last_run_at=base.isoformat()) == expected

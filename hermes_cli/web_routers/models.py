@@ -137,7 +137,8 @@ def get_model_info(profile: Optional[str] = None):
         caps = {}
         try:
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+            with _config_profile_scope(profile):
+                mc = get_model_capabilities(provider=provider, model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
         except Exception:

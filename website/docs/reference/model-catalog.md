@@ -64,7 +64,8 @@ Field notes:
 - **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this.
 - **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship. Only the OpenRouter and Nous Portal blocks carry the label; on any other block it is ignored.
 - **`requires`** — optional list on a model entry, for the added-row providers. It names request handling the model depends on. A build that does not have that handling skips the entry, so an older release never lists a model it cannot drive. No build satisfies any requirement yet, so an entry carrying the field is skipped everywhere.
-- **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
+- **Pricing** is not supplied by the model catalog manifest.
+- **Context length and capabilities** still come from live provider APIs and models.dev first. The manifest's `context_lengths` and `model_metadata` tables extend the last fallback; see below for how context keys match and which entry wins.
 
 ## Providers other than OpenRouter and Nous Portal
 
@@ -90,6 +91,41 @@ Other rules:
 - Six providers (`zai`, `nvidia`, `moonshot`, `deepseek`, `opencode-zen`, `huggingface`) show their plugin's own fallback list while their live `/models` probe is unavailable. The manifest rows join once the probe answers.
 
 Not published, on purpose: `openai-codex` (only the account's live Codex catalog may advertise a model), `xai` and `xai-oauth` (their rows come from the models.dev cache) and `moa` (a preset name, not a model list).
+
+## Metadata and context windows for new models
+
+Two top-level tables publish what the built-in tables hold on `main`:
+
+```json
+{
+  "context_lengths": {
+    "default":     {"gpt-6.2-sol": 1050000},
+    "bedrock":     {"anthropic.claude-opus-5": 1000000},
+    "codex_oauth": {"gpt-6.2-sol": 500000}
+  },
+  "model_metadata": {
+    "openai": {
+      "gpt-6.2-sol": {
+        "limit": {"context": 1050000, "output": 128000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": true,
+        "reasoning": true
+      }
+    }
+  }
+}
+```
+
+- **`context_lengths`** mirrors the three hardcoded context-window tables (the general one, Bedrock's, and the Codex OAuth fallback). Keys match the way the built-in tables do: a key is a substring of the model id and the longest matching key wins.
+- **`model_metadata`** mirrors the built-in metadata entries, keyed by models.dev provider id and lowercased model id, in the models.dev entry shape.
+
+Both only fill gaps. A context-table key or a provider/model metadata entry your install ships keeps its own value, under any casing, even when the manifest disagrees. What the manifest adds is the row for a model the install has never heard of.
+
+One consequence is worth spelling out. Context keys match as substrings and the longest key wins, so a new, more specific key (`glm-9-preview`) does take over from a shipped family catch-all (`glm`) for the models it names. That is the gap being filled: the catch-all was only a guess for that model. A model no key matches still gets the generic 256K window, and a model no metadata source knows stays "unknown" for vision and reasoning.
+
+A malformed row is dropped rather than half-used: a context value that is not a positive integer, a blank key, or a metadata entry without a valid `limit.context`. A `cost` field in a metadata entry is ignored; prices never come from this table.
+
+The order of sources is unchanged: an explicit `model.context_length`, live provider endpoints and models.dev all still come first. These tables sit where the hardcoded tables already sat, at the end.
 
 ## Fetch behavior
 

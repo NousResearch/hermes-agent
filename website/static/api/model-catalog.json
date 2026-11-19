@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-24T04:45:09Z",
+  "updated_at": "2026-11-24T04:45:51Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -1836,6 +1836,357 @@
           "id": "xai/grok-4.20-reasoning"
         }
       ]
+    }
+  },
+  "model_metadata": {
+    "openai": {
+      "gpt-6.2-astra": {
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "structured_output": true,
+        "temperature": false,
+        "family": "gpt-6"
+      },
+      "gpt-6.2-sol": {
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "structured_output": true,
+        "temperature": false,
+        "family": "gpt-6"
+      },
+      "gpt-6-astra": {
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "gpt-6"
+      }
+    },
+    "deepseek": {
+      "deepseek-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4.1-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4-flash-vision-exp": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      }
+    }
+  },
+  "context_lengths": {
+    "default": {
+      "claude-fable-5": 1000000,
+      "claude-fable": 1000000,
+      "claude-mythos": 1000000,
+      "claude-opus-5": 1000000,
+      "claude-sonnet-5": 1000000,
+      "claude-haiku-5": 1000000,
+      "claude-opus-4-8": 1000000,
+      "claude-opus-4.8": 1000000,
+      "claude-opus-4-7": 1000000,
+      "claude-opus-4.7": 1000000,
+      "claude-opus-4-6": 1000000,
+      "claude-sonnet-4-6": 1000000,
+      "claude-opus-4.6": 1000000,
+      "claude-sonnet-4.6": 1000000,
+      "claude": 200000,
+      "gpt-6.2-astra": 1050000,
+      "gpt-6.2-sol": 1050000,
+      "gpt-6-astra": 1050000,
+      "gpt-6.1-sol": 1050000,
+      "gpt-6.1-terra": 1050000,
+      "gpt-6-sol": 1050000,
+      "gpt-6-luna": 1050000,
+      "gpt-5.6": 1050000,
+      "gpt-5.6-luna": 1050000,
+      "gpt-5.6-terra": 1050000,
+      "gpt-5.6-sol": 1050000,
+      "gpt-5.5": 1050000,
+      "gpt-5.4-nano": 400000,
+      "gpt-5.4-mini": 400000,
+      "gpt-5.4": 1050000,
+      "gpt-5.3-codex-spark": 128000,
+      "gpt-5.1-chat": 128000,
+      "gpt-5": 400000,
+      "gpt-4.1": 1047576,
+      "gpt-4": 128000,
+      "gemini": 1048576,
+      "gemma-4": 256000,
+      "gemma4": 256000,
+      "gemma-4-31b": 256000,
+      "gemma-3": 131072,
+      "gemma": 8192,
+      "deepseek-v4-pro": 1000000,
+      "deepseek-v4.1-flash": 1000000,
+      "deepseek-v4-flash": 1000000,
+      "deepseek-chat": 1000000,
+      "deepseek-reasoner": 1000000,
+      "deepseek-flash": 1000000,
+      "deepseek": 128000,
+      "llama": 131072,
+      "muse-spark-1.3": 1048576,
+      "muse-spark": 1048576,
+      "inkling": 1048576,
+      "qwen3.8-max": 1000000,
+      "qwen3.8-flash": 1000000,
+      "qwen3.6-plus": 1048576,
+      "qwen3.7-plus": 1048576,
+      "qwen3-coder-plus": 1000000,
+      "qwen3-coder": 262144,
+      "qwen3-max": 262144,
+      "qwen": 131072,
+      "minimax-m3": 1000000,
+      "minimax": 204800,
+      "glm-5.3": 1048576,
+      "glm-5.3-flash": 1048576,
+      "glm-5.3:batch": 1048576,
+      "glm-5.3:us": 1048576,
+      "glm-5.3-flash:batch": 1048576,
+      "glm-5.3-flash:us": 1048576,
+      "glm-5.3-flashx": 1048576,
+      "glm-5.2": 1048576,
+      "glm-5.2:free": 256000,
+      "glm-5.1": 204800,
+      "glm-5-turbo": 202752,
+      "glm-5v-turbo": 202752,
+      "glm-5": 204800,
+      "glm-4.7-flash": 202752,
+      "glm-4.7": 204800,
+      "glm-4.6v": 131072,
+      "glm-4.6": 204800,
+      "glm": 202752,
+      "grok-composer": 200000,
+      "grok-build-latest": 500000,
+      "grok-build": 256000,
+      "grok-code-fast": 256000,
+      "grok-2-vision": 8192,
+      "grok-4-fast": 2000000,
+      "grok-4.20": 1000000,
+      "grok-4.7": 500000,
+      "grok-4.6": 500000,
+      "grok-4.5": 500000,
+      "grok-4.3": 1000000,
+      "grok-4": 256000,
+      "grok-3": 131072,
+      "grok-2": 131072,
+      "grok": 131072,
+      "kimi-k3": 1048576,
+      "kimi": 262144,
+      "solar-open2": 262144,
+      "solar-pro3": 131072,
+      "solar-pro2": 65536,
+      "solar-mini": 32768,
+      "solar-": 524288,
+      "hy4-preview": 1048576,
+      "hy3-preview": 262144,
+      "hy3": 262144,
+      "x-preview-f": 1048576,
+      "ox-alpha": 1048576,
+      "union-alpha": 262144,
+      "nemotron-3.5-lightning": 1000000,
+      "nemotron-3.5-super-vl": 1000000,
+      "nemotron": 131072,
+      "laguna-s-2.1": 262144,
+      "laguna-xs-2.1": 262144,
+      "trinity": 262144,
+      "elephant": 262144,
+      "Qwen/Qwen3.5-397B-A17B": 131072,
+      "Qwen/Qwen3.5-35B-A3B": 131072,
+      "deepseek-ai/DeepSeek-V3.2": 65536,
+      "moonshotai/Kimi-K2.5": 262144,
+      "moonshotai/Kimi-K2.6": 262144,
+      "moonshotai/Kimi-K2-Thinking": 262144,
+      "MiniMaxAI/MiniMax-M2.5": 204800,
+      "XiaomiMiMo/MiMo-V2-Flash": 262144,
+      "mimo-v2.6-pro-ultraspeed": 1048576,
+      "mimo-v2.6-pro": 1048576,
+      "mimo-v2.6-flash": 1048576,
+      "mimo-v2-pro": 1048576,
+      "mimo-v2.5-pro": 1048576,
+      "mimo-v2.5": 1048576,
+      "mimo-v2-omni": 262144,
+      "mimo-v2-flash": 262144,
+      "zai-org/GLM-5": 202752
+    },
+    "bedrock": {
+      "xai.grok-4.6": 500000,
+      "anthropic.claude-fable-5": 1000000,
+      "anthropic.claude-fable": 1000000,
+      "anthropic.claude-sonnet-5": 1000000,
+      "anthropic.claude-opus-5": 1000000,
+      "anthropic.claude-opus-4-8": 1000000,
+      "anthropic.claude-opus-4-7": 1000000,
+      "anthropic.claude-mythos": 1000000,
+      "anthropic.claude-opus-4-6": 1000000,
+      "anthropic.claude-sonnet-4-6": 1000000,
+      "anthropic.claude-sonnet-4-5": 200000,
+      "anthropic.claude-haiku-4-5": 200000,
+      "anthropic.claude-opus-4": 200000,
+      "anthropic.claude-sonnet-4": 200000,
+      "anthropic.claude-3-5-sonnet": 200000,
+      "anthropic.claude-3-5-haiku": 200000,
+      "anthropic.claude-3-opus": 200000,
+      "anthropic.claude-3-sonnet": 200000,
+      "anthropic.claude-3-haiku": 200000,
+      "amazon.nova-pro": 300000,
+      "amazon.nova-lite": 300000,
+      "amazon.nova-micro": 128000,
+      "meta.llama4-maverick": 128000,
+      "meta.llama4-scout": 128000,
+      "meta.llama3-3-70b-instruct": 128000,
+      "mistral.mistral-large": 128000,
+      "deepseek.v3": 128000,
+      "amazon.nova-2-lite": 1000000,
+      "ai21.jamba-1-5": 256000,
+      "google.gemma-4-26b": 256000,
+      "google.gemma-4-31b": 256000,
+      "minimax.minimax-m2.1": 196000,
+      "minimax.minimax-m2.5": 196000,
+      "mistral.devstral-2": 256000,
+      "mistral.mistral-large-3": 256000,
+      "moonshotai.kimi-k2.5": 256000,
+      "moonshot.kimi-k2-thinking": 256000,
+      "moonshotai.kimi-k2-thinking": 256000,
+      "moonshotai.kimi-k3": 1000000,
+      "qwen.qwen3-coder": 256000,
+      "zai.glm-4.7": 203000,
+      "zai.glm-5": 200000,
+      "zai.glm-5.3": 1000000,
+      "openai.gpt-6.1-sol": 1000000,
+      "openai.gpt-6-astra": 1050000,
+      "openai.gpt-6.1-terra": 1050000,
+      "openai.gpt-6-sol": 1050000,
+      "openai.gpt-6-luna": 1050000,
+      "openai.gpt-5.5": 1050000,
+      "openai.gpt-5.6-sol": 1050000,
+      "openai.gpt-5.6-terra": 1050000,
+      "openai.gpt-5.6-luna": 1050000,
+      "openai.gpt-5.4": 1050000
+    },
+    "codex_oauth": {
+      "gpt-6.2-astra": 272000,
+      "gpt-6.2-sol": 500000,
+      "gpt-6-astra": 272000,
+      "gpt-6.1-sol": 272000,
+      "gpt-6-sol": 272000,
+      "gpt-6-luna": 272000,
+      "gpt-5.1-codex-max": 272000,
+      "gpt-5.1-codex-mini": 272000,
+      "gpt-5.3-codex": 272000,
+      "gpt-5.3-codex-spark": 128000,
+      "gpt-5.2-codex": 272000,
+      "gpt-5.4-mini": 272000,
+      "gpt-5.6-sol": 272000,
+      "gpt-5.6-terra": 272000,
+      "gpt-5.6-luna": 272000,
+      "gpt-daybreak-blue-latest": 272000,
+      "gpt-5.5": 272000,
+      "gpt-5.4": 272000,
+      "gpt-5.2": 272000,
+      "gpt-5": 272000
     }
   }
 }

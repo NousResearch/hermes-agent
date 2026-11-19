@@ -27,6 +27,7 @@ from agent.model_metadata_memo_keys import endpoint_disk_slot as _endpoint_disk_
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
+from hermes_cli.model_catalog import extend_context_lengths
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
@@ -1921,7 +1922,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
         slug = _codex_catalog_key(live, lookup_bare)
         if slug is not None:
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
-    hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
+    hit = _longest_key_match(extend_context_lengths("codex_oauth", _CODEX_OAUTH_CONTEXT_FALLBACK), lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
 
@@ -2069,7 +2070,7 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     )
     # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
     # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    hit = _longest_key_match(extend_context_lengths("default", DEFAULT_CONTEXT_LENGTHS), model.lower())
     if hit:
         logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
         return hit[1]
@@ -2314,8 +2315,7 @@ def get_model_context_length(
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    if hit:
+    if hit := _longest_key_match(extend_context_lengths("default", DEFAULT_CONTEXT_LENGTHS), model.lower()):
         return hit[1]
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.
     _warn_context_length_fallback(model, base_url)

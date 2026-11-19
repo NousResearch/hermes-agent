@@ -5,8 +5,6 @@ URL and its credential), ``payload`` (the report body: contract v1, ``status`` c
 ``transport`` (one POST over a fresh connection, the reply classified), ``reporter`` (the schedule,
 the backoff, the one-sender lock and the goodbye before a self-suspend). The contract and its test
 vectors are in ``tests/fixtures/status_report/v1``.
+
+Nothing is imported here: the gateway imports ``reporter`` only when the stamp is set.
 """
-
-from gateway.status_report.reporter import INTERVAL_S, StatusReporter, status_reporter_from_launch_env
-
-__all__ = ["INTERVAL_S", "StatusReporter", "status_reporter_from_launch_env"]

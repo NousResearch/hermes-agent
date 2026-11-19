@@ -31,8 +31,10 @@ from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, loop_heartbeat_forever,
 )
-from gateway.status_report import INTERVAL_S as STATUS_REPORT_INTERVAL_S, StatusReporter, status_reporter_from_launch_env
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from gateway.status_report.reporter import StatusReporter
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1650,13 +1652,22 @@ class GatewayStartupMixin:
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
-        reporter = self._status_reporter = status_reporter_from_launch_env()
-        if reporter is not None:
-            logger.info("status report: on, reporting gateway status about every %.0fs", STATUS_REPORT_INTERVAL_S)
-            self._spawn_supervised(lambda: reporter.run(lambda: self._running), "status_report_watcher")
+        self._start_status_report_watcher()
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
+
+    def _start_status_report_watcher(self) -> None:
+        """Only when the launch environment carries the stamp; the reporter is imported only then,
+        so a gateway with reports off loads none of it."""
+        from gateway.status_report.target import STATUS_REPORT_URL_ENV
+        if not os.environ.get(STATUS_REPORT_URL_ENV, "").strip():
+            return
+        from gateway.status_report.reporter import INTERVAL_S, status_reporter_from_launch_env
+        reporter = self._status_reporter = status_reporter_from_launch_env()
+        if reporter is not None:
+            logger.info("status report: on, reporting gateway status about every %.0fs", INTERVAL_S)
+            self._spawn_supervised(lambda: reporter.run(lambda: self._running), "status_report_watcher")
 
     async def _suspend_after_status_goodbye(self, lever, *args) -> bool:
         reporter = self._status_reporter

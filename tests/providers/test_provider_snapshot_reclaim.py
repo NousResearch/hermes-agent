@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import types
 from pathlib import Path
 
@@ -127,7 +126,7 @@ def test_a_lock_failure_keeps_its_cause_and_leaves_no_root(loader, monkeypatch):
     assert not [e for e in _parent().iterdir() if e.name.startswith(reload._OWNED_PREFIX)]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs os.fork")
+@pytest.mark.platforms("posix")  # os.fork
 def test_a_forked_child_exiting_keeps_its_parents_copy(loader):
     reload, hooks = loader
     root = reload._new_root()

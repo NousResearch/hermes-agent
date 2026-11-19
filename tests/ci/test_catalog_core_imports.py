@@ -53,6 +53,14 @@ try:
     from sqlite_support import apply_wal_with_fallback, wal_mode
 except ImportError:
     from hermes_state_wal import apply_wal_with_fallback, wal_mode
+def data_dir():
+    try:
+        from plugins.plugin_storage import plugin_data_dir
+    except Exception:
+        try:
+            from hermes_constants import get_hermes_home
+        except Exception:
+            get_hermes_home = None
 """
 
 
@@ -83,6 +91,8 @@ def core(tmp_path: Path):
         "hermes_state_wal.py": WAL,
         "sqlite_support.py": WAL,
         "hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n",
+        "plugins/plugin_storage.py": "def plugin_data_dir(name): ...\n",
+        "hermes_constants.py": "def get_hermes_home(): ...\n",
     })
     return repo, base
 
@@ -119,6 +129,12 @@ def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is
                    "hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n"})
     assert _check(repo, index, {"tools/registry.py": "def read():\n    return globals().get('x')\n"}) == [
         ("__init__.py:2", "tools.registry.registry_helper")]
+
+
+def test_a_fallback_nested_in_the_handler_keeps_the_plugin_working(index, core):
+    assert _check(core[0], index, {"plugins/plugin_storage.py": None}) == []
+    # With the nested fallback gone too, the plugin runs on neither: the surviving branch is named.
+    assert _check(core[0], index, {"hermes_constants.py": None}) == [("__init__.py:12", "hermes_constants.get_hermes_home")]
 
 
 def test_the_label_lets_an_intended_break_through(index, core, monkeypatch, capsys):

@@ -46,7 +46,13 @@ if str(ROOT) not in sys.path:
 
 from hermes_agent.compat.finder import current_name
 from hermes_agent.compat.paths import moves_from_source
-from hermes_cli.plugin_validate_private_imports import CoreImports, ImportChoice, ImportSite, hermes_import_sites
+from hermes_cli.plugin_validate_private_imports import (
+    CoreImports,
+    ImportBranch,
+    ImportChoice,
+    ImportSite,
+    hermes_import_sites,
+)
 
 
 # ── index ────────────────────────────────────────────────────────────────────────────────────────────
@@ -81,6 +87,24 @@ def _site(item: list) -> ImportSite:
     return ImportSite(rel, int(line), module, name)
 
 
+def _branch_json(branch: ImportBranch) -> list:
+    """A branch is its sites, then each nested ``try`` as ``{"try": [branch, ...]}``."""
+    return [*(_site_json(site) for site in branch.sites), *({"try": _choice_json(c)} for c in branch.choices)]
+
+
+def _choice_json(choice: ImportChoice) -> list:
+    return [_branch_json(branch) for branch in choice.branches]
+
+
+def _branch(items: list) -> ImportBranch:
+    return ImportBranch(tuple(_site(i) for i in items if isinstance(i, list)),
+                        tuple(_choice(i["try"]) for i in items if isinstance(i, dict)))
+
+
+def _choice(branches: list) -> ImportChoice:
+    return ImportChoice(tuple(_branch(b) for b in branches))
+
+
 def _row_json(row: Row) -> dict:
     """The on-disk row. A plain import is kept once per (module, name), at its first site."""
     out: dict = {"sha": row.sha, **({"subdir": row.subdir} if row.subdir else {})}
@@ -92,15 +116,13 @@ def _row_json(row: Row) -> dict:
     if first:
         out["imports"] = [_site_json(site) for site in first.values()]
     if row.imports.choices:
-        out["choices"] = [[[_site_json(site) for site in branch] for branch in choice.branches]
-                          for choice in row.imports.choices]
+        out["choices"] = [_choice_json(choice) for choice in row.imports.choices]
     return out
 
 
 def _row(data: dict) -> Row:
     imports = CoreImports(tuple(_site(item) for item in data.get("imports", [])),
-                          tuple(ImportChoice(tuple(tuple(_site(item) for item in branch) for branch in choice))
-                                for choice in data.get("choices", [])))
+                          tuple(_choice(c) for c in data.get("choices", [])))
     return Row(data["sha"], data.get("subdir", ""), imports, data.get("error", ""))
 
 
@@ -300,19 +322,34 @@ class Break:
         return f"{self.site.module}.{self.site.name}" if self.site.name else self.site.module
 
 
-def _usable(resolver: Resolver, branch: tuple[ImportSite, ...]) -> bool:
-    return all(resolver.resolves(site.module, site.name) for site in branch)
+def _runs(resolver: Resolver, branch: ImportBranch) -> bool:
+    """The block runs: its imports resolve and no nested ``try`` fails as a whole."""
+    return (all(resolver.resolves(site.module, site.name) for site in branch.sites)
+            and all(any(_runs(resolver, b) for b in choice.branches) for choice in branch.choices))
+
+
+def _runs_on_hermes(resolver: Resolver, branch: ImportBranch) -> bool:
+    """The block runs AND reaches Hermes through at least one import, directly or in a nested ``try``."""
+    return _runs(resolver, branch) and (bool(branch.sites) or any(
+        _runs_on_hermes(resolver, b) for choice in branch.choices for b in choice.branches))
+
+
+def _sites(branch: ImportBranch) -> list[ImportSite]:
+    return [*branch.sites, *(s for choice in branch.choices for b in choice.branches for s in _sites(b))]
 
 
 def _lost_sites(choice: ImportChoice, before: Resolver, after: Resolver) -> list[ImportSite]:
-    """The sites to report when ``choice`` works on ``before`` and not on ``after``: what the branches that
-    worked on ``before`` no longer resolve. A ``try`` that can run without Hermes imports (an empty
-    branch) is judged on its import branches, so losing them is still reported, as a lost feature."""
-    branches = [branch for branch in choice.branches if branch]
-    if any(_usable(after, branch) for branch in branches):
+    """The sites to report when no branch of ``choice`` that reaches Hermes runs on ``after`` while one did on
+    ``before``: what those branches no longer resolve. A ``try`` that still runs without Hermes (a handler
+    with no Hermes import) has lost the feature, so it is reported too."""
+    if any(_runs_on_hermes(after, branch) for branch in choice.branches):
         return []
-    worked = [branch for branch in branches if _usable(before, branch)]
-    return [site for branch in worked for site in branch if not after.resolves(site.module, site.name)]
+    worked = [branch for branch in choice.branches if _runs_on_hermes(before, branch)]
+    return [site for branch in worked for site in _sites(branch) if not after.resolves(site.module, site.name)]
+
+
+def _degrades(choice: ImportChoice, after: Resolver) -> bool:
+    return any(_runs(after, branch) for branch in choice.branches)
 
 
 def _changed_paths(base: Tree, head: Tree) -> list[str]:
@@ -344,8 +381,8 @@ def breaks(index: dict[str, Row], base: Tree, head: Tree) -> list[Break]:
             if relevant([site]) and before.resolves(site.module, site.name) and not after.resolves(site.module, site.name):
                 found.append(Break(plugin, site, guarded=False))
         for choice in imports.choices:
-            if relevant([site for branch in choice.branches for site in branch]):
-                found += [Break(plugin, site, choice.degrades) for site in _lost_sites(choice, before, after)]
+            if relevant([site for branch in choice.branches for site in _sites(branch)]):
+                found += [Break(plugin, site, _degrades(choice, after)) for site in _lost_sites(choice, before, after)]
     return found
 
 

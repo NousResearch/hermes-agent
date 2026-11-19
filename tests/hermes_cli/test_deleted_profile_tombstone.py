@@ -468,8 +468,19 @@ class TestMkdirBoundaryElevatedGrantSelection:
         home = create_profile("worker", no_alias=True, no_skills=True)
         self._forget_creation(granted)
 
-        mkdir_under_hermes_home(home / "missing" / ".." / "dest")
-        assert granted == [home / "dest"] and (home / "dest").is_dir() and not (home / "missing").exists()
+        target = home / "missing" / ".." / "dest"
+        assert mkdir_under_hermes_home(target).is_dir()
+        assert granted == [home / "missing", target]
+
+    def test_dotdot_after_a_symlink_follows_the_link_like_mkdir(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        (profile_env / "outside" / "inner").mkdir(parents=True)
+        (home / "link").symlink_to(profile_env / "outside" / "inner", target_is_directory=True)
+        target = home / "link" / ".." / "dest"
+        assert mkdir_under_hermes_home(target).is_dir()
+        assert (profile_env / "outside" / "dest").is_dir() and not (home / "dest").exists()
 
     def test_default_home_grant_selection_is_unchanged(self, profile_env, granted):
         from hermes_constants import mkdir_under_hermes_home

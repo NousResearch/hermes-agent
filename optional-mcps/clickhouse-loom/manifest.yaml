@@ -1,0 +1,37 @@
+manifest_version: 1
+
+name: clickhouse-loom
+description: Connect Hermes to a user-run ClickHouse Loom MCP endpoint.
+source: https://github.com/ClickHouse/loom
+
+transport:
+  type: http
+  url: "${LOOM_MCP_SERVER_URL}"
+
+auth:
+  type: api_key
+  env:
+    - name: LOOM_MCP_SERVER_URL
+      prompt: "Loom MCP URL (full URL ending in /mcp?toolset=core)"
+      required: true
+      secret: false
+    - name: MCP_CLICKHOUSE_LOOM_API_KEY
+      prompt: "Loom access token (JWT, without the Bearer prefix)"
+      required: true
+      secret: true
+
+post_install: |
+  Run a Loom server you control before connecting. Use its full MCP URL,
+  for example https://loom.example.com/mcp?toolset=core, and a token scoped
+  to the namespace and operations you want this agent to access. Use HTTPS
+  for remote connections. The Hermes backend must be able to reach it.
+
+  This entry configures a connection to Loom's MCP tools. It does not install
+  a Hermes memory provider, enable automatic capture, or configure
+  protected-session binding. Live memory operations and protected-session
+  behavior have not been validated through this entry. Review the tools
+  before enabling them, including tools that change stored data. Text sent
+  to these tools goes to your Loom server and its processing providers.
+
+  Run `hermes mcp configure clickhouse-loom` to review the discovered tools.
+  Start a new Hermes session after setup to load them.

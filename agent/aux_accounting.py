@@ -41,10 +41,11 @@ class ServingCredential:
         base_url = str(getattr(client, "base_url", "") or "")
         if not base_url:
             return None
-        # The SDK parks a token source in ``_api_key_provider`` and leaves ``.api_key`` empty.
-        if callable(getattr(client, "__dict__", {}).get("_api_key_provider")):
-            return cls(base_url, None)
+        # The SDK parks a token source in ``_api_key_provider`` and writes each minted token to
+        # ``.api_key``; wrapper clients (native Anthropic) keep the token source in ``.api_key`` itself.
         api_key = getattr(client, "api_key", None)
+        if callable(getattr(client, "__dict__", {}).get("_api_key_provider")) or callable(api_key):
+            return cls(base_url, None)
         return cls(base_url, api_key.strip() or None) if isinstance(api_key, str) else None
 
     def serves(self, base_url: Optional[str]) -> bool:

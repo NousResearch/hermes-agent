@@ -192,3 +192,35 @@ def test_async_aux_pricing_after_a_same_provider_retry_uses_the_serving_key(monk
     assert client.chat.completions.create.call_count == 2
     assert keys == ["serving-key-2222"]
     assert [r["estimated_cost_usd"] for r in rows] == [0.125]
+
+
+def _priced_keys(monkeypatch, serving, base_url="http://127.0.0.1:47970/v1"):
+    """Pricing-lookup keys for one aux response at *base_url*, whose saved model key is ``saved-key-1111``."""
+    from hermes_cli.config import save_config
+
+    monkeypatch.setenv("LAB_LLAMA_KEY", "saved-key-1111")
+    save_config({"model": {"default": "m", "provider": "custom", "base_url": base_url, "key_env": "LAB_LLAMA_KEY"}})
+    keys = []
+    monkeypatch.setattr(usage_pricing, "estimate_usage_cost", lambda model, usage, **kw: keys.append(kw["api_key"]) or
+                        SimpleNamespace(amount_usd=None))
+    token = aux_accounting.set_accounting_context(SimpleNamespace(record_auxiliary_usage=lambda *a, **k: None), "s")
+    try:
+        aux_accounting.record_aux_usage(
+            SimpleNamespace(model="m", usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)), "title_generation",
+            provider="custom", base_url=base_url, serving=serving)
+    finally:
+        aux_accounting.reset_accounting_context(token)
+    return keys
+
+
+def test_aux_pricing_mints_nothing_for_a_wrapper_client_holding_a_token_source(monkeypatch):
+    """A native-Anthropic wrapper keeps a ``key_cmd`` token source in ``.api_key``: keyless, unminted."""
+    from unittest.mock import MagicMock
+
+    from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+    minted = []
+    base = "http://127.0.0.1:47970/v1"
+    client = AnthropicAuxiliaryClient(MagicMock(), "m", lambda: minted.append(1) or "minted", base)
+    assert _priced_keys(monkeypatch, aux_accounting.ServingCredential.of(client), base) == [None]
+    assert minted == []

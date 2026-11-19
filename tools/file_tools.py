@@ -120,7 +120,7 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
 # Above this size, a wide read (limit > 200) gets a hint toward targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000
 
-def _clipped_line_hint(content: str, path: str) -> "str | None":
+def _clipped_line_hint(content: str, path: str, python: str = "python3") -> "str | None":
     """Where the rest of a clamped long line is, or None when no line was clamped.
 
     Without it the model only sees ``... [truncated]`` and re-reads the same page (offset pages by
@@ -133,8 +133,10 @@ def _clipped_line_hint(content: str, path: str) -> "str | None":
     and nothing else has that shape. The one command form streams from that line (``tail -n +N``),
     keeps at most ``8 * width`` bytes (enough for ``2 * width`` characters of 4-byte UTF-8; ``head``
     closing the pipe stops ``tail``), and slices decoded characters of the first line, so it is right
-    for any text and stays bounded on a multi-GB single line. *path* is the path the backend read; a leading ``~/`` stays unquoted
-    so the backend's shell expands it."""
+    for any text and stays bounded on a multi-GB single line. A BOM is stripped only on line 1, as
+    read_file does. *python* is the backend's interpreter (``_python_interpreter_cmd``: the agent's
+    own on local, which dodges the Windows Store ``python3`` stub). *path* is the path the backend
+    read; a leading ``~/`` stays unquoted so the backend's shell expands it."""
     from tools.tool_output_limits import get_max_line_length
     width = get_max_line_length()
     clipped = [int(n) for n in re.findall(
@@ -143,11 +145,18 @@ def _clipped_line_hint(content: str, path: str) -> "str | None":
         return None
     shown = ", ".join(map(str, clipped[:5])) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
     quoted = "~/" + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(path)
-    decode = (f"import sys; print(sys.stdin.buffer.read().decode('utf-8-sig', 'replace')"
+    codec = "utf-8-sig" if clipped[0] == 1 else "utf-8"
+    decode = (f"import sys; print(sys.stdin.buffer.read().decode('{codec}', 'replace')"
               f".split(chr(10), 1)[0][{width}:{2 * width}])")
-    command = f"tail -n +{clipped[0]} {quoted} | head -c {8 * width} | python3 -c \"{decode}\""
+    command = f"tail -n +{clipped[0]} {quoted} | head -c {8 * width} | {python} -c \"{decode}\""
     return (f"Line(s) {shown} were cut at {width:,} characters. read_file pages by line, so offset cannot "
             f"reach the rest; read the next part of a line with the terminal: {command}")
+
+
+def _hint_python(file_ops) -> str:
+    """The interpreter a terminal command on this backend should name (``python3`` if unknown)."""
+    pick = getattr(file_ops, "_python_interpreter_cmd", None)
+    return pick() if callable(pick) else "python3"
 
 
 def _add_read_size_hint(result_dict: dict, clip_hint: "str | None", file_size: int, limit: int) -> None:
@@ -760,7 +769,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         # Clamp facts come from the clamp's own output: budget trim and redaction both change it. A
         # transcoded (UTF-16) read gets none: its bytes on disk are not the text the model saw.
-        clip_hint = (_clipped_line_hint(result.content, read_path) if result_dict.get("truncated_lines")
+        clip_hint = (_clipped_line_hint(result.content, read_path, _hint_python(file_ops)) if result_dict.get("truncated_lines")
                      and not str(result_dict.get("hint") or "").startswith("Transcoded") else None)
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully

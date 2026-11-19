@@ -68,7 +68,7 @@ export interface BackendMigrationPlan {
   webapp_bundle_missing: string | null;
   running_turns: number;
   blockers: string[];
-  unsupported: { supervisor: string | null; unit: string | null; instructions: string }[];
+  unsupported: { supervisor: string | null; unit: string | null; instructions: string; steps?: string[] }[];
   notices: string[];
   nothing_to_do: boolean;
   /** An old backend was found (movable or not). A blocker alone (an unreadable config.yaml) is no

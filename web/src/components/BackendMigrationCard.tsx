@@ -215,6 +215,11 @@ function PlanDetails({ plan: p, profile, busy, onMove }: {
       {p.unsupported.map((u) => (
         <div key={u.instructions} className="text-warning">
           This server cannot be moved from here. {qualifyCommands(u.instructions, profile)}
+          {blockers.length === 0 && !!u.steps?.length && (
+            <ol className="list-decimal pl-6">
+              {u.steps.map((step, index) => <li key={index}><code>{step}</code></li>)}
+            </ol>
+          )}
         </div>
       ))}
       {blockers.map((b) => (

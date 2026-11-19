@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -16,7 +17,8 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
-from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+from hermes_cli.colors import should_use_color
+from hermes_cli.kanban_output import WATCH_QUIET_KINDS, _err, _fmt_ts, _print_json, format_watch_event
 
 
 def _kanban_config() -> dict:
@@ -269,6 +271,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 def _cmd_watch(args: argparse.Namespace) -> int:
     """Live-stream task_events to the terminal."""
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()} if args.kinds else None
+    fmt = getattr(args, "format", None) or "auto"
+    pretty = fmt == "pretty" or (fmt == "auto" and sys.stdout.isatty())
+    use_color = pretty and should_use_color()
     print(f"Watching kanban events (initial board '{kb.get_current_board()}'). Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.
     with kbc.connect_closing() as conn:
@@ -278,8 +283,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         nonlocal cursor
         with kbc.connect_closing() as conn:
             rows = conn.execute(
-                "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at,        t.assignee, "
-                "t.tenant FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id WHERE e.id > ? "
+                "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, t.assignee, t.tenant, "
+                "t.title FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id WHERE e.id > ? "
                 "ORDER BY e.id ASC LIMIT 200",
                 (cursor,),
             ).fetchall()
@@ -288,10 +293,21 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             if (kinds and r["kind"] not in kinds) or (args.assignee and r["assignee"] != args.assignee) \
                     or (args.tenant and r["tenant"] != args.tenant):
                 continue
+            if pretty and not kinds and r["kind"] in WATCH_QUIET_KINDS:
+                continue
             try:
                 payload = json.loads(r["payload"]) if r["payload"] else None
             except Exception:
                 payload = None
+            if pretty:
+                for line in format_watch_event(
+                    kind=r["kind"], task_id=r["task_id"], assignee=r["assignee"], title=r["title"],
+                    payload=payload, ts=kb._to_epoch(r["created_at"]),
+                    width=shutil.get_terminal_size((100, 24)).columns, use_color=use_color,
+                ):
+                    print(line)
+                sys.stdout.flush()
+                continue
             pl = f" {payload}" if payload else ""
             print(
                 f"[{_fmt_ts(kb._to_epoch(r['created_at']))}] {r['task_id']:10s} "

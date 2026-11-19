@@ -7,12 +7,13 @@ Covers:
 """
 
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-from hermes_cli.sessions_cmd_browse import _session_browse_picker
+from hermes_cli.sessions_cmd_browse import _content_hits, _format_row, _session_browse_picker
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -156,6 +157,162 @@ class TestCursesBrowse:
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────
 
+
+
+# ─── Message-content search ─────────────────────────────────────────────────
+
+def _hit(session_id=None, role=None, snippet=None):
+    """One ``SearchHit``-shaped row (the picker reads attributes, not keys)."""
+    return SimpleNamespace(message_id="m1", session_id=session_id, role=role, snippet=snippet)
+
+
+class TestContentHits:
+    """`_content_hits` — FTS5 over message text, the half `_match` cannot cover."""
+
+    def _store(self, rows):
+        store = MagicMock()
+        store.search.search_messages.return_value = tuple(rows)
+        return store
+
+    def test_prefixes_tokens_and_dedupes_sessions(self):
+        store = self._store([
+            _hit("s9", "assistant", "tool json mentioning >>>brave<<<"),
+            _hit("s9", "user", "please fix >>>brave<<< autocomplete"),
+            _hit("s4", "assistant", "unrelated"),
+        ])
+
+        hits = _content_hits(store, "Brave autocomplete")
+
+        # user excerpt wins over the higher-ranked assistant one; one entry per session
+        assert hits == {"s9": "please fix brave autocomplete", "s4": "unrelated"}
+        kwargs = store.search.search_messages.call_args.kwargs
+        assert kwargs["query"] == "Brave* autocomplete*"
+        assert kwargs["role_filter"] == ["user", "assistant"]
+        assert "role" in kwargs["fields"]
+
+    def test_quoted_phrase_keeps_its_shape(self):
+        store = self._store([])
+
+        _content_hits(store, '"session browse"')
+
+        assert store.search.search_messages.call_args.kwargs["query"] == '"session browse"'
+
+    def test_boolean_operators_are_not_prefix_wildcarded(self):
+        store = self._store([])
+
+        _content_hits(store, "brave OR firefox NOT edge")
+
+        assert store.search.search_messages.call_args.kwargs["query"] == "brave* OR firefox* NOT edge*"
+
+    def test_short_query_skips_the_index(self):
+        store = self._store([])
+        assert _content_hits(store, "b") == {}
+        store.search.search_messages.assert_not_called()
+
+    def test_no_store_or_store_error_degrades_to_empty(self):
+        assert _content_hits(None, "brave") == {}
+        store = MagicMock()
+        store.search.search_messages.side_effect = RuntimeError("search index unavailable")
+        assert _content_hits(store, "brave") == {}
+
+
+class TestContentSearchInPicker:
+    """A session whose TITLE says nothing about the topic must still be findable by typing."""
+
+    def _run_with_keys(self, sessions, key_sequence, store):
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = key_sequence
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                try:
+                    func(mock_stdscr)
+                except StopIteration:
+                    pass  # key sequence exhausted
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    return _session_browse_picker(sessions, store=store)
+
+    def _store(self, rows, records=None):
+        store = MagicMock()
+        store.sessions.lifecycle_statuses.return_value = {}
+        store.search.search_messages.return_value = tuple(rows)
+        records = records or {}
+        store.sessions.get.side_effect = lambda sid: records.get(sid)
+        return store
+
+    @staticmethod
+    def _record(session_id, title, started_at, last_activity_at=None):
+        return SimpleNamespace(
+            session_id=session_id, source="cli", title=title, message_count=12,
+            started_at=started_at, ended_at=None, last_activity_at=last_activity_at)
+
+    def test_message_only_match_is_listed_and_resumable(self):
+        sessions = [
+            {"id": "s1", "source": "cli", "title": "Weekly prep", "preview": "", "last_active": time.time()},
+        ]
+        now = time.time()
+        store = self._store(
+            [_hit("s7", "user", "the >>>kubernetes<<< ingress broke again")],
+            {"s7": self._record("s7", "Notes", now - 7200, now - 3600)},
+        )
+
+        result = self._run_with_keys(sessions, [ord(c) for c in "kubernetes"] + [10], store)
+
+        assert result == "s7"
+
+    def test_content_rows_are_marked_and_snippet_shown(self):
+        sessions = [{"id": "s1", "source": "cli", "title": "Weekly prep", "preview": "", "last_active": time.time()}]
+        store = self._store([_hit("s1", "user", "kubernetes ingress broke")])
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = [ord(c) for c in "kubernetes"] + [27, 27]
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                try:
+                    func(mock_stdscr)
+                except StopIteration:
+                    pass
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    _session_browse_picker(sessions, store=store)
+
+        drawn = " ".join(str(c.args[2]) for c in mock_stdscr.addnstr.call_args_list)
+        assert "* Weekly prep" in drawn
+        assert "match: kubernetes ingress broke" in drawn
+
+    def test_title_match_is_not_starred(self):
+        """A row the title already explains stays unmarked, even when the text matches too."""
+        sessions = [{"id": "s1", "source": "cli", "title": "Weekly prep", "preview": "", "last_active": time.time()}]
+        store = self._store([_hit("s1", "user", "weekly prep agenda")])
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = [ord(c) for c in "weekly"] + [27, 27]
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                try:
+                    func(mock_stdscr)
+                except StopIteration:
+                    pass
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    _session_browse_picker(sessions, store=store)
+
+        drawn = " ".join(str(c.args[2]) for c in mock_stdscr.addnstr.call_args_list)
+        assert "Weekly prep" in drawn
+        assert "* Weekly prep" not in drawn
+
+
+def test_format_row_marks_message_matches():
+    row = {"id": "abcdef", "source": "cli", "title": "Weekly prep", "preview": "",
+           "message_count": 3, "last_active": time.time()}
+    plain = _format_row(dict(row), 120)
+    marked = _format_row({**row, "_hit": "excerpt"}, 120)
+    assert "Weekly prep" in plain and not plain.startswith("*")
+    assert marked.lstrip().startswith("* Weekly prep")
 
 
 # ─── Edge cases ──────────────────────────────────────────────────────────────

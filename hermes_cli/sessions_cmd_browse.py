@@ -1,6 +1,8 @@
-"""Interactive picker for ``hermes sessions browse``: curses UI with live search filtering and ``d``
+"""Interactive picker for ``hermes sessions browse``: curses UI with live search over session
+metadata (title / preview / id / source) and over message text (FTS5), plus ``d``
 delete-with-confirmation; numbered-list fallback when curses is unavailable (Windows, etc.)."""
 
+import re
 from typing import Optional
 
 from hermes_cli.timefmt import relative_time as _relative_time
@@ -50,6 +52,51 @@ def _match(s: dict, query: str) -> bool:
     )
 
 
+def _clean_snippet(text: str) -> str:
+    """FTS5 ``>>>term<<<`` snippet markers -> one plain line."""
+    return re.sub(r"\s+", " ", (text or "").replace(">>>", "").replace("<<<", "")).strip()
+
+
+def _content_hits(store, query: str, limit: int = 200, source: Optional[str] = None,
+                  exclude_sources=None) -> dict:
+    """``{session_id: snippet}`` for sessions whose MESSAGE TEXT matches *query* (FTS5).
+
+    This is the half of search the metadata filter cannot do: a session titled "Weekly prep"
+    whose body is all about Kubernetes is only reachable through its messages. Tokens get a
+    ``*`` suffix so partial words match. Best-effort by design — a store without a search index,
+    an older schema, or query syntax the tokenizer rejects must degrade to ``{}`` and leave the
+    title/preview filter working.
+    """
+    q = (query or "").strip()
+    if store is None or len(q) < 2:  # one char matches everything; not worth a scan
+        return {}
+    prefix_query = " ".join(
+        tok if tok.startswith('"') or tok.endswith("*") or tok.upper() in {"AND", "OR", "NOT"}
+        else tok + "*"
+        for tok in re.findall(r'"[^"]*"|\S+', q))
+    try:
+        rows = store.search.search_messages(
+            query=prefix_query, role_filter=["user", "assistant"],
+            source_filter=[source] if source else None,
+            exclude_sources=list(exclude_sources) if exclude_sources else None,
+            limit=limit, fields=("session_id", "role", "snippet"))
+    except Exception:  # health: allow BLE001 -- a broken/absent search index must not take down the title filter
+        return {}
+    hits: dict = {}
+    for row in rows or ():
+        sid = row.session_id
+        if not sid:
+            continue
+        sid = str(sid)
+        snippet = _clean_snippet(row.snippet or "")
+        prev = hits.get(sid)
+        # Prefer a USER message excerpt: assistant rows are often tool-call JSON, which reads as
+        # noise in a one-line footer. First user hit wins; assistant only fills a gap.
+        if prev is None or (row.role == "user" and not prev[1]):
+            hits[sid] = (snippet, row.role == "user")
+    return {sid: snippet for sid, (snippet, _is_user) in hits.items()}
+
+
 # Layout: [arrow 3] [title/preview flexible] [status 5] [msgs 5] [active 12] [src 6] [id 18]
 _FIXED_COLS = 3 + 5 + 2 + 5 + 2 + 12 + 6 + 18 + 6
 
@@ -58,6 +105,8 @@ def _format_row(s: dict, max_x: int) -> str:
     name_width = max(20, max_x - _FIXED_COLS)
     sid = s["id"][:18]
     name = ((s.get("title") or "").strip() or (s.get("preview") or "").strip())[:name_width] or sid
+    if s.get("_hit"):  # found through message text, not the title — flag it in the name column
+        name = f"* {name}"[:name_width]
     return (
         f"{name:<{name_width}}  {_session_status_tag(s.get('_status')):<5}  "
         f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active'), session_id=s['id']):<10}  "
@@ -68,14 +117,21 @@ def _format_row(s: dict, max_x: int) -> str:
 class _CursesBrowser:
     """State + render loop for the curses picker. ``run`` is the wrapper target."""
 
-    def __init__(self, curses, sessions, delete_fn):
+    def __init__(self, curses, sessions, delete_fn, store=None, source=None, exclude_sources=None):
         self.curses, self.sessions, self.delete_fn = curses, sessions, delete_fn  # delete_fn None => no delete
+        self.store = store  # message-content search + row hydration for hits outside the loaded page
+        self.source = source
+        self.exclude_sources = tuple(exclude_sources or ())
         self.result = None
         self.cursor = self.scroll = 0
         self.search = ""
+        self.hits = {}  # session_id -> matching message snippet
+        self.marked = {}  # session_id -> snippet, rows that matched only on message text
         self.confirm_delete = None  # session dict pending y/n confirmation
         self.flash = ""  # one-frame notice (e.g. "Deleted.")
         self.filtered = list(sessions)
+        self._by_id = {s.get("id"): s for s in sessions}
+        self._extra = {}  # hydrated rows for content hits beyond the preloaded page
 
     def _pair(self, n, fallback=0):
         return self.curses.color_pair(n) if self.curses.has_colors() else fallback
@@ -90,8 +146,62 @@ class _CursesBrowser:
         except self.curses.error:
             pass
 
+    def _row_for(self, session_id, snippet=""):
+        """Rich row for a content hit: the page-loaded row when we have it, else hydrate one."""
+        row = self._by_id.get(session_id) or self._extra.get(session_id)
+        if row is not None or self.store is None:
+            return row
+        try:
+            rec = self.store.sessions.get(session_id)
+        except Exception:  # health: allow BLE001 -- a missing/garbled row must not kill the picker
+            rec = None
+        if rec is None:
+            return None
+        if self.source and (rec.source or "") != self.source:
+            return None
+        if self.exclude_sources and (rec.source or "") in self.exclude_sources:
+            return None
+        row = {
+            "id": session_id,
+            "source": rec.source or "",
+            "title": rec.title or "",
+            "preview": snippet,
+            "message_count": rec.message_count,
+            "last_active": rec.last_activity_at or rec.ended_at or rec.started_at,
+            "started_at": rec.started_at,
+        }
+        self._extra[session_id] = row
+        _annotate_session_statuses([row], self.store)
+        return row
+
     def _refilter(self, reset_cursor=True):
-        self.filtered = [s for s in self.sessions if _match(s, self.search)] if self.search else list(self.sessions)
+        self.hits = {}
+        self.marked = {}  # session_id -> snippet, for rows that matched ONLY on message text
+        query = self.search.strip()
+        if not query:
+            self.filtered = list(self.sessions)
+        else:
+            rows = [s for s in self.sessions if _match(s, self.search)]
+            seen = {s.get("id") for s in rows}
+            # Message-content search: without it, a session whose title says nothing about the
+            # topic you remember discussing is unreachable from this picker.
+            self.hits = _content_hits(self.store, query, source=self.source,
+                                      exclude_sources=self.exclude_sources)
+            for sid, snippet in self.hits.items():
+                if sid in seen:
+                    continue  # already matched on metadata — no need to flag why it is here
+                extra = self._row_for(sid, snippet)
+                if extra is not None:
+                    rows.append(extra)
+                    seen.add(sid)
+                    self.marked[sid] = snippet
+            self.filtered = rows
+        for row in [*self.sessions, *self._extra.values()]:
+            row.pop("_hit", None)
+        for sid, snippet in self.marked.items():
+            row = self._by_id.get(sid) or self._extra.get(sid)
+            if row is not None:
+                row["_hit"] = snippet
         if reset_cursor:
             self.cursor = self.scroll = 0
 
@@ -99,8 +209,15 @@ class _CursesBrowser:
         c = self.curses
         if self.search:
             header, header_attr = f"  Browse sessions — filter: {self.search}█", c.A_BOLD | self._pair(3)
+            if self.search.strip():
+                n_hits = sum(1 for s in self.filtered if s.get("_hit"))
+                tail = f"  {len(self.filtered)} session" + ("" if len(self.filtered) == 1 else "s")
+                if n_hits:
+                    tail += f" · {n_hits} from message text"
+                if len(header) + len(tail) < max_x - 1:
+                    header += tail
         else:
-            header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+            header = "  Browse sessions — ↑↓ navigate  Enter select  Type to search  Esc quit"
             header_attr = c.A_BOLD | self._pair(2)
         self._put(stdscr, 0, 0, header, max_x - 1, header_attr)
         name_width = max(20, max_x - _FIXED_COLS)
@@ -111,7 +228,9 @@ class _CursesBrowser:
         visible_rows = max(max_y - 4, 1)  # header + col header + blank + footer
         filtered = self.filtered
         if not filtered:
-            self._put(stdscr, 3, 0, "  No sessions match the filter.", max_x - 1, c.A_DIM)
+            empty = ("  No sessions match — searched titles and message text." if self.store
+                     else "  No sessions match the filter.")
+            self._put(stdscr, 3, 0, empty, max_x - 1, c.A_DIM)
         else:
             self.cursor = max(min(self.cursor, len(filtered) - 1), 0)
             if self.cursor < self.scroll:
@@ -145,6 +264,9 @@ class _CursesBrowser:
                 footer += f" (filtered from {len(self.sessions)})"
             if self.delete_fn is not None and not self.search:
                 footer += "   d delete"
+            snippet = filtered[self.cursor].get("_hit") if filtered else ""
+            if snippet:  # why this row matched — the excerpt around the query, not just the title
+                footer += f"   match: {_clip(snippet, max(20, max_x - len(footer) - 12))}"
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
     def _handle_key(self, key) -> bool:
@@ -163,6 +285,7 @@ class _CursesBrowser:
                 self.flash = "Delete failed."
                 return False
             self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
+            self._by_id.pop(target["id"], None)
             self._refilter(reset_cursor=False)
             self.flash = "Deleted."
             return not self.sessions
@@ -243,11 +366,12 @@ def _fallback_picker(sessions: list) -> Optional[str]:
             return None
 
 
-def _session_browse_picker(sessions: list, store=None) -> Optional[str]:
+def _session_browse_picker(sessions: list, store=None, source=None, exclude_sources=None) -> Optional[str]:
     """Curses session browser with live search; returns the selected session ID, or None if cancelled.
 
-    With *store* (a storage interface handle): shows lifecycle status / message count per row, and ``d``
-    (while the filter is empty) prompts y/n and deletes through ``store.sessions.delete``.
+    With *store* (a storage interface handle): shows lifecycle status / message count per row, ``d``
+    (while the filter is empty) prompts y/n and deletes through ``store.sessions.delete``, and typing
+    searches message text (FTS5) in addition to title / preview / id / source.
     """
     if not sessions:
         print("No sessions found.")
@@ -273,7 +397,8 @@ def _session_browse_picker(sessions: list, store=None) -> Optional[str]:
             return False
     try:  # curses first; any failure (no curses module, odd terminal) falls back
         import curses
-        browser = _CursesBrowser(curses, sessions, _delete_session if store is not None else None)
+        browser = _CursesBrowser(curses, sessions, _delete_session if store is not None else None,
+                                 store=store, source=source, exclude_sources=exclude_sources)
         curses.wrapper(browser.run)
         return browser.result
     except Exception:

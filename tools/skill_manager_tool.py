@@ -218,10 +218,24 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
-            yield skill_md.parent
+    """Yield every skill directory under *root*, using the read-side skill index walk.
+
+    Delegates to :func:`agent.skill_utils.iter_skill_index_files` — the same
+    ``os.walk(followlinks=True)`` scan ``skills_list`` / ``skill_view`` use — instead of
+    ``Path.rglob``, which does not descend symlinked directories. That makes "visible in
+    skills_list" and "writable by skill_manage" one scan by construction: a skill mounted
+    as a symlink (e.g. an external skill repo linked into ``skills.external_dirs``) is
+    found here exactly when the reader finds it, instead of failing later with the
+    misleading "not found in active profile" error. Loop safety and one-entry-per-real-
+    directory dedupe come from that shared walk too, so both sides agree on the set.
+
+    A symlink whose target directory is gone simply produces no match, like any other
+    missing directory — it never raises.
+    """
+    from agent.skill_utils import iter_skill_index_files
+
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
+        yield skill_md.parent
 
 
 def _read_frontmatter_name(skill_md: Path) -> Optional[str]:

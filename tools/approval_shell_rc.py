@@ -30,9 +30,11 @@ _HERMES_CONFIG_PATH = (
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _SECRET_CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 
-# Shell word boundary used by exact-file targets. `#` is deliberately not
+# Shell word boundaries used by exact-file targets. `#` is deliberately not
 # included: a glued `#` is part of the filename, while a comment has leading
-# whitespace and is already covered by `\s`.
+# whitespace and is already covered by `\s`. Leading boundary anchors at a path
+# start so `/mnt/root/.bashrc` never folds into `/mnt~/.bashrc`.
+_WRITE_TARGET_START = r'(?<![\w.~$}/\\-])'
 _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 _CREDENTIAL_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
@@ -79,7 +81,7 @@ def _rewrite_resolved_shell_rc_paths(command: str) -> str:
     for path in sorted(paths, key=lambda value: len(value), reverse=True):
         candidates: set[str] = {path, path.replace(os.sep, "/")}
         for candidate in candidates:
-            command = re.sub(re.escape(candidate) + _WRITE_TARGET_BOUNDARY,
+            command = re.sub(_WRITE_TARGET_START + re.escape(candidate) + _WRITE_TARGET_BOUNDARY,
                              lambda match: paths[path], command)
     return command
 

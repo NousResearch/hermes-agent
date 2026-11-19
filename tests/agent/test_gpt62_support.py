@@ -120,3 +120,179 @@ def test_new_contract_does_not_capture_predecessors_or_invent_variants():
     for model in ("gpt-6.2-astra", "gpt-6.2-sol"):
         assert resolve_fast_mode_overrides(model, provider="openrouter", base_url="https://openrouter.ai/api/v1",
                                            tier="ultrafast") is None
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+        "gpt-6.2-sol-900k",
+        "openai/gpt-6.2-sol",
+        "us.openai.gpt-6.2-astra",
+        "gpt-6.3-terra",
+        "gpt-6.10-luna",
+        "gpt-7-sol",
+    ],
+)
+def test_gpt62_plus_moves_system_prompt_to_leading_developer_item(model):
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    prompt = "You are Hermes. Follow repository conventions."
+    msgs = [{"role": "system", "content": prompt}, {"role": "user", "content": "Hi"}]
+    kwargs = transport.build_kwargs(
+        model=model, messages=msgs, tools=[], session_id="sess-62",
+        provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+    wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+    assert "instructions" not in wire
+    assert wire["input"][0] == {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": prompt}],
+    }
+    assert wire["input"][1]["role"] == "user"
+
+    baseline = transport.build_kwargs(
+        model="gpt-6.1-sol", messages=msgs, tools=[], session_id="sess-62",
+        provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+    assert wire["prompt_cache_key"] == baseline["prompt_cache_key"]
+
+
+@pytest.mark.parametrize(
+    "model,is_xai",
+    [
+        ("gpt-6.1-sol", False),
+        ("gpt-6-sol", False),
+        ("gpt-6-astra", False),
+        ("gpt-5.6-sol", False),
+        ("gpt-5.5", False),
+        ("grok-4.7", True),
+        ("gpt-6.2-sol", True),
+    ],
+)
+def test_pre_gpt62_and_xai_keep_top_level_instructions(model, is_xai):
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    prompt = "You are Hermes."
+    kwargs = transport.build_kwargs(
+        model=model,
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Hi"}],
+        tools=[],
+        is_xai_responses=is_xai,
+    )
+    wire = transport.preflight_kwargs(kwargs)
+
+    assert wire["instructions"] == prompt
+    assert all(item.get("role") != "developer" for item in wire["input"])
+
+
+def test_gpt62_places_developer_prompt_after_compaction_checkpoint():
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    prompt = "You are Hermes."
+    history = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "Earlier ask"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {
+                    "type": "compaction",
+                    "encrypted_content": "enc_cp_1",
+                    "_issuer_kind": "codex_backend",
+                    "_issuer_model": "gpt-6.2-sol",
+                }
+            ],
+        },
+        {"role": "user", "content": "Post-compaction ask"},
+    ]
+    kwargs = transport.build_kwargs(
+        model="gpt-6.2-sol",
+        messages=history,
+        tools=[],
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+        context_management=[{"type": "compaction", "compact_threshold": 1000}],
+    )
+    wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+    assert "instructions" not in wire
+    assert wire["input"][0] == {"type": "compaction", "encrypted_content": "enc_cp_1"}
+    assert wire["input"][1] == {
+        "type": "message",
+        "role": "developer",
+        "content": [{"type": "input_text", "text": prompt}],
+    }
+
+
+def test_gpt62_turn_instructions_override_and_harmony_sanitization_and_hooks():
+    from agent.auxiliary_hooks import _system_prompt as aux_system_prompt
+    from agent.conversation_loop import _system_prompt_for_hooks
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    harmony_start = "<\x7cstart\x7c>"
+    prompt = f"System prompt with {harmony_start} token."
+    kwargs = transport.build_kwargs(
+        model="gpt-6.2-sol",
+        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Hi"}],
+        tools=[],
+        request_overrides={"instructions": "Return JSON only for this turn."},
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+    wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+    assert wire["instructions"] == "Return JSON only for this turn."
+    expected_text = "System prompt with <\uff5cstart\uff5c> token."
+    assert wire["input"][0]["role"] == "developer"
+    assert wire["input"][0]["content"] == [{"type": "input_text", "text": expected_text}]
+    assert _system_prompt_for_hooks(wire, wire["input"]) == expected_text
+    assert aux_system_prompt(wire["input"], wire) == expected_text
+
+    post_cp_input = [{"type": "compaction", "encrypted_content": "enc"}, *wire["input"]]
+    post_cp_wire = {**wire, "input": post_cp_input}
+    assert _system_prompt_for_hooks(post_cp_wire, post_cp_input) == expected_text
+    assert aux_system_prompt(post_cp_input, post_cp_wire) == expected_text
+
+
+def test_codex_auxiliary_moves_system_prompt_to_developer_item_for_gpt62_plus():
+    from agent.auxiliary_client import _CodexCompletionsAdapter
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(),
+        base_url="https://api.openai.com/v1",
+        _hermes_aux_effective_provider="openai-api",
+    )
+    msgs = [
+        {"role": "system", "content": "Summarize the transcript accurately."},
+        {"role": "user", "content": "Transcript text"},
+    ]
+
+    kw_62, _, _ = _CodexCompletionsAdapter(client, "gpt-6.2-sol")._build_responses_kwargs({"messages": msgs})
+    kw_62_prefixed, _, _ = _CodexCompletionsAdapter(client, "openai/gpt-6.2-astra")._build_responses_kwargs({"messages": msgs})
+    kw_61, _, _ = _CodexCompletionsAdapter(client, "gpt-6.1-sol")._build_responses_kwargs({"messages": msgs})
+
+    for kw in (kw_62, kw_62_prefixed):
+        assert "instructions" not in kw
+        assert kw["input"][0] == {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "Summarize the transcript accurately."}],
+        }
+        assert kw["input"][1]["role"] == "user"
+        assert kw["prompt_cache_key"] == kw_61["prompt_cache_key"]
+
+    assert kw_61["instructions"] == "Summarize the transcript accurately."
+    assert all(item.get("role") != "developer" for item in kw_61["input"])

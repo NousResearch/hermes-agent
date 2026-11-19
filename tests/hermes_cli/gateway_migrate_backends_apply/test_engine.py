@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1313,4 +1314,60 @@ def test_a_failed_apply_is_rolled_back_only_after_a_real_health_result(home, hea
         assert code == engine.EXIT_ROLLBACK_INCOMPLETE and state != "rolled_back"
     else:
         assert code == engine.EXIT_ROLLED_BACK and state == "rolled_back"
+
+
+# --------------------------------------------------------------------------- --restore never loses later edits
+
+
+def _restore_refused_and_nothing_changed(host, home, capsys, *expected):
+    gw, old, files = dict(host.gw), dict(host.old), _config_files(home)
+    capsys.readouterr()
+
+    assert engine.restore(host, yes=True) == engine.EXIT_BLOCKED
+
+    out = capsys.readouterr().out
+    assert host.gw == gw and host.old == old and _config_files(home) == files  # the gateway keeps serving
+    assert engine.read_manifest(home)["state"] == "done"
+    assert "Nothing changed" in out and "To restore by hand, keeping your edits" in out
+    for text in expected:
+        assert text in out
+    return out
+
+
+@pytest.mark.parametrize("name", ["config.yaml", ".env"])
+def test_restore_refuses_when_a_file_was_edited_after_the_migration(home, capsys, name):
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    path = home / name
+    path.write_text(path.read_text(encoding="utf-8") + "# edited after the move\n", encoding="utf-8")
+
+    _restore_refused_and_nothing_changed(host, home, capsys, f"{path} changed since the migration")
+
+
+def test_restore_refuses_when_a_recorded_backup_cannot_be_read(home, capsys):
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    backup = Path(engine.read_manifest(home)["backups"]["config"])
+    backup.unlink()
+
+    _restore_refused_and_nothing_changed(host, home, capsys, f"the backup of config.yaml ({backup}) cannot be read")
+
+
+def test_restore_refuses_a_manifest_without_the_after_apply_record(home, capsys):
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    m = engine.read_manifest(home)
+    del m["files_after_apply"]
+    engine.manifest_path(home).write_text(json.dumps(m), encoding="utf-8")
+
+    _restore_refused_and_nothing_changed(host, home, capsys, "did not record config.yaml and .env")
+
+
+def test_restore_of_unedited_files_still_restores(home):
+    host = FakeHost(home)
+    before = _config_files(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    assert engine.restore(host, yes=True) == engine.EXIT_OK
+    assert _config_files(home) == before and engine.read_manifest(home)["state"] == "restored"
 

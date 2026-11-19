@@ -150,3 +150,45 @@ def test_a_serving_credential_never_shows_its_key_in_repr():
                                                                 api_key="serving-key-2222"))
     assert cred.api_key == "serving-key-2222"
     assert "serving-key-2222" not in repr(cred) and "serving-key-2222" not in str(cred)
+
+
+def _transient_error():
+    import httpx
+    import openai
+    return openai.APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1:47970/v1/chat/completions"))
+
+
+def test_sync_aux_pricing_after_a_same_provider_retry_uses_the_serving_key(monkeypatch):
+    """The transient retry reuses the same client at the same URL; its success prices like the first try."""
+    from agent import auxiliary_client
+    from agent.auxiliary_client import call_llm
+
+    token, rows, keys = _serving_vs_saved_route(monkeypatch, async_mode=False)
+    client, _ = auxiliary_client._get_cached_client()
+    client.chat.completions.create.side_effect = [_transient_error(), client.chat.completions.create.return_value]
+    monkeypatch.setattr(auxiliary_client, "_TRANSIENT_RETRY_BACKOFF_BASE", 0.0)
+    try:
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        aux_accounting.reset_accounting_context(token)
+    assert client.chat.completions.create.call_count == 2
+    assert keys == ["serving-key-2222"]
+    assert [r["estimated_cost_usd"] for r in rows] == [0.125]
+
+
+def test_async_aux_pricing_after_a_same_provider_retry_uses_the_serving_key(monkeypatch):
+    import asyncio
+
+    from agent import auxiliary_client
+    from agent.auxiliary_client import async_call_llm
+
+    token, rows, keys = _serving_vs_saved_route(monkeypatch, async_mode=True)
+    client, _ = auxiliary_client._get_cached_client()
+    client.chat.completions.create.side_effect = [_transient_error(), client.chat.completions.create.return_value]
+    try:
+        asyncio.run(async_call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}]))
+    finally:
+        aux_accounting.reset_accounting_context(token)
+    assert client.chat.completions.create.call_count == 2
+    assert keys == ["serving-key-2222"]
+    assert [r["estimated_cost_usd"] for r in rows] == [0.125]

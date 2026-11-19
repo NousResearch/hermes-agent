@@ -8027,7 +8027,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8048,9 +8048,8 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
-        )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info, client=client)
+            task, provider=request_provider, base_url=req.base_info, client=client)
+    resp, exc = _outcome(_primary)
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8199,12 +8198,13 @@ async def _async_call_llm_impl(
         return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async,
                                             provider=request_provider)
 
-    async def _primary(**validate_kw: Any) -> Any:
+    async def _primary() -> Any:
         import asyncio
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
-            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
+            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate),
+            task, provider=request_provider, base_url=req.base_info, client=client)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info, client=client))
+    resp, exc = await _aoutcome(_primary())
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

@@ -1355,6 +1355,231 @@ def _publish_review_summary(agent: Any, actions: list[str]) -> None:
             agent.background_review_callback(t("display.review.summary_callback", summary=summary))
 
 
+@dataclass(frozen=True)
+class _PreReviewDecision:
+    """Resolved outcome of ``pre_background_review`` hooks."""
+
+    prompt: str
+    skip: bool = False
+    skip_reason: Optional[str] = None
+    extra_tools: tuple[str, ...] = ()
+
+
+def _preview_review_route(agent: Any, task_cfg: Optional[dict[str, Any]]) -> tuple[str, str, bool]:
+    """Cheap ``(provider, model, routed)`` preview for lifecycle hooks without triggering provider resolution."""
+    parent_provider = str(getattr(agent, "provider", "") or "")
+    parent_model = str(getattr(agent, "model", "") or "")
+    task = _background_review_task_config(task_cfg)
+    task_provider = str(task.get("provider", "") or "").strip()
+    task_model = str(task.get("model", "") or "").strip()
+    if task_provider and task_provider != "auto" and task_model and (
+        task_provider != parent_provider or task_model != parent_model
+    ):
+        return task_provider, task_model, True
+    return parent_provider, parent_model, False
+
+
+def _extract_loaded_skills(messages_snapshot: list[dict]) -> list[str]:
+    """Skill names loaded via ``skill_view`` in ``messages_snapshot``, preserving first-seen order."""
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for msg in messages_snapshot or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            if fn.get("name") != "skill_view":
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            name = args.get("name") if isinstance(args, dict) else None
+            if isinstance(name, str) and name.strip() and name.strip() not in seen_set:
+                seen_set.add(name.strip())
+                seen.append(name.strip())
+    return seen
+
+
+def _collect_new_review_tool_calls(
+    review_messages: list[dict], prior_snapshot: list[dict],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Structured records for review-fork ``memory``/``skill_manage``/``skill_view`` tool calls
+    plus the distinct skills successfully mutated by ``skill_manage``."""
+    existing_ids, existing_contents = _prior_tool_keys(prior_snapshot)
+    tracked = {"memory", "skill_manage", "skill_view"}
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            tcid = tc.get("id")
+            fn = tc.get("function") or {}
+            fn_name = fn.get("name") or ""
+            if not tcid or tcid in existing_ids or fn_name not in tracked:
+                continue
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            calls_by_id[tcid] = {
+                "tool": fn_name,
+                "action": str(args.get("action") or ("view" if fn_name == "skill_view" else "")),
+                "name": str(args.get("name") or args.get("target") or ""),
+            }
+    records: list[dict[str, Any]] = []
+    touched: list[str] = []
+    touched_set: set[str] = set()
+    for msg in _tool_messages(review_messages):
+        tcid = msg.get("tool_call_id")
+        if tcid:
+            if tcid in existing_ids or tcid not in calls_by_id:
+                continue
+        elif isinstance(msg.get("content"), str) and msg["content"] in existing_contents:
+            continue
+        else:
+            continue
+        info = calls_by_id[tcid]
+        try:
+            data = json.loads(msg.get("content") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        success = bool(isinstance(data, dict) and data.get("success"))
+        message = str(data.get("message") or "")[:300] if isinstance(data, dict) else ""
+        records.append({**info, "success": success, "message": message})
+        if info["tool"] == "skill_manage" and success:
+            skill_name = info["name"]
+            if skill_name and skill_name not in touched_set:
+                touched_set.add(skill_name)
+                touched.append(skill_name)
+            if isinstance(data, dict) and isinstance(data.get("results"), list):
+                for item in data["results"]:
+                    if isinstance(item, dict) and item.get("success") is True:
+                        rname = str(item.get("name") or "").strip()
+                        if rname and rname not in touched_set:
+                            touched_set.add(rname)
+                            touched.append(rname)
+    return records, touched
+
+
+def _apply_pre_background_review_hook(
+    *, agent: Any, messages_snapshot: list[dict], prompt: str,
+    task_cfg: Optional[dict[str, Any]], review_memory: bool, review_skills: bool,
+    explicit: bool, focus: Optional[str], provider: str, model: str, routed: bool,
+) -> _PreReviewDecision:
+    """Fire ``pre_background_review``; fail-open. Plugins may observe (None), augment
+    (``prompt`` / ``append_prompt`` / ``extra_tools``), or override (``action='skip'``)."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook("pre_background_review"):
+            return _PreReviewDecision(prompt=prompt)
+        raw_extra = _background_review_task_config(task_cfg).get("extra_tools", [])
+        base_extra = [s.strip() for s in raw_extra if isinstance(s, str) and s.strip()] if isinstance(raw_extra, list) else []
+        results = invoke_hook(
+            "pre_background_review",
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            review_memory=bool(review_memory),
+            review_skills=bool(review_skills),
+            explicit=bool(explicit),
+            focus=focus,
+            prompt=prompt,
+            model=model,
+            provider=provider,
+            routed=bool(routed),
+            message_count=len(messages_snapshot or []),
+            skills_loaded=_extract_loaded_skills(messages_snapshot),
+            extra_tools=list(base_extra),
+        )
+        effective_prompt = prompt
+        appends: list[str] = []
+        extra_tools: list[str] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "").strip().lower()
+            if action == "skip":
+                reason = str(item.get("reason") or "").strip() or None
+                return _PreReviewDecision(prompt=effective_prompt, skip=True, skip_reason=reason)
+            if isinstance(item.get("prompt"), str) and item["prompt"].strip():
+                effective_prompt = item["prompt"]
+            if isinstance(item.get("append_prompt"), str) and item["append_prompt"].strip():
+                appends.append(item["append_prompt"].strip())
+            if isinstance(item.get("extra_tools"), (list, tuple)):
+                for tool_name in item["extra_tools"]:
+                    if isinstance(tool_name, str) and tool_name.strip() and tool_name.strip() not in extra_tools:
+                        extra_tools.append(tool_name.strip())
+        if appends:
+            effective_prompt = effective_prompt + "\n\n" + "\n\n".join(appends)
+        return _PreReviewDecision(prompt=effective_prompt, extra_tools=tuple(extra_tools))
+    except Exception as exc:
+        logger.debug("pre_background_review hook failed (fail-open): %s", exc, exc_info=True)
+        return _PreReviewDecision(prompt=prompt)
+
+
+def _notify_post_background_review(
+    *, agent: Any, review_memory: bool, review_skills: bool, explicit: bool, focus: Optional[str],
+    provider: str, model: str, routed: bool, outcome: str, result_kind: str,
+    actions: list[str], tool_calls: list[dict[str, Any]], skills_touched: list[str],
+    usage: dict[str, Any], duration_seconds: float, error: Optional[str] = None,
+    skip_reason: Optional[str] = None,
+) -> None:
+    """Observer ``post_background_review`` fired once per review pass; fail-open."""
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+        if not has_hook("post_background_review"):
+            return
+        invoke_hook(
+            "post_background_review",
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            review_memory=bool(review_memory),
+            review_skills=bool(review_skills),
+            explicit=bool(explicit),
+            focus=focus,
+            model=str(usage.get("model") or model),
+            provider=str(usage.get("provider") or provider),
+            routed=bool(routed),
+            outcome=outcome,
+            result_kind=result_kind,
+            actions=list(actions),
+            tool_calls=list(tool_calls),
+            skills_touched=list(skills_touched),
+            usage=dict(usage or {}),
+            duration_seconds=round(max(0.0, duration_seconds), 3),
+            error=error,
+            skip_reason=skip_reason,
+        )
+    except Exception as exc:
+        logger.debug("post_background_review hook failed (non-fatal): %s", exc, exc_info=True)
+
+
+def _merge_hook_extra_tools(task_cfg: Optional[dict[str, Any]], extra_tools: tuple[str, ...]) -> Optional[dict[str, Any]]:
+    """Return a copy of ``task_cfg`` with ``extra_tools`` appended (leaving caller's dict untouched)."""
+    if not extra_tools:
+        return task_cfg
+    base = dict(_background_review_task_config(task_cfg))
+    existing = base.get("extra_tools")
+    merged = [s for s in existing if isinstance(s, str)] if isinstance(existing, list) else []
+    for name in extra_tools:
+        if name not in merged:
+            merged.append(name)
+    base["extra_tools"] = merged
+    return base
+
+
+# Optional extra hook metadata carried from spawn_background_review_thread without widening
+# _run_review_in_thread's call signature (existing test stubs patch _run_review_in_thread with the
+# 7-parameter signature).
+_REVIEW_HOOK_META: contextvars.ContextVar[Optional[tuple[Optional[str], bool]]] = contextvars.ContextVar(
+    "hermes_background_review_hook_meta", default=None,
+)
+
+
 def _run_review_in_thread(
     agent: Any, messages_snapshot: list[dict], prompt: str,
     task_cfg: Optional[dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
@@ -1370,6 +1595,10 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
+    meta = _REVIEW_HOOK_META.get()
+    focus = meta[0] if meta is not None else None
+    review_skills = meta[1] if meta is not None else (not review_memory)
+    started_at = time.monotonic()
     _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
@@ -1383,6 +1612,25 @@ def _run_review_in_thread(
         )
         _set_thread_approval_callback(None)
         return
+    route_provider, route_model, route_routed = _preview_review_route(agent, task_cfg)
+    decision = _apply_pre_background_review_hook(
+        agent=agent, messages_snapshot=messages_snapshot, prompt=prompt, task_cfg=task_cfg,
+        review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
+        provider=route_provider, model=route_model, routed=route_routed,
+    )
+    if decision.skip:
+        logger.info("Background review skipped by pre_background_review hook: %s", decision.skip_reason or "no reason")
+        finish_background_review_run(agent, review_run)
+        _set_thread_approval_callback(None)
+        _notify_post_background_review(
+            agent=agent, review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
+            provider=route_provider, model=route_model, routed=route_routed, outcome="skipped",
+            result_kind="none", actions=[], tool_calls=[], skills_touched=[], usage={},
+            duration_seconds=time.monotonic() - started_at, skip_reason=decision.skip_reason,
+        )
+        return
+    effective_prompt = decision.prompt
+    effective_task_cfg = _merge_hook_extra_tools(task_cfg, decision.extra_tools)
     st = _ReviewForkState()
     # The gateway's stop may close the parent's handle while the review runs: the fork records its usage through its
     # own reference on the same store, released when the fork finishes.
@@ -1401,7 +1649,10 @@ def _run_review_in_thread(
         # to devnull and leaves all other threads on the real streams.
         from tools.skills_tool import bind_turn_secret_capture
         with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
-            _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
+            _run_review_fork(
+                agent, messages_snapshot, effective_prompt, effective_task_cfg, review_run, st,
+                review_memory, explicit,
+            )
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:
@@ -1426,14 +1677,29 @@ def _run_review_in_thread(
                 e,
             )
             actions = []
-        _log_review_completion(st.review_usage, _classify_review_result(actions))
+        result_kind = _classify_review_result(actions)
+        _log_review_completion(st.review_usage, result_kind)
         if actions:
             _publish_review_summary(agent, actions)
+        tool_calls, skills_touched = _collect_new_review_tool_calls(st.review_messages, messages_snapshot)
+        outcome = "cancelled" if (review_run is not None and review_run.cancel_requested.is_set()) else "ok"
+        _notify_post_background_review(
+            agent=agent, review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
+            provider=route_provider, model=route_model, routed=route_routed, outcome=outcome,
+            result_kind=result_kind, actions=actions, tool_calls=tool_calls, skills_touched=skills_touched,
+            usage=st.review_usage, duration_seconds=time.monotonic() - started_at,
+        )
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:
             _log_review_completion(st.review_usage, "error")
         agent._emit_auxiliary_failure(t("display.review.aux_failure_label"), e)
+        _notify_post_background_review(
+            agent=agent, review_memory=review_memory, review_skills=review_skills, explicit=explicit, focus=focus,
+            provider=route_provider, model=route_model, routed=route_routed, outcome="error",
+            result_kind="none", actions=[], tool_calls=[], skills_touched=[],
+            usage=st.review_usage, duration_seconds=time.monotonic() - started_at, error=str(e),
+        )
     finally:
         # Safety net for the exception path (setup failures before the request-phase finally).
         # Both cleanups are identity-scoped and idempotent; re-enter thread-scoped silence so
@@ -1474,16 +1740,22 @@ def spawn_background_review_thread(
     # Per-agent overrides (agent._MEMORY_REVIEW_PROMPT etc.) keep working.
     name = _PROMPT_NAME_BY_SCOPE[(review_memory, review_skills)]
     prompt = getattr(agent, name, globals()[name])
-    if focus := (focus or "").strip():
+    clean_focus = (focus or "").strip() or None
+    if clean_focus:
         prompt = (
             f"{prompt}\n\nThe user explicitly requested this review with the following "
-            f"focus — prioritize it over the general instructions above:\n{focus}"
+            f"focus — prioritize it over the general instructions above:\n{clean_focus}"
         )
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
-        _run_review_in_thread(
-            agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+        token = _REVIEW_HOOK_META.set((clean_focus, bool(review_skills)))
+        try:
+            _run_review_in_thread(
+                agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
+                review_memory=review_memory, explicit=explicit,
+            )
+        finally:
+            _REVIEW_HOOK_META.reset(token)
 
     return _target, prompt
 

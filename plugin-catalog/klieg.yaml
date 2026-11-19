@@ -1,7 +1,7 @@
 name: klieg
 repo: https://github.com/LangerSword/hermes-klieg
-sha: 6e03c7b3ab78da2ae0e4abe9c03b49f096a1d933
-version: "0.3.0"
+sha: 5f6d15d84ae554f68416712d289f8b8960c52c41
+version: "0.3.1"
 title: Klieg
 description: >-
   Motion design for Hermes. klieg_motion lets the agent author a scene - kinetic type,

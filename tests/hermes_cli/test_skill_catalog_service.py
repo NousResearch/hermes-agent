@@ -136,6 +136,44 @@ def test_operation_read_reconciles_terminal_journal_without_second_effect(tmp_pa
         manager.unload()
 
 
+@pytest.mark.parametrize('isolation', ['in_process', 'host'])
+def test_one_plugin_multiple_catalogs_keep_permit_routing_unambiguous(tmp_path, isolation):
+    from hermes_cli.skill_catalog.service import Service
+    from hermes_cli.skill_catalog import registry
+    body = FIXTURE + '''
+_original_register = register
+class OtherCatalog(Catalog):
+    name = 'other'
+def register(ctx):
+    _original_register(ctx)
+    ctx.register_skill_catalog(OtherCatalog(ctx))
+'''
+    owner = SimpleNamespace(source_id=source_id('fixture-catalog', 'team'))
+    plan = review(owner, expires_at_ms=int(time.time() * 1000) + 60000)
+    make_plugin(tmp_path, body='PLAN = ' + repr(plan) + '\n' + body)
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    config = read_user_config_raw(tmp_path / 'config.yaml')
+    config['plugins']['isolation'] = isolation
+    atomic_config_write(tmp_path / 'config.yaml', config)
+    manager = PluginManager(scope_key=str(tmp_path))
+    manager.discover_and_load()
+    try:
+        assert len(registry.snapshot(scope=str(tmp_path))) == 2
+        result = Service(tmp_path).confirm(plan['identifier'], 'install', plan['review_token'], [])
+        assert result['outcome'] == 'installed'
+        assert (tmp_path / 'skills/new/SKILL.md').is_file()
+        from hermes_cli.skill_catalog.projection import Projection
+        assert not Projection(tmp_path).read()['reservations']
+        if isolation == 'host':
+            from hermes_cli.plugins_manifest import manifest_key
+            context = manager._plugin_host()._contexts[manifest_key(manager._plugins['fixture-catalog'].manifest)]
+            api = context.skill_catalog_mutations
+            assert not api._permits
+            assert api.release({'permit_id': 'already-released'}) is True
+    finally:
+        manager.unload()
+
+
 def test_confirm_wrong_ack_or_identity_has_zero_effect(tmp_path):
     from hermes_cli.skill_catalog.service import Service
     manager, entry, plan = fixture(tmp_path)

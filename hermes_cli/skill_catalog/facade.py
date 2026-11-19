@@ -1,6 +1,7 @@
 """Owning-context mutation facade, including legacy native receipt admission."""
 import hashlib
 import time
+import threading
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, hermes_home_key
@@ -13,6 +14,8 @@ class ContextMutations:
     def __init__(self, ctx):
         self.ctx = ctx
         self.home = Path(getattr(ctx._manager, 'scope_key', None) or get_hermes_home())
+        self._permits = {}
+        self._permit_lock = threading.Lock()
 
     def _entry(self, identifier=None):
         rows = registry.snapshot(scope=hermes_home_key(self.home))
@@ -73,10 +76,19 @@ class ContextMutations:
         return dict(admission=admission, operation_id=operation_id)
 
     def _mutations(self, payload):
+        if payload.get('permit_id') is not None:
+            with self._permit_lock:
+                facade = self._permits.get(payload['permit_id'])
+            if facade is None:
+                raise CatalogError('ownership_conflict', 'Catalog permit is unavailable.')
+            return facade
         registration_id = payload.get('registration_id')
+        identifier = (payload.get('result') or {}).get('identifier')
+        source = identifier.split(':')[0] if type(identifier) is str else None
         rows = [row for row in registry.snapshot(scope=hermes_home_key(self.home))
-                if row.plugin_key == self.ctx.plugin_id and
-                (registration_id is None or row.registration_id == registration_id)]
+                if row.plugin_key == self.ctx.plugin_id
+                and (source is None or row.source_id == source)
+                and (registration_id is None or row.registration_id == registration_id)]
         if len(rows) != 1 or not rows[0].authorized():
             raise CatalogError('provider_unavailable', 'Owning catalog is unavailable.')
         return rows[0].mutations
@@ -94,7 +106,13 @@ class ContextMutations:
             if row is None:
                 raise CatalogError('ownership_conflict', 'Reservation is absent.')
             admission.update(generation=row['generation'], review_id=row['review_id'])
-        return facade.acquire(dict(admission=_admission(admission), operation_id=payload['operation_id']))
+        acquired = facade.acquire(dict(admission=_admission(admission), operation_id=payload['operation_id']))
+        return self._remember_permit(facade, acquired)
+
+    def _remember_permit(self, facade, acquired):
+        with self._permit_lock:
+            self._permits[acquired['permit_id']] = facade
+        return acquired
 
     def validate(self, payload):
         return self._mutations(payload).validate(payload)
@@ -103,7 +121,14 @@ class ContextMutations:
         return self._mutations(payload).settle(payload)
 
     def release(self, payload):
-        return self._mutations(payload).release(payload)
+        with self._permit_lock:
+            facade = self._permits.get(payload['permit_id'])
+        if facade is None:
+            return True
+        result = facade.release(payload)
+        with self._permit_lock:
+            self._permits.pop(payload['permit_id'], None)
+        return result
 
     def _recovery_mutations(self, operation_id):
         from hermes_cli.skill_catalog.projection import _valid_token
@@ -119,7 +144,8 @@ class ContextMutations:
         return matches[0]
 
     def recovery_acquire(self, payload):
-        return self._recovery_mutations(payload['operation_id']).recovery_acquire(payload)
+        facade = self._recovery_mutations(payload['operation_id'])
+        return self._remember_permit(facade, facade.recovery_acquire(payload))
 
     def recover(self, operation_id):
         return self._recovery_mutations(operation_id).recover(operation_id)

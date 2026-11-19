@@ -400,7 +400,10 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
         auth_park = getattr(srv, "_auth_park", None)
         # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
         if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
-            _loop._signal_reconnect(srv)
+            # One free wake per park streak; once a revival has failed the parked backoff decides,
+            # or every cron tick / new session respawned the broken child (official-plugins#401).
+            if not (getattr(srv, "_park_quiet", False) or getattr(srv, "_parked_probe_failures", 0)):
+                _loop._signal_reconnect(srv)
     return new_servers
 
 

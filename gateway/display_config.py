@@ -35,6 +35,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Background self-improvement review notice in chat: "off" (review still runs) | "on" | "verbose".
+    "memory_notifications": "on",
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -212,6 +214,7 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
+    "memory_notifications": _norm_tristate("on", "off", {"off", "on", "verbose"}),
 }
 
 

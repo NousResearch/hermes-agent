@@ -2600,6 +2600,7 @@ display:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
+      memory_notifications: 'off'  # no "💾 Memory updated" review notices there either
 ```
 
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected. Writing them under the nested prefix (`hermes config set gateway.platforms.telegram.enabled true`) is redirected to the top-level `platforms.telegram.enabled` with a note: the gateway reads both blocks, but the top-level one wins on shared keys, so a nested write would be silently shadowed by an existing top-level value.

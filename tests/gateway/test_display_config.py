@@ -271,3 +271,40 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+# ---------------------------------------------------------------------------
+# memory_notifications — background self-improvement review notice (#149680)
+# ---------------------------------------------------------------------------
+
+class TestMemoryNotifications:
+    """``memory_notifications`` is per-platform overrideable like its display siblings."""
+
+    def test_registered_as_overrideable_with_on_default(self):
+        from gateway.display_config import OVERRIDEABLE_KEYS, resolve_display_setting
+
+        assert "memory_notifications" in OVERRIDEABLE_KEYS
+        assert resolve_display_setting({}, "telegram", "memory_notifications") == "on"
+
+    def test_platform_override_beats_global(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"memory_notifications": "verbose",
+                              "platforms": {"discord": {"memory_notifications": "off"}}}}
+        assert resolve_display_setting(config, "discord", "memory_notifications") == "off"
+        assert resolve_display_setting(config, "telegram", "memory_notifications") == "verbose"
+
+    def test_yaml_bools_and_case_normalise(self):
+        from gateway.display_config import resolve_display_setting
+
+        for raw, expected in ((False, "off"), (True, "on"), ("OFF", "off"), ("Verbose", "verbose"),
+                              ("false", "off"), ("yes", "on")):
+            config = {"display": {"platforms": {"whatsapp": {"memory_notifications": raw}}}}
+            assert resolve_display_setting(config, "whatsapp", "memory_notifications") == expected, raw
+
+    def test_unsupported_platform_value_falls_back_to_global(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"memory_notifications": "off",
+                              "platforms": {"whatsapp": {"memory_notifications": "loud"}}}}
+        assert resolve_display_setting(config, "whatsapp", "memory_notifications") == "off"

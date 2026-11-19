@@ -266,3 +266,44 @@ def run_auto_prune_and_vacuum(
         if maintenance_lock is not None:
             admin.release_auto_maintenance_lock(maintenance_lock)
     return result
+
+
+def run_tool_payload_elision(store, admin: StoreAdmin | AdminUnsupported | None, *, retention_days: int,
+                             min_interval_hours: int = 24) -> dict[str, Any]:
+    """Opt-in ``sessions.tool_payload_retention_days`` pass (never raises): blank the stored output of tool calls
+    older than *retention_days* in ended, unpinned, idle sessions (``elide_tool_payloads``), keeping every user and
+    assistant message and every tool call's name and arguments, so the conversation still reads and searches.
+
+    ``retention_days <= 0`` (the default) does nothing. Runs at most once per ``min_interval_hours`` (the
+    ``last_tool_payload_elision`` state key) under the store's auto-maintenance lock when the backend has one. No
+    VACUUM: the freed pages are reused by new writes, so the file stops growing; ``hermes sessions optimize``
+    returns them to the disk. Returns ``{"skipped", "elided"}`` plus ``"error"`` on failure."""
+    result: dict[str, Any] = {"skipped": False, "elided": 0}
+    if not isinstance(retention_days, int) or isinstance(retention_days, bool) or retention_days <= 0:
+        result["skipped"] = True
+        return result
+    if isinstance(admin, AdminUnsupported):
+        admin = None
+    lock = admin.try_acquire_auto_maintenance_lock() if admin is not None else None
+    if admin is not None and lock is None:
+        result["skipped"] = True
+        return result
+    try:
+        now = time.time()
+        since = _seconds_since(now, store.state_meta.get("last_tool_payload_elision"))
+        if since is not None and since < min_interval_hours * 3600:
+            result["skipped"] = True
+            return result
+        report_startup_progress(900.0, phase="state_db_tool_payload_elision")
+        result["elided"] = elided = store.maintenance.elide_tool_payloads(cutoff=now - retention_days * 86400.0)
+        store.state_meta.set("last_tool_payload_elision", str(now))
+        if elided:
+            logger.info("state.db auto-maintenance: removed the stored output of %d tool call(s) older than %d days",
+                        elided, retention_days)
+    except Exception as exc:  # health: allow BLE001 -- maintenance never blocks startup; the error rides in the result
+        logger.warning("state.db tool-output retention failed: %s", exc)
+        result["error"] = str(exc)
+    finally:
+        if lock is not None:
+            admin.release_auto_maintenance_lock(lock)
+    return result

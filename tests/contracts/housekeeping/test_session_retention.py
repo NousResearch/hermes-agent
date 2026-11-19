@@ -390,3 +390,37 @@ def test_collect_retired_spillover_unlinks_unreferenced_archives(backend, scope_
     # CONTRACT: the referenced archive stays on disk, the other goes, and both candidates are dropped.
     assert state() == {"files": ["kept.txt"], "candidates": []}
     assert scanned == [spill, spill]
+
+
+# ── run_tool_payload_elision ─────────────────────────────────────────────────
+
+
+def test_tool_payload_elision_blanks_only_aged_tool_output_of_finished_unpinned_sessions(backend, scope_a):
+    from persistence.housekeeping.maintenance import TOOL_PAYLOAD_TOMBSTONE
+    store, old, big = backend.open(scope_a), NOW - 100 * DAY, "terminal dump " * 200
+
+    def chat(sid, *, ended=old + 60, last=old + 3, **fields):
+        return {**_payload(sid, old, ended=ended, end_reason="done" if ended else None), **fields, "messages": [
+            {"role": "user", "content": "list the repo", "timestamp": old},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{\"command\": \"ls\"}"}}], "timestamp": old + 1},
+            {"role": "tool", "content": big, "tool_call_id": "c1", "tool_name": "terminal", "timestamp": old + 2},
+            {"role": "tool", "content": "ok", "tool_call_id": "c2", "tool_name": "terminal", "timestamp": old + 2},
+            {"role": "assistant", "content": "done", "timestamp": last}]}
+
+    _seed(store, chat("s-aged"), chat("s-pinned", pinned=1), chat("s-open", ended=None), chat("s-recent", last=NOW))
+
+    def view(sid):
+        return [(m.role, m.content, m.tool_name) for m in store.maintenance.export_session(SessionId(sid)).messages]
+
+    before = {sid: view(sid) for sid in ("s-aged", "s-pinned", "s-open", "s-recent")}
+    # CONTRACT: off by default; a non-positive window never touches the store.
+    assert session_retention.run_tool_payload_elision(store, None, retention_days=0) == {"skipped": True, "elided": 0}
+    assert session_retention.run_tool_payload_elision(store, None, retention_days=30) == {"skipped": False, "elided": 1}
+    # CONTRACT: only the aged, oversized tool output of an ended, unpinned, idle session is replaced; the user and
+    # assistant text, the tool call, the tool's name and the short result stay as stored, in place and in order.
+    assert view("s-aged") == [row if row[0] != "tool" or row[1] != big else ("tool", TOOL_PAYLOAD_TOMBSTONE, "terminal")
+                              for row in before["s-aged"]]
+    assert {sid: view(sid) for sid in ("s-pinned", "s-open", "s-recent")} == {k: v for k, v in before.items() if k != "s-aged"}
+    # CONTRACT: the interval gate holds, and a rerun past it changes nothing.
+    assert session_retention.run_tool_payload_elision(store, None, retention_days=30)["skipped"] is True
+    assert session_retention.run_tool_payload_elision(store, None, retention_days=30, min_interval_hours=0)["elided"] == 0

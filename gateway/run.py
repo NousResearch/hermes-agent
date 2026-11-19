@@ -4290,23 +4290,21 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
 
 
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
-    """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own handle
-    on the profile's store and closes it when done.
+    """Stale-session auto-archive, auto-prune/VACUUM and tool-output retention for ONE profile's state.db, each
+    gated by sessions.min_interval_hours (VACUUM also by its own throttles); opens and closes its own store handle.
 
-    Profile-scoped by its caller: ``profile_scope()``, ``get_hermes_home()`` and ``load_config()`` all
-    resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
-    the LAUNCH profile's retention settings and a multiplexed secondary was never archived, pruned
-    or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
-    gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
-    dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
+    Profile-scoped by its caller: ``profile_scope()``, ``get_hermes_home()`` and ``load_config()`` all resolve through
+    the active scope, so an unscoped run swept only the LAUNCH profile's store with the LAUNCH profile's settings and a
+    multiplexed secondary was never maintained by anyone — the dashboard/serve trigger defers to the gateway for every
+    profile a gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript dir
+    (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
+    if not any(_sess_cfg.get(key) for key in ("auto_archive", "auto_prune", "tool_payload_retention_days")):
         return
     from gateway.session_ingress_media import native_inputs_root
     from persistence_assembly import open_persistence, open_store_admin, profile_scope
-    from session_retention import run_auto_archive, run_auto_prune_and_vacuum
+    from session_retention import run_auto_archive, run_auto_prune_and_vacuum, run_tool_payload_elision
     scope = profile_scope()
     store = open_persistence(scope, eager=True)
     try:
@@ -4323,6 +4321,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                 sessions_dir=_profile_sessions_dir(launch))
+        if _tool_days := _sess_cfg.get("tool_payload_retention_days", 0):
+            run_tool_payload_elision(store, open_store_admin(scope, read_only=False), retention_days=_tool_days, min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
     finally:
         store.close()
 

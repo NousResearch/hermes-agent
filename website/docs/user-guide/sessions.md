@@ -1218,6 +1218,25 @@ sessions:
 Installs that set any of these keys explicitly keep their values; only unset
 keys follow the defaults.
 
+**Trimming old tool output instead of whole sessions.** Most of `state.db` is
+usually tool output: terminal dumps, web pages and file reads the agent saw.
+To keep every conversation but drop that bulk once it is old, set:
+
+```yaml
+sessions:
+  tool_payload_retention_days: 30   # default 0 = keep all tool output
+```
+
+About once per `min_interval_hours`, the gateway's maintenance pass replaces
+the stored output of tool calls older than that many days with a one-line
+marker. Only sessions that are **ended**, **not pinned** and idle for the same
+window are touched. Your messages, the agent's replies, which tool ran and its
+arguments all stay, so `/resume`, the transcript and `session_search` still
+show what happened; only the raw output is gone (short results are left
+as-is). This works independently of `auto_prune`. The space it frees is
+reused by new history, so the file stops growing; run `hermes sessions
+optimize` to give it back to the disk.
+
 Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
 freshest of live activity, latest message, or session start — so a long-lived

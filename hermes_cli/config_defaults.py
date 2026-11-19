@@ -2226,8 +2226,9 @@ DEFAULT_CONFIG = {
         "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         "retention_days": 90,
-        # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
-        # once per min_interval_hours. Pinned sessions are exempt.
+        # Days of tool output kept in ended, unpinned, idle sessions; older output becomes a one-line marker. 0 = all.
+        "tool_payload_retention_days": 0,
+        # Auto-archive (soft-hide, never delete) sessions idle for auto_archive_days, once per min_interval_hours; pinned exempt.
         "auto_archive": False,
         # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
@@ -2239,8 +2240,7 @@ DEFAULT_CONFIG = {
         "vacuum_after_prune": True,
         # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,
-        # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
-        # processes).
+        # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across processes).
         "min_interval_hours": 24,
 
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes

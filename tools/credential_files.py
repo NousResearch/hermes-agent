@@ -288,6 +288,12 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 ]
 
 
+def cache_directory_subpaths() -> list[str]:
+    """Subpaths under a remote ``.hermes`` that hold copies of host files pushed for sandbox tools
+    to read (the ``_CACHE_DIRS`` mounts). The host copy is canonical."""
+    return [new_subpath for new_subpath, _old_name in _CACHE_DIRS]
+
+
 def _cache_dir_roots(container_base: str, *, create_missing: bool) -> Iterator[tuple[Path, str]]:
     """Yield ``(host_dir, container_root)`` per cache dir; always maps to the *new* container layout."""
     base = container_base.rstrip("/")

@@ -2,6 +2,7 @@
 
 import asyncio
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -93,6 +94,30 @@ def _make_mock_daytona_env():
 
 class TestSSHBulkDownload:
     """Unit tests for _ssh_bulk_download."""
+
+    def test_ssh_bulk_download_leaves_out_the_directories_the_host_pushes(self, ssh_mock_env, tmp_path, monkeypatch):
+        """The cache, attachment and paste mounts hold copies of host files: the archive skips them,
+        keeps everything else, and the real tar command runs (through bash instead of ssh)."""
+        hermes = tmp_path / "home" / "u" / ".hermes"
+        kept = ("skills/demo/SKILL.md", "cache/other/keep.txt", "memories/MEMORY.md")
+        pushed = ("cache/images/a.png", "cache/documents/b.pdf", "cache/web/c.html",
+                  "attachments/d.zip", "composer-pastes/e.txt", "images/f.png")
+        for rel in kept + pushed:
+            path = hermes / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(rel)
+        ssh_mock_env._remote_home = str(tmp_path / "home" / "u")
+        monkeypatch.setattr(ssh_mock_env, "_build_ssh_command", lambda: ["bash", "-c"])
+        dest = tmp_path / "pulled.tar"
+
+        ssh_mock_env._ssh_bulk_download(dest)
+
+        with tarfile.open(dest) as tar:
+            prefix = str(hermes).lstrip("/") + "/"
+            names = {name[len(prefix):] for name in tar.getnames() if name.startswith(prefix)}
+        pushed_dirs = {rel.rsplit("/", 1)[0] for rel in pushed}
+        assert set(kept) <= names
+        assert [name for name in names if any(name == d or name.startswith(d + "/") for d in pushed_dirs)] == []
 
     def test_ssh_bulk_download_runs_tar_over_ssh(self, ssh_mock_env, tmp_path):
         """subprocess.run command should include tar cf - over SSH."""
@@ -206,6 +231,9 @@ class TestModalBulkDownload:
         assert "-C / root/.hermes" in args[2]
         # Live sockets cannot be archived; exclude them like the SSH backend.
         assert "--exclude='*.sock'" in args[2]
+        # The cache mounts hold copies of host files; sync-back has nothing to bring back from them.
+        assert "--exclude=root/.hermes/attachments" in args[2]
+        assert "--exclude=root/.hermes/cache/images" in args[2]
 
 class TestModalCleanup:
     """Verify Modal cleanup() calls sync_back() before terminate."""
@@ -282,6 +310,8 @@ class TestDaytonaBulkDownload:
 
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "home/daytona/.hermes" in tar_cmd
+        assert "--exclude=home/daytona/.hermes/attachments" in tar_cmd
+        assert "--exclude=home/daytona/.hermes/cache/images" in tar_cmd
 
 class TestDaytonaCleanup:
     """Verify Daytona cleanup() calls sync_back() before stop."""

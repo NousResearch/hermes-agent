@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, pushed_cache_excludes, quoted_mkdir_command, quoted_rm_command,
+    unique_parent_dirs)
 from tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
@@ -125,9 +126,10 @@ class DaytonaEnvironment(BaseEnvironment):
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # PID-suffixed remote temp path avoids collisions if sync_back runs concurrently.
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
-        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download;
+        # the cache mounts only hold copies of host files.
         self._sandbox.process.exec(
-            f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(rel_base)}")
+            f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' {pushed_cache_excludes(rel_base)} -C / {shlex.quote(rel_base)}")
         self._sandbox.fs.download_file(remote_tar, str(dest))
         with contextlib.suppress(Exception):  # best-effort cleanup
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")

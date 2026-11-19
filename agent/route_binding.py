@@ -125,8 +125,12 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         agent._fallback_reasoning_primary = copy.deepcopy(
             voice["reasoning_config"] if voice and "reasoning_at_bind" in voice and "snapshot" not in voice
             else current)
-    elif type(current) is not type(prior) or current != prior:
-        # An in-place edit since this fallback bound: keep it as the session's own value.
+    elif (type(current) is not type(prior) or current != prior or
+          (vars(agent).get("_fallback_reasoning_session_edit") is not None and
+           (not voice or voice.get("reasoning_session_edit") is not None))):
+        # Reconcile the edit snapshot with the live value, even if a later
+        # mutation brought it back to the previous bind value. A voice route's
+        # own override is not a session edit.
         agent._fallback_reasoning_session_edit = (copy.deepcopy(current),)
 
     # Clear the per-config context_length override so the new model's own context window is
@@ -160,7 +164,9 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     # A recorded edit is authoritative even when its value is None or happens
     # to be an unchanged ProfileReasoningConfig. Its snapshot is for restoring;
     # keep the live value here (it may have been mutated after assignment).
-    if vars(agent).get("_fallback_reasoning_session_edit") is None:
+    # A restored explicit None is not the same as an unset profile default.
+    if (vars(agent).get("_fallback_reasoning_session_edit") is None and not
+            (current is None and vars(agent).get("_reasoning_explicit_none", False))):
         with internal_reasoning_assignment(agent):
             _reresolve_fallback_reasoning_config(agent)
     # Record what the fallback itself installed, not the primary's snapshot. A later
@@ -227,9 +233,12 @@ def reinstall_primary_runtime(
     marker_present = marker is not _NO_REASONING_MARKER
     edit = vars(agent).get("_fallback_reasoning_session_edit")
     current = getattr(agent, "reasoning_config", None)
-    if marker_present and (type(current) is not type(marker) or current != marker):
-        # A plain attribute assignment or an in-place mutation since the fallback bound.
+    if marker_present and (edit is not None or type(current) is not type(marker) or current != marker):
+        # Once an assignment is recorded, the live value wins over its snapshot
+        # even when it happens to equal the fallback bind marker.
         edit = (current,)
+    if edit is not None:
+        agent._reasoning_explicit_none = current is None
     if edit is None and marker_present:
         edit = (vars(agent).get("_fallback_reasoning_primary"),)
     if edit is None and not marker_present:

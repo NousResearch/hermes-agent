@@ -795,3 +795,76 @@ def test_legacy_persisted_baseline_and_explicit_choice_are_indistinguishable(tmp
             _reresolve_fallback_reasoning_config(agent)
         assert agent.reasoning_config == explicit
     assert params_list[0] == params_list[1]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_restored_explicit_none_survives_later_fallbacks(nested):
+    from agent.route_binding import bind_route_entry
+
+    cfg = {"agent": {"reasoning_effort": "low",
+                     "reasoning_overrides": {"openrouter/model-b": "high"}}}
+    agent = _make_agent(fallback_model={"provider": "openrouter", "model": "model-a"})
+    agent.reasoning_config = agent._primary_runtime["reasoning_config"] = resolve_reasoning_config(cfg, "primary")
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._try_activate_fallback()
+        agent.reasoning_config = None
+        assert agent._restore_primary_runtime()
+        for _ in range(2):
+            assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                    "openrouter", "model-b")
+            assert agent.reasoning_config is None
+            if nested:
+                assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-a"},
+                                        "openrouter", "model-a")
+                assert agent.reasoning_config is None
+            assert agent._restore_primary_runtime()
+            assert agent.reasoning_config is None
+        # A new profile baseline replaces the prior explicit None.
+        agent.reasoning_config = resolve_reasoning_config(cfg, "primary")
+        assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                "openrouter", "model-b")
+        assert agent.reasoning_config["effort"] == "high"
+
+
+def test_unset_profile_none_still_resolves_for_fallback():
+    from agent.route_binding import bind_route_entry
+
+    cfg = {"agent": {"reasoning_overrides": {"openrouter/model-b": "high"}}}
+    agent = _make_agent()
+    agent.reasoning_config = agent._primary_runtime["reasoning_config"] = None
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        for _ in range(2):
+            assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                    "openrouter", "model-b")
+            assert agent.reasoning_config["effort"] == "high"
+            assert agent._restore_primary_runtime()
+            assert agent.reasoning_config is None
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_assigned_profile_mutated_to_bind_value_survives_restore(nested):
+    from agent.route_binding import bind_route_entry
+
+    cfg = {"agent": {"reasoning_effort": "low"}}
+    agent = _make_agent(fallback_model={"provider": "openrouter", "model": "model-a"})
+    agent.reasoning_config = agent._primary_runtime["reasoning_config"] = resolve_reasoning_config(cfg, "primary")
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._try_activate_fallback()
+        previous = agent.reasoning_config.copy()
+        assigned = resolve_reasoning_config({"agent": {"reasoning_effort": "high"}}, "primary")
+        agent.reasoning_config = assigned
+        assigned.clear()
+        assigned.update(previous)
+        if nested:
+            assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                    "openrouter", "model-b")
+            assert agent.reasoning_config == previous
+        assert agent._restore_primary_runtime()
+        assert agent.reasoning_config == previous
+        assert type(agent.reasoning_config) is type(assigned)

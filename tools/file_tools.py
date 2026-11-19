@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import stat
 import threading
 import time
@@ -118,6 +119,42 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
 
 # Above this size, a wide read (limit > 200) gets a hint toward targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000
+
+# A gutter line ``_add_line_numbers`` clamped: ``<n>|<first max_line_length chars>... [truncated]``.
+_CLIPPED_LINE_RE = re.compile(r'^(\d+)\|.*\.\.\. \[truncated\]$', re.MULTILINE)
+
+
+def _clipped_line_hint(content: str, path: str) -> "str | None":
+    """Where the rest of a clamped long line is, or None when no line was clamped.
+
+    Without it the model only sees ``... [truncated]`` and re-reads the same page (offset pages by
+    LINE, so it never reaches past the clamp) or gives up on minified/JSONL files. The command reads
+    one character range of one line, so the model can walk a long line chunk by chunk. Inspired by
+    Muse Code 1.4.15 ("Read long text lines in full when they fit the output limit, with byte-range
+    guidance for larger lines")."""
+    clipped = [int(m) for m in _CLIPPED_LINE_RE.findall(content or "")]
+    if not clipped:
+        return None
+    from tools.tool_output_limits import get_max_line_length
+    width = get_max_line_length()
+    shown = ", ".join(map(str, clipped[:5])) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
+    return (f"Line(s) {shown} were cut at {width:,} characters. read_file pages by line, so offset cannot "
+            f"reach the rest; read the next part of a line with the terminal: "
+            f"sed -n '{clipped[0]}p' {shlex.quote(path)} | cut -c{width + 1}-{2 * width}")
+
+
+def _add_read_size_hint(result_dict: dict, content: str, path: str, file_size: int, limit: int) -> None:
+    """At most one ``_hint`` about size (an earlier hint, e.g. merge conflicts, wins): a wide page of a
+    large file, else a line clamped at ``max_line_length``."""
+    if (file_size and file_size > _LARGE_FILE_HINT_BYTES
+            and limit > 200 and result_dict.get("truncated")):
+        result_dict.setdefault("_hint", (
+            f"This file is large ({file_size:,} bytes). "
+            "Consider reading only the section you need with offset and limit "
+            "to keep context usage efficient."))
+    elif result_dict.get("truncated_lines") and (clip_hint := _clipped_line_hint(content, path)):
+        result_dict.setdefault("_hint", clip_hint)
+
 
 def _file_ops_uses_host_paths(file_ops) -> bool:
     """True when *file_ops* targets the host filesystem (only then may we stat paths
@@ -738,12 +775,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                     f"{conflicts} unresolved git merge-conflict block(s) (<<<<<<< / ======= / >>>>>>>) in this "
                     "range. Resolve them (keep one side or combine, delete the markers) before editing around them.")
 
-        if (file_size and file_size > _LARGE_FILE_HINT_BYTES
-                and limit > 200 and result_dict.get("truncated")):
-            result_dict.setdefault("_hint", (
-                f"This file is large ({file_size:,} bytes). "
-                "Consider reading only the section you need with offset and limit "
-                "to keep context usage efficient."))
+        _add_read_size_hint(result_dict, result.content, path, file_size, limit)
 
         total_lines = result_dict.get("total_lines")
         if result_dict.get("truncated_by") == "bytes":

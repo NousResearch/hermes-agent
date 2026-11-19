@@ -392,13 +392,13 @@ class Projection:
         if tuple(current[key] for key in ("registration_id", "identifier", "installation_revision")) != expected:
             raise CatalogError("review_changed", "Catalog installation changed.")
 
-    def reserve(self, entry, review, *, operation_id=None, recovery=False):
+    def reserve(self, entry, review, *, operation_id=None, recovery=False, deadline=None):
         review = v.validate_result("review", {"ok": True, "data": review}, entry)
         if not review["confirmable"]:
             raise CatalogError("review_required", "A confirmable review is required.")
         if operation_id is not None:
             _valid_token(operation_id)
-        with self.transaction() as doc:
+        with self.transaction(deadline=deadline) as doc:
             self._owner(entry, doc)
             if any(row["state"] != "ready" for row in doc["registrations"].values()):
                 raise CatalogError("busy", "Catalog installed ownership is reconciling.")

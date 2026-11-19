@@ -93,6 +93,11 @@ def _invoke(call, profile):
         call.done.set()
 
 
+def deadline_for(method, deadline=None):
+    end = time.monotonic() + _BUDGETS[method]
+    return min(end, deadline) if deadline is not None else end
+
+
 def call(entry, method, payload, *, deadline=None) -> dict:
     """Return sanitized data or raise CatalogError; deadline is absolute monotonic.
 
@@ -100,11 +105,8 @@ def call(entry, method, payload, *, deadline=None) -> dict:
     method budget and caller's remaining monotonic budget. Scope hydration and
     live authorization are part of that budget, entirely inside the worker.
     """
-    started = time.monotonic()
+    end = deadline_for(method, deadline)
     request = validate_request(method, payload)
-    end = started + _BUDGETS[method]
-    if deadline is not None:
-        end = min(end, deadline)
     if time.monotonic() >= end:
         raise CatalogError("timeout", "Catalog request timed out.")
     request["context"] = {

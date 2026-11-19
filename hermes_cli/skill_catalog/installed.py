@@ -135,9 +135,10 @@ def extend_installed_rows(rows):
         except (ValueError, CatalogError):
             continue
     claims = {}
+    deadline = time.monotonic() + 3
     for entry in entries:
         try:
-            records = installed_records(entry)
+            records = installed_records(entry, deadline=deadline)
             claims.update(_records_by_claim(home, entry, records, projection))
         except CatalogError:
             raise _unavailable() from None

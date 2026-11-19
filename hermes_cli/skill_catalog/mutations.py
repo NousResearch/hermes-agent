@@ -104,8 +104,9 @@ class Mutations:
             pass
         return result
 
-    def reconcile(self, *, operation_id=None, target=None):
-        return self._send('reconcile', dict(operation_id=operation_id, target=target))
+    def reconcile(self, *, operation_id=None, target=None, deadline=None):
+        end = min(deadline, time.monotonic() + 3) if deadline is not None else time.monotonic() + 3
+        return self._send('reconcile', dict(operation_id=operation_id, target=target, deadline=end))
 
     def settlement(self, operation_id):
         return self._send('settlement', operation_id)
@@ -172,22 +173,25 @@ class Mutations:
         from hermes_cli.skill_catalog.worker import call
         if self._permit is not None:
             raise CatalogError('operation_in_progress', 'A catalog writer is still active.')
-        with self.projection.transaction() as doc:
+        deadline = payload['deadline']
+        if time.monotonic() >= deadline:
+            raise CatalogError('timeout', 'Catalog request timed out.')
+        with self.projection.transaction(deadline=deadline) as doc:
             rows = [(key, copy.deepcopy(row)) for key, row in doc['reservations'].items()
                     if row['registration_id'] == self.entry.registration_id
                     and (row['state'] == 'unknown' or row.get('local_result') is not None)
                     and (payload['operation_id'] is None or row['operation_id'] == payload['operation_id'])
                     and (payload['target'] is None or _overlap(row['target_relative_path'], payload['target']))]
             for reservation_id, row in rows:
-                self._reconcile_row(doc, reservation_id, row, call)
+                self._reconcile_row(doc, reservation_id, row, call, deadline)
 
-    def _reconcile_row(self, doc, reservation_id, row, call):
+    def _reconcile_row(self, doc, reservation_id, row, call, deadline):
         if row['operation_id'] is None:
             raise CatalogError('ownership_state_unavailable', 'Catalog operation binding is unavailable.')
         try:
             with writer_hold(self.projection.home, [row['target_relative_path']], deadline=time.monotonic()):
                 try:
-                    result = call(self.entry, 'operation', dict(operation_id=row['operation_id']))
+                    result = call(self.entry, 'operation', dict(operation_id=row['operation_id']), deadline=deadline)
                 except CatalogError:
                     raise CatalogError('ownership_state_unavailable', 'Catalog operation cannot be reconciled.') from None
                 if result['operation_id'] != row['operation_id']:

@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 
 from hermes_cli.skill_catalog.installed import installed_records
 from hermes_cli.skill_catalog.validation import CatalogError
+from hermes_cli.skill_catalog.worker import deadline_for
 from hermes_cli.web_routers._common import destructive_profile
 
 
@@ -102,12 +103,12 @@ def _invoke(service, method, *args, **kwargs):
         return getattr(service, method)(*args, **kwargs)
 
 
-async def _provider_action(service, route, body):
+async def _provider_action(service, route, body, deadline):
     identifier = body['identifier']
     if route in ('preview', 'scan'):
         _fields(body, ('identifier',), ('profile', 'version'))
         data = await asyncio.to_thread(_invoke, service, 'read',
-            'inspect' if route == 'preview' else 'scan', identifier, {'version': body.get('version')})
+            'inspect' if route == 'preview' else 'scan', identifier, {'version': body.get('version')}, deadline=deadline)
         return JSONResponse(data)
     if route in ('install', 'update', 'uninstall'):
         _fields(body, ('identifier',), ('profile', 'review_token', 'acknowledgements', 'name'))
@@ -116,29 +117,36 @@ async def _provider_action(service, route, body):
         if 'review_token' not in body:
             raise CatalogError('review_required', 'Review this action before confirming.')
         result = await asyncio.to_thread(_invoke, service, 'confirm', identifier,
-            route, body['review_token'], body.get('acknowledgements', []))
+            route, body['review_token'], body.get('acknowledgements', []), deadline=deadline)
         return JSONResponse(result)
     raise CatalogError('invalid_request', 'Unsupported catalog action.')
 
 
 async def delegate(request, stock):
+    route = request.url.path.rsplit('/', 1)[-1]
+    method = {'preview': 'inspect', 'update': 'check', 'updates': 'check',
+              'install': 'confirm', 'uninstall': 'confirm', 'sources': 'availability',
+              'official': 'availability'}.get(route, route)
+    deadline = (time.monotonic() + 5 if route in ('official', 'sources') else
+        deadline_for(method if method in ('inspect', 'check', 'confirm', 'review',
+        'operation', 'scan', 'search', 'availability') else 'availability'))
     if (request.url.path.startswith('/api/skills/hub/') and request.method == 'GET'
             and len(request.query_params.getlist('profile')) > 1):
         # Resolve ambiguous read scopes before starting independent public search.
         # With no source, the stock handler still owns duplicate-query semantics.
-        if await _selected_service(request, None, time.monotonic() + 5) is None:
+        if await _selected_service(request, None, deadline) is None:
             return await stock(request)
     if request.url.path == '/api/skills/hub/search' and not request.query_params.get('source', '').startswith('plugin.'):
         public = asyncio.create_task(stock(request))
         async def completed(_request):
             return await public
         try:
-            return await _delegate(request, completed)
+            return await _delegate(request, completed, deadline)
         finally:
             if not public.done():
                 public.cancel()
                 await asyncio.gather(public, return_exceptions=True)
-    return await _delegate(request, stock)
+    return await _delegate(request, stock, deadline)
 
 
 async def _bounded_body(request):
@@ -168,8 +176,7 @@ async def _bounded_body(request):
             return request._body
 
 
-async def _delegate(request, stock):
-    provider_deadline = time.monotonic() + 5
+async def _delegate(request, stock, provider_deadline):
     route = request.url.path.rsplit('/', 1)[-1]
     if not request.url.path.startswith('/api/skills/hub/'):
         return await stock(request)
@@ -189,12 +196,12 @@ async def _delegate(request, stock):
     else:
         body = dict(request.query_params)
     if route in ('review', 'confirm', 'operation'):
-        return await _extension(service, route, body)
+        return await _extension(service, route, body, provider_deadline)
     if route == 'search':
         return await _search(request, stock, service, provider_deadline)
     identifier = body.get('identifier')
     if type(identifier) is str and identifier.startswith('plugin.'):
-        return await _provider_action(service, route, body)
+        return await _provider_action(service, route, body, provider_deadline)
     if route == 'uninstall':
         await asyncio.to_thread(_scoped_managed_name, service, body.get('name'))
     response = await stock(request)
@@ -208,9 +215,12 @@ async def _delegate(request, stock):
                 data['provider_sources'] = sources
             else:
                 data['sources'].extend(sources)
-                data['installed'].update(await asyncio.to_thread(_installed_map, service, deadline=provider_deadline))
+                try:
+                    data['installed'].update(await asyncio.to_thread(_installed_map, service, deadline=provider_deadline))
+                except CatalogError as exc:
+                    data['provider_errors'] = [dict(code=exc.code, message=exc.message)]
     elif route in ('updates', 'update'):
-        updates, errors = await asyncio.to_thread(_updates, service)
+        updates, errors = await asyncio.to_thread(_updates, service, deadline=provider_deadline)
         if route == 'updates':
             data['updates'].extend(updates)
         else:
@@ -258,18 +268,18 @@ async def _search(request, stock, service, deadline):
     return JSONResponse(data)
 
 
-async def _extension(service, route, body):
+async def _extension(service, route, body, deadline):
     if route == 'review':
         _fields(body, ('identifier', 'action'), ('version', 'profile'))
         result = await asyncio.to_thread(_invoke, service, 'review', body['identifier'],
-            body['action'], body.get('version'))
+            body['action'], body.get('version'), deadline=deadline)
     elif route == 'confirm':
         _fields(body, ('identifier', 'action', 'review_token', 'acknowledgements'), ('profile',))
         result = await asyncio.to_thread(_invoke, service, 'confirm', body['identifier'],
-            body['action'], body['review_token'], body['acknowledgements'])
+            body['action'], body['review_token'], body['acknowledgements'], deadline=deadline)
     else:
         _fields(body, ('identifier', 'operation_id'), ('profile',))
-        result = await asyncio.to_thread(_invoke, service, 'operation', body['identifier'], body['operation_id'])
+        result = await asyncio.to_thread(_invoke, service, 'operation', body['identifier'], body['operation_id'], deadline=deadline)
     return JSONResponse(result)
 
 
@@ -301,11 +311,10 @@ def _managed_name(service, name):
                 raise error
 
 
-def _updates(service):
-    import time
+def _updates(service, *, deadline=None):
     from hermes_cli.skill_catalog.worker import call
     rows, errors = [], []
-    deadline = time.monotonic() + 15
+    deadline = deadline_for('check', deadline)
     for entry in service.entries():
         cursor, seen = None, set()
         try:

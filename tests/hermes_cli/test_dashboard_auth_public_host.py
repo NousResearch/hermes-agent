@@ -48,10 +48,38 @@ def test_a_sign_in_started_on_another_host_completes_on_the_public_one(agent):
     assert agent.get(f"{PUBLIC}/api/auth/me").status_code == 200
 
 
+def test_the_desktop_sign_in_moves_to_the_public_host_too(agent):
+    """The desktop's RFC 8252 start sets the same PKCE cookie, so it must not stay on the old host."""
+    native = {"provider": "stub", "code_challenge": "challenge", "code_challenge_method": "S256",
+              "redirect_uri": "http://127.0.0.1:53682/callback", "state": "desktop-state"}
+    started = agent.get("/auth/native/authorize", params=native, follow_redirects=False)
+
+    moved = urlsplit(started.headers["location"])
+    assert (started.status_code, f"{moved.scheme}://{moved.netloc}", moved.path) == (
+        302, PUBLIC, "/auth/native/authorize")
+    assert {key: parse_qs(moved.query)[key] for key in native} == {key: [value] for key, value in native.items()}
+
+
+@pytest.mark.parametrize("own, lands_on", [
+    ("https://hermes.example.test", "https://hermes.example.test/auth/login?"),
+    ("", "https://agent.example.test/auth/callback?code="),
+], ids=["webapp-public-url", "webapp-without-one"])
+def test_a_webapp_listener_signs_in_on_its_own_public_url_never_the_dashboards(agent, monkeypatch, own, lands_on):
+    """The Webapp's IDP callback is its own ``webapp.public_url``; the dashboard's would lose the cookie."""
+    monkeypatch.setattr(web_server.app.state, "listener_public_url", own, raising=False)
+
+    started = agent.get("/auth/login", params={"provider": "stub"}, follow_redirects=False)
+
+    assert started.status_code == 302
+    assert started.headers["location"].startswith(lands_on), started.headers["location"]
+
+
 @pytest.mark.parametrize("headers, query", [
     ({"host": "sandbox.azure.example", "x-forwarded-host": "agent--dash.example.test"}, ""),
+    ({"host": "sandbox.azure.example", "x-forwarded-host": "agent--dash.example.test, sandbox.azure.example"}, ""),
     ({"host": "sandbox.azure.example"}, "&public_host_hop=1"),
-], ids=["proxy-forwards-the-browser-host", "proxy-hides-it-after-one-hop"])
+], ids=["proxy-forwards-the-browser-host", "proxy-chain-puts-the-browser-host-first",
+        "proxy-hides-it-after-one-hop"])
 def test_a_proxy_that_rewrites_host_goes_to_the_idp_without_looping(agent, headers, query):
     started = agent.get(f"/auth/login?provider=stub{query}", headers=headers, follow_redirects=False)
 

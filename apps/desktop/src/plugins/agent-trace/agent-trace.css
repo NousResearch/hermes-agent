@@ -1,0 +1,29 @@
+/* AgentTrace — tree indent guides + drawer entrance. Theme variables only;
+   the pane/page already sit on the app's editor background. */
+
+.atrace-children {
+  margin-left: 0.875rem;
+  border-left: 1px solid var(--ui-stroke-tertiary);
+  padding-left: 0.25rem;
+}
+
+.atrace-drawer {
+  animation: atrace-slide-in 160ms ease-out;
+}
+
+@keyframes atrace-slide-in {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .atrace-drawer {
+    animation: none;
+  }
+}

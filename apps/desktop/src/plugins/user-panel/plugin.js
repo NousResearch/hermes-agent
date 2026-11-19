@@ -414,17 +414,6 @@ function UserPanelContent({ onOpenUrl }) {
     onOpenUrl(url)
   }
 
-  if (snapshot.status === 'loading') {
-    return jsx(Button, {
-      'aria-label': 'Loading account',
-      disabled: true,
-      size: 'icon-titlebar',
-      type: 'button',
-      variant: 'ghost',
-      children: jsx('span', { className: 'size-5 rounded-full bg-(--ui-bg-quaternary)' })
-    })
-  }
-
   const signedIn = snapshot.enabled && snapshot.status === 'signed-in' && Boolean(snapshot.user)
 
   // Signed out (or Clerk unavailable): keep the same panel, but replace the
@@ -602,7 +591,6 @@ function UserPanelContent({ onOpenUrl }) {
                       jsxs(DropdownMenuItem, {
                         className: 'min-w-0',
                         disabled: pending,
-                        key: 'personal',
                         onSelect: event => {
                           event.preventDefault()
                           void switchTo(null)
@@ -627,7 +615,7 @@ function UserPanelContent({ onOpenUrl }) {
                                 })
                               : null
                         ]
-                      }),
+                      }, 'personal'),
                       ...snapshot.organizations.map(organization => {
                         const active = activeOrganization?.id === organization.id
 

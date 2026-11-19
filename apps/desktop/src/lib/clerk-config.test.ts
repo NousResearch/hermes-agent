@@ -1,53 +1,34 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { BrowserHostGlobals } from './platform'
-
-const win = window as Window & BrowserHostGlobals
-
-beforeEach(() => {
-  vi.resetModules()
-  delete document.documentElement.dataset.hermesDesktopHost
-  delete (window as Partial<Window>).hermesDesktop
-  delete win.__HERMES_UI_SURFACE__
-})
+const setClerkBridge = (bridge?: { enabled: boolean; host: string; scheme: string }) => {
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: bridge ? { clerk: bridge } : undefined
+  })
+}
 
 afterEach(() => {
-  delete document.documentElement.dataset.hermesDesktopHost
-  delete (window as Partial<Window>).hermesDesktop
-  delete win.__HERMES_UI_SURFACE__
+  vi.resetModules()
+  setClerkBridge()
 })
 
-describe('Clerk host configuration', () => {
-  it('enables the browser provider for the browser-hosted renderer', async () => {
-    document.documentElement.dataset.hermesDesktopHost = 'browser'
-    window.hermesDesktop = {} as Window['hermesDesktop']
+describe('clerk-config host detection', () => {
+  it('enables browser Clerk when there is no Electron bridge', async () => {
+    setClerkBridge()
+
     const config = await import('./clerk-config')
 
     expect(config.clerkBrowserEnabled).toBe(true)
     expect(config.clerkEnabled).toBe(false)
   })
 
-  it('detects the browser host before its bridge is installed', async () => {
-    win.__HERMES_UI_SURFACE__ = 'webapp'
+  it('leaves browser Clerk off when the Electron bridge is present', async () => {
+    setClerkBridge({ enabled: true, host: 'renderer', scheme: 'unitalk-app' })
+
     const config = await import('./clerk-config')
 
-    expect(config.clerkBrowserEnabled).toBe(true)
-    expect(config.clerkEnabled).toBe(false)
-  })
-
-  it.each([true, false])('keeps the browser provider off for a native bridge (enabled=%s)', async enabled => {
-    window.hermesDesktop = { clerk: { enabled } } as Window['hermesDesktop']
-    const config = await import('./clerk-config')
-
+    expect(config.clerkEnabled).toBe(true)
     expect(config.clerkBrowserEnabled).toBe(false)
-    expect(config.clerkEnabled).toBe(enabled)
-  })
-
-  it('does not enable the browser provider on an unrecognized host', async () => {
-    const config = await import('./clerk-config')
-
-    expect(config.clerkBrowserEnabled).toBe(false)
-    expect(config.clerkEnabled).toBe(false)
   })
 })

@@ -176,6 +176,17 @@ class TestFocusAssertion:
         assert _run(setup, build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN, refocus=False))["refused"] == "focus_lost"
         assert _run(setup, build_focus_js(fills, nonce=NONCE, expected_origin=ORIGIN)) == {"focused": 1}
 
+    @pytest.mark.parametrize("root", ["document", "shadowHost(document).shadowRoot"])
+    def test_a_page_holding_a_frame_is_refused_even_with_focus(self, root):
+        """A frame runs in its own process and can take focus after this check, before the keystroke
+        lands; Input.insertText would then type into the frame's document, another origin."""
+        setup = """
+          const pw = stamp(add(document, "input", { type: "password" }), 1);
+          add(ROOT, "iframe");
+        """.replace("ROOT", root)
+        js = build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE, expected_origin=ORIGIN)
+        assert _run(setup, js) == {"refused": "frame_on_page"}
+
 
 class TestReadBack:
     def test_a_select_holding_another_option_is_not_landed(self):

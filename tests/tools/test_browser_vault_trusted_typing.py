@@ -116,6 +116,40 @@ def test_without_a_redirect_the_password_is_typed(tmp_path):
     assert out["success"] is True and sup.typed == [PASSWORD]
 
 
+class _FramedPage(_Supervisor):
+    """A login page that embeds a frame: the frame probe answers true, the JS fill writes."""
+
+    def __init__(self, controls):
+        super().__init__(controls)
+        self.scripts: list[str] = []
+
+    def _answer(self, expression):
+        self.scripts.append(expression)
+        if "iframe, frame, object, embed" in expression:
+            return True
+        if "filled }" in expression:
+            return {"filled": 1}
+        return super()._answer(expression)
+
+
+def test_a_page_with_a_frame_gets_the_js_write_not_a_keystroke(tmp_path):
+    """A frame can take focus from its own process between the focus check and the keystroke, and
+    Input.insertText would type the password into it. Such a page gets the JS fill, which writes
+    the stamped control itself."""
+    sup = _FramedPage([_PW])
+    out = _fill(sup, tmp_path)
+    assert out["success"] is True and sup.typed == []
+    assert any(PASSWORD in s and "filled }" in s for s in sup.scripts)
+
+
+def test_a_frame_that_appears_after_the_probe_stops_the_keystroke(tmp_path):
+    sup = _Supervisor([_PW])
+    answer = sup._answer
+    sup._answer = lambda e: {"refused": "frame_on_page"} if 'refused: "focus_lost"' in e else answer(e)
+    out = _fill(sup, tmp_path)
+    assert out["error_type"] == "frame_on_page" and sup.typed == []
+
+
 def test_a_takeover_during_the_focus_check_stops_the_keystroke(tmp_path):
     """A human can take the Bot Desktop screen while a focus check is in flight. The keystroke is a
     write like any secret script: it is admitted again right before it is sent."""

@@ -348,6 +348,10 @@ _TAB_PROBES = {
     "payment": _deep_probe("input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]"),
     "address": _deep_probe("input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]"),
 }
+# Input.insertText types into whatever holds focus, and a frame on the page (another origin, its own
+# process) can take focus between the focus check and the keystroke. Such a page gets the JS write,
+# which addresses the stamped control itself; the focus check refuses a frame that appears later.
+_FRAME_PROBE = _deep_probe("iframe, frame, object, embed")
 
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[_CheckedPage]:
@@ -837,6 +841,9 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
             focus = _script(build_focus_js([f], nonce, expected_origin=page_origin, refocus=refocus))
             if isinstance(focus, dict) and focus.get("focused") == f["index"]:
                 return None
+            if isinstance(focus, dict) and focus.get("refused") == "frame_on_page":
+                return _abort("frame_on_page", "Refused: a frame appeared on the page before the value could be typed; "
+                                               "a frame can take the focus. Nothing further was typed.")
             if isinstance(focus, dict) and focus.get("refused") == "origin_changed":
                 return _abort("origin_changed",
                               f"Refused: the page navigated away from the bound origin ({page_origin}) "
@@ -1094,7 +1101,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     supervisor, insert_text, page_backend = _typing_channel(effective_task_id)
     # The trusted path types into the SUPERVISOR's page: only use it when that page is the page the
     # inspection stamped (no plugin page backend in front of it).
-    trusted = bool(callable(insert_text)) and page_backend is None
+    trusted = (bool(callable(insert_text)) and page_backend is None
+               and _eval_js(effective_task_id, _FRAME_PROBE).get("result") is not True)
     type_fills = [f for f in fills
                   if f["index"] in type_by_index
                   and type_by_index[f["index"]] not in ("select", "checkbox", "radio")]

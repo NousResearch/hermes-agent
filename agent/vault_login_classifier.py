@@ -437,7 +437,8 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
     Returns (by value): ``{"focused": <index>}`` or
     ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
-    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}``.
+    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}`` /
+    ``{"refused": "frame_on_page"}`` (a frame can take focus before the keystroke lands).
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
@@ -467,8 +468,12 @@ __ORIGIN_GUARD__
   if (__REFOCUS__) { try { el.focus(); } catch (e) { /* focus can throw on a detached node */ } }
   let active = document.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
-  if (active === el) return { __proto__: null, focused: f.index };
-  return { __proto__: null, refused: "focus_lost", tag: el.tagName, found: active ? active.tagName : null };
+  if (active !== el) return { __proto__: null, refused: "focus_lost", tag: el.tagName, found: active ? active.tagName : null };
+  // A frame runs in its own process and can take focus between this check and the keystroke, which
+  // Input.insertText then types into the frame's document: another origin.
+  const frameTags = ["IFRAME", "FRAME", "OBJECT", "EMBED"];
+  if (find("*").some((e) => frameTags.includes(e.tagName))) return { __proto__: null, refused: "frame_on_page" };
+  return { __proto__: null, focused: f.index };
 })()"""
 
 

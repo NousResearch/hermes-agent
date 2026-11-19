@@ -2,7 +2,7 @@ import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC, useState } from 'react'
 
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
-import { messageContentText } from '@/components/assistant-ui/thread/content'
+import { partText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -88,9 +88,11 @@ const ContentRefusedNote: FC<{ notice: string; userText: string }> = ({ notice, 
 
 export const SystemMessage: FC = () => {
   const { t } = useI18n()
-  const text = useAuiState(s => messageContentText(s.message.content))
+  const rawText = useAuiState(s => s.message.content.map(partText).join(''))
+  const text = rawText.trim()
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const cronReport = useAuiState(s => s.message.metadata.custom?.cronReport === true)
 
   const contentRefused = useAuiState(
     s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
@@ -104,6 +106,20 @@ export const SystemMessage: FC = () => {
 
   if (!text) {
     return null
+  }
+
+  // Local cron results are the deliverable itself: no follow-up turn will render a reply.
+  if (cronReport) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 max-w-full flex-col self-start gap-1 pb-(--conversation-turn-gap) pl-(--message-text-indent)"
+        data-role="system"
+        data-slot="aui_cron-report"
+      >
+        <MarkdownTextContent disableArtifacts isRunning={false} text={rawText} />
+        <MessageTimelineTimestamp />
+      </MessagePrimitive.Root>
+    )
   }
 
   if (processResult || (typeof asyncResult === 'string' && asyncResult)) {

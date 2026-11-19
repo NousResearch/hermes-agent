@@ -238,10 +238,17 @@ it('carries each install channel from Python publication checks into the source 
       commits.push(git(['rev-parse', 'HEAD']))
     }
 
+    // Published releases are descendants of the installed source for the
+    // forward-update test. The older releases below exercise downgrade refusal.
+    for (const label of ['forward-stable', 'forward-canary']) {
+      git(['commit', '--allow-empty', '-m', label])
+      commits.push(git(['rev-parse', 'HEAD']))
+    }
+
     const tags: Record<'stable' | 'canary', string> = { stable: 'v1.2.3', canary: 'v1.2.3+canary.20260911T123456Z' }
 
     for (const channel of ['stable', 'canary'] as const) {
-      const sha: string = commits[channel === 'stable' ? 1 : 2]
+      const sha: string = commits[channel === 'stable' ? 4 : 5]
       git(['tag', '-a', tags[channel], sha, '-m', channel])
       const manifest: FixtureManifest = buildManifest(channel, sha, tags[channel], buildId(channel))
       const body: string = canonicalJson(manifest)
@@ -272,8 +279,8 @@ it('carries each install channel from Python publication checks into the source 
       draft: false,
       prerelease: false
     })
-    git(['tag', 'v99.0.0'])
-    git(['worktree', 'add', '-b', 'feature/gui', root])
+    git(['tag', 'v99.0.0', commits[3]])
+    git(['worktree', 'add', '-b', 'feature/gui', root, commits[3]])
     git(['remote', 'add', 'origin', origin])
     fs.writeFileSync(path.join(origin, 'install-stamp.json'), JSON.stringify({ updateMechanism: 'external' }))
     fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ updateMechanism: 'self' }))
@@ -412,7 +419,7 @@ if not getattr(urllib.request, '_hermes_loopback', False):
 
     for (const channel of ['stable', 'canary'] as const) {
       await setChannel(channel)
-      const sha: string = commits[channel === 'stable' ? 1 : 2]
+      const sha: string = commits[channel === 'stable' ? 4 : 5]
       const checked: unknown = await strategy.check()
       expect(checked, JSON.stringify({ checked, requests })).toMatchObject({
         supported: true,
@@ -448,6 +455,19 @@ if not getattr(urllib.request, '_hermes_loopback', False):
       expect(await strategy.check()).toMatchObject({ targetSha: sha, updateAvailable: false })
       git(['checkout', 'feature/gui'], root)
     }
+
+    // The same stable release is not installable once this checkout has moved
+    // past it. Keep the downgrade refusal distinct from forward handoff.
+    await setChannel('stable')
+    git(['checkout', '--detach', commits[5]], root)
+    expect(await strategy.check()).toMatchObject({
+      channel: 'stable',
+      targetSha: commits[4],
+      updateAvailable: false,
+      held: 'downgrade'
+    })
+    git(['checkout', 'feature/gui'], root)
+    await setChannel('canary')
 
     // The R2 record, not GitHub metadata, decides availability: retire the
     // canary object and the resolver must fail closed before any handoff.

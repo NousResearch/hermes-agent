@@ -1,6 +1,6 @@
 name: neural-mesh
 repo: https://github.com/D0xedDevi0/hermes-neural-mesh
-sha: 93f98fd7fe899559928009441cd7869efa7146441b6869327c2dd77f36335836d127b959
+sha: 281b7b381b6869327c2dd77f36335836d127b959
 description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, an injection floor measured on a 15-family ablation, and a tamper-evident provenance ledger (mesh_verify, mesh_provenance) that names what its verdict rests on: which anchor file it was judged against, or plainly that it had none. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores user turns, pre-compression and session-end message extracts, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path)."
 maintainer: D0xedDevi0
 tier: community

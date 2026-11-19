@@ -122,7 +122,7 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
         goal_text="do the thing",
         run_turn=lambda p: turns.append(p) or "x",
         task_status_fn=lambda: "done",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="done already",
     )
     assert res["outcome"] == "completed_by_worker"
@@ -144,7 +144,7 @@ def test_loop_stops_on_judge_transport_failure(monkeypatch):
         goal_text="do the thing",
         run_turn=lambda p: turns.append(p) or "x",
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"
@@ -166,7 +166,7 @@ def test_loop_stops_on_worker_failed_flag(monkeypatch):
             "failure_reason": "context_window_exceeded",
         },
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"
@@ -186,7 +186,7 @@ def test_loop_stops_on_worker_failed_flag_default_reason(monkeypatch):
             "failed": True,
         },
         task_status_fn=lambda: "running",
-        block_fn=lambda r: pytest.fail("should not block"),
+        block_fn=lambda _reason, _kind: pytest.fail("should not block"),
         first_response="first attempt",
     )
     assert res["outcome"] == "stopped"

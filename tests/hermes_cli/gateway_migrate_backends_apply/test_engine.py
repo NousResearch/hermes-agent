@@ -1265,3 +1265,52 @@ def test_an_acknowledgement_no_caller_waits_for_is_removed_by_the_next_run(home,
         engine.cmd_backends(_args(apply=False, restore=True))
 
     assert not abandoned.exists() and fresh.exists()  # a caller may still be waiting for the fresh one
+
+
+def _old_comes_back_without_health(host, on: bool = True, *, already_stopped: bool = False) -> None:
+    """Once the old backend has been stopped, what answers on its address again gives 401/403/404 on
+    /api/health (``{"health": "missing"}``): something listens, but nothing proves it is the old backend."""
+    real, stopped = host.http_status, [already_stopped]
+    real_stop = host.old_stop
+
+    def stop(rec):
+        stopped[0] = True
+        return real_stop(rec)
+
+    def probe(h, port):
+        status = real(h, port)
+        return {"health": "missing"} if on and stopped[0] and status is not None and host.old["active"] else status
+
+    host.old_stop, host.http_status = stop, probe
+
+
+@pytest.mark.parametrize("health_missing", [True, False])
+def test_a_restore_is_restored_only_after_a_real_health_result(home, health_missing):
+    host = FakeHost(home)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    _old_comes_back_without_health(host, health_missing, already_stopped=True)  # the apply stopped it
+
+    code = engine.restore(host, yes=True)
+
+    state = engine.status_payload(host)["state"]
+    if health_missing:
+        assert code == engine.EXIT_ROLLBACK_INCOMPLETE and state != "restored"
+        assert "/api/health answered without a health result" in engine.status_payload(host)["message"]
+    else:
+        assert code == engine.EXIT_OK and state == "restored"
+
+
+@pytest.mark.parametrize("health_missing", [True, False])
+def test_a_failed_apply_is_rolled_back_only_after_a_real_health_result(home, health_missing):
+    host = FakeHost(home)
+    host.gateway_lies = True  # verify fails after the old backend stopped
+    _old_comes_back_without_health(host, health_missing)
+
+    code = engine.cmd_apply(host, _args())
+
+    state = engine.status_payload(host)["state"]
+    if health_missing:
+        assert code == engine.EXIT_ROLLBACK_INCOMPLETE and state != "rolled_back"
+    else:
+        assert code == engine.EXIT_ROLLED_BACK and state == "rolled_back"
+

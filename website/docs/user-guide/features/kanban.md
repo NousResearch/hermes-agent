@@ -461,7 +461,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | Tool | Purpose | Required params |
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
-| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
+| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, a `due` window (`overdue` / `today` / `any` / `none`), archived visibility, `sort` (`priority` default, or `due`), and limit. Rows carry `due_at` + `due_at_iso`. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
@@ -471,7 +471,7 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
 | `kanban_attachments` | List a task's attachments. | — |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
+| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, `due` ([due-date forms](#due-dates)), etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
 | `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
 
@@ -780,15 +780,15 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
   - Queue columns list cards in dispatch order (priority, then oldest first — top card spawns next). The `done` column is history and lists newest-completed first; `hermes kanban list --status done --sort completed-desc` gives the same order on the CLI.
   - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, else the assignee the task already had, else the active default profile) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
-- Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
+- Cards show the task id, title, priority badge, tenant tag, a **due badge** (red *Overdue*, amber *Due today*, otherwise the date — see [Due dates](#due-dates)), assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
 - **Drag-drop** cards between columns to change status. The drop sends `PATCH /api/plugins/kanban/tasks/:id` which routes through the same `kanban_db` code the CLI uses — the three surfaces can never drift. Moves into destructive statuses (`done`, `archived`, `blocked`) prompt for confirmation. Touch devices use a pointer-based fallback so the board is usable from a tablet.
-- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
+- **Create-task dialog** — click `+` on any column header to open a modal with labeled fields: title, assignee, priority, an optional due date (in Hermes's configured timezone), skills, workspace kind/path (seeded from the board's project directory; per-task override), goal mode, and (optionally) a parent task from a dropdown over every existing task. Press Enter to create the task, Shift+Enter to insert a newline in the title field, or Escape to cancel. Creating from the Triage column automatically parks the new task in triage.
 - **Multi-select with bulk actions** — shift/ctrl-click a card or tick its checkbox to add it to the selection. A bulk action bar appears at the top with batch status transitions, archive, and reassign (by profile dropdown, or "(unassign)"). Destructive batches confirm first. Per-id partial failures are reported without aborting the rest.
 - **Click a card** (without shift/ctrl) to open a side drawer (Escape or click-outside closes) with:
   - **Editable title** — click the heading to rename.
-  - **Editable assignee / priority** — click the meta row to rewrite.
+  - **Editable assignee / priority / due date** — click the meta row to rewrite; the due editor has a **Clear** button.
   - **Editable description** — markdown-rendered by default (headings, bold, italic, inline code, fenced code, `http(s)` / `mailto:` links, bullet lists), with an "edit" button that swaps in a textarea. Markdown rendering is a tiny, XSS-safe renderer — every substitution runs on HTML-escaped input, only `http(s)` / `mailto:` links pass through, and `target="_blank"` + `rel="noopener noreferrer"` are always set.
   - **Dependency editor** — chip list of parents and children, each with an `×` to unlink, plus dropdowns over every other task to add a new parent or child. Cycle attempts are rejected server-side with a clear message.
   - **Status action row** (→ triage / → ready / → running / block / unblock / complete / archive) with confirm prompts for destructive transitions. For cards in the **Triage** column the row also exposes two LLM-driven actions: **⚗ Decompose** fans the task out into a graph of child tasks routed to specialist profiles by description, and **✨ Specify** does a single-task spec rewrite. Decompose falls back to specify-style promotion when the LLM decides the task doesn't benefit from fan-out, so it's a strict superset. Both are reachable from the CLI (`hermes kanban decompose <id>` / `specify <id>` / `--all`), from any gateway platform (`/kanban decompose <id>`), and programmatically via `POST /api/plugins/kanban/tasks/:id/decompose` and `…/specify`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`.
@@ -876,8 +876,8 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 |---|---|---|
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
-| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
-| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
+| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool`, `parents: [id, …]` and `due_at` — epoch-seconds integer or any `--due` string; booleans/floats → 422, unparseable → 400). Task payloads carry `due_state`, `due_at_local`, `due_at_iso` |
+| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result / `due_at`; `clear_due: true` removes the due date. Every field is validated before the first write and the status transition runs before the field writes, so a refused PATCH (400/409) changes nothing |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |
@@ -945,6 +945,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
                                 [--branch <name>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
+                                [--due <when>]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
                                 [--goal] [--goal-max-turns N]
@@ -952,13 +953,14 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
         [--workflow-template-id <id>] [--current-step-key <key>]
-        [--sort completed-desc|created|created-desc|priority|priority-desc|status|assignee|title|updated]
+        [--due overdue|today|any|none]
+        [--sort completed-desc|created|created-desc|due|due-desc|priority|priority-desc|status|assignee|title|updated]
         [--json]
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
-hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
-        [--priority N]
+hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority / due date in place
+        [--priority N] [--due <when>|none]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
@@ -1031,6 +1033,53 @@ Set `scheduled_at` on a task to delay dispatch until a specific time. The dispat
 hermes kanban create "nightly backup audit" \
   --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
 ```
+
+### Due dates
+
+A task can carry a **due date** (`due_at`): a human deadline for personal task management and
+daily briefings. It is **informational only** — the dispatcher never reads it, so a due date
+never starts, re-prioritises or re-orders work, and an overdue card assigned to a person (or
+any name that is not a Hermes profile) stays exactly where it is. Nothing runs "because it is
+due": a profile-assigned card still dispatches on the normal ready/priority rules, and a card
+parked in *Scheduled* (`hermes kanban schedule`) stays parked until it is unblocked.
+
+`due_at` is stored as epoch seconds (an absolute UTC instant, like every other task
+timestamp) and is `null` when unset. Every surface — `--due` on the CLI, `due` on the
+`kanban_create` tool, `due_at` on the dashboard API — accepts the same forms:
+
+| Input | Meaning |
+|---|---|
+| `2026-11-20T17:00:00Z`, `2026-11-20T17:00:00+01:00` | That exact instant |
+| `2026-11-20T17:00` | 17:00 in the profile's configured `timezone` (server-local when unset) — the same rule cron uses for a naive one-shot. A local time a DST change skips (`2026-03-08T02:30` in New York) is refused; one it repeats (`2026-11-01T01:30`) needs an explicit offset (`-04:00` / `-05:00`) |
+| `2026-11-20` | Due **by the end** of that day (23:59:59) in the configured timezone |
+| `in 2h`, `in 3d`, `in 90m` | Relative to now (`s`/`m`/`h`/`d`, the `--max-runtime` duration grammar) |
+| `1795186799` | Epoch seconds (milliseconds are rejected) |
+| `none` (also `clear`, `null`, `-`) | No due date — on `edit`, clears it |
+
+Natural-language phrases such as `tomorrow` or `next friday` are rejected rather than guessed.
+
+```bash
+hermes kanban create "renew passport" --due 2026-11-20
+hermes kanban edit t_abcd --due "in 3d"
+hermes kanban edit t_abcd --due none          # clear
+
+# Daily briefing
+hermes kanban list --due overdue --sort due   # past due and not done/archived
+hermes kanban list --due today --sort due     # due during today (configured timezone)
+hermes kanban list --due any --sort due --json
+```
+
+`--due` filters: `overdue` (due before now and not `done`/`archived` — a finished task is never
+overdue), `today` (due within today's local day; an item due earlier today is both `today` and
+`overdue`), `any` (has a due date), `none`. `--sort due` lists soonest first and `due-desc`
+latest first; undated tasks always sort last. Without `--sort` the default dispatch order
+(priority, then oldest) is unchanged. `list --json` / `show --json` carry `due_at` (epoch) and
+`due_at_iso` (ISO-8601 with the configured timezone's offset); `show` prints a `due:` line and
+`list` appends `(due …, OVERDUE)` to late cards. Setting or clearing a due date records an
+`edited` event with `fields: ["due_at"]` and the new value. The dashboard shows and edits due
+dates in the configured timezone too: the API returns `due_state` (`overdue` / `today` /
+`later`, the same rules as the `--due` filters), `due_at_local` and `due_at_iso` with each task,
+and the editor sends its `datetime-local` value back as typed.
 
 ### Respawn guard
 

@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
+from hermes_cli.kanban_due import due_iso
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
@@ -436,21 +437,25 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract last_failure_error due_at".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
-    "created_at started_at completed_at current_run_id model_override provider_override".split())
+    "created_at started_at completed_at current_run_id model_override provider_override due_at".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
-_CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id")
+_CREATED_FIELDS = ("status", "workspace_kind", "workspace_path", "project_id", "due_at")
 
 
 def _fields(obj: Any, names: tuple[str, ...]) -> dict[str, Any]:
-    """``{name: getattr(obj, name)}``; every value None when ``obj`` is None."""
-    return {n: getattr(obj, n) if obj is not None else None for n in names}
+    """``{name: getattr(obj, name)}``; every value None when ``obj`` is None. A ``due_at``
+    field is paired with ``due_at_iso`` (configured timezone) so agents need no epoch math."""
+    out = {n: getattr(obj, n) if obj is not None else None for n in names}
+    if "due_at" in out:
+        out["due_at_iso"] = due_iso(out["due_at"])
+    return out
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -730,7 +735,8 @@ def _handle_list(args: dict, **kw) -> str:
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),
-            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1)
+            tenant=args.get("tenant"), include_archived=include_archived, limit=limit + 1,
+            due=args.get("due"), order_by=args.get("sort"))
         truncated = len(rows) > limit
         tasks = rows[:limit]
         return json.dumps({
@@ -1162,7 +1168,7 @@ def _handle_create(args: dict, **kw) -> str:
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
-            completion_contract=args.get("completion_contract"),
+            completion_contract=args.get("completion_contract"), due_at=args.get("due"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)

@@ -15,6 +15,8 @@ from typing import Any, Callable, Iterable, Optional
 import json
 import time
 
+from hermes_cli.kanban_due import to_epoch
+
 
 # Least → most urgent; sorted outputs put critical first.
 SEVERITY_ORDER = ("warning", "error", "critical")
@@ -751,13 +753,13 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     if _task_field(task, "status") != "running":
         return []
     from hermes_cli import kanban_db as kb
-    expires = kb._to_epoch(_task_field(task, "claim_expires", None))
+    expires = to_epoch(_task_field(task, "claim_expires", None))
     if expires is None or (now - expires) < grace_seconds:
         return []
     lock = str(_task_field(task, "claim_lock", "") or "")
     if not lock.startswith(kb._host_prefix()):
         return []
-    hb = kb._to_epoch(_task_field(task, "last_heartbeat_at", None))
+    hb = to_epoch(_task_field(task, "last_heartbeat_at", None))
     if hb is not None and (now - hb) <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
         return []
 

@@ -13,6 +13,7 @@ import argparse
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_notify as kbn
+from hermes_cli.kanban_due import DUE_FILTERS, DUE_FORMS_HELP
 
 
 def _arg(*flags: str, **kw):
@@ -83,6 +84,7 @@ _TASK_IDS = _arg("task_ids", nargs="+")
 _SLUG = _arg("slug")
 _TENANT = _arg("--tenant", help="Tenant namespace")
 _PRIORITY = _arg("--priority", type=int, default=0, help="Priority tiebreaker")
+_DUE_HELP = f"Due date: {DUE_FORMS_HELP}. Informational only — never triggers dispatch."
 _RECLAIM_REASON = _reason("Human-readable reason (recorded on the reclaimed event)")
 _NOTIFY_TARGET = (
     _arg("--platform", required=True),
@@ -176,6 +178,7 @@ _SPECS = [
                   "deterministic branch. See `hermes project list`."),
         _TENANT,
         _PRIORITY,
+        _arg("--due", help=_DUE_HELP),
         _arg("--triage", action="store_true",
              help="Park in triage — a specifier will flesh out the spec and promote to todo"),
         _arg("--idempotency-key",
@@ -241,7 +244,10 @@ _SPECS = [
         _arg("--archived", action="store_true", help="Include archived tasks"),
         _json_flag(),
         _arg("--sort", choices=sorted(kb.VALID_SORT_ORDERS.keys()),
-             help="Sort order for listed tasks (default: priority)"),
+             help="Sort order for listed tasks (default: priority; 'due' = soonest first, undated last)"),
+        _arg("--due", choices=sorted(DUE_FILTERS), dest="due_filter",
+             help="Due-date window: overdue (past due, not done), today (due during today in the "
+                  "configured timezone), any (has a due date), none (no due date)"),
         _arg("--workflow-template-id", metavar="ID", help="Restrict to tasks with this workflow_template_id"),
         _arg("--step-key", dest="current_step_key", metavar="KEY",
              help="Restrict to tasks with this current_step_key"),
@@ -309,6 +315,7 @@ _SPECS = [
         _arg("--title", help="Replace the task title"),
         _arg("--body", help="Replace the task body"),
         _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--due", help=_DUE_HELP),
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),

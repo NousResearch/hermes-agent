@@ -136,6 +136,9 @@ zero outside a kanban task (footprint ladder rung 3).
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
+- **Due dates are display/filter only.** `tasks.due_at` (epoch s) is parsed for every surface by
+  `hermes_cli/kanban_due.py::parse_due`; the dispatcher never reads it, so no deadline spawns,
+  re-orders or reassigns a card (human assignees included). Keep it that way.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
   own connection helper — do not alias it to `projects_db.connect` (a path-proximity generator did).
 

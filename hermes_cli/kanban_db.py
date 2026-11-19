@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_due import DUE_SORT_ORDERS, due_filter_sql, parse_due, to_epoch as _to_epoch
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -638,6 +639,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    due_at: Optional[int] = None             # epoch seconds (UTC instant); None = no due date
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -664,7 +666,7 @@ _TASK_REQUIRED_COLUMNS = (
     "id", "title", "body", "assignee", "status", "priority", "created_by",
     "workspace_kind", "workspace_path", "claim_lock",
 )
-_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires", "last_heartbeat_at")
+_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires", "last_heartbeat_at", "due_at")
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
@@ -874,7 +876,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Human deadline, epoch seconds (kanban_due.parse_due). Display/filter only: the
+    -- dispatcher never reads it, so a due date never spawns or re-prioritises anything.
+    due_at               INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1167,7 +1172,7 @@ def create_task(
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
-    completion_contract: Optional[str] = None,
+    completion_contract: Optional[str] = None, due_at: Any = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1187,7 +1192,7 @@ def create_task(
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
-    completion_contract = validate_contract(completion_contract)
+    completion_contract, due_at = validate_contract(completion_contract), parse_due(due_at)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1267,8 +1272,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, due_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1277,7 +1282,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract, due_at,
                     ),
                 )
                 for pid in parents:
@@ -1299,7 +1304,7 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
-                        "provider_override": provider_override,
+                        "provider_override": provider_override, "due_at": due_at,
                     },
                 )
                 if task_status == "blocked":
@@ -1416,6 +1421,7 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
     "completed-desc": "completed_at DESC NULLS LAST, id DESC",
+    **DUE_SORT_ORDERS,
 }
 
 
@@ -1424,7 +1430,9 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    due: Optional[str] = None,
 ) -> list[Task]:
+    """``due``: a ``kanban_due.DUE_FILTERS`` window (overdue / today / any / none)."""
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
     query = "SELECT * FROM tasks WHERE 1=1"
@@ -1439,6 +1447,9 @@ def list_tasks(
             params.append(val)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
+    if due is not None:
+        due_sql, due_params = due_filter_sql(due)
+        query, params = f"{query} AND {due_sql}", [*params, *due_params]
     if order_by is not None:
         order_by = order_by.strip().lower()
         if order_by not in VALID_SORT_ORDERS:
@@ -1454,8 +1465,18 @@ def list_tasks(
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
-    profile = _canonical_assignee(profile)
     with write_txn(conn):
+        if not _assign_in_txn(conn, task_id, profile):
+            return False
+    # Observer fires AFTER commit so subscribers see durable state.
+    notify_task_updated(conn, task_id, ("assignee",))
+    return True
+
+
+def _assign_in_txn(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+    """:func:`assign_task`'s write; composes under a caller's txn, which owns the notify."""
+    profile = _canonical_assignee(profile)
+    with write_txn(conn, allow_nested=True):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -1479,8 +1500,6 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         _append_event(
             conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
         )
-    # Observer fires AFTER commit so subscribers see durable state.
-    notify_task_updated(conn, task_id, ("assignee",))
     return True
 
 
@@ -3050,22 +3069,23 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    due_at: Any = None, clear_due: bool = False,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
-    changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+    """Edit task fields, optionally backfilling a completed task's result. ``due_at`` takes any
+    ``kanban_due.parse_due`` form ('none' clears); ``clear_due=True`` clears it explicitly."""
+    updates: dict[str, Any] = {
+        field: value for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
-    ]
+    }
+    if clear_due or due_at is not None:
+        updates["due_at"] = None if clear_due else parse_due(due_at)  # ValueError before any write
+    changed_fields = list(updates)
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
             return False
-        assignments = []
-        params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
-            if value is not None:
-                assignments.append(f"{field} = ?")
-                params.append(value)
+        assignments = [f"{field} = ?" for field in updates]
+        params = list(updates.values())
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
@@ -3081,7 +3101,8 @@ def edit_task(
         if result is None:
             non_priority_fields = [field for field in changed_fields if field != "priority"]
             if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
+                _append_event(conn, task_id, "edited", {"fields": non_priority_fields}
+                              | ({"due_at": updates["due_at"]} if "due_at" in updates else {}))
         else:
             handoff_summary = summary if summary is not None else result
             changed_fields.append("summary")
@@ -3556,9 +3577,9 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. Composable."""
     now = int(time.time())
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -3602,9 +3623,9 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
     Preserves ``consecutive_failures`` and the block loop counter (review is
-    not a block; only :func:`complete_task` clears them)."""
+    not a block; only :func:`complete_task` clears them). Composable."""
     now = int(time.time())
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",
@@ -3957,28 +3978,6 @@ def _counts_by_assignee(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     ):
         counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
     return counts
-
-
-def _to_epoch(val) -> Optional[int]:
-    """Epoch seconds from int/float/numeric string/ISO-8601; None for empty/invalid."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        return int(val)
-    s = str(val).strip()
-    if not s:
-        return None
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
-    try:
-        from datetime import datetime
-        dt = datetime.fromisoformat(s)
-        return int(dt.timestamp())
-    except (ValueError, OSError):
-        return None
 
 
 def task_age(task: Task) -> dict:

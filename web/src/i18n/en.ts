@@ -795,6 +795,13 @@ export const en: Translations = {
     needsAssignee: "Needs assignee",
     needsAssigneeHint:
       "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
+    dueLabel: "Due",
+    dueLabelHint: "(optional, Hermes timezone)",
+    dueHint: "Due {when}. Informational only — the dispatcher never runs a task because of its due date.",
+    dueOverdue: "Overdue",
+    dueToday: "Due today",
+    dueNone: "none",
+    dueClear: "Clear",
     untitled: "(untitled)",
     loadingDetail: "Loading…",
     addComment: "Add a comment… (Enter to submit)",

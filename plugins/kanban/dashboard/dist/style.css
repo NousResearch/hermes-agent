@@ -293,6 +293,24 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+/* Due-date badge: overdue (destructive tint) > due today (warning tint) > later (plain). */
+.hermes-kanban-due {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+}
+.hermes-kanban-due--overdue,
+.hermes-kanban-due-text--overdue {
+  color: var(--color-destructive, #e5484d) !important;
+}
+.hermes-kanban-due--overdue {
+  border-color: color-mix(in srgb, var(--color-destructive, #e5484d) 55%, var(--color-border)) !important;
+  background: color-mix(in srgb, var(--color-destructive, #e5484d) 12%, transparent);
+}
+.hermes-kanban-due--today {
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 55%, var(--color-border)) !important;
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 14%, transparent);
+}
+
 /* Board-level project binding readout in the board switcher; the × unbinds. */
 .hermes-kanban-board-project-unbind {
   margin-left: 0.25rem;

@@ -68,6 +68,13 @@
     return str;
   }
 
+  // Due dates: the backend sends ``due_state`` (overdue | today | later), ``due_at_local``
+  // (a datetime-local value) and ``due_at_iso``, all in Hermes's configured timezone with the
+  // same rules as ``hermes kanban list --due``. The UI does no date math: it shows those and
+  // sends the raw datetime-local value back (or ``clear_due``). Informational only — the
+  // dispatcher never reads it.
+  function fmtDueLocal(task) { return (task.due_at_local || "").replace("T", " "); }
+
   // ``fetchJSON`` throws ``Error("<status>: <raw body>")`` on non-2xx, and
   // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
   // human-readable message out so banners/toasts don't have to leak HTTP
@@ -3232,6 +3239,17 @@
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
               : null,
+            t.due_state
+              ? h(Badge, {
+                  variant: "outline",
+                  className: cn("hermes-kanban-due", "hermes-kanban-due--" + t.due_state),
+                  title: tx(i18n, "dueHint", "Due {when}. Informational only — the dispatcher never runs a task because of its due date.",
+                    { when: t.due_at_iso }),
+                },
+                  t.due_state === "overdue" ? tx(i18n, "dueOverdue", "Overdue")
+                    : t.due_state === "today" ? tx(i18n, "dueToday", "Due today")
+                    : fmtDueLocal(t))
+              : null,
             progress
               ? h("span", {
                   className: cn(
@@ -3292,6 +3310,7 @@
     const [title, setTitle] = useState("");
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
+    const [due, setDue] = useState("");
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
     // A board with a configured workdir defaults to a persistent workspace:
@@ -3319,6 +3338,7 @@
         triage: props.columnName === "triage",
       };
       if (parent) body.parents = [parent];
+      if (due) body.due_at = due;
       // Parse comma-separated skills into a clean list. Blank = no
       // extras (omit key so backend leaves it null). The dispatcher
       // always auto-loads kanban-worker; these are extras on top.
@@ -3342,7 +3362,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setDue(""); setParent(""); setSkills("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -3420,6 +3440,16 @@
                 title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
               }),
             ),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "dueLabel", "Due"), tx(t, "dueLabelHint", "(optional, Hermes timezone)")),
+            h(Input, {
+              type: "datetime-local",
+              value: due,
+              onChange: function (e) { setDue(e.target.value); },
+              className: "h-8 text-sm",
+              title: "Optional due date. Shown on the card and in daily-briefing filters; it never makes the dispatcher run the task.",
+            }),
           ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "skillsLabel", "Skills"),
@@ -4022,6 +4052,7 @@
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        h(DueEditor, { task: t, onPatch: props.onPatch }),
         h(ModelEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
@@ -4427,6 +4458,49 @@
         },
         className: "h-7 text-xs w-20",
       }),
+    );
+  }
+
+  function DueEditor(props) {
+    const { t } = useI18n();
+    const [editing, setEditing] = useState(false);
+    const [v, setV] = useState(props.task.due_at_local || "");
+    useEffect(function () { setV(props.task.due_at_local || ""); }, [props.task.due_at_local]);
+    const label = h("span", { className: "hermes-kanban-meta-label" }, tx(t, "dueLabel", "Due"));
+    if (!editing) {
+      const state = props.task.due_state;
+      return h("div", { className: "hermes-kanban-meta-row" }, label,
+        h("span", {
+          className: cn("hermes-kanban-meta-value hermes-kanban-editable",
+            state ? "hermes-kanban-due-text--" + state : ""),
+          onClick: function () { setEditing(true); },
+          title: props.task.due_at_iso || tx(t, "clickToEdit", "Click to edit"),
+        }, state
+          ? fmtDueLocal(props.task) + (state === "overdue" ? ` (${tx(t, "dueOverdue", "Overdue")})` : "")
+          : tx(t, "dueNone", "none")),
+      );
+    }
+    const done = function () { setEditing(false); };
+    const save = function () {
+      props.onPatch(v ? { due_at: v } : { clear_due: true }).then(done);
+    };
+    return h("div", { className: "hermes-kanban-meta-row" }, label,
+      h(Input, {
+        type: "datetime-local", value: v, autoFocus: true,
+        onChange: function (e) { setV(e.target.value); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter") { e.preventDefault(); save(); }
+          if (e.key === "Escape") done();
+        },
+        className: "h-7 text-xs w-48",
+      }),
+      h(Button, { size: "sm", className: "h-7 text-xs", onClick: save }, tx(t, "save", "Save")),
+      props.task.due_at != null
+        ? h(Button, {
+            size: "sm", variant: "ghost", className: "h-7 text-xs",
+            onClick: function () { props.onPatch({ clear_due: true }).then(done); },
+          }, tx(t, "dueClear", "Clear"))
+        : null,
     );
   }
 

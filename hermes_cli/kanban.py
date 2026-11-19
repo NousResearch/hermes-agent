@@ -23,6 +23,7 @@ from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
 from hermes_cli import kanban_workflow
+from hermes_cli.kanban_due import due_iso, parse_due, parse_duration
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -263,26 +264,6 @@ def _require_ids(args: argparse.Namespace) -> tuple[list[str], int]:
     return ids, 0
 
 
-def _parse_duration(val) -> Optional[int]:
-    """``30s`` / ``5m`` / ``2h`` / ``1d`` or a raw integer → seconds; None for empty input;
-    ValueError on malformed input."""
-    if val is None or val == "":
-        return None
-    s = str(val).strip().lower()
-    try:
-        return int(s)  # bare integer → seconds
-    except ValueError:
-        pass
-    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if not (s and s[-1] in units):
-        raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
-    try:
-        n = float(s[:-1])
-    except ValueError as exc:
-        raise ValueError(f"malformed duration {val!r}") from exc
-    return int(n * units[s[-1]])
-
-
 def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
@@ -353,9 +334,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if branch_name and ws_kind != "worktree":
         return _err("kanban: --branch is only valid with --workspace worktree", 2)
     try:
-        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+        max_runtime = parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
         return _err(f"kanban: --max-runtime: {exc}", 2)
+    try:
+        due_at = parse_due(getattr(args, "due", None))
+    except ValueError as exc:
+        return _err(f"kanban: --due: {exc}", 2)
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
@@ -373,7 +358,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
-            completion_contract=getattr(args, "completion_contract", None),
+            completion_contract=getattr(args, "completion_contract", None), due_at=due_at,
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -427,6 +412,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
+            due=getattr(args, "due_filter", None),
         )
     if _json_out(args, [_task_to_dict(t) for t in tasks]):
         return 0
@@ -526,6 +512,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+    field("due", due_iso(task.due_at) or "-")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
@@ -951,17 +938,23 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    raw_due = getattr(args, "due", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, raw_due)):
+        return _err("kanban edit: provide --title, --body, --priority, --due, or --result", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
+    try:
+        due_at = parse_due(raw_due)
+    except ValueError as exc:
+        return _err(f"kanban edit: --due: {exc}", 2)
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
             result=result, summary=summary, metadata=metadata,
+            due_at=due_at, clear_due=raw_due is not None and due_at is None,
         )
     return _ok_or_err(
         ok,

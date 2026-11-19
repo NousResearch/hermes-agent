@@ -16,6 +16,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli.kanban_due import to_epoch
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
 
 
@@ -294,7 +295,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 payload = None
             pl = f" {payload}" if payload else ""
             print(
-                f"[{_fmt_ts(kb._to_epoch(r['created_at']))}] {r['task_id']:10s} "
+                f"[{_fmt_ts(to_epoch(r['created_at']))}] {r['task_id']:10s} "
                 f"{r['kind']:18s} (@{r['assignee'] or '-'}){pl}",
                 flush=True,
             )

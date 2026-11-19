@@ -794,6 +794,13 @@ export interface Translations {
     unassigned: string;
     needsAssignee?: string;
     needsAssigneeHint?: string;
+    dueLabel?: string;
+    dueLabelHint?: string;
+    dueHint?: string;
+    dueOverdue?: string;
+    dueToday?: string;
+    dueNone?: string;
+    dueClear?: string;
     untitled: string;
     loadingDetail: string;
     addComment: string;

@@ -65,8 +65,8 @@ KANBAN_LIST_SCHEMA = _schema(
     "kanban_list",
     (
         "List Kanban task summaries so an orchestrator can discover work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
+        "status, tenant, due window, sort, include_archived, and limit. Returns compact rows "
+        "with ids, title, status, assignee, priority, due date, parent/child ids, and "
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
@@ -80,6 +80,19 @@ KANBAN_LIST_SCHEMA = _schema(
             "description": "Optional task status filter.",
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),
+        "due": {
+            "type": "string",
+            "enum": ["overdue", "today", "any", "none"],
+            "description": (
+                "Optional due-date window: 'overdue' (past due and not done), 'today' (due "
+                "during today in the configured timezone), 'any' (has a due date), 'none'."
+            ),
+        },
+        "sort": {
+            "type": "string",
+            "enum": ["priority", "due", "due-desc"],
+            "description": "Row order. 'priority' (default) or 'due' (soonest first, undated last).",
+        },
         "include_archived": _prop("boolean", "Include archived tasks. Defaults to false."),
         "limit": _prop("integer", "Optional maximum rows to return (default 50, max 200)."),
     },
@@ -452,6 +465,12 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "If a non-archived task with this key already "
                 "exists, return that task's id instead of creating "
                 "a duplicate. Useful for retry-safe automation."
+        )),
+        "due": _prop("string", (
+                "Optional due date: ISO-8601 timestamp (no offset = the configured "
+                "timezone), a YYYY-MM-DD date (due by the end of that day), or "
+                "'in <duration>' such as 'in 2h' / 'in 3d'. Informational: it never "
+                "changes when the dispatcher runs the task."
         )),
         "max_runtime_seconds": _prop("integer", (
                 "Per-task runtime cap. When exceeded, the "

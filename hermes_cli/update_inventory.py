@@ -413,13 +413,14 @@ def match_runtime_outcomes(
     stale_serve_pids: set | None = None, failed_respawn_pids: set | None = None,
     external_gateway_pids: set | None = None,
     live_gateway_pids: dict[str, set[int]] | None = None,
+    self_restart_pending: set | None = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred``, ``external``
-    or ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred``, ``external``,
+    ``restart_pending`` or ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -463,6 +464,11 @@ def match_runtime_outcomes(
     DIFFERENT checkout than this updater (a ``profiles/<name>`` symlinked to a separate install).
     An untouched gateway in that set is ``external`` — another install owns its restart — instead
     of ``unaccounted``. No evidence keeps the tripwire armed. See #120240.
+
+    ``self_restart_pending``: gateway pids the restart phase handed a restart they take on their own
+    (an ancestor of this updater, #119597, or one still running live work past the drain wait). The
+    restart was asked for and is owed by the gateway itself, so an otherwise untouched one is
+    ``restart_pending`` (the fleet matrix's word for the same row) instead of ``unaccounted``.
     """
     outcomes: list[dict[str, Any]] = []
     try:
@@ -473,6 +479,7 @@ def match_runtime_outcomes(
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
         failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
         external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
+        pending_restart = {p for p in (self_restart_pending or ()) if isinstance(p, int)}
         successors = (
             {str(profile): {p for p in pids if isinstance(p, int)} for profile, pids in live_gateway_pids.items()}
             if live_gateway_pids is not None
@@ -549,7 +556,9 @@ def match_runtime_outcomes(
                         "reconciling on restart bookkeeping alone",
                         r.profile, r.pid, r.restart_via,
                     )
-            return "external" if r.pid in external else "unaccounted"
+            if r.pid in external:
+                return "external"
+            return "restart_pending" if r.pid in pending_restart else "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
@@ -585,6 +594,14 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
             action = ("owned by a Desktop connected over SSH; it picks up the update when that Desktop reconnects"
                       if o.get("mechanism") == "desktop-ssh" else "relaunch the Desktop app to pick up the update")
             print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — {action}")
+    pending = [o for o in outcomes if o.get("outcome") == "restart_pending"]
+    if pending:
+        # Surfaced but not escalated: each holds the restart it was asked for and takes it at its first
+        # idle moment (or once this updater exits), on the new code.
+        print()
+        print("  ℹ Restart pending (each restarts itself on the new code once idle):")
+        for o in pending:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}")
     external = [o for o in outcomes if o.get("outcome") == "external"]
     if external:
         # Surfaced but not escalated: another install's updater owns these restarts. See #120240.

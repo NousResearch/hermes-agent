@@ -77,3 +77,28 @@ async def test_creation_is_not_adopted_late_or_by_others(adapter):
     assert _thread(adapter, _msg(13, WINDOW + 1)) is None  # a lobby message sent well after the creation
     await _create(adapter, 20, user_id=7)  # creation by a user the adapter would reject
     assert not adapter._pending_created_topics
+
+
+@pytest.mark.asyncio
+async def test_ignore_root_dm_keeps_a_thread_less_new_topic_opener(monkeypatch):
+    """``ignore_root_dm`` drops root-DM chatter, not the opener of a just-created topic, which Telegram
+    Android sends without ``message_thread_id``: the gate must see the topic the opener adopts."""
+    monkeypatch.setattr(routing.time, "monotonic", lambda: 1000.0)
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={
+        "allow_from": [str(USER)], "ignore_root_dm": True, "dm_topics": [{"chat_id": CHAT, "topics": []}]}))
+    queued = []
+    a._enqueue_text_event = queued.append
+
+    async def _no_commands(*_a):
+        return None
+
+    a._ensure_forum_commands = _no_commands
+    a._reload_dm_topics_from_config = lambda: None  # config.yaml would re-supply the same dm_topics
+
+    def _update(m):
+        return SimpleNamespace(message=m, effective_message=m, update_id=m.message_id)
+
+    await _create(a, 10)
+    await a._handle_text_message(_update(_msg(11, 0.2)), None)
+    await a._handle_text_message(_update(_msg(12, WINDOW + 5)), None)
+    assert [e.source.thread_id for e in queued] == [str(NEW_TOPIC)]

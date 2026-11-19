@@ -5,8 +5,8 @@ import contextlib
 import pytest
 
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_runtime import (ADMISSION_QUEUE_MAX, RuntimeStoreError, admit_session_input,
-                                  list_session_admissions)
+from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX
+from persistence.core.errors import AuthorityRefusal
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
 
@@ -19,16 +19,16 @@ async def test_queue_full_refusal_withdraws_the_pin_and_the_retry_admits(bot):
     from tools.bot_live_delivery import read_delivery_result
     authority = bot.authority
     authority._schedule = lambda ref: None  # hold the backlog: nothing drains until we cancel it
-    fillers = [admit_session_input(authority.db, epoch=authority.epoch, principal_id='uid:1000',
-               session_id=bot.chat, request_id=f'fill{i}', payload={'text': f'f{i}'})
+    fillers = [authority.persistence.admissions.admit(epoch=authority.epoch, principal_id='uid:1000',
+               session_id=bot.chat, request_id=f'fill{i}', payload={'text': f'f{i}'})[0]
                for i in range(ADMISSION_QUEUE_MAX)]
-    with pytest.raises(RuntimeStoreError, match='queue_full'):
+    with pytest.raises(AuthorityRefusal, match='queue_full'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     assert read_delivery_result(bot.home, KEY) is None
     control = SessionActor('uid:1000', 'default', frozenset({'session:submit', 'session:read', 'session:control'}), 'native')
     for row in fillers:
-        with contextlib.suppress(RuntimeStoreError):
-            await authority.cancel_queued(control, SessionRef('default', bot.chat), row['admission_id'])
+        with contextlib.suppress(AuthorityRefusal):
+            await authority.cancel_queued(control, SessionRef('default', bot.chat), row.admission_id)
     retried = await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     assert 'error' not in retried and retried['admission_id']
-    assert [r['request_id'] for r in list_session_admissions(authority.db, session_id=bot.chat)] == ['bot:' + KEY]
+    assert [r.request_id for r in authority.persistence.admissions.list(session_id=bot.chat)] == ['bot:' + KEY]

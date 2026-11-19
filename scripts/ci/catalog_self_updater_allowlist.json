@@ -1,0 +1,51 @@
+[
+  {
+    "repo": "https://github.com/erosika/rom-studio",
+    "sha": "ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6",
+    "path": "kit/kit.ts",
+    "sha256": "1196e7fc3b53e506f11381ac4fa8f7d234d3459613d971b01c4c9f9d3f0fefc4",
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798)"
+  },
+  {
+    "repo": "https://github.com/erosika/rom-studio",
+    "sha": "2c07ad28539231defd46bad8d2e6b868a5f909d3",
+    "path": "kit/kit.ts",
+    "sha256": "f9f2a6623802f7ae6665a86ef87601fd87dcf93a885b8809b339946a27b96c08",
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: same fixed poryscript 3.6.1 download and sha256 check, the delta only adds new subcommands and help text)"
+  },
+  {
+    "repo": "https://github.com/Pukujan/swarm-studio",
+    "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
+    "path": "dyad/makers/MakerAppImage.ts",
+    "sha256": "35f08f9c78ff96d2d36c7fbfcdbf957ba17e6bbf1397b7b836fbd98b3291f787",
+    "why": "vendored dyad build maker: downloads the third-party AppImage type2-runtime 20251108 from its GitHub release and checks it against a fixed sha256 before packaging; the plugin never runs it and it never fetches or replaces swarm-studio's own files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Pukujan/swarm-studio",
+    "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
+    "path": "dyad/scripts/symbolicate-dump.mjs",
+    "sha256": "815e07e31cbd85efe860e3a80f629afc8eb548a88c214f8a312b3f1d8a8f603e",
+    "why": "vendored dyad developer script: fetches Electron debug-symbol (.sym) data for a crash dump from symbols.electronjs.org into the user's cache dir; the GitHub URLs are install hints in comments; the plugin never runs it and it never fetches or replaces swarm-studio's own files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Pukujan/swarm-studio",
+    "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
+    "path": "engine/library.mjs",
+    "sha256": "153bc6d4ad966ca2e40474b9be39f96aa39b7275b46833edce2f8bb4ecb6b529",
+    "why": "downloads picture assets (PNGs) and their catalog from the third-party assetrizz repo pinned to one commit (RIZZ_SHA) into the plugin's data dir, with every path confined to that folder; data only, never swarm-studio's own files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Pukujan/swarm-studio",
+    "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
+    "path": "engine/godotinstall.mjs",
+    "sha256": "0897b3ec361a1fe377dcdcaef59dc0485a734172aa6639bdc777fea27eb59c75",
+    "why": "installs the third-party Godot 4.7.2 editor and its Web export templates only when the user asks in the game chat. The templates, and the editor unless Homebrew installs it on macOS, come from the pinned godotengine 4.7.2-stable release, checked for size and against the release's published SHA-512 before unpacking: the editor into <data folder>/godot/4.7.2/, and the two Web templates into Godot's own export_templates folder outside HERMES_HOME (left alone when already there). On macOS with Homebrew the editor comes from `brew install --cask godot` (Homebrew's current cask, not pinned). Never fetches or replaces swarm-studio's own files (PR #154007)"
+  },
+  {
+    "repo": "https://github.com/Pukujan/swarm-studio",
+    "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
+    "path": "tests/godotinstall.test.mjs",
+    "sha256": "5ed7b16d794ff07b88270e74de780cde95d180ae9f6fd4bc476d82b2605711bb",
+    "why": "unit tests for engine/godotinstall.mjs against an injected fake fetch and temp folders; downloads nothing and writes only test temp files (PR #154007)"
+  }
+]

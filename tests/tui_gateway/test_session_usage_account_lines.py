@@ -47,13 +47,17 @@ def test_usage_slash_shows_account_limits_before_first_turn_inside_session_scope
     with (
         patch.object(server, "_session_usage_snapshot", return_value={}),
         patch.object(server, "_session_profile_runtime_scope", lambda sess, **kw: _Scope()),
-        patch.object(server, "_config_model_target", lambda: ("openai/gpt-5-mini", "openrouter")),
+        patch.object(server, "_load_cfg", lambda: {"model": {"provider": "openrouter", "default": "openai/gpt-5-mini"}}),
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+              lambda *, requested=None, **kw: {"provider": requested or "openrouter", "base_url": "", "api_key": "k"}),
         patch("agent.account_usage.fetch_account_usage", _fetch),
-        patch("agent.account_usage.nous_credits_lines", _credits),
+        patch("agent.account_usage_nous.nous_credits_lines", _credits),
     ):
         out = server._live_slash_command_output("sid-usage", session, "usage", "")
 
     assert scoped == ["enter", "exit"]
     assert fetched == ["openai-codex"]
-    assert "Account limits" in out and "Nous credits: 100 remaining" in out, out
+    assert "Account limits" in out, out
+    # The profile's Nous balance follows the Codex block as its own section, read in the same scope.
+    assert out.index("Account limits") < out.index("Nous Portal balance") < out.index("Nous credits: 100 remaining"), out
     assert "send a message first" not in out

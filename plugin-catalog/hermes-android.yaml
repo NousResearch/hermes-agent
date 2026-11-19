@@ -1,0 +1,82 @@
+name: hermes-android
+repo: https://github.com/TechFlipsi/FlipsiBridge
+sha: 5f185b2d5ac8b88d127815c13ee31970d31f678a
+subdir: hermes-android-plugin
+description: "Remote Android device control for Hermes Agent: 58 android_* tools (read screen, tap/type/swipe, open apps, camera, screenshots & screen recording, files, notifications, microphone streaming, media, clipboard, SMS/calls, Health Connect) plus a companion Android bridge app (Kotlin/Compose). The phone dials out to a relay you host — works behind NAT, no port forwarding, no VPN. Chat and media are end-to-end encrypted with a Double Ratchet (the relay sees only ciphertext); device commands travel over your own TLS-authenticated relay. Disclosure — drives a paired Android phone (screen reading and input, camera, microphone, files, notifications, clipboard, SMS/calls, Health Connect) through a relay the plugin starts inside Hermes (localhost by default; a non-localhost bind requires TLS or an explicit ANDROID_RELAY_ALLOW_PLAINTEXT=1); SMS, calls, file deletion, intents/broadcasts, APK install and relay setup go through Hermes' approval prompt (cron follows approvals.cron_mode, other unattended runs refuse); chat and media are Double-Ratchet end-to-end encrypted, but device commands are protected only by the relay's TLS when configured."
+maintainer: TechFlipsi
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/TechFlipsi/FlipsiBridge
+readme: true
+image: https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-chat.png
+screenshots:
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-home.png
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/5f185b2d5ac8b88d127815c13ee31970d31f678a/docs/img/fb-chat.png
+platforms: []
+capabilities:
+  provides_tools:
+    - android_alarm
+    - android_apk_install
+    - android_broadcast
+    - android_call
+    - android_clipboard_read
+    - android_clipboard_write
+    - android_current_app
+    - android_describe_node
+    - android_diff_screen
+    - android_drag
+    - android_event_stream
+    - android_events
+    - android_file_delete
+    - android_file_get
+    - android_file_put
+    - android_files_count
+    - android_files_list
+    - android_files_permission
+    - android_files_search
+    - android_find_nodes
+    - android_get_apps
+    - android_health
+    - android_location
+    - android_long_press
+    - android_macro
+    - android_media
+    - android_mic_fetch
+    - android_mic_record
+    - android_mic_status
+    - android_mic_stop
+    - android_network_status
+    - android_notifications
+    - android_notify_reply
+    - android_open_app
+    - android_photo
+    - android_pinch
+    - android_ping
+    - android_press_key
+    - android_read_screen
+    - android_read_widgets
+    - android_screen_hash
+    - android_screen_record
+    - android_screenshot
+    - android_scroll
+    - android_search_contacts
+    - android_send_intent
+    - android_send_sms
+    - android_setup
+    - android_speak
+    - android_speak_stop
+    - android_swipe
+    - android_tap
+    - android_tap_text
+    - android_timer
+    - android_torch
+    - android_type
+    - android_volume
+    - android_wait
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - ANDROID_BRIDGE_URL
+    - ANDROID_BRIDGE_TOKEN

@@ -1149,35 +1149,54 @@ scroller ends `--portal-page-end-space` above the floor. Global Settings keeps i
 
 ### Routines (`app/routines/`)
 
-The rail's Routines destination follows Figma "Routines — proposal + mock" (1081/1099/1100) and the
-board's decisions of Nov 12: one list, two doors. The rail page lists every agent's routines on this
-machine (the shared `$cronJobs` snapshot, which the redesign's sidebar sync keeps at every profile)
-with **quick actions only**: Run now (Retry on a failure), Pause/Resume, Rename, Delete, and "Edit in
-<agent> settings", which opens that routine, editor open, inside Agent › Settings › Routines
-(`?agentProfile=…&tab=agent:schedules&routine=<id>&edit=1`). That agent page is the same list filtered
-to the agent, read from its own machine, where the one editor changes what a routine does. Both doors
-share the rows, detail and editor (`RoutineSource` is the difference); classic keeps `CronView` and
-`AgentSchedulesSettings`. The rail page's panel and stage use the shared page-panel frame (panel at the
-rail's edge, `--page-nav-width`; H1 where Settings puts it). The panel holds New routine (creation
-opens "What kind of routine?" with an agent select), the overview row, and NEEDS ATTENTION / SCHEDULED
-/ PAUSED (/ FINISHED) groups with a status dot and the agent's name as a tag. The overview is the
-`PageHeader`, search and a status segment, a danger-tint banner per routine that needs attention (its
-streak, its first plain error sentence, when it tries again, Retry) and a Routine · Agent · When · Last
-run · Status table; on compact the schedule moves under the name. A routine needs attention when its
-newest run failed or did not deliver, or its slot sits overdue past the scheduler's grace (a run in
-flight supersedes the result); the rail button then carries the error-ink dot. The detail's breadcrumb
-is its first row, at the page top like every page's first row, with the H1 under it; on the rail it shows what it does, when and where
-read-only with an "Edit in <agent>" card, and Runs (each opens as a chat via `openCronRun`; chips only
-where the backend recorded an outcome). In the agent's settings each row has Change, plus Advanced
-(model, missed runs, run limit, remember last run; developer mode adds expression, script, id) and
-Delete. "What kind of routine?" offers the agent's ready-made catalog, Ask in chat (a new chat with the
-agent, its composer seeded with a starter sentence) and Start blank. When to run composes the
-scheduler's own strings and reads them back in words. Send results to lists the agent's chat and its
-connected channels; nothing checked is today's save-only `local`. A chat's items pane lists the routines
-of the chat's agent first (a Routines section and tab; rev 11/16, 1264:40927), each with its schedule
-in words and an error dot while it needs attention, and opens one on the Routines page. The chat list
-carries no routines; runs never join Chats. The sidebar's scheduled-jobs
-section and the statusbar's Cron item are classic only.
+The rail's Routines destination follows Figma "Routines final rev" (1081:29252) and is **the only place a
+routine is created or changed**. It lists every agent's routines on this window's machine (the shared
+`$cronJobs` snapshot, which the redesign's sidebar sync keeps at every profile). The panel (the shared
+page-panel frame: panel at the rail's edge, `--page-nav-width`) holds New routine and the routines
+themselves, as Chats lists chats, under NEEDS ATTENTION / SCHEDULED / PAUSED (/ FINISHED, only when a run
+limit completed one) with a status dot and the agent's name as a tag; a search appears once the list
+outgrows a glance. There is no overview row or table. With nothing selected the stage shows the first
+routine in the panel's order (below wide, where the panel is a sheet, it shows the list itself until one
+is opened); with no routines it is the empty state with New routine.
+
+One routine on the stage: the breadcrumb (Routines › agent) at the page top like every page's first row,
+the H1 with its status chip, and three actions, each with a tooltip on hover and keyboard focus: Run now
+(Run routine while paused; Stop while a run is live), a Pause / Resume icon button and an Edit pencil.
+Under it, while the last run went wrong, a danger-tint banner names which run ("Yesterday's run
+failed"), its chip, the reason as one plain sentence (the backend's text behind Details) and Retry. One
+card holds the instruction (mono, folding past eight lines) beside Frequency, Last ran, Next run and Send
+results to, read in the app's own moment words; one column on compact. Run history is When · Duration ·
+Outcome; outcome chips only where the backend recorded one (never a guessed success); each row's View
+(View error for a failed run; a run with no chat says its reason in place) shows on hover, on focus and
+always on touch. The history loads a batch of 20 as its end scrolls into view, up to the endpoint's 100.
+
+**The sheet** (`routine-sheet.tsx`, `components/ui/sheet` from the stage's end, 640 wide, the whole
+window on compact; the page's control language via `data-page-surface`) creates and edits. Create:
+Agent (only when there is more than one), Start from Blank or Template, and nothing else until one is
+picked. Template is the catalog for that agent by category with a search; picking one fills every field
+from the job its defaults make (`prefill` on `/api/cron/blueprints`, skills kept). Then Name (optional),
+Instruction, Frequency (a frequency "at" a time, read back in words under it once set; none picked at
+first), Send results to, and Advanced collapsed (model, missed runs, run limit, remember last run, each
+description in its info tooltip). The footer sits on the sheet's opaque fill: Cancel, Create in chat (a
+new chat with the agent, its composer seeded), Create routine, and above them "First run: …" once a
+frequency is set (`lib/routine-first-run.ts`). A created routine is selected and toasts. Edit is the same
+sheet titled Edit "<name>", without Start from, the agent read only with its tooltip, and Delete routine /
+Cancel / Save & update routine; Delete swaps the footer for "Delete this routine?" with Keep it (focused)
+and Delete. Esc, the scrim and × close it and focus returns to its opener.
+
+**Delete with Undo** (`routine-held-delete.ts`): a delete is held, not done, while its banner ("<name>
+deleted." with Undo and ×, the stage's first row above the breadcrumb) is up. The routine is paused on its
+owner and hidden, and the list lands on the next routine. Undo resumes it only if it was on; ×, deleting
+another routine, leaving Routines or closing the window make the delete final. The hold is written down
+first, so a window that closes or crashes mid-hold is finished on the next launch; Undo drops that note
+before resuming, and a delete that fails shows the routine again, paused, never hidden.
+
+An agent's Settings › Routines and its Overview's Routines are read only: each routine opens on the Routines
+page, and New routine starts one there for that agent. A chat's items pane lists the routines of the chat's
+agent first (a Routines section and tab; rev 11/16, 1264:40927), each with its schedule in words and an
+error dot while it needs attention, and opens one on the Routines page. The chat list carries no routines;
+runs never join Chats. The sidebar's scheduled-jobs section and the statusbar's Cron item are classic
+only, and classic keeps `CronView`.
 
 ### Discovery: splashes and the notifications tray (`app/discovery/`)
 

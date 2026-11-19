@@ -51,6 +51,29 @@ class TestParentValidation:
         items = store.write([_item("a", parent="")])
         assert "parent" not in items[0]
 
+    def test_cycle_above_item_keeps_item_parent(self):
+        # #156671: a cycle higher up the ancestor chain (2 <-> 3) must be broken at the
+        # ancestor that closes it, not at item 1, which hangs below the cycle and keeps
+        # its own parent link to 2.
+        store = TodoStore()
+        items = store.write([
+            _item("1", parent="2"),
+            _item("2", parent="3"),
+            _item("3", parent="2"),
+        ])
+        by_id = {i["id"]: i for i in items}
+        assert by_id["1"].get("parent") == "2"
+        assert "parent" not in by_id["2"]
+        assert by_id["3"].get("parent") == "2"
+        # No item can walk a loop after sanitization.
+        for item in items:
+            seen = set()
+            node = item
+            while node.get("parent"):
+                assert node["parent"] not in seen
+                seen.add(node["id"])
+                node = by_id[node["parent"]]
+
 
 class TestMergeParent:
     def test_merge_sets_parent(self):

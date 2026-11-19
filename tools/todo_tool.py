@@ -169,7 +169,10 @@ class TodoStore:
             seen, node = {item["id"]}, item
             while node.get("parent"):
                 if node["parent"] in seen:
-                    item.pop("parent", None)
+                    # Break the cycle at the ancestor that closed it, not at ``item``:
+                    # ``item`` may hang below the cycle and must keep its own parent
+                    # link (#156671). Popping ``item`` detached an innocent subtree.
+                    by_id[node["parent"]].pop("parent", None)
                     break
                 seen.add(node["parent"])
                 node = by_id[node["parent"]]

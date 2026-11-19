@@ -131,7 +131,10 @@ def update_token_counts(
         insert_session_row_in_transaction(holder, conn, session_id, source or "unknown", model=model)
         _update_token_counts_in_transaction(holder, conn, session_id, **values)
 
-    holder._execute_write(write)
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(write, patience_s=remaining)
 
 
 def _update_token_counts_in_transaction(

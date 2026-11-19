@@ -363,6 +363,9 @@ class StoreHolder:
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
         self._token_queue: deque = deque()
+        self._token_pending_marker = None
+        self._token_pending_marker_path = None
+        self._token_pending_marker_identity = None
         self._token_writer_uncertain: list[tuple[str, dict[str, Any]]] = []
         self._token_batch_write_context = threading.local()
         self._token_queue_cond = threading.Condition(threading.Lock())
@@ -1453,19 +1456,27 @@ class StoreHolder:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
-        from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+        from persistence.sqlite._state.lineage_fence import session_lineage_guard
+
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
+            self._queue_owned_token_counts(session_id, kwargs)
+
+    def _queue_owned_token_counts(self, session_id, kwargs):
+        from persistence.sqlite._state.accounting_markers import hold_pending_usage, require_legacy_accounting_clear
 
         require_legacy_accounting_clear(self)
         if _token_delta_applier is None:
             from . import SQLiteBackend  # loads the repositories; the usage family registers the applier
         with self._token_queue_cond:
-            if self._token_writer_uncertain:
+            if self._token_writer_uncertain or (self._token_writer_stop and self._token_queue):
+                hold_pending_usage(self)
                 self._token_queue.append((session_id, kwargs))
                 return
             thread = self._token_writer_thread
             writer_alive = thread is not None and thread.is_alive()
             writer_stopped = self._token_writer_stop and not writer_alive
             if not writer_stopped:
+                hold_pending_usage(self)
                 self._token_queue.append((session_id, kwargs))
                 if not writer_alive:
                     # Daemon so exit never hangs on accounting; the atexit hook drains
@@ -1496,8 +1507,11 @@ class StoreHolder:
             return self._apply_token_batch(batch)
         finally:
             with self._token_queue_cond:
+                from persistence.sqlite._state.accounting_markers import release_idle_usage
+
                 self._token_writer_busy = False
                 self._token_queue_cond.notify_all()
+                release_idle_usage(self)
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Wait for queued accounting to settle. Unknown effects never count as flushed."""

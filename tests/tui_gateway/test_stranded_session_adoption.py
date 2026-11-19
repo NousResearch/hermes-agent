@@ -9,6 +9,8 @@ primitive (lineage_adoption.adopt_session_lineage) and its invariants.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lineage_adoption import adopt_session_lineage
@@ -374,10 +376,12 @@ def test_donor_retired_reports_false_on_retirement_failure(stores, monkeypatch):
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    def _boom(_sid, _reason):
-        raise RuntimeError("locked")
-
-    monkeypatch.setattr(default_db.sessions, "end", _boom)
+    # An archive refusal must roll back the end stamp in the same transaction.
+    holder = raw_holder(default_db)
+    holder._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER refuse_archive BEFORE UPDATE OF archived ON sessions "
+        "WHEN NEW.archived=1 BEGIN SELECT RAISE(ABORT, 'locked'); END"
+    ))
     result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     assert result["adopted"] is True
@@ -392,16 +396,23 @@ def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkey
     default_db, profile_db = stores
     _seed_stranded(default_db)
 
-    real_export = default_db.maintenance.export_session_lineage
+    holder = raw_holder(default_db)
+    write = holder._execute_write
+    appended = False
 
-    def _export_then_append(session_id, **kwargs):
-        payload = real_export(session_id, **kwargs)
-        # Another backend appends AFTER the export snapshot is taken.
-        seed_messages(default_db, STRANDED_ID, {"role": "user", "content": "raced question"},
-                      {"role": "assistant", "content": "raced answer"})
-        return payload
+    def _grow_before_retirement(callback, *args, **kwargs):
+        nonlocal appended
+        if not appended and profile_db.maintenance.pending_adoption_source(STRANDED_ID):
+            # Simulate a legacy writer that does not participate in the fence.
+            write(lambda conn: conn.executemany(
+                "INSERT INTO messages(session_id,role,content,timestamp) VALUES (?,?,?,?)",
+                [(STRANDED_ID, "user", "raced question", time.time()),
+                 (STRANDED_ID, "assistant", "raced answer", time.time())],
+            ))
+            appended = True
+        return write(callback, *args, **kwargs)
 
-    monkeypatch.setattr(default_db.maintenance, "export_session_lineage", _export_then_append)
+    monkeypatch.setattr(holder, "_execute_write", _grow_before_retirement)
     result = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
     # Adoption itself still serves (profile copy has the snapshot)...
@@ -415,6 +426,42 @@ def test_donor_growth_between_export_and_retire_blocks_retirement(stores, monkey
     second = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
     assert second["donor_retired"] is False
     assert not session_row(default_db, STRANDED_ID)["archived"]
+
+
+def test_pending_transfer_recovers_full_membership_after_one_segment_retires(stores):
+    default_db, profile_db = stores
+    root, tip = "pending-root", "pending-tip"
+    _seed_stranded(default_db, session_id=root, turns=1, title="Root")
+    default_db.sessions.end(root, "compression")
+    _seed_stranded(default_db, session_id=tip, turns=1, title="Tip", parent_session_id=root)
+    holder = raw_holder(default_db)
+    holder._execute_write(lambda conn: conn.execute(
+        "CREATE TRIGGER fail_tip_retirement BEFORE UPDATE OF archived ON sessions "
+        "WHEN NEW.archived=1 AND NEW.id='pending-tip' BEGIN SELECT RAISE(ABORT, 'held'); END"
+    ))
+    first = adopt_session_lineage(profile_db, default_db, root)
+    assert first["adopted"] and not first["donor_retired"]
+    assert session_row(default_db, root)["end_reason"] == "adopted_by_profile"
+    assert session_row(default_db, tip)["ended_at"] is None
+
+    holder._execute_write(lambda conn: conn.execute("DROP TRIGGER fail_tip_retirement"))
+    # The donor no longer traverses the retired root. New handles must recover
+    # both IDs from the target journal and complete the outstanding retirement.
+    donor_scope, target_scope = default_db.scope, profile_db.scope
+    default_db.close()
+    profile_db.close()
+    with open_persistence(donor_scope) as donor_again, open_persistence(target_scope) as target_again:
+        source = target_again.maintenance.pending_adoption_source(tip)
+        assert source == donor_again.maintenance.adoption_store_location()
+        result = target_again.maintenance.adopt_lineage_from(donor_again.maintenance, tip, pending_only=True)
+        assert result["skipped_ids"] == [root, tip]
+        assert result["donor_retired"]
+        assert target_again.maintenance.pending_adoption_source(tip) is None
+
+        for sid in (root, tip):
+            assert session_row(donor_again, sid)["end_reason"] == "adopted_by_profile"
+            assert session_row(donor_again, sid)["archived"]
+            assert len(transcript_rows(target_again, sid)) == 2
 
 
 def _every_row(db, session_id):

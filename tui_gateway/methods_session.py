@@ -694,15 +694,36 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
 
 
+def _resume_pending_adoption(ctx: _Resume) -> dict | None:
+    """Settle a previously copied lineage before serving its target row."""
+    read_pending = getattr(ctx.persistence.maintenance, "pending_adoption_source", None)
+    if read_pending is None:
+        return None
+    try:
+        pending = read_pending(ctx.target)
+        if pending is None:
+            return None
+        with _persistence_for(_get_db()) as donor:
+            if donor is None or donor.maintenance.adoption_store_location() != pending:
+                return _err(ctx.rid, 4001, "Pending adoption donor is unavailable")
+            outcome = ctx.persistence.maintenance.adopt_lineage_from(donor.maintenance, ctx.target, pending_only=True)
+        if outcome.get("retry_skipped") or (outcome.get("adopted") and outcome.get("donor_retired")):
+            return None
+        return _err(ctx.rid, 4001, "Donor retirement is incomplete")
+    except Exception:
+        logger.exception("pending profile adoption could not be verified for %s", ctx.target)
+        return _err(ctx.rid, 4001, "Pending adoption could not be verified")
+
+
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     ctx.found = _row_of(ctx.persistence.sessions.get(ctx.target))
     if ctx.found:
-        return None
+        return _resume_pending_adoption(ctx) if ctx.owns_db else None
     ctx.found = _row_of(ctx.persistence.sessions.get_by_title(ctx.target))
     if ctx.found:
         ctx.target = ctx.found["id"]
-        return None
+        return _resume_pending_adoption(ctx) if ctx.owns_db else None
     if ctx.lazy and _child_run_active(ctx.target, ctx.profile_home):
         # Fresh subagent watch window: `subagent.start` relays BEFORE the child's first DB flush. Proceed lazily
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
@@ -713,6 +734,8 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
+        if ctx.found:
+            return _resume_pending_adoption(ctx)
     if not ctx.found and not ctx.lazy and _is_server_minted_key(ctx.target) \
             and not _any_live_session_claims_key(ctx.target):
         _resume_materialize_minted(ctx)

@@ -220,6 +220,15 @@ def normalize_provider(name: str, overlay_profiles: Optional[list] = None) -> st
     return _profile_overlay_key(prof) if prof is not None else key
 
 
+def overlay_profile_id(canonical: str) -> str:
+    """The provider id of the overlay profile *canonical* names (``github-copilot`` -> ``copilot``), else
+    *canonical*. ``normalize_provider`` keys an overlay by its models.dev id for catalog lookups, while
+    config, auth and the picker rows know the provider by its profile id (#157658)."""
+    key = canonical.strip().lower()
+    prof = None if _is_static_canonical(key) else _overlay_profile(key)
+    return prof.name if prof is not None else canonical
+
+
 def _get_overlay(canonical: str) -> tuple[Optional[HermesOverlay], str]:
     """``(overlay, label)`` for a canonical id: the static table, else a profile's ``provider_overlay``,
     labelled with the profile's ``display_name`` also when keyed by its models.dev id: without a

@@ -15,7 +15,7 @@ from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
-    host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
+    host_mandated_api_mode, is_aggregator, normalize_provider, overlay_profile_id, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -1268,7 +1268,8 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     if pdef is None:
         return st.fail(_unknown_provider_message(st.explicit_provider))
 
-    st.target_provider, st.provider_label = pdef.id, pdef.name  # label is re-derived in the credential step
+    # pdef.id is an overlay's models.dev key (github-copilot); save the provider's own id (#157658).
+    st.target_provider, st.provider_label = overlay_profile_id(pdef.id), pdef.name  # label re-derived later
     if st.target_provider == "moa" and not st.new_model:
         st.new_model = _moa_default_preset()
 

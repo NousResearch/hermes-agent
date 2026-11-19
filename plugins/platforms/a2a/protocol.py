@@ -57,6 +57,21 @@ def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def _agent_version() -> str:
+    """Running Hermes version for the Agent Card's ``version`` field.
+
+    In A2A the card version identifies the agent build (the protocol version has
+    its own ``protocolVersion`` field), so clients can tell which Hermes build
+    is answering. ``1.0.0`` stays as the fallback when the version can't be read.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info
+
+        return get_version_info().derived_version or "1.0.0"
+    except Exception:
+        return "1.0.0"
+
+
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
                      streaming: bool = False, push_notifications: bool = False, auth_required: bool = False,
                      tenant: str = "") -> dict:
@@ -67,7 +82,7 @@ def build_agent_card(*, name: str, url: str, description: str, skills: Optional[
         "name": name,
         "description": description,
         "url": url,  # convenience for pre-1.0 clients; canonical is supportedInterfaces
-        "version": "1.0.0",
+        "version": _agent_version(),
         "provider": {"organization": os.getenv("A2A_PROVIDER_ORG", "Hermes Agent"), "url": os.getenv("A2A_PROVIDER_URL", "") or url},
         "supportedInterfaces": [iface],
         "capabilities": {"streaming": streaming, "pushNotifications": push_notifications,

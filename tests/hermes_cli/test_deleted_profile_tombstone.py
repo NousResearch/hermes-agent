@@ -418,8 +418,6 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
 
 
 class TestMkdirBoundaryElevatedGrantSelection:
-    """Grant recorder under forced elevation (as in tests/test_hermes_dir_acl.py); no ACL is written."""
-
     @pytest.fixture()
     def granted(self, monkeypatch):
         import hermes_dir_acl
@@ -471,6 +469,29 @@ class TestMkdirBoundaryElevatedGrantSelection:
         target = home / "missing" / ".." / "dest"
         assert mkdir_under_hermes_home(target).is_dir()
         assert granted == [home / "missing", target]
+
+    @pytest.mark.parametrize("racer", ["dir", "file"])
+    def test_a_leaf_created_after_its_parent_still_goes_through_mkdir(self, profile_env, granted, monkeypatch, racer):
+        import hermes_constants
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+        leaf = home / "new" / "leaf"
+        real = hermes_constants._mkdir_below_home
+
+        def parent_then_race(h, path):
+            real(h, path)
+            if path == leaf.parent:
+                leaf.mkdir() if racer == "dir" else leaf.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(hermes_constants, "_mkdir_below_home", parent_then_race)
+        if racer == "file":
+            with pytest.raises(FileExistsError):
+                mkdir_under_hermes_home(leaf)
+        else:
+            mkdir_under_hermes_home(leaf)
+            assert granted == [leaf.parent, leaf]
 
     def test_dotdot_after_a_symlink_follows_the_link_like_mkdir(self, profile_env):
         from hermes_constants import mkdir_under_hermes_home

@@ -512,6 +512,22 @@ describe('terminal kinds beyond completed', () => {
     expect(hostMock.notify).not.toHaveBeenCalled()
   })
 
+  it('a task created parked (blocked, reason initial_status) is not a blocker and stays silent', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { reason: 'initial_status', status: 'blocked', actor: 'user' })
+    ])
+
+    expect(fired).toBe(false)
+    expect(hostMock.notify).not.toHaveBeenCalled()
+
+    // The cursor still advanced: a real block afterwards notifies.
+    expect(await m.onKanbanEventsFrame('smoke', [ev(102, 'blocked', { reason: 'needs API key' })])).toBe(true)
+    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'needs API key' })
+  })
+
   it('block_loop_detected notifies that a decision is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)

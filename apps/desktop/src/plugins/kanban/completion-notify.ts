@@ -130,6 +130,10 @@ function trimmed(value: unknown): string {
 }
 
 function isOwnerInputBlock(ev: CompletionEvent): boolean {
+  if (isParkedAtCreation(ev)) {
+    return false
+  }
+
   const blockKind = ev.payload?.kind
 
   return blockKind == null || blockKind === 'needs_input'
@@ -165,6 +169,14 @@ function bodyFor(kind: string, ev: CompletionEvent): string {
   }
 
   return ''
+}
+
+/** A task created with `--initial-status blocked` records a `blocked` event whose
+ *  reason is `initial_status` (hermes_cli/kanban_db.py create path): the task
+ *  was parked on purpose by its creator, nobody hit a blocker. Not notified;
+ *  the cursor still advances past it. */
+function isParkedAtCreation(ev: CompletionEvent): boolean {
+  return ev.kind === 'blocked' && trimmed(ev.payload?.reason) === 'initial_status'
 }
 
 /** Raw machine text that must never be the toast body — surfaced muted in `detail`. */

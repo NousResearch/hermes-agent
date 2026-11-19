@@ -10,7 +10,7 @@ user's own keys (``save_env_value`` / ``remove_env_value``) still land in the fi
 any other folder reads as before.
 
 ``home_runs_elsewhere`` is the check they share: ``run_elsewhere_for_home`` kept per process and
-home, asked again whenever a stat of the marker file or its folder changes.
+home, asked again whenever a stat of the home, the marker file or its folder changes.
 """
 from __future__ import annotations
 
@@ -209,6 +209,46 @@ def test_a_marker_is_seen_when_its_folders_time_does_not_move(root):
         after = os.stat(folder)
         assert (after.st_mode, after.st_size, after.st_mtime_ns) == (before.st_mode, before.st_size, before.st_mtime_ns)
         assert cfg.get_env_value("MH2_KEY") == expected
+
+
+def _point(link: Path, target: Path) -> None:
+    """Make *link* lead to the folder *target*, wherever it led before: a symlink, or on Windows a
+    junction when this account may not create symlinks. Skips where the OS offers neither."""
+    if os.path.lexists(link):
+        os.rmdir(link) if os.name == "nt" else os.unlink(link)  # the link alone, not what it leads to
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        if os.name != "nt":
+            pytest.skip(f"cannot create a directory symlink here: {exc}")
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+
+
+@pytest.mark.parametrize("among_the_profiles", [False, True])
+def test_a_home_link_pointed_at_another_profile_is_seen_at_the_next_read(root, tmp_path, among_the_profiles):
+    """The home may be a symlink or junction, and a link can be pointed at another profile while
+    the process runs. No marker is written or removed then: the kept answer is for the directory
+    the path led to, and the home's own stat is part of what is compared."""
+    dev = root / "profiles" / "dev"
+    dev.mkdir()
+    (dev / ".env").write_text("MH2_KEY=from-the-dev-home\n", encoding="utf-8")
+    _mark(root)  # ops, before the first read
+    link = root / "profiles" / "linked" if among_the_profiles else tmp_path / "home-link"
+    _point(link, dev)
+    assert not pre.home_runs_elsewhere(link)
+    assert secret_scope.load_env_file(link / ".env") == {"MH2_KEY": "from-the-dev-home"}
+
+    _point(link, _ops(root))
+    assert pre.run_elsewhere_for_home(link).profile == "ops"
+    assert pre.home_runs_elsewhere(link)
+    assert secret_scope.load_env_file(link / ".env") == {}
+
+    _point(link, dev)
+    assert pre.run_elsewhere_for_home(link) is None
+    assert not pre.home_runs_elsewhere(link)
+    assert secret_scope.load_env_file(link / ".env") == {"MH2_KEY": "from-the-dev-home"}
 
 
 def test_the_marker_folder_is_listed_once_while_nothing_changes(root, monkeypatch):

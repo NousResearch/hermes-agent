@@ -220,8 +220,19 @@ def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
     return None
 
 
-# home -> ((marker folder, marker file) per reading of the home, their stamp, marked)
-_HOME_ANSWERS: dict[str, tuple[tuple[tuple[str, str], ...], tuple, bool]] = {}
+# home -> (the directory it led to, (marker folder, marker file) per reading of the home, their stamp, marked)
+_HOME_ANSWERS: dict[str, tuple[tuple, tuple[tuple[str, str], ...], tuple, bool]] = {}
+
+
+def _home_target(home: str) -> tuple:
+    """Which directory the path *home* leads to now, as one stat tells it (device and file id). A
+    link on the way that was pointed at another directory changes it; so does a home that appears
+    or goes."""
+    try:
+        st = os.stat(os.path.expanduser(home))
+    except OSError as exc:
+        return (type(exc), exc.errno)
+    return (st.st_dev, st.st_ino)
 
 
 def _marker_stamp(markers: tuple[tuple[str, str], ...]) -> tuple:
@@ -245,15 +256,18 @@ def home_runs_elsewhere(home: str | Path) -> bool:
     """``run_elsewhere_for_home(home) is not None``, for code that asks at every value it reads
     (the ``.env`` tokenizer, the host features that start a profile's own command).
 
-    The answer is kept per process and home. Each call stats the home's marker file and the marker
-    folder, and asks again when that differs from the stat taken before the last asking, so a
-    profile marked or cleared by any process is seen at the next call. A marker folder that cannot
-    be read marks every home, as for running a profile, and is asked about again every time.
+    The answer is kept per process and home. Each call stats the home, its marker file and the
+    marker folder, and asks again when that differs from the stat taken before the last asking, so
+    a profile marked or cleared by any process is seen at the next call, and so is a home whose
+    path leads to another profile's directory since (a symlink or junction pointed elsewhere). A
+    marker folder that cannot be read marks every home, as for running a profile, and is asked
+    about again every time.
     """
     key = str(home)
     known = _HOME_ANSWERS.get(key)
-    if known is not None and _marker_stamp(known[0]) == known[1]:
-        return known[2]
+    target = _home_target(key)  # before resolving: a link changed while resolving shows at the next call
+    if known is not None and target == known[0] and _marker_stamp(known[1]) == known[2]:
+        return known[3]
     readings = _home_readings(Path(home).expanduser())
     markers = tuple((str(folder), str(folder / f"{profile}{_SUFFIX}"))
                     for profile, folder in ((profile, run_elsewhere_dir(root)) for profile, root in readings))
@@ -262,7 +276,7 @@ def home_runs_elsewhere(home: str | Path) -> bool:
     if len(_HOME_ANSWERS) >= 256:  # homes are few; a process that asks about many starts over
         _HOME_ANSWERS.clear()
     if entry is None or entry.folder_error is None:
-        _HOME_ANSWERS[key] = (markers, stamp, entry is not None)
+        _HOME_ANSWERS[key] = (target, markers, stamp, entry is not None)
     else:
         _HOME_ANSWERS.pop(key, None)
     return entry is not None

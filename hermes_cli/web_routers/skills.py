@@ -390,7 +390,10 @@ async def get_skills(profile: Optional[str] = None):
                 else "bundled" if s["name"] in bundled_names
                 else "external" if s["name"] in external_names
                 else "agent")
-        return skills
+        from hermes_cli.skill_catalog.installed import extend_installed_rows
+        # Provider work never holds the process-wide skills/profile lock.
+        with _config_profile_scope(profile):
+            return extend_installed_rows(skills)
 
     return await asyncio.to_thread(_run)
 

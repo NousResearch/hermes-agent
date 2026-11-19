@@ -14,7 +14,6 @@ from persistence.core.errors import AuthorityRefusal
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
-    from gateway.session_policy import build_policy
     authority, actor = connection.authority, connection.actor
     if not connection.native_owner or 'session:create' not in actor.capabilities:
         raise AuthorityRefusal('permission_denied')
@@ -49,15 +48,8 @@ def build_kanban_policy(connection, params, config):
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise AuthorityRefusal('invalid_kanban_claim') from exc
     cwd = task.workspace_path
-    params_policy = {'source': 'cli', 'cwd': cwd}
-    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
-        if value:
-            params_policy[name] = value
     private = {}
-    policy = build_policy(params_policy, config, private_secrets=private)
-    if policy.model is None:
-        from gateway.run import _resolve_gateway_model
-        policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    policy = kanban_launch_policy(task, cwd, config, private)
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
@@ -68,6 +60,48 @@ def build_kanban_policy(connection, params, config):
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
     return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
+
+
+def kanban_launch_policy(task, cwd, config, private=None):
+    """The launch policy a claimed card runs, its model resolved. Refuses ``invalid_params`` (field
+    ``model``) only when nothing can name one, before a receipt or a worker exists."""
+    from gateway.session_policy import build_policy
+    params = {'source': 'cli', 'cwd': cwd}
+    for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
+        if value:
+            params[name] = value
+    policy = build_policy(params, config, private_secrets={} if private is None else private)
+    if policy.model is None:
+        model, unresolved = _profile_model(policy.config())
+        if unresolved:
+            raise AuthorityRefusal('invalid_params', field='model', detail=(
+                f"No model configured for profile {task.assignee}; run `hermes -p {task.assignee} model` "
+                "or create the task with --model"))
+        policy = replace(policy, model=model)
+    return policy
+
+
+def _profile_model(config):
+    """``(model, unresolved)`` for a card without ``--model``: the profile's own (``model.default``, the
+    claimed welcome trial), else what a CLI or gateway turn falls back to: the named endpoint's model,
+    then the provider's catalog default. A provider left to credential discovery (``auto``) and a
+    loopback server (the CLI asks it for its one model) resolve at turn time and are never probed."""
+    from gateway.run import _resolve_gateway_model
+    from gateway.session_route_identity import profile_route_identity
+    from hermes_cli.models import get_default_model_for_provider
+    from hermes_cli.runtime_provider import _loopback_hostname
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+    from utils import base_url_hostname
+    model = _resolve_gateway_model(config)
+    identity = profile_route_identity(config)
+    if model or identity == 'auto':
+        return model, False
+    held = config.get('model') if isinstance(config.get('model'), dict) else {}
+    entry = (_get_named_custom_provider(str(held.get('provider') or ''), config=config, resolve_credentials=False)
+             if identity.startswith('custom:') else None) or {}
+    model = str(entry.get('model') or '').strip() or ('' if entry else get_default_model_for_provider(identity))
+    base_url = str(held.get('base_url') or entry.get('base_url') or '')
+    return model, not model and not _loopback_hostname(base_url_hostname(base_url))
 
 
 async def run_task(connection, params):

@@ -364,7 +364,7 @@ class SystemHost:
 
     def http_status(self, host: str, port: int) -> Optional[dict]:
         """Read sign-in state without invoking /api/status's install-ID or stale-record maintenance.
-        ``{"health": "missing"}`` when the backend answers 404 there (a Hermes older than v2026.7.30)."""
+        ``{"health": "missing"}`` when the backend answers 401, 403 or 404 there (a Hermes older than v2026.7.30)."""
         from hermes_cli.url_utils import format_url_host
         origin = f"http://{format_url_host(host)}:{port}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -376,7 +376,10 @@ class SystemHost:
             try:
                 data = read("/api/health")
             except urllib.error.HTTPError as exc:
-                if exc.code == 404:  # Hermes before v2026.7.30 has no /api/health
+                # Hermes before v2026.7.30 has no /api/health: v2026.7.1-v2026.7.20 401 every /api/* path
+                # outside their public list before routing (signed in or not), older ones 404 it. Since
+                # v2026.7.30 /api/health is in dashboard_auth.public_paths, which both auth gates use.
+                if exc.code in (401, 403, 404):
                     return {"health": "missing"}
                 raise
             if not isinstance(data, dict) or not isinstance(data.get("auth_required"), bool):

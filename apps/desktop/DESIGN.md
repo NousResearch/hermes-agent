@@ -1140,6 +1140,13 @@ On compact the actions take their own row and the tabs keep their own widths in 
 A page that loads in fills its first paint with placeholders shaped like the loaded content
 (`SettingsCardSkeleton`: the card's 64px rows and 48px add row), never arbitrary spacers.
 
+The page's edges are one rule, read from these tokens and the page stage contract: the column's first
+row (a breadcrumb, else the H1) starts `--portal-page-top` under the stage's top, never inside that
+inset; its sides keep `--page-content-inset` at least (16 on compact); the header ends in its own gap
+(24 under tabs, the page rhythm without), which the content under it never adds to; and a page
+scroller ends `--portal-page-end-space` above the floor. Global Settings keeps its own frame
+(`--portal-settings-*`), and a conversation keeps the chat column.
+
 ### Routines (`app/routines/`)
 
 The rail's Routines destination follows Figma "Routines — proposal + mock" (1081/1099/1100) and the

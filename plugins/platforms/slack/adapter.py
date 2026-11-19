@@ -1550,6 +1550,32 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         except Exception:  # pragma: no cover - diagnostics must never break connect
             pass
 
+    def _warn_if_missing_reaction_scope(self, auth_response, team_name: str) -> None:
+        """Nudge a reinstall when ``reactions:write`` is absent while status reactions are on:
+        ``reactions.add`` then fails with ``missing_scope`` on every message and ``_react`` logs it
+        at debug only, so ``auth.test``'s ``x-oauth-scopes`` header at connect time is the place to say so."""
+        try:
+            if not self._reactions_enabled():
+                return
+            # Warn once per team per process, not on every reconnect.
+            warned = self._lazy_attr("_reaction_scope_warned", set)
+            headers = getattr(auth_response, "headers", None) or {}
+            raw = headers.get("x-oauth-scopes") or headers.get("X-OAuth-Scopes") or ""
+            if not raw:
+                return  # Header absent (e.g. some proxies) — don't guess.
+            granted = {s.strip() for s in raw.split(",") if s.strip()}
+            team_key = team_name or ""
+            if team_key not in warned and "reactions:write" not in granted:
+                warned.add(team_key)
+                logger.warning(
+                    "[Slack] Status reactions (👀 while working, then ✅ or ❌) will not appear in "
+                    "workspace %s: the app is missing the 'reactions:write' scope. Add it to bot "
+                    "scopes and REINSTALL the app to the workspace, or set SLACK_REACTIONS=false to "
+                    "turn reactions off. Regenerating the app from `hermes slack manifest` includes it.",
+                    team_key or "this workspace")
+        except Exception:  # diagnostics must never break connect
+            logger.debug("[Slack] reactions:write scope check failed", exc_info=True)
+
     def _warn_if_not_bot_token(self, auth_response, team_name: str) -> None:
         """Warn once per workspace when the token authenticates as a human: ``auth.test`` on an
         ``xoxp-`` token returns the installer's ``user_id`` and no ``bot_id``, so mentions OF THAT
@@ -1748,6 +1774,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         logger.info(
             "[Slack] Authenticated as @%s in workspace %s (team: %s)", bot_name, team_name, team_id)
         self._warn_if_missing_group_dm_scopes(auth_response, team_name)
+        self._warn_if_missing_reaction_scope(auth_response, team_name)
         self._warn_if_not_bot_token(auth_response, team_name)
         self._warn_if_inchannel_without_flat_reply(team_name)
 

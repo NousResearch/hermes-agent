@@ -83,6 +83,29 @@ export const enCatalog: CatalogTranslations = {
     submit: 'Submit Mod',
     docs: 'Developer Docs'
   },
+  provider: {
+    review: (action: string) => `Review ${action}`,
+    confirm: (action: string) => `Confirm ${action}`,
+    actions: { install: 'install', update: 'update', uninstall: 'uninstall' },
+    managed: 'Managed by this source. Review changes here instead of editing or deleting local files.',
+    loading: 'Loading source…',
+    empty: 'This source has no matching skills.',
+    signIn: 'Sign in through the providing plugin to browse this source.',
+    unavailable: 'This source is unavailable. Your local skills are unchanged.',
+    incomplete: 'The review is incomplete or the provider policy does not allow confirmation.',
+    changed: 'This review is no longer current. Close it and request a new review.',
+    unknown: 'The outcome is not yet known. Recover the original confirmation before starting another action.',
+    recover: 'Recover original operation',
+    finalizing: 'Finalizing local status…',
+    setup: 'Setup guidance only. Confirming does not run these instructions.',
+    more: (source: string) => `Load more ${source}`,
+    preview: 'Skill preview',
+    status: {
+      not_installed: 'Not installed', installed: 'Installed', removed: 'Removed outside this source',
+      unmanaged_local: 'Unmanaged local copy', pending: 'Operation pending', unavailable: 'Source unavailable',
+      unknown: 'Outcome unknown', completed: 'Completed', failed: 'Operation refused'
+    }
+  },
   toolsets: {
     mostUsed: 'Most used',
     mostUsedBlurb: 'The toolsets Hermes reaches for most on this profile.',

@@ -3,6 +3,7 @@ import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
+import type { CatalogManagedInstallation, CatalogProvider } from '@/types/skill-catalog'
 
 import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
 
@@ -16,6 +17,8 @@ export interface CatalogEntry {
   category: string
   categoryLabel: string
   source: string
+  provider?: CatalogProvider
+  management?: CatalogManagedInstallation
   author: string
   identifier: string
   installIdentifier?: string | null
@@ -144,7 +147,8 @@ function catalogEntry(kind: CatalogKind, row: any): CatalogEntry {
   const description = text(row.description)
 
   return {
-    id: `${source}:${identifier}`,
+    ...(row.provider ? { provider: row.provider as CatalogProvider } : {}),
+    id: row.provider ? identifier : `${source}:${identifier}`,
     name,
     description,
     overview: text(row.overview),

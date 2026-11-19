@@ -1,0 +1,36 @@
+{
+  "entry": {
+    "id": "example-skill",
+    "name": "Example skill",
+    "description": "A generic fixture skill.",
+    "source": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team",
+    "identifier": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team:example-skill",
+    "trust_level": "community",
+    "repo": null,
+    "path": null,
+    "tags": [
+      "example"
+    ],
+    "provider": {
+      "id": "team",
+      "plugin_id": "fixture-catalog",
+      "label": "Team skills",
+      "version": "1",
+      "author": "Example team",
+      "managed_state": "not_installed",
+      "scan_verdict": "safe",
+      "actions": [
+        "install"
+      ]
+    }
+  },
+  "skill_md": "---\nname: example-skill\ndescription: A generic fixture skill.\n---\n\nFollow the approved plan.\n",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "size": 87,
+      "change": "add"
+    }
+  ],
+  "preview_complete": true
+}

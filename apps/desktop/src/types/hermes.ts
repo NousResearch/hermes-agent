@@ -2,6 +2,8 @@ import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } fr
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
+import type { CatalogManagedInstallation, CatalogProvider } from './skill-catalog'
+
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
 export interface ConfigFieldSchema {
@@ -1232,7 +1234,8 @@ export interface ProfilesResponse {
   profiles: ProfileInfo[]
 }
 
-export interface SkillInfo {
+export interface SkillInfo extends Partial<CatalogManagedInstallation> {
+  provider?: CatalogProvider
   category: string
   description: string
   enabled: boolean
@@ -1241,7 +1244,7 @@ export interface SkillInfo {
   usage?: number
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
    * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
-  provenance?: 'agent' | 'bundled' | 'external' | 'hub'
+  provenance?: 'agent' | 'bundled' | 'external' | 'hub' | 'provider'
   /** User lock: the AGENT may not change this skill (the user still can). Absent on older backends. */
   locked?: boolean
 }

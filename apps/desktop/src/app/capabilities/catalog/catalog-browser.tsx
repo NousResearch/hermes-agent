@@ -30,10 +30,10 @@ import {
   type CatalogFacets,
   type CatalogSort,
   catalogSortOptions,
-  catalogSources,
   catalogTags,
   filterCatalog,
-  relatedEntries, sortCatalog } from './catalog-query'
+  relatedEntries,
+  sortCatalog, sourceFacetValues } from './catalog-query'
 import { $catalogCardView } from './store'
 import { useCatalogFilters } from './use-catalog-filters'
 
@@ -58,7 +58,11 @@ interface CatalogBrowserProps {
   renderInstalledDetail?: (entry: CatalogEntry) => ReactNode
   renderInstalledAction?: (entry: CatalogEntry) => ReactNode
   selectedEntryId?: string | null
+  detailSuppressed?: boolean
+  sources?: Record<string, string>
 }
+
+const showCatalogDetail = (open: boolean, suppressed?: boolean) => open && !suppressed
 
 const PAGE_SIZE = 60
 /** Related entries listed under a detail. */
@@ -97,6 +101,7 @@ function mergeInstalled(
     return [
       {
         ...entry,
+        ...(installed.provider ? { provider: installed.provider, management: installed.management } : {}),
         id: installed.id,
         version: installed.version || entry.version,
         locked: installed.locked,
@@ -325,6 +330,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   renderInstalledDetail,
   renderInstalledAction,
   selectedEntryId,
+  detailSuppressed,
+  sources,
   query,
   onQueryChange,
   searchHints
@@ -479,7 +486,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             onUpdates={filters.toggleUpdates}
             resultCount={filtered.length}
             sortControl={sortControl}
-            sources={catalogSources(visible, kind)}
+            sourceLabels={sources}
+            sources={sourceFacetValues(visible, kind, sources)}
             tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
             updateCount={visible.filter(entry => entry.updateAvailable).length}
           />
@@ -512,7 +520,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                 <CatalogDetailDialog
                   onOpenChange={setDetailOpen}
                   onSelect={setSelectedId}
-                  open={detailOpen}
+                  open={showCatalogDetail(detailOpen, detailSuppressed)}
                   order={pageOrder}
                   selectedId={selected.id}
                 >

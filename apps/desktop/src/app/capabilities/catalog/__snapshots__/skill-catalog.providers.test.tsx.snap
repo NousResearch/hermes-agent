@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stock fixture: failed-registration has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: flag-off has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: never-used has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: previously-used-disabled has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: signed-out has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;

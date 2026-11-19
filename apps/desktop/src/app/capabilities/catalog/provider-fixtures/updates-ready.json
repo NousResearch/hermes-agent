@@ -1,0 +1,11 @@
+{
+  "updates": [
+    {
+      "identifier": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team:example-skill",
+      "installed_version": "1",
+      "latest_version": "2",
+      "state": "update_available",
+      "installation_revision": "install-1"
+    }
+  ]
+}

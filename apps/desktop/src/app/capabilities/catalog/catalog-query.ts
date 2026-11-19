@@ -26,6 +26,10 @@ export function catalogSources(entries: CatalogEntry[], kind: CatalogKind) {
   return kind === 'plugins' ? PLUGIN_TIER_ORDER.filter(tier => present.has(tier)) : [...present]
 }
 
+export function sourceFacetValues(entries: CatalogEntry[], kind: CatalogKind, sources: Record<string, string> = {}) {
+  return [...new Set([...catalogSources(entries, kind), ...Object.keys(sources)])]
+}
+
 /** Category facet rows with counts, A–Z with "Other" last. */
 export function catalogCategories(entries: CatalogEntry[]) {
   const values = new Map<string, { label: string; count: number }>()

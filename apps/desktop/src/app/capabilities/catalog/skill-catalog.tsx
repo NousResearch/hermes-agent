@@ -9,11 +9,16 @@ import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILL
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
 
-import { skillSearchTerms, usageOf } from '../skills/skills-data'
+import { skillSearchTerms } from '../skills/skills-data'
 
 import { CatalogAlert } from './catalog-alert'
 import { CatalogBrowser } from './catalog-browser'
-import { type CatalogEntry, parseCatalog } from './catalog-data'
+import type { CatalogEntry } from './catalog-data'
+import { useProviderAction } from './provider-action'
+import { useProviderCatalog } from './provider-catalog'
+import { ProviderActions, ProviderDetail, ProviderNotices } from './provider-detail'
+import { ProviderReviewDialog } from './provider-review-dialog'
+import { buildSkillCatalog } from './skill-catalog-data'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -77,6 +82,9 @@ function ScopedSkillCatalog({
     retry: false
   })
 
+  const providerSources = (officialData?.provider_sources ?? []).filter(source => source.state !== 'hidden')
+  const providers = useProviderCatalog(providerSources, profile, query ?? '')
+  const providerAction = useProviderAction(profile)
   const hasHubSkills = skills.some(skill => skill.provenance === 'hub')
 
   const {
@@ -110,129 +118,13 @@ function ScopedSkillCatalog({
     retry: false
   })
 
-  const catalog = useMemo(() => {
-    const updatable = new Set((updatesData?.updates ?? []).map(row => row.name))
-    const skillsById = new Map<string, SkillInfo>()
-    const skillsByName = new Map(skills.map(skill => [skill.name, skill]))
-    const installedByName = new Map<string, CatalogEntry>()
-    const installedByIdentifier = new Map<string, CatalogEntry>()
-    const installedIdentifiers = new Set(Object.keys(hubData?.installed ?? {}))
-
-    const localEntries = parseCatalog(
-      'skills',
-      skills.map(skill => ({
-        name: skill.name,
-        description: skill.description,
-        category: skill.category,
-        source: skill.provenance === 'bundled' ? 'built-in' : skill.provenance === 'hub' ? 'hub' : 'local'
-      }))
-    ).map(entry => {
-      const skill = skillsByName.get(entry.name)!
-
-      const installed = {
-        ...entry,
-        id: `installed:${skill.name}`,
-        installIdentifier: null,
-        locked: !!skill.locked,
-        usage: usageOf(skill),
-        updateAvailable: skill.provenance === 'hub' && updatable.has(skill.name)
-      }
-
-      skillsById.set(installed.id, skill)
-      installedByName.set(skill.name, installed)
-
-      return installed
-    })
-
-    for (const [identifier, record] of Object.entries(hubData?.installed ?? {})) {
-      const installed = record.name ? installedByName.get(record.name) : undefined
-
-      if (installed && skillsById.get(installed.id)?.provenance === 'hub') {
-        installedByIdentifier.set(identifier, installed)
-      }
-    }
-
-    const official = officialData?.skills ?? []
-
-    const officialEntries = parseCatalog(
-      'skills',
-      official.map(skill => ({
-        ...skill,
-        source: 'optional',
-        installIdentifier: skill.identifier
-      }))
-    )
-
-    const officialByIdentifier = new Map(officialEntries.map(entry => [entry.identifier, entry]))
-
-    for (const skill of official) {
-      if (!skill.installed) {
-        continue
-      }
-
-      installedIdentifiers.add(skill.identifier)
-      const installed = installedByName.get(skill.name)
-
-      if (installed && skillsById.get(installed.id)?.provenance === 'hub') {
-        installedByIdentifier.set(skill.identifier, installed)
-      }
-    }
-
-    const officialFor = (entry: CatalogEntry) => {
-      if (entry.source !== 'optional') {
-        return undefined
-      }
-
-      const identifier = entry.installIdentifier ?? entry.identifier
-      const exact = officialByIdentifier.get(identifier)
-
-      if (exact) {
-        return exact
-      }
-
-      if (identifier !== entry.name && identifier !== `official/${entry.name}`) {
-        return undefined
-      }
-
-      // Old public snapshots omit optional identifiers. Only the official
-      // optional namespace can use this fallback, never community lookalikes.
-      return officialEntries.find(skill => skill.name === entry.name && skill.category === entry.category)
-    }
-
-    const matchInstalled = (entry: CatalogEntry): CatalogEntry | undefined => {
-      const exact = installedByIdentifier.get(entry.installIdentifier ?? entry.identifier)
-
-      if (exact) {
-        return exact
-      }
-
-      if (entry.source === 'built-in') {
-        const bundled = installedByName.get(entry.name)
-
-        if (bundled && skillsById.get(bundled.id)?.provenance === 'bundled') {
-          return bundled
-        }
-      }
-
-      const optional = officialFor(entry)
-
-      return optional ? (installedByIdentifier.get(optional.identifier) ?? optional) : undefined
-    }
-
-    // CatalogBrowser merges these supplemental rows with the public feed.
-    // Optional rows remain available even offline / ahead of the snapshot;
-    // membership here is NOT installation — isInstalled owns that decision.
-    const entries = [
-      ...localEntries,
-      ...officialEntries.filter(entry => !installedByIdentifier.has(entry.identifier) && !skillsByName.has(entry.name))
-    ]
-
-    return { entries, skillsById, skillsByName, installedIdentifiers, matchInstalled, officialFor }
-  }, [skills, hubData, officialData, updatesData])
+  const catalog = buildSkillCatalog(skills, hubData, officialData, updatesData, providerSources)
 
   // Skills install by name, so a same-named entry can never be added beside the installed one.
   const isInstalled = useCallback(
     (entry: CatalogEntry) => {
+      if (entry.provider) { return catalog.skillsById.has(entry.id) || entry.provider.managed_state === 'installed' }
+
       if (catalog.skillsById.has(entry.id) || catalog.skillsByName.has(entry.name)) {
         return true
       }
@@ -258,7 +150,7 @@ function ScopedSkillCatalog({
   // id is the installed row's) stay visible.
   const isSuperseded = useCallback(
     (entry: CatalogEntry) =>
-      entry.source !== 'official' && !entry.id.startsWith('installed:') && catalog.skillsByName.has(entry.name),
+      !entry.provider && entry.source !== 'official' && !entry.id.startsWith('installed:') && catalog.skillsByName.has(entry.name),
     [catalog]
   )
 
@@ -292,9 +184,12 @@ function ScopedSkillCatalog({
   }
 
   return (
+    <>
+    {providerAction.state && <ProviderReviewDialog controller={providerAction} key={`${providerAction.state.identifier}:${providerAction.state.action}`} />}
     <CatalogBrowser
       actions={actions}
-      installedEntries={catalog.entries}
+      detailSuppressed={!!providerAction.state}
+      installedEntries={[...catalog.entries, ...providers.entries.filter(entry => !catalog.skillsById.has(entry.id))]}
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}
       isInstalling={entry => installing.has(installIdentifier(entry) ?? '')}
@@ -304,6 +199,7 @@ function ScopedSkillCatalog({
       notice={
         <>
           {notice}
+          <ProviderNotices catalog={providers} onRefresh={() => void refreshOfficial()} sources={providerSources} />
           {(officialError || hubError) && (
             <CatalogAlert
               onRetry={() => {
@@ -334,16 +230,22 @@ function ScopedSkillCatalog({
       onQueryChange={onQueryChange}
       query={query}
       renderInstalledAction={entry => {
+        if (entry.provider) { return <ProviderActions disabled={!!providerAction.state} entry={entry} onAction={(item, action) => void providerAction.begin(item, action)} /> }
         const skill = catalog.skillsById.get(entry.id)
 
         return skill && renderInstalledAction ? renderInstalledAction(skill) : null
       }}
       renderInstalledDetail={entry => {
+        if (entry.provider) { return <ProviderDetail entry={entry} key={entry.id} profile={profile} /> }
         const skill = catalog.skillsById.get(entry.id)
+
+        if (skill?.provider && !entry.provider) { return <p role="status">{t.skills.loading}</p> }
 
         return skill ? renderInstalledDetail(skill) : null
       }}
       searchHints={searchHints}
+      sources={providerSources.length ? Object.fromEntries(providerSources.map(source => [source.id, source.label])) : undefined}
     />
+    </>
   )
 }

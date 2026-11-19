@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "id": "second-skill",
+      "name": "Second skill",
+      "description": "A generic fixture skill.",
+      "source": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team",
+      "identifier": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team:second-skill",
+      "trust_level": "community",
+      "repo": null,
+      "path": null,
+      "tags": [
+        "example"
+      ],
+      "provider": {
+        "id": "team",
+        "plugin_id": "fixture-catalog",
+        "label": "Team skills",
+        "version": "1",
+        "author": "Example team",
+        "managed_state": "not_installed",
+        "scan_verdict": "safe",
+        "actions": [
+          "install"
+        ]
+      }
+    }
+  ],
+  "source_counts": {
+    "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team": 1
+  },
+  "timed_out": [],
+  "installed": {},
+  "next_cursor": null
+}

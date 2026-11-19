@@ -140,9 +140,10 @@ def install_after_setup(args) -> bool:
         return True
     if ensure_gateway_service(context="setup", interactive=True):
         return False
-    # Only a Yes leaves the choice unrecorded on a host that can run a service: its install failed.
+    # A Yes (now or saved) that did not end in a running service is a failure: the install or its
+    # start failed. Only a No records "decline" on a host that can run a service.
     attempted = sys.stdin.isatty() and not is_container() and gw._service_backend() is not None
-    if attempted and _recorded_choice() is None:
+    if attempted and _recorded_choice() != "decline":
         raise SystemExit(1)
     return False
 

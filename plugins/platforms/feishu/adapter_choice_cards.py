@@ -2,9 +2,9 @@
 
 Mixed into ``FeishuAdapter``: the ``send_clarify`` / ``retire_clarify_card`` / ``send_choice_picker``
 capabilities from ``BasePlatformAdapter`` plus their card-action handlers. The card builders,
-``_send_interactive_card``, ``_validate_card_action`` and ``_card_response`` live on the facade, so
-every click passes the same operator authorization and chat check as an exec-approval click before
-it answers anything.
+``_send_interactive_card`` and ``_card_response`` live on the facade and ``_validate_card_action``
+in ``adapter_card_authz``, so every click passes the same operator authorization and chat check as
+an exec-approval click before it answers anything.
 """
 
 from __future__ import annotations

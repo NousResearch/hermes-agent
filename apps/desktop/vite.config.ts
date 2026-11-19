@@ -258,7 +258,15 @@ export default defineConfig(({ command }) => ({
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
       'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
+    dedupe: [
+      'react',
+      'react-dom',
+      'react-router',
+      '@tanstack/react-query',
+      '@clerk/react',
+      '@clerk/shared',
+      '@clerk/clerk-js'
+    ]
   },
   server: {
     host: '127.0.0.1',

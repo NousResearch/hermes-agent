@@ -1,7 +1,8 @@
-import { ClerkProvider, SignIn, SignUp, useAuth } from '@clerk/electron/react'
+import { ClerkProvider as ElectronClerkProvider, SignIn, SignUp, useAuth } from '@clerk/electron/react'
+import { ClerkProvider as BrowserClerkProvider } from '@clerk/react'
 import { type ReactNode, useEffect, useState } from 'react'
 
-import { clerkEnabled, clerkPublishableKey } from '@/lib/clerk-config'
+import { clerkBrowserEnabled, clerkEnabled, clerkPublishableKey } from '@/lib/clerk-config'
 
 import { ClerkSessionBridge } from './clerk-session-bridge'
 
@@ -11,15 +12,27 @@ type AuthMode = 'sign-in' | 'sign-up'
 const authMode = (): AuthMode => (window.location.hash.includes('/sign-up') ? 'sign-up' : 'sign-in')
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  if (!clerkEnabled) {
-    return <>{children}</>
+  if (clerkEnabled) {
+    return (
+      <ElectronClerkProvider publishableKey={clerkPublishableKey}>
+        <ClerkAuthGate>{children}</ClerkAuthGate>
+      </ElectronClerkProvider>
+    )
   }
 
-  return (
-    <ClerkProvider publishableKey={clerkPublishableKey}>
-      <ClerkAuthGate>{children}</ClerkAuthGate>
-    </ClerkProvider>
-  )
+  // Browser-hosted Desktop has no Electron bridge and no full-page auth gate:
+  // mount Clerk so host.clerk can open its sign-in modal from the user panel,
+  // while the app itself keeps rendering.
+  if (clerkBrowserEnabled) {
+    return (
+      <BrowserClerkProvider publishableKey={clerkPublishableKey}>
+        {children}
+        <ClerkSessionBridge />
+      </BrowserClerkProvider>
+    )
+  }
+
+  return <>{children}</>
 }
 
 function ClerkAuthGate({ children }: { children: ReactNode }) {

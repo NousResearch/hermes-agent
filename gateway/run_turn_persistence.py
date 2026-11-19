@@ -632,6 +632,11 @@ class GatewayTurnPersistenceMixin:
                 # Close the failed turn: a user-only tail lets alternation repair merge this request
                 # into an unrelated future message and replay stale side effects (#107070).
                 await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
+                if (
+                    agent_result.get("failure_reason") == "launch_credentials_unavailable"
+                    and not bool(getattr(event, "internal", False))
+                ):
+                    await store.touch_activity(sid, ts)
             else:
                 # Only the NEW messages: history_offset (what the agent saw), not len(history), which
                 # counts session_meta entries stripped before the agent saw them.

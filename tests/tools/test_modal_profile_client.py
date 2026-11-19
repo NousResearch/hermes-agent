@@ -197,6 +197,32 @@ def test_backend_selection_agrees_with_the_constructor_for_a_routed_profile(
     assert calls["creates"] == (["ak-B"] if usable else [])
 
 
+def test_routed_direct_mode_refusal_names_the_profile_tokens(profiles, tmp_path, monkeypatch):
+    from agent.runtime_scope import bind_profile_scope
+    from tools.terminal_tool_backends import _get_modal_backend_state, _modal_unavailable_reason
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)  # Windows reads USERPROFILE, not HOME
+    (tmp_path / ".modal.toml").write_text('[default]\ntoken_id = "ak-cli"\ntoken_secret = "as-cli"\n')
+    with bind_profile_scope(profiles("B", "OTHER=1\n"), hydrate_secrets=False):
+        log_reason, error = _modal_unavailable_reason(_get_modal_backend_state("direct"))
+    for reason in (log_reason, error):
+        assert "MODAL_TOKEN_ID and MODAL_TOKEN_SECRET" in reason
+        assert "single-profile" in reason
+
+
+def test_single_profile_direct_mode_refusal_is_unchanged(tmp_path, monkeypatch):
+    from tools.terminal_tool_backends import _get_modal_backend_state, _modal_unavailable_reason
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)  # Windows reads USERPROFILE, not HOME
+    _, error = _modal_unavailable_reason(_get_modal_backend_state("direct"))
+    assert error == "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
+
+
 def test_single_profile_host_login_still_selects_direct(tmp_path, monkeypatch):
     from tools.tool_backend_helpers import has_direct_modal_credentials
 
@@ -290,7 +316,7 @@ def test_client_build_runs_inside_the_one_startup_window(modal_sdk, profiles, mo
     run_coroutine = modal_env._AsyncWorker.run_coroutine
 
     def shortened(self, coro, timeout=600):
-        requested.append(timeout)  # the retry below runs on its own, unshortened window
+        requested.append(timeout)  # the first window is cut to 2 s; the retry may take up to 15 s
         return run_coroutine(self, coro, timeout=min(timeout, 2 if len(requested) == 1 else 15))
 
     monkeypatch.setattr(modal_env._AsyncWorker, "run_coroutine", shortened)

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -198,24 +199,21 @@ class CompactionScanTests(unittest.TestCase):
     def test_scan_stats_survive_compaction_and_v1_checkpoint_is_rescanned(self):
         """#112273: compaction archives the active rows (active=0, compacted=1); the scan must
         keep counting them, and a schema-1 (active-only) checkpoint must not be reused."""
-        import hermes_state
-        from hermes_state import SessionDB
+        from persistence.conversation.messages import NewMessage
+        from persistence.conversation.sessions import NewSession
+        from persistence_assembly import open_persistence, profile_scope
 
-        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)):
-            db = SessionDB(Path(tmp) / "state.db")
-            try:
-                db.create_session("s1", "cli", model="m")
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)), patch.dict(os.environ, {"HERMES_HOME": tmp}):
+            with open_persistence(profile_scope(home=Path(tmp))) as store:
+                store.sessions.create(NewSession(session_id="s1", source="cli", model="m"))
                 for i in range(20):
-                    db.append_message("s1", "assistant", tool_calls=[{"function": {"name": f"tool_{i}", "arguments": "{}"}}])
-                    db.append_message("s1", "tool", content="ok", tool_name=f"tool_{i}")
-                db.archive_and_compact("s1", [{"role": "user", "content": "[summary]"}])
-            finally:
-                db.close()
+                    store.messages.append("s1", NewMessage(role="assistant", content=None, tool_calls=({"function": {"name": f"tool_{i}", "arguments": "{}"}},)))
+                    store.messages.append("s1", NewMessage(role="tool", content="ok", tool_name=f"tool_{i}"))
+                store.messages.compact("s1", [NewMessage(role="user", content="[summary]")])
             # A schema-1 (active-only) checkpoint for this session must be ignored, not reused.
             stale = {"fingerprint": None, "stats": {"tool_call_count": 0}}
             plugin_api._write_json(plugin_api.CHECKPOINT_FILE, {"schema_version": 1, "generated_at": 1, "sessions": {"s1": stale}})
-            with patch.object(hermes_state, "SessionDB", lambda read_only=True: SessionDB(Path(tmp) / "state.db", read_only=read_only)):
-                scan = plugin_api.scan_sessions()
+            scan = plugin_api.scan_sessions()
 
         self.assertEqual(scan["aggregate"]["max_distinct_tools_in_session"], 20)
         self.assertEqual(scan["scan_meta"]["sessions_reused"], 0)

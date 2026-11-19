@@ -11,7 +11,7 @@ import json
 import logging
 
 from hermes_cli.plugins_dispatch import resolve_plugin_command_result
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ async def resolve_plugin_rpc(connection, method):
 
 async def call_plugin_rpc(connection, ref, method, handler, params):
     if ref.session_id is not None and not isinstance(ref.session_id, str):
-        raise RuntimeStoreError('invalid_params', field='session_id')
+        raise AuthorityRefusal('invalid_params', field='session_id')
     if ref.session_id:
         from gateway.session_busy_controls import authorize
         authorize(connection, ref, params, 'session:control')
@@ -44,7 +44,7 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
         from gateway.session_authorities import require_serving
         require_serving(connection.authority)
         if 'session:control' not in connection.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
     try:
         # Resolved in the worker: an ``async def`` handler's body must not run on the gateway loop.
         result = await _off_loop(connection, lambda: resolve_plugin_command_result(
@@ -52,7 +52,7 @@ async def call_plugin_rpc(connection, ref, method, handler, params):
         return json.loads(json.dumps(result, allow_nan=False))  # NaN/Infinity: not JSON, an error
     except Exception as exc:  # the call's only answer: a plugin failure is the client's error, not a crash
         logger.warning('plugin RPC %s failed', method, exc_info=True)
-        raise RuntimeStoreError('plugin_rpc_failed', field=method, detail=f'{type(exc).__name__}: {exc}') from exc
+        raise AuthorityRefusal('plugin_rpc_failed', field=method, detail=f'{type(exc).__name__}: {exc}') from exc
 
 
 def publish_session_event(session_id, event_type, payload) -> bool:

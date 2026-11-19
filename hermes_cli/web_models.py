@@ -434,6 +434,8 @@ class ImportRequest(BaseModel):
     # --force: the spawned `hermes import` has stdin=DEVNULL, so its "Continue? [y/N]" prompt would
     # hit EOF and abort; the dashboard confirms in its own modal.
     force: bool = False
+    # --keep-host: replace the agent but keep what its host provisioned (Hermes Cloud transfer/undo).
+    keep_host: bool = False
 
 class HookCreate(BaseModel):
     event: str

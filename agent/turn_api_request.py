@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import time
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -127,6 +129,8 @@ def build_request_payload(
     # retry rotates to a different credential.
     from agent.credential_scope import capture_attempt_credential_scope
     _credential_scope = capture_attempt_credential_scope(agent, api_request_id).to_dict()
+    # The real request about to go out refreshes the cache entry itself.
+    cancel_prompt_cache_warming(agent, "new request in flight")
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None

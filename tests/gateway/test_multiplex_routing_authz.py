@@ -133,11 +133,12 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
     """An async-delegation completion for a secondary session must be classified against THAT
     profile's state.db (the watcher runs unscoped, where the row does not exist → ``terminal``)."""
     from gateway import run as run_module
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     db_home = mux.home / "profiles" / "team_b"
-    SessionDB(db_path=db_home / "state.db").create_session(
-        session_id="sess-b", source="telegram", session_key="agent:team_b:telegram:dm:1", profile_name="team_b")
+    with open_persistence(profile_scope(home=db_home)) as store:
+        seed_session(store, "sess-b", "telegram", session_key="agent:team_b:telegram:dm:1", profile_name="team_b")
     runner = mux.runner
     runner._session_db_pinned = run_module._SESSION_DB_UNPINNED
     runner._session_db_handles, runner._session_db_handles_lock = {}, threading.Lock()
@@ -163,7 +164,8 @@ def test_raw_api_server_child_notice_follows_the_served_profile_policy(
     from typing import cast
 
     from gateway import run as run_module
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     home = tmp_path / "home"
     served = home / "profiles" / "builder"
@@ -172,8 +174,8 @@ def test_raw_api_server_child_notice_follows_the_served_profile_policy(
     policy = "delegation:\n  surface_child_process_notifications: {}\ndisplay:\n  background_process_notifications: all\n"
     (home / "config.yaml").write_text(policy.format(str(launch_policy).lower()))
     (served / "config.yaml").write_text(policy.format(str(served_policy).lower()))
-    db = SessionDB(db_path=served / "state.db")
-    db.create_session(session_id="raw-session", source="api_server", profile_name="builder")
+    db = open_persistence(profile_scope(home=served))
+    seed_session(db, "raw-session", "api_server", profile_name="builder")
     turns = []
 
     async def api_turn(**kw):

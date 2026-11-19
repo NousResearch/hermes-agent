@@ -71,8 +71,10 @@ async def probe(peer, creator):
 
         async with httpx.AsyncClient(base_url=origin, trust_env=False) as client:
             assert (await client.post('/api/auth/ws-ticket')).status_code == 401
-            # Walk real login, PKCE callback, cookie verification, then ticket mint.
-            login = await client.get('/auth/login', params={'provider': 'stub'})
+            # Walk real login, PKCE callback, cookie verification, then ticket mint. The browser
+            # addressed the public host; the proxy routing it here forwards that host.
+            login = await client.get('/auth/login', params={'provider': 'stub'},
+                                     headers={'X-Forwarded-Host': 'gateway.example.test'})
             assert login.status_code == 302, login.text
             from urllib.parse import urlsplit
             callback_url = urlsplit(login.headers['location'])

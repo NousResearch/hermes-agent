@@ -16,7 +16,7 @@ import pytest
 from persistence.conversation.messages import NewMessage
 from persistence.conversation.sessions import SessionLineageKind
 from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
-from tests.fixtures.storage_holder import holder_type, raw_holder
+from tests.fixtures.storage_holder import drift_probe_seam, holder_type, raw_holder
 from tests.fixtures.storage_read import session_row, transcript_rows
 from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
@@ -244,6 +244,32 @@ def mutation_owner(monkeypatch, _isolate_hermes_home):
     yield authority
 
 
+def _seeded_store(home):
+    with open_persistence(profile_scope(home=home)) as seed:
+        seed_session(seed, "kept", "cli")
+    return home / "state.db"
+
+
+def _writable_opens(monkeypatch) -> list:
+    """Every writable acquisition a browse could escalate to: a writable admin handle or the shared writer."""
+    import persistence_assembly
+
+    opens, real_admin, real_writer = [], persistence_assembly.open_store_admin, persistence_assembly.open_persistence
+
+    def admin(target, *, read_only=True, **kwargs):
+        if not read_only:
+            opens.append(("admin", target))
+        return real_admin(target, read_only=read_only, **kwargs)
+
+    def writer(*args, **kwargs):
+        opens.append(("writer", args))
+        return real_writer(*args, **kwargs)
+
+    monkeypatch.setattr(persistence_assembly, "open_store_admin", admin)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", writer)
+    return opens
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
@@ -403,12 +429,10 @@ class TestWebServerEndpoints:
         dashboard (close-time checkpoint, possible FTS rebuild) is the
         two-writer corruption vector. Only the stale-schema heal may write.
         """
-        import persistence_assembly
-
         open_persistence(profile_scope(), eager=True).close()
 
         holder_cls = holder_type()
-        writable_opens = []
+        writable_opens = _writable_opens(monkeypatch)
         real_init = holder_cls.__init__
 
         def spy(self, *args, **kwargs):
@@ -416,20 +440,7 @@ class TestWebServerEndpoints:
                 writable_opens.append(kwargs)
             return real_init(self, *args, **kwargs)
 
-        real_admin, real_writer = persistence_assembly.open_store_admin, persistence_assembly.open_persistence
-
-        def spy_admin(target, *, read_only=True, **kwargs):
-            if not read_only:
-                writable_opens.append(("admin", target))
-            return real_admin(target, read_only=read_only, **kwargs)
-
-        def spy_writer(*args, **kwargs):
-            writable_opens.append(("writer", args))
-            return real_writer(*args, **kwargs)
-
         monkeypatch.setattr(holder_cls, "__init__", spy)
-        monkeypatch.setattr(persistence_assembly, "open_store_admin", spy_admin)
-        monkeypatch.setattr(persistence_assembly, "open_persistence", spy_writer)
         _web_server_lifecycle._eager_reconcile_own_session_db()
 
         assert writable_opens == []
@@ -438,18 +449,17 @@ class TestWebServerEndpoints:
         """A store the eager reconcile cannot open must not break startup."""
         import sqlite3 as sqlite3_module
 
-        import persistence_assembly
-        from persistence.sqlite._backend import translated
-
         open_persistence(profile_scope(), eager=True).close()
+        hits = []
 
         def boom(*args, **kwargs):
-            with translated():
-                raise sqlite3_module.OperationalError("database is locked")
+            hits.append(1)
+            raise sqlite3_module.OperationalError("database is locked")
 
-        monkeypatch.setattr(persistence_assembly, "open_store_admin", boom)
+        monkeypatch.setattr(*drift_probe_seam(), boom)
         # Must swallow — reads report unavailable until owner recovery.
         _web_server_lifecycle._eager_reconcile_own_session_db()
+        assert hits == [1]
 
     def test_failed_schema_probes_never_escalate_reads(self, monkeypatch):
         from fastapi import HTTPException
@@ -458,9 +468,7 @@ class TestWebServerEndpoints:
         db_path = get_hermes_home() / "state.db"
         with open_persistence(profile_scope(home=db_path.parent)) as seed:
             seed_session(seed, "unfixable", "cli")
-        from persistence.sqlite.admin._maintenance import MaintenanceAdmin
-
-        monkeypatch.setattr(MaintenanceAdmin, "schema_drift_reason", lambda _self: "no such column: not_a_real_column")
+        monkeypatch.setattr(*drift_probe_seam(), lambda _conn, _home: "no such column: not_a_real_column")
         before = db_path.read_bytes()
         for _ in range(2):
             with pytest.raises(HTTPException, match="schema") as caught:
@@ -474,50 +482,30 @@ class TestWebServerEndpoints:
         """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
         import sqlite3
 
-        import persistence_assembly
-        from persistence.sqlite._backend import translated
-
-        db_path = tmp_path / "state.db"
-        db_path.write_bytes(b"not-empty")
-        opens = []
-
-        class _CorruptAdmin:
-            def schema_drift_reason(self):
-                with translated():
-                    raise sqlite3.DatabaseError("database disk image is malformed")
-
-        def corrupt_open(_target, *, read_only=True, **_kwargs):
-            opens.append(read_only)
-            return _CorruptAdmin()
-
-        monkeypatch.setattr(persistence_assembly, "open_store_admin", corrupt_open)
-
         from fastapi import HTTPException
+
+        def corrupt_probe(_conn, _home):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        db_path = _seeded_store(tmp_path)
+        monkeypatch.setattr(*drift_probe_seam(), corrupt_probe)
+        writable = _writable_opens(monkeypatch)
         with pytest.raises(HTTPException, match="corrupt"):
             _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
-
-        assert opens == [True]
+        assert writable == []
 
     def test_decode_error_never_triggers_writable_heal(self, tmp_path, monkeypatch):
-        import persistence_assembly
         from fastapi import HTTPException
 
-        db_path = tmp_path / "state.db"
-        db_path.write_bytes(b"not-empty")
-        opens = []
+        def undecodable_probe(_conn, _home):
+            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
 
-        class _UndecodableAdmin:
-            def schema_drift_reason(self):
-                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
-
-        def corrupt_open(_target, *, read_only=True, **_kwargs):
-            opens.append(read_only)
-            return _UndecodableAdmin()
-
-        monkeypatch.setattr(persistence_assembly, "open_store_admin", corrupt_open)
+        db_path = _seeded_store(tmp_path)
+        monkeypatch.setattr(*drift_probe_seam(), undecodable_probe)
+        writable = _writable_opens(monkeypatch)
         with pytest.raises(HTTPException, match="corrupt"):
             _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
-        assert opens == [True]
+        assert writable == []
 
     def test_get_sessions_zero_byte_store_is_not_quarantined(self):
         from hermes_constants import get_hermes_home

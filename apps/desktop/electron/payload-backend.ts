@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 
+import { type BootProgress, stablePayloadResources } from './appimage-payload'
 import { INSTALL_STAMP, type InstallStamp, type PayloadRuntime } from './install-stamp'
 
 export interface PayloadInfo extends PayloadRuntime {
@@ -36,6 +37,14 @@ export function bundledPayload(
     commands,
     shim: commands.hermes
   }
+}
+
+/** The payload this launch runs: an AppImage's stable per-build copy, else the artifact's own. */
+export async function runnableBundledPayload(
+  log: (line: string) => void,
+  progress?: BootProgress
+): Promise<PayloadInfo | null> {
+  return bundledPayload(await stablePayloadResources(log, progress))
 }
 
 /**

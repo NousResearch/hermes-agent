@@ -1,14 +1,19 @@
 """Session flush / reaping / orphan sweep / cross-backend heartbeat: exit-flush signal handlers, idle + LRU
-eviction, orphaned session-row sweep, backend heartbeat refresher. Bodies are rebound onto server.py's
+eviction (compacting a cache-expiry-due chat before release), the cache-expiry compaction ticker, orphaned
+session-row sweep, backend heartbeat refresher. Bodies are rebound onto server.py's
 globals at install time (method_ctx.bind_module), so they reference server.py globals bare — including the
 knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUSH_INTERVAL_S.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
+import queue
 import secrets
 import threading
+import time
+from typing import Any, Callable
 
 from tui_gateway._env import env_float
 
@@ -267,6 +272,10 @@ def _reap_idle_sessions() -> None:
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
+        with _sessions_lock:
+            session = _sessions.get(sid)
+        if session is not None and _compact_then_close(sid, session, end_reason="idle_timeout") is not None:
+            continue  # step 2 at release: that job compacts, then closes it
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
@@ -408,11 +417,19 @@ def _enforce_session_cap() -> None:
             return
         evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_reapable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
+    # A close deferred behind its release-time compaction still sits in ``_sessions``: it counts as gone.
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
-    for sid, _s in evictable:
+
+    def over_cap() -> bool:
         with _sessions_lock:
-            if len(_sessions) <= cap:
-                break
+            current_cap = _max_live_sessions()  # re-read: a cap disabled mid-sweep evicts nothing more
+            return current_cap > 0 and len(_sessions) - _pending_release_closes() > current_cap
+
+    for sid, _s in evictable:
+        if not over_cap():
+            break
+        if _compact_then_close(sid, _s, end_reason="lru_evict", still_due=over_cap) is not None:
+            continue  # step 2 at release: that job compacts, then closes it if the cap still needs it
         _close_session_by_id(
             sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 
@@ -581,6 +598,234 @@ def _schedule_startup_orphan_sweep() -> None:
         _startup_orphan_sweep_ran = True
     _reaper_daemon_timer(
         _WS_ORPHAN_REAP_GRACE_S, _sweep_orphaned_session_rows, "startup orphan session sweep failed", level="warning")
+
+# ── Cache-edge compaction and offload (steps 2-3 of agent.prompt_cache_lifecycle) ──
+# A daemon ticker compacts an idle TUI / Desktop session at the end of its keep-alive budget (nothing is
+# sent after it until the next user message), or offloads old tool output once the cache is over (step 3).
+# It runs the manual-compress choke point
+# (busy claim, snapshot fence, lease) with an automatic trigger, so a prompt arriving meanwhile queues
+# behind it as it does behind ``/compress``, and a job still queued when its chat closes (``_closing``)
+# is refused at that claim. The idle reapers above release through :func:`_compact_then_close`: a budget
+# ends at its keep-alives or at the release, whichever comes first, so a due chat is compacted (or, past its
+# window, offloaded) before it is closed.
+
+_cache_expiry_started = False
+_cache_expiry_lock = threading.Lock()
+# Summaries running at once: one slow summary must not hold every other due chat past its window
+# (the ticker used to run them serially), nor may a burst of due chats fan out unbounded. The pool's
+# workers are the bound: a due chat past them waits in the pool's queue, not on a thread of its own.
+_CACHE_EXPIRY_CONCURRENCY = 3
+_cache_expiry_queue: queue.SimpleQueue = queue.SimpleQueue()
+_cache_expiry_workers: list[threading.Thread] = []
+_cache_expiry_in_flight: set[str] = set()
+# Reaper closes waiting behind a ticker job already queued for that sid: run once it finishes, so the
+# close never lands first (the job would see ``_closing`` and drop its compaction or offload).
+_cache_expiry_after: dict[str, list[Callable[[], None]]] = {}
+# Sessions a reaper is releasing behind their release-time compaction: the session cap counts them as gone.
+_cache_expiry_releasing: set[str] = set()
+
+
+def _cache_expiry_worker() -> None:
+    while True:
+        future, job, args = _cache_expiry_queue.get()
+        if future.set_running_or_notify_cancel():
+            try:
+                future.set_result(job(*args))
+            except BaseException as exc:  # health: allow BLE001 -- handed to the future's owner, which re-raises it
+                future.set_exception(exc)
+
+
+def _cache_expiry_submit(job: Callable[..., Any], *args: Any) -> concurrent.futures.Future:
+    """Queue *job* for the cache-edge workers, under the caller's contextvars (profile scope). At most
+    ``_CACHE_EXPIRY_CONCURRENCY`` daemon workers exist: a burst of due chats waits in the queue, not on
+    a thread each, and a summary still running never holds the process open at exit."""
+    from agent.memory_provider import ctx_bound, spawn_context_thread
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    _cache_expiry_queue.put((future, ctx_bound(job), args))
+    with _cache_expiry_lock:
+        while len(_cache_expiry_workers) < _CACHE_EXPIRY_CONCURRENCY:
+            worker = spawn_context_thread(_cache_expiry_worker, name=f"cache-expiry-{len(_cache_expiry_workers)}")
+            _cache_expiry_workers.append(worker)
+            worker.start()
+    return future
+
+
+def _cache_expiry_candidates() -> list[tuple[str, dict, str]]:
+    """Due sessions as ``(sid, session, action)``: the claim (``PromptCacheWarmer.claim_edge``) latched
+    each one's stretch and says whether it is compacted or offloaded."""
+    with _sessions_lock:
+        live = list(_sessions.items())
+    with _cache_expiry_lock:
+        busy = set(_cache_expiry_in_flight)
+    picked = []
+    for sid, session in live:
+        agent = session.get("agent")
+        warmer = getattr(agent, "_prompt_cache_warmer", None)
+        if warmer is None or sid in busy or session.get("running") or session.get("_closing"):
+            continue
+        if _session_uses_compute_host(session):
+            continue  # the compute host owns that transcript; it is not compacted from here
+        with _session_profile_runtime_scope(session):
+            action = warmer.claim_edge()
+        if action:
+            picked.append((sid, session, action))
+    return picked
+
+
+def _offload_expired_cache(sid: str, session: dict) -> None:
+    """Step 3: the cache is over and nothing compacted it, so old tool output goes to disk now (the cold
+    prune), under the same manual-compress claim as a compaction, so the person returns to a small chat."""
+    from agent.turn_proactive_prune import offload_cold_history
+    agent = session["agent"]
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
+        with session["history_lock"]:
+            before, version = list(session.get("history", [])), int(session.get("history_version", 0))
+        after = offload_cold_history(agent, before, session.get("session_key") or sid)
+        if after is before:
+            return
+        with session["history_lock"]:
+            if int(session.get("history_version", 0)) != version:
+                return  # history moved meanwhile: the next turn's at-return check covers it
+            session["history"], session["history_version"] = after, version + 1
+    logger.info("Cache-expiry offload: sid=%s", sid)
+
+
+def _compact_before_cache_expiry(sid: str, session: dict, action: str = "compact") -> None:
+    """Run the claimed cache-edge *action* on *session*: ``offload`` (step 3) or ``compact`` at the end
+    of its keep-alive budget (step 2). Nothing is sent afterwards: the next user message starts the
+    compacted chat's cache (and its keep-alives)."""
+    from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.manual_compression_feedback import summarize_manual_compression
+    from agent.prompt_cache_lifecycle import TRIGGER
+    agent = session["agent"]
+    if action == "offload":
+        _offload_expired_cache(sid, session)
+        return
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
+        with session["history_lock"]:
+            before, version = list(session.get("history", [])), int(session.get("history_version", 0))
+        try:
+            removed, _usage = _compress_session_history(
+                session, trigger=TRIGGER, before_messages=before, history_version=version)
+        except CompressionLockHeld:
+            return
+        except Exception:
+            finalize_context_engine_compression_notification(agent, committed=False)
+            raise
+        _sync_session_key_after_compress(sid, session, clear_pending_title=False)
+        finalize_context_engine_compression_notification(agent, committed=True)
+        with session["history_lock"]:
+            compacted = list(session.get("history", []))
+        summarize_manual_compression(before, compacted, 0, 0,
+                                     compression_state=getattr(agent, "context_compressor", None))
+    logger.info("Cache-expiry compaction: sid=%s removed=%d messages", sid, removed)
+
+
+def _cache_expiry_job(sid: str, session: dict, action: str = "compact") -> None:
+    try:
+        _compact_before_cache_expiry(sid, session, action)
+    except (CompressionBusy, SessionNotOwned):
+        pass  # a turn, a close or another owner got there first: nothing to do this window
+    except Exception:
+        logger.warning("cache-expiry compaction failed sid=%s", sid, exc_info=True)
+    finally:
+        with _cache_expiry_lock:
+            _cache_expiry_in_flight.discard(sid)
+            waiting = _cache_expiry_after.pop(sid, [])
+        for then in waiting:
+            then()
+
+
+def _cache_expiry_tick() -> list[concurrent.futures.Future]:
+    """Queue one job per due session on the bounded pool (contextvars carried, so the profile scope
+    survives the hop); a sid already in flight is never claimed again. Returns the queued futures."""
+    futures = []
+    for sid, session, action in _cache_expiry_candidates():
+        with _cache_expiry_lock:
+            _cache_expiry_in_flight.add(sid)
+        futures.append(_cache_expiry_submit(_cache_expiry_job, sid, session, action))
+    return futures
+
+
+def _pending_release_closes() -> int:
+    """Sessions whose reaper close waits behind its release-time compaction (still in ``_sessions``)."""
+    with _cache_expiry_lock:
+        return len(_cache_expiry_releasing)
+
+
+def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=None):
+    """A reaper's release: when the cache edge is due at release (``claim_edge(releasing=True)`` ends the
+    budget now, so nothing is warmed after it), compact or offload on the bounded pool first and close
+    afterwards if the session is still reapable then and ``still_due()`` (the session cap: other closes
+    may have brought it under) still holds. Returns that job's future, or None when the caller closes
+    the session now as before. A ticker job already queued for *sid* is waited for, never pre-empted:
+    closing first would make it see ``_closing`` and drop the compaction or offload it claimed."""
+    warmer = getattr(session.get("agent"), "_prompt_cache_warmer", None)
+    if warmer is None or _session_uses_compute_host(session):
+        return None
+
+    def _closable(current: dict) -> bool:
+        with _cache_expiry_lock:
+            _cache_expiry_releasing.discard(sid)  # under _sessions_lock: no longer counted as pending
+        return _session_is_reapable(sid, current) and (still_due is None or still_due())
+
+    def _close() -> None:
+        if not _close_session_by_id(sid, end_reason=end_reason, predicate=_closable):
+            with _cache_expiry_lock:
+                _cache_expiry_releasing.discard(sid)
+
+    with _cache_expiry_lock:
+        if sid in _cache_expiry_releasing:  # a close already waits behind this sid's job
+            done: concurrent.futures.Future = concurrent.futures.Future()
+            done.set_result(None)
+            return done
+        if sid in _cache_expiry_in_flight:  # the ticker's job is queued or running: close after it
+            closed: concurrent.futures.Future = concurrent.futures.Future()
+
+            def _after_queued() -> None:
+                try:
+                    closed.set_result(_close())
+                except BaseException as exc:  # health: allow BLE001 -- handed to the future's owner
+                    closed.set_exception(exc)
+
+            _cache_expiry_releasing.add(sid)
+            _cache_expiry_after.setdefault(sid, []).append(_after_queued)
+            return closed
+    with _session_profile_runtime_scope(session):
+        action = warmer.claim_edge(releasing=True)
+    if action is None:
+        return None
+    with _cache_expiry_lock:
+        _cache_expiry_in_flight.add(sid)
+        _cache_expiry_releasing.add(sid)
+
+    def _job() -> None:
+        try:
+            _cache_expiry_job(sid, session, action)
+        finally:
+            _close()
+
+    return _cache_expiry_submit(_job)
+
+
+def _start_cache_expiry_compactor() -> None:
+    """Start the ticker once per process (stdio entry and WS sidecar both call this)."""
+    from agent.prompt_cache_lifecycle import CHECK_INTERVAL_SECONDS
+    global _cache_expiry_started
+    with _cache_expiry_lock:
+        if _cache_expiry_started:
+            return
+        _cache_expiry_started = True
+
+    def _loop() -> None:
+        while True:
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            try:
+                _cache_expiry_tick()
+            except Exception:
+                logger.debug("cache-expiry tick failed", exc_info=True)
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_loop, name="cache-expiry-compactor").start()
 
 
 def register(server) -> None:

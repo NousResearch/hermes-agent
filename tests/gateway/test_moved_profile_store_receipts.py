@@ -92,7 +92,7 @@ async def test_picker_offers_an_ended_chat_only_when_resume_would_take_it(tmp_pa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('damage', [
-    lambda receipt: receipt['policy'].update(model=''),
+    lambda receipt: receipt['policy'].update(model=42),
     lambda receipt: receipt.update(lineage=['not-the-root', receipt['entry']['session_id']]),
 ], ids=['policy', 'lineage'])
 async def test_picker_leaves_out_a_chat_whose_policy_or_lineage_resume_refuses(tmp_path, authority_for, damage):

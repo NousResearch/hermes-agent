@@ -354,9 +354,23 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             status_code=503,
             detail="Session store is not initialized. Start this profile's gateway to initialize it.")
 
+    def reader():
+        # The drift probe runs on the reader's own connection as it opens: one connection per browse.
+        context = ExitStack()
+        store = context.enter_context(open_persistence_reader(db_path, check_drift=True))
+        try:
+            store.ready()
+        except BaseException:
+            context.close()
+            raise
+        # The reader stays open while its handle lives; the handle's ``close`` releases it.
+        store._context = context
+        return store
+
     try:
-        admin = open_store_admin(db_path)
-        if admin.schema_drift_reason() is not None:
+        try:
+            return reader()
+        except DeclarativeDrift:
             # A missing declared table/column is upgrade drift, not corruption (#140315): catch
             # an unowned store up once under its runtime lock, refuse by name when a gateway
             # owns it. Never destructive: additive DDL only, no repair from browse.
@@ -365,13 +379,10 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             except DeclarativeDrift as drift:
                 _log.warning("session store at %s is behind SCHEMA_SQL: %s", db_path, drift)
                 raise HTTPException(status_code=503, detail=str(drift)) from drift
-            if admin.schema_drift_reason() is not None:
-                raise HTTPException(status_code=503, detail=_SCHEMA_UNAVAILABLE)
-        context = ExitStack()
-        store = context.enter_context(open_persistence_reader(db_path))
-        # The reader stays open while its handle lives; the handle's ``close`` releases it.
-        store._context = context
-        return store
+        try:
+            return reader()
+        except DeclarativeDrift as drift:
+            raise HTTPException(status_code=503, detail=_SCHEMA_UNAVAILABLE) from drift
     except StoreReplaced:
         raise
     except (PersistenceError, UnicodeDecodeError) as exc:

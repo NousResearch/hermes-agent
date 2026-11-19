@@ -20,6 +20,7 @@ __all__ = [
     "blueprint_catalog_entry",
     "blueprint_deeplink",
     "blueprint_form_schema",
+    "blueprint_prefill",
     "blueprint_slash_command",
     "fill_blueprint",
     "get_blueprint",
@@ -789,3 +790,13 @@ def fill_blueprint(
     if origin is not None:
         spec["origin"] = origin
     return spec
+
+
+def blueprint_prefill(blueprint: AutomationBlueprint) -> Optional[dict[str, Any]]:
+    """The create-job spec the blueprint fills with every slot at its default, or None when a
+    required slot has none. A form that edits a routine's own fields (name, instruction, schedule,
+    delivery) starts from this and creates through the ordinary job path, skills included."""
+    try:
+        return fill_blueprint(blueprint, {})
+    except BlueprintFillError:
+        return None

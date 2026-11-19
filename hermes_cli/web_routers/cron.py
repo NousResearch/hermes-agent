@@ -946,7 +946,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
     from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
     this runs off the event loop, inside the profile scope that picks the plugin manager."""
-    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
+    from cron.blueprint_catalog import blueprint_catalog_entry, blueprint_prefill, list_blueprints
 
     with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
         catalog = list_blueprints()
@@ -962,6 +962,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     entries = []
     for r in catalog:
         entry = blueprint_catalog_entry(r)
+        entry["prefill"] = blueprint_prefill(r)
         if deliver_options:
             for f in entry.get("fields", []):
                 if f.get("name") == "deliver":

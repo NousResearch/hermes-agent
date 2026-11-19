@@ -118,6 +118,102 @@ def reset_delay_from_message(message: str) -> Optional[float]:
     return None
 
 
+# A weekly plan wall names a wall-clock instant instead of a delay ("You've hit your weekly
+# limit · resets Nov 20, 3pm (Asia/Tokyo)"), so the relative grammars above cannot answer it.
+# Only these two absolute shapes are trusted, and only when a limit word sits just before the
+# verb: prose that merely mentions a reset must not turn into a multi-day wait.
+_MONTH_NUMBERS = {
+    name: number for number, name in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)
+}
+_LIMIT_CONTEXT_RE = re.compile(r"rate[\s_-]?limit|limit|quota|usage|window", re.IGNORECASE)
+_ABSOLUTE_RESET_RE = re.compile(
+    r"resets?\s+(?:at\s+)?(?:"
+    r"(?P<iso>\d{4}-\d{2}-\d{2})[T ](?P<iso_time>\d{2}:\d{2}(?::\d{2})?)"
+    r"(?P<iso_zone>Z|[+-]\d{2}:?\d{2})?"
+    r"|(?:(?P<mon>[a-z]{3})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm)?)"
+    r")(?:\s*\((?P<zone>[A-Za-z][A-Za-z0-9_+\-/]*)\))?",
+    re.IGNORECASE,
+)
+# A reset instant is evidence about a window, not a licence to park forever: beyond two weeks
+# the hint is more likely a misparse than a real plan boundary.
+_MAX_RESET_HORIZON_SECONDS = 14 * 86400.0
+
+
+def _resolve_message_zone(name: Optional[str]):
+    """``tzinfo`` for an IANA name (the host's zone when absent), or None when unknown."""
+    if not name:
+        return datetime.now().astimezone().tzinfo
+    from zoneinfo import ZoneInfo
+
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError subclasses KeyError
+        return None
+
+
+def _absolute_reset_instant(match: "re.Match[str]", now: float) -> Optional[float]:
+    """Epoch of one absolute ``resets <when>`` match, or None when it cannot be trusted."""
+    try:
+        if match.group("iso"):
+            instant = datetime.fromisoformat(f"{match.group('iso')}T{match.group('iso_time')}")
+            designator = match.group("iso_zone")
+            if designator:
+                tzinfo = (UTC if designator.upper() == "Z"
+                          else datetime.strptime(designator.replace(":", ""), "%z").tzinfo)
+            else:
+                tzinfo = _resolve_message_zone(match.group("zone"))
+            if tzinfo is None:
+                return None
+            instant = instant.replace(tzinfo=tzinfo)
+        else:
+            month = _MONTH_NUMBERS.get((match.group("mon") or "").lower()[:3])
+            if month is None:
+                return None
+            hour = int(match.group("hour"))
+            meridiem = (match.group("meridiem") or "").lower()
+            if meridiem:
+                if not 1 <= hour <= 12:
+                    return None
+                hour = (hour % 12) + (12 if meridiem == "pm" else 0)
+            elif hour > 23:
+                return None
+            tzinfo = _resolve_message_zone(match.group("zone"))
+            if tzinfo is None:  # unknown IANA name: the instant is unreadable, not a guess
+                return None
+            local_now = datetime.fromtimestamp(now, tz=tzinfo)
+            instant = datetime(local_now.year, month, int(match.group("day")), hour,
+                               int(match.group("minute") or 0), tzinfo=tzinfo)
+            if instant.timestamp() < now - 86400.0:  # a fresh year boundary, not last year
+                instant = instant.replace(year=instant.year + 1)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    epoch = instant.timestamp()
+    return epoch if now - 86400.0 < epoch <= now + _MAX_RESET_HORIZON_SECONDS else None
+
+
+def reset_instant_from_message(message: str, *, now: Optional[float] = None) -> Optional[float]:
+    """Epoch a provider's absolute ``resets <when>`` names, or None when the text carries none.
+
+    Distinct from :func:`reset_delay_from_message`: that one answers a *delay* for an in-turn
+    retry and stays untouched, while this answers the calendar boundary a long quota window
+    reopens at. ``now`` is injectable so callers can reason about a recorded run rather than
+    the wall clock.
+    """
+    if not message:
+        return None
+    reference = time.time() if now is None else float(now)
+    for match in _ABSOLUTE_RESET_RE.finditer(str(message)):
+        context = str(message)[max(0, match.start() - 90):match.start()]
+        if not _LIMIT_CONTEXT_RE.search(context):
+            continue
+        instant = _absolute_reset_instant(match, reference)
+        if instant is not None:
+            return instant
+    return None
+
+
 def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float = 120.0, jitter_ratio: float = 0.5) -> float:
     """min(base * 2^(attempt-1), max_delay) + uniform jitter in
     [0, jitter_ratio * delay]. ``attempt`` is 1-based."""

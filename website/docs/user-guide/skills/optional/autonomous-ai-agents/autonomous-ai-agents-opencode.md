@@ -151,9 +151,18 @@ terminal(command="opencode -s ses_abc123", workdir="~/project", background=true,
 | `--format json` | Machine-readable output/events |
 | `--file <path>` / `-f` | Attach file(s) to the message |
 | `--thinking` | Show model thinking blocks |
-| `--variant <level>` | Reasoning effort (high, max, minimal) |
 | `--title <name>` | Name the session |
-| `--attach <url>` | Connect to a running opencode server |
+
+### Version-Specific Flags
+
+OpenCode's `run` flags differ by version. Check `opencode --version` and `opencode run --help` before using version-specific flags.
+
+| OpenCode version tested | Reasoning variant | Existing server |
+|-------------------------|-------------------|-----------------|
+| 1.1.53 | `--variant <level>` | `--attach <url>` |
+| 2.0.32 and 2.3.0 | `--model 'provider/model#variant'` | `--server <url>` |
+
+For V2, replace the placeholders with a model and variant supported by the provider. The syntax being accepted does not guarantee that a model supports a particular variant.
 
 ## Procedure
 

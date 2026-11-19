@@ -345,3 +345,25 @@ def test_a_password_only_step_types_nothing(tmp_path):
     sup = _Supervisor([_PW])
     out = _fill(sup, tmp_path)
     assert out["success"] is True and sup.typed == []
+
+
+def test_card_values_are_never_sent_as_keystrokes(tmp_path):
+    """A card number and CVC are secrets like the password: the guarded JS write, never insert_text."""
+    from tools import browser_vault_tool
+
+    controls = [{"autocomplete": "cc-number", "formIndex": 0, "index": 0, "label": "", "name": "card", "type": "text"},
+                {"autocomplete": "cc-csc", "formIndex": 0, "index": 1, "label": "", "name": "cvc", "type": "text"}]
+    sup = _Supervisor(controls)
+    store = VaultStore(base_dir=tmp_path / "vault")
+    meta = store.add_item(kind="payment", label="Visa", origin="https://example.com",
+                          secret={"card_number": "4111111111111111", "exp_month": "7", "exp_year": "2029",
+                                  "cvc": "987"})
+    with patch("agent.vault_store.get_vault_store", return_value=store), \
+         patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+         patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+         patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+         patch.object(browser_vault_tool, "_confirm_payment_fill", return_value=True), \
+         patch.object(browser_vault_tool, "_FILL_VERIFY_STABLE_S", 0):
+        out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+    assert out["success"] is True and out["filled_fields"] == 2, out
+    assert sup.typed == []

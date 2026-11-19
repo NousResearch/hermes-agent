@@ -4,7 +4,7 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 # Models enabled in the Unitalk intranet catalogue (public, OpenAI /models shape).
-INTRANET_MODELS_URL = "https://unitalk-git-feat-intranet-llm-models-unitalkai.vercel.app/api/desktop/models"
+INTRANET_MODELS_URL = "https://unitalk.ai/api/desktop/models"
 
 
 class UnitalkProfile(ProviderProfile):

@@ -132,3 +132,31 @@ def test_offline_boot_selects_cpu_and_activation_does_not_probe(payload, monkeyp
     assert engine is not None and engine.backend == "cpu"
     assert binaries.resolve_backend() == "cpu"
     assert not log.exists()
+
+
+@pytest.mark.parametrize("failure", [
+    pytest.param(lambda: (_ for _ in ()).throw(OSError("confstr unavailable")), id="oserror"),
+    pytest.param(lambda: "musl 1.2", id="non-glibc"),
+    pytest.param(lambda: "", id="empty"),
+])
+def test_failed_libc_detection_stays_fail_closed_and_lets_auto_fall_through(payload, monkeypatch, failure):
+    root, log = payload
+    confstr = os.confstr
+    monkeypatch.setattr(os, "confstr", lambda key: failure() if key == "CS_GNU_LIBC_VERSION" else confstr(key))
+
+    assert pm.is_installed("llamacpp-cuda") is False
+    assert pm.installed_package("llamacpp-cuda") is None
+    reason = binaries.unavailable_reason("cuda")
+    assert reason is not None and "cannot determine host glibc version" in reason
+    assert binaries.resolve_backend("auto") == "cpu"
+    engine = binaries.installed_engine("auto")
+    assert engine is not None and engine.backend == "cpu"
+
+    with pytest.raises(binaries.BinaryResolutionError, match="cannot determine host glibc version"):
+        binaries.resolve_backend("cuda")
+    with pytest.raises(pm.InstallError, match="cannot determine host glibc version"):
+        pm.ensure("llamacpp-cuda")
+    package = pm.get_package("llamacpp-cuda")
+    entry = root / package.store_entry("123", "linux-x64")
+    assert "cannot determine host glibc version" in package.verify(entry, "linux-x64")
+    assert not log.exists()

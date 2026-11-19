@@ -115,7 +115,7 @@ class Package:
                 raise ValueError(f"unexpected libc version: {libc} {version}")
             return self.host_abi_reason(target, tuple(map(int, parts)))
         except (OSError, ValueError) as exc:
-            raise InstallError(self.name, f"cannot determine host glibc version: {exc}") from exc
+            return f"cannot determine host glibc version: {exc}"
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)

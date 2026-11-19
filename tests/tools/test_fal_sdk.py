@@ -2,9 +2,10 @@
 import json
 from types import SimpleNamespace
 
-import fal_client
 import httpx
 import pytest
+
+fal_client = pytest.importorskip("fal_client", reason="fal-client (fal extra) required")
 
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,

@@ -397,8 +397,11 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     if children_cost_total <= 0.0:
         return
     try:
-        current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
-        parent_agent.session_estimated_cost_usd = current + children_cost_total
+        from agent.prompt_cache_lifecycle import session_totals_lock
+
+        with session_totals_lock(parent_agent):  # a keep-alive's reply adds to the same total under it
+            current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            parent_agent.session_estimated_cost_usd = current + children_cost_total
         if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
             parent_agent.session_cost_source = "subagent"
         if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:

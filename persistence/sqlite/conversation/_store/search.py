@@ -8,16 +8,18 @@ import time
 from dataclasses import dataclass
 from typing import Any, Collection, Optional
 from persistence.sqlite._state.common import fts_rebuild_admission
+from persistence.sqlite._state.errors import _DISK_IO_ERROR_MARKER
+from persistence.sqlite._state.health import note_storage_error
 from sqlite_support import routed_sessions_setting
-from storage_errors import is_malformed_db_error
+from storage_errors import is_fts_scoped_corruption_error, is_malformed_db_error
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite._schema import _enter_fts_fail_open, _present_fts_tables
+from persistence.sqlite._schema import _enter_fts_fail_open, _mark_fts_detached, _present_fts_tables
 from persistence.sqlite._schema_ddl import (
     FTS_STALE_KEY, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_EXCLUDED_SOURCES, fts_trigram_session_sql,
 )
 from persistence.sqlite.conversation._store.messages import _decode_content, _row_to_message_dict, get_messages_around
 from persistence.sqlite.conversation._store.sessions import list_sessions_rich
-from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, escape_like as _escape_like
+from persistence.sqlite.conversation._store.sql_common import MAX_FTS5_QUERY_CHARS, _in_one_read, escape_like as _escape_like
 
 
 logger = logging.getLogger("hermes_state")
@@ -85,6 +87,7 @@ _LIKE_COALESCED_COLUMN_SQL = (
 )
 
 
+_FTS_RANK_ORDER_BY = "ORDER BY rank"
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 
 
@@ -448,22 +451,103 @@ def _fts_match_sql(table: str, match_query: str, order_by_sql: str, *, limit: in
     return sql, params
 
 
+class _RankProbeIoerr(sqlite3.OperationalError):
+    """A disk I/O error from the rank probe, carrying the corruption error it was diagnosing:
+    ``_read_retrying_ioerr`` replays it as an IOERR, and ``_fts_match_read`` fails closed with the
+    carried error once the retry budget is spent."""
+
+    def __init__(self, ioerr: sqlite3.OperationalError, unattributed: sqlite3.DatabaseError):
+        super().__init__(str(ioerr))
+        self.unattributed = unattributed
+
+
+def _attribute_ranked_corruption(
+    conn: sqlite3.Connection, table: str, match_query: str, order_by_sql: str, exc: sqlite3.DatabaseError,
+) -> sqlite3.DatabaseError:
+    """The error to raise for a failed MATCH read: FTS5 runs ``ORDER BY rank`` in a nested sorter
+    statement whose error SQLite masks to the primary code, so index damage bm25 reports as
+    ``SQLITE_CORRUPT_VTAB`` arrives as bare ``SQLITE_CORRUPT`` and would latch the whole store.
+    For that case only, re-ask the index on the same connection without the sort, which keeps the
+    extended code. A disk I/O error from that probe raises ``_RankProbeIoerr`` for a replay; any other
+    outcome keeps *exc*, so damage the index does not reproduce fails closed."""
+    if order_by_sql != _FTS_RANK_ORDER_BY or getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_CORRUPT:
+        return exc
+    try:
+        # bm25() is refused inside an aggregate, so stream the rows.
+        for _ in conn.execute(f"SELECT bm25({table}) FROM {table} WHERE {table} MATCH ?", (match_query,)):
+            pass
+    except sqlite3.OperationalError as probe_exc:
+        if _DISK_IO_ERROR_MARKER in str(probe_exc).lower():
+            raise _RankProbeIoerr(probe_exc, exc) from probe_exc  # _read_retrying_ioerr replays the read
+        logger.debug("%s rank-corruption probe could not run; keeping the original error", table, exc_info=True)
+    except sqlite3.DatabaseError as probe_exc:
+        if is_fts_scoped_corruption_error(probe_exc):
+            logger.warning("%s ranked MATCH reported bare SQLITE_CORRUPT; the index alone reports %s, "
+                           "so this is index damage, not a corrupt state.db", table, probe_exc)
+            return probe_exc
+        logger.debug("%s rank-corruption probe failed another way; keeping the original error", table, exc_info=True)
+    return exc
+
+
+def _fts_match_read(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, **kwargs) -> list[dict[str, Any]]:
+    """One MATCH read whose corruption error is attributed inside ``_read_retrying_ioerr``'s callback,
+    before the storage-health latch sees it (see ``_attribute_ranked_corruption``). A probe IOERR that
+    outlasts the retry budget is published and raised here as the original, unattributed error."""
+    sql, params = _fts_match_sql(table, match_query, order_by_sql, **kwargs)
+
+    def read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        try:
+            return conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError as exc:
+            attributed = _attribute_ranked_corruption(conn, table, match_query, order_by_sql, exc)
+            if attributed is exc:
+                raise
+            raise attributed from exc
+
+    if order_by_sql != _FTS_RANK_ORDER_BY:
+        return [dict(row) for row in holder._read_retrying_ioerr(read)]
+    try:
+        # One snapshot for the failed read and its probe: a peer rebuild in between must not hide the damage.
+        return [dict(row) for row in _in_one_read(holder, read)]
+    except _RankProbeIoerr as exc:
+        # The probe's IOERR outlasted the retry budget: the corruption it was diagnosing stays unattributed,
+        # so it fails closed as the read reported it.
+        note_storage_error(holder.db_path, exc.unattributed)
+        raise exc.unattributed from exc
+
+
+def _detach_fts_for_search(holder: StoreHolder, exc: sqlite3.DatabaseError) -> bool:
+    """``_enter_fts_fail_open`` for a search read. A read-only handle cannot write the stale
+    breadcrumb: it stops using the indexes for its own lifetime only. Nothing is persisted, so the
+    damage stays on disk until a writable handle reaches it (a search or a write that hits it detaches
+    the index for repair) or ``optimize-storage`` rebuilds."""
+    if not holder.read_only:
+        return _enter_fts_fail_open(holder, exc)
+    if not holder._fts_enabled or not is_fts_scoped_corruption_error(exc):
+        return False
+    logger.warning("FTS search on a read-only handle hit index damage (%s); this handle answers from canonical "
+                   "rows. A writable handle that hits it detaches the index for repair, or run `hermes sessions optimize-storage`.",
+                   exc)
+    _mark_fts_detached(holder)
+    return True
+
+
 def _match_rows(holder: StoreHolder, table: str, match_query: str, order_by_sql: str, *, fail_open: Optional[str] = None,
                 operational_debug: Optional[str] = None, **kwargs) -> Optional[list[dict[str, Any]]]:
     """Run one MATCH against *table*; ``None`` when the query cannot execute (tokenizer /
-    syntax) so the caller falls back. *fail_open* names the index for the
-    substring-capable routes: a corruption-class ``DatabaseError`` there detaches the
-    derived indexes (``_enter_fts_fail_open``) and answers from canonical rows — a live
+    syntax, or any other ``OperationalError``) and, with *fail_open*, after a corruption-class
+    ``DatabaseError`` detached the derived indexes; the caller decides the fallback. A live
     search never runs the unbounded rebuild. Other ``DatabaseError``s propagate."""
-    sql, params = _fts_match_sql(table, match_query, order_by_sql, **kwargs)
     try:
-        return [dict(row) for row in holder._read_all(sql, params)]
+        return _fts_match_read(holder, table, match_query, order_by_sql, **kwargs)
     except sqlite3.OperationalError:
         if operational_debug:
             logger.debug(operational_debug, exc_info=True)
         return None
     except sqlite3.DatabaseError as exc:
-        if fail_open is None or not _enter_fts_fail_open(holder, exc):
+        if fail_open is None or not _detach_fts_for_search(holder, exc):
             raise
         logger.warning(
             "%s FTS search hit a corruption error (%s); detached FTS and falling back to canonical LIKE.",
@@ -537,8 +621,7 @@ def _refresh_fts_stale_state(holder: StoreHolder) -> None:
     except sqlite3.Error:
         return
     if stale is not None:
-        holder._fts_stale = True
-        holder._fts_enabled = holder._trigram_available = False
+        _mark_fts_detached(holder)
 
 
 def _finalize_search_matches(
@@ -595,6 +678,18 @@ def search_messages(
                         query[: 200])
 
 
+def _search_messages_stale(holder: StoreHolder, query: str, limit: int, offset: int, sort: Optional[str],
+                           filters: dict[str, Any], result_fields) -> list[dict[str, Any]]:
+    """Search canonical rows while FTS is detached. Latin retries use this path on the
+    triggering and later requests: exact terms, then any term on a miss. A triggering
+    CJK trigram failure uses the separate any-term fallback in _search_cjk."""
+    matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
+    relaxed = None if matches or _contains_cjk(query) else _or_relaxed_query(query)
+    if relaxed is not None:
+        matches = _search_messages_like_fallback(holder, relaxed, limit=limit, offset=offset, sort=sort, **filters)
+    return _finalize_search_matches(holder, matches, result_fields=result_fields)
+
+
 def _search_messages_impl(
     holder: StoreHolder, query: str, source_filter: list[str] | None = None, exclude_sources: list[str] | None = None,
     role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
@@ -624,12 +719,11 @@ def _search_messages_impl(
         return _finalize_search_matches(holder, matches, result_fields=result_fields)
     _refresh_fts_stale_state(holder)
     if holder._fts_stale:
-        matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
-        return _finalize_search_matches(holder, matches, result_fields=result_fields)
+        return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
     if not holder._fts_enabled:
         return []
 
-    order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, "ORDER BY rank")
+    order_by_sql = _FTS_ORDER_BY.get(sort.strip().lower() if isinstance(sort, str) else None, _FTS_RANK_ORDER_BY)
     route = dict(order_by_sql=order_by_sql, limit=limit, offset=offset, **filters)
     # Tool rows and FTS_TRIGRAM_EXCLUDED_SOURCES sessions are excluded from the trigram
     # index (see FTS_TRIGRAM_SQL); an explicit filter for them must scan the base table.
@@ -639,9 +733,8 @@ def _search_messages_impl(
     if is_cjk:
         matches = _search_cjk(holder, query, wants_unindexed_rows, route)
     else:
-        sql, params = _fts_match_sql("messages_fts", query, **route)
         try:
-            matches = [dict(row) for row in holder._read_all(sql, params)]
+            matches = _fts_match_read(holder, "messages_fts", query, **route)
         except sqlite3.OperationalError:
             return []  # FTS5 syntax error despite sanitization
         except sqlite3.DatabaseError as exc:
@@ -651,9 +744,9 @@ def _search_messages_impl(
             # MATCH read, the same class the write path handles (#66296). OperationalError (query
             # syntax) is a subclass caught above; this arm is the corruption parent. The existing
             # stale-open/repair paths retain rebuild ownership.
-            if not _enter_fts_fail_open(holder, exc):
+            if not _detach_fts_for_search(holder, exc):
                 raise
-            matches = _search_messages_like_fallback(holder, query, limit=limit, offset=offset, sort=sort, **filters)
+            return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
 
     # Deferred-rebuild supplement: while the backfill is pending the FTS indexes miss
     # the (progress, high_water] gap; top up with a bounded LIKE scan so old messages
@@ -673,7 +766,7 @@ def _search_messages_impl(
     if not matches and not is_cjk and not (bool(role_filter) and "tool" in role_filter):
         fb_query = _quote_fts_tokens(query.strip('"').strip())
         if holder._trigram_available and _trigram_eligible_tokens(query):
-            matches = _match_rows(holder, "messages_fts_trigram", fb_query, **route) or matches
+            matches = _match_rows(holder, "messages_fts_trigram", fb_query, fail_open="Trigram", **route) or matches
 
     # OR-relaxed retry: the implicit AND between terms means a paraphrased multi-word query
     # misses a stored sentence that lacks even ONE word ("when does Sarah like her standup
@@ -689,6 +782,9 @@ def _search_messages_impl(
             matches = _match_rows(holder, "messages_fts", relaxed, fail_open="OR-relaxed",
                                        operational_debug="OR-relaxed FTS retry failed; keeping empty result",
                                        **route) or matches
+    if not matches and holder._fts_stale:
+        # A retry detached the indexes: answer as every later request on this store will.
+        return _search_messages_stale(holder, query, limit, offset, sort, filters, result_fields)
     return _finalize_search_matches(holder, matches, result_fields=result_fields)
 
 

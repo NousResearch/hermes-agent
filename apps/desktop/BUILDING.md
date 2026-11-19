@@ -68,6 +68,15 @@ It refreshes digests after child signatures and before the outer app signature.
 Unsigned macOS builds refresh them at the end of `afterPack`.
 Do not refresh facts in `afterSign`: that changes resources covered by the signature.
 
+electron-builder copies the payload with builder-util, whose `walk()` drops
+`.gitkeep` and `.DS_Store` files and whose `copyDir()` never creates empty
+directories. The resource copy, the AppImage stage and the MSIX file map all
+use them, and tool digests cover those files. `run-electron-builder.mjs`
+therefore starts the builder with `scripts/patch-electron-builder-copy.mjs`,
+which removes both omissions in memory. Before relocation, framework repair
+and signing change anything, `afterPack` fails the pack unless the packaged
+payload has the prepared payload's entries, types, file sizes and link targets.
+
 ## Local test build
 
 To build the commit you have checked out, without a tag and without pushing:

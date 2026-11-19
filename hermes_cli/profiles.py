@@ -25,6 +25,8 @@ from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry
 from hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
+from hermes_cli.profile_mountpoints import (
+    _non_exportable_entries, _read_mount_points as _read_child_mount_points)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -110,34 +112,15 @@ _PLACEHOLDER_ENV = (
 )
 
 
-def _non_exportable_entries(directory: str, contents: list) -> set:
-    """Entries under *directory* that must never be copied out of a profile: bytecode caches,
-    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
-    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
-    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
-    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
-    ignored: set = set()
-    for entry in contents:
-        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
-            ignored.add(entry)
-            continue
-        try:
-            mode = os.lstat(os.path.join(directory, entry)).st_mode
-        except OSError:
-            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
-            continue
-        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
-            ignored.add(entry)
-    return ignored
-
-
 def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
-    only when the source is the default profile (see the two exclude sets above)."""
+    only when the source is the default profile (see the two exclude sets above). The child
+    mount-point table is read once per clone, not per directory."""
     source_resolved = source_dir.resolve()
     root_exclude = set(_CLONE_ALL_HISTORY_EXCLUDE_ROOT)
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+    mount_points = _read_child_mount_points()
 
     def _ignore(directory: str, names: list[str]) -> set:
         try:
@@ -146,7 +129,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        ignored = _non_exportable_entries(directory, names)
+        ignored = _non_exportable_entries(directory, names, mount_points)
         if at_root:
             ignored.update(root_exclude & set(names))
             ignored.update(n for n in names if _GATEWAY_CONNECTION_STORE_RE.fullmatch(n.casefold()))

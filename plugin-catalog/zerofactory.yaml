@@ -1,7 +1,7 @@
 name: zerofactory
-version: "1.4.0"
+version: "1.4.1"
 repo: https://github.com/hotcode-dev/zerofactory
-sha: e4916d23a642df995b303c49dcc5680f40ae4f62
+sha: f50356eb5098006b3e89f2a7a3d91fe7369237f0
 description: "24/7 AI multi-agent software engineering factory and durable SQLite Kanban board. Flexible triage with Grill Me clarification and EGM sequential spec audit, isolated Git worktrees, deterministic precommit pipeline, thematic continuous review, autonomous self-healing recovery, and Mem0 vector memory. Disclosure — once you turn on auto_start_dispatcher or start the dispatcher from the dashboard it runs background worker subprocesses using Hermes agent profiles (zf-orchestrator, zf-goldfish, zf-builder, zf-reviewer) inside dedicated Git worktrees that push branches and open pull requests on boards' repos; workers use the profiles' normal approval policy unless you enable allow_unattended_approvals (which passes --yolo and --accept-hooks); mounts a web dashboard at /zerofactory with an embedded SQLite database; workers run each project's .zerofactory/precommit.sh checks; optional Mem0/Qdrant repository memory (off by default) sends memory text to the LLM endpoint you configure."
 maintainer: hotcode-dev
 tier: community

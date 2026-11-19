@@ -5,7 +5,7 @@ description: >-
   Verify email addresses, follow verification jobs, read results, and check
   FairValid workspace credits. Discover business leads with FairMatch, quote
   selections, and unlock verified work emails after explicit credit-limit approval.
-source: https://github.com/moonlitnayeem/fairvalid-ai/tree/f5f04f4354a5c2fe075728f0d664b90d8848640d
+source: https://github.com/moonlitnayeem/fairvalid-ai/tree/40cac2883dc74f50f7bc8562b380782c4c6a4379
 
 transport:
   type: http
@@ -19,6 +19,7 @@ tools:
     - fairvalid_get_balance
     - fairvalid_get_job
     - fairvalid_get_results
+    - fairvalid_verify_email
     - fairvalid_get_lead_filters
     - fairvalid_search_leads
     - fairvalid_quote_leads
@@ -34,19 +35,17 @@ suggest:
     - fairvalid.com
 
 post_install: |
-  Complete OAuth on https://fairvalid.com and select an existing Live API key
-  for the intended workspace. Its scopes and lifetime cap apply. Never paste
-  credentials or authorization codes into chat.
-  The default selection exposes three verification reads and all six FairMatch
-  tools, including unlock. This is not a read-only tool set: search performs a
-  search, and unlock can acquire leads and spend credits. Keep normal approval
-  prompts. Tool selection does not grant scopes or authorize a purchase.
-  Use `hermes mcp configure fairvalid` to review the nine defaults or enable
-  email submission and job cancellation when those actions are wanted.
-  FairMatch reads/search/quotes require leads:read; unlock requires leads:acquire.
-  Existing keys and OAuth grants do not gain permissions from this catalog update.
-  Deliberately reconnect through native OAuth with a suitably scoped key when
-  FairMatch is wanted; review the workspace, scopes and lifetime credit cap.
+  Connect the server and sign in at https://fairvalid.com. Review the workspace
+  and permissions, then choose Allow connection. FairValid prepares access to
+  the existing workspace balance automatically and uses available free credits first.
+  Never paste credentials or authorization codes into chat.
+  The ten default tools include one-address verification, the three verification
+  reads and all six FairMatch tools. Submit a single address only at the user's
+  request. Searching and quoting leads does not approve an unlock. Keep normal
+  per-use tool approval prompts. Bulk submission and cancellation remain opt-in.
+  Use `hermes mcp configure fairvalid` to review the tools for this client.
+  Existing grants keep their permissions. Reconnect and approve additional
+  permissions when needed for FairMatch or verification.
   Discover filters, search, then quote 1-50 distinct returned selection IDs.
   A quote reserves no credits. Obtain explicit approval of that exact selection
   and a numerical maximum credit spend before fairvalid_unlock_leads. Pass
@@ -66,8 +65,8 @@ post_install: |
   unresolved catch-all, technical failures, and unprocessed items have no net
   verification charge. Retry uncertain submissions only with the same selected
   API-key identity, idempotency key, and unchanged input.
-  OAuth uses Live keys. Sandbox checks need a separate direct Test-key connection
+  OAuth connects to the live workspace. Sandbox checks need a separate direct Test-key connection
   and documented synthetic fixtures. Never unlock real leads as a connection test.
-  FairMatch contracts and fixtures: https://github.com/moonlitnayeem/fairvalid-ai/blob/f5f04f4354a5c2fe075728f0d664b90d8848640d/docs/fairmatch.md
+  FairMatch contracts and fixtures: https://github.com/moonlitnayeem/fairvalid-ai/blob/40cac2883dc74f50f7bc8562b380782c4c6a4379/docs/fairmatch.md
   Documentation: https://fairvalid.com/help/mcp
   Support: nayeem@fairvalid.com

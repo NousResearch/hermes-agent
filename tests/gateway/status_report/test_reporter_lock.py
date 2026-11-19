@@ -349,6 +349,38 @@ async def test_a_sender_cancelled_while_it_confirms_its_lock_leaves_no_lock_held
                            what="a cancelled sender to give back the lock its confirmation took again")
 
 
+async def test_a_goodbye_still_taking_the_lock_when_the_watcher_stops_neither_takes_it_nor_is_sent(clock, monkeypatch):
+    """The watcher's cleanup gives the lock up. A goodbye still confirming it then must not take it
+    back and report for a gateway that has stopped, beside whichever gateway took over."""
+    confirming, release, taken = threading.Event(), threading.Event(), []
+
+    def take_the_lock(scope, identity):
+        if taken:  # the goodbye's confirmation: the first one was the beat's
+            confirming.set()
+            release.wait(timeout=5)
+        result = gateway_status.acquire_scoped_lock(scope, identity)
+        taken.append(result[0])
+        return result
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    receiver = Receiver()
+    reporter = make_reporter(receiver)
+    watcher = asyncio.create_task(reporter.run(lambda: True, tick=0.01))
+    await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="the first beat")
+    reporter.goodbye()
+    await async_wait_until(confirming.is_set, timeout=5, what="the goodbye confirming the lock")
+
+    watcher.cancel()
+    await asyncio.wait({watcher}, timeout=5)
+    release.set()
+    await async_wait_until(lambda: len(taken) == 2, timeout=5, what="the goodbye's confirmation")
+    await settle()
+
+    assert receiver.kinds == ["beat"], "a goodbye went out after the watcher stopped"
+    await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
+                           what="the lock to be free after the watcher stopped")
+
+
 async def test_a_goodbye_cancelled_while_it_confirms_the_lock_leaves_the_sender_holding_it(clock, monkeypatch):
     """The goodbye confirms the lock too. Cancelled there (the loop closing under it), it must not
     give back a lock the watcher still reports under."""

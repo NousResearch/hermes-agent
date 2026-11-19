@@ -101,6 +101,8 @@ class StatusReporter:
                 await asyncio.sleep(tick)
         finally:
             self._stopped = True
+            for task in list(self._goodbyes):  # a goodbye outliving the watcher would report for it
+                task.cancel()
             if self._is_sender:
                 self._is_sender = False
                 release_scoped_lock(_LOCK_SCOPE, self._target.url)

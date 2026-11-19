@@ -626,6 +626,44 @@ class TestRunEvents:
         assert event["preview"].endswith("...")
 
     @pytest.mark.asyncio
+    async def test_session_authority_tool_completed_carries_result_preview(self, adapter, monkeypatch):
+        """Regression for #156792: the session-authority run path must forward the
+        tool result to the run stream, so a client following /v1/runs sees the
+        result preview instead of an empty string."""
+        from contextlib import contextmanager
+
+            from gateway import session_api_turn as session_turn
+        from gateway.platforms import api_server as api_server_mod
+        from gateway.platforms import api_server_runs as api_runs
+        from gateway.platforms.api_server_runs import _RunLaunch
+
+            run_id = "run_tool_preview"
+            adapter._run_streams[run_id] = _RunStream()
+            launch = _RunLaunch(
+                        owner=adapter, run_id=run_id, queue=adapter._run_streams[run_id],
+                        session_id="sess", gateway_session_key=None, declared_selected=False,
+                        user_message="hello", conversation_history=[], session_history_delivery=False,
+                        agent_kwargs={}, request_profile=None, admission=object(),
+            )
+
+            async def fake_observe_turn(admitted, **kwargs):
+                        kwargs["tool_complete_callback"]("call-1", "terminal", {"path": "todo.md"}, "todo list written")
+                        return {"final_response": "done"}, {}
+
+            @contextmanager
+            def fake_observe_controls(admitted, sink):
+                        yield
+
+            monkeypatch.setattr(session_turn, "observe_api_turn", fake_observe_turn)
+                    monkeypatch.setattr(session_turn, "observe_api_controls", fake_observe_controls)
+            await api_runs._execute_run(adapter, launch, _api_server=api_server_mod)
+            await asyncio.sleep(0)
+            events = [event for _, event in adapter._run_streams[run_id].backlog if event is not None]
+            completed = [e for e in events if e.get("event") == "tool.completed"]
+            assert completed, events
+            assert "todo list written" in completed[-1]["preview"]
+    
+        @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)

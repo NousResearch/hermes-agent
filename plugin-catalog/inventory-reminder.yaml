@@ -1,6 +1,6 @@
 name: inventory-reminder
 repo: https://github.com/ether-btc/inventory-reminder
-sha: 11fa2d37c4857cbd8c1d2d40912274e90fcb21c1
+sha: 3a3b60521a86fce0a257ddb51807c2603ae8b611
 subdir: ""
 description: >-
   Live, evidence-backed inventory of the host an agent is running on: repos (cloned vs
@@ -10,8 +10,9 @@ description: >-
   section with a ready detail line, and inventory_summary() returns a one-line digest for
   session bootstrap. Both read a cached digest file ($INVENTORY_JSON, else
   ~/.hermes/inventory.json); no live rescan per turn, no network, no writes. Credential
-  handling is names-only: API-key variables are reported by NAME with a SET/UNSET flag, and
-  their values are never read, stored or logged. Disclosure — the digest describes the host
+  handling is references-only: the credential env-var names that config.yaml references are
+  reported by name, and the credential file is never opened — no value is read, stored or
+  logged. Disclosure — the digest describes the host
   (repo names, skill names, CLI paths, model names, provider and profile names, cron job
   names, service names) and that text is returned to the model.
 maintainer: ether-btc

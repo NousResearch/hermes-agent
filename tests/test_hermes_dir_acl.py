@@ -345,3 +345,24 @@ def test_icacls_tree_fallback_walks_the_tree_once(tmp_path, monkeypatch):
 
 def _no_pywin32(*_a, **_k):
     raise ImportError("pywin32 missing")
+
+
+def test_repair_user_dir_grants_an_existing_dir_once_and_never_creates(tmp_path, monkeypatch):
+    """make_user_dir's existing-leaf repair without the mkdir (a named profile home a delete may
+    have just removed): granted once per directory object, a missing path stays missing."""
+    granted = []
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **k: granted.append((p, k)) or True)
+    monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+    left = tmp_path / "home"
+    left.mkdir()
+    hermes_dir_acl.repair_user_dir(left)
+    hermes_dir_acl.repair_user_dir(left)
+    assert granted == [(left, {"elevated": True, "repair_children": True})]  # as make_user_dir's repair
+
+    left.rmdir()
+    hermes_dir_acl.repair_user_dir(left)
+    assert not left.exists() and len(granted) == 1
+    left.mkdir()
+    hermes_dir_acl.repair_user_dir(left, elevated=False)
+    assert len(granted) == 1

@@ -393,3 +393,60 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
 
         nested = profile_env / ".hermes" / "x" / "y"
         assert mkdir_under_hermes_home(nested) == nested and nested.is_dir()
+
+
+class TestMkdirBoundaryElevatedGrantSelection:
+    """Which dirs an elevated Windows process would grant through ``mkdir_under_hermes_home``: the same
+    as the ``parents=True`` call it replaced (fresh dirs, an existing leaf once per object, the home
+    when it is the target) and never an existing ancestor merely on the way to the leaf. Elevation is
+    the host fact and the grant a recorder, as in tests/test_hermes_dir_acl.py; no ACL is written."""
+
+    @pytest.fixture()
+    def granted(self, monkeypatch):
+        import hermes_dir_acl
+
+        calls = []
+        monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
+        monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+        monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: calls.append(Path(p)) or True)
+        return calls
+
+    @staticmethod
+    def _forget_creation(granted):
+        """Drop what creating the fixture profile granted (and memoized), as a later process sees it."""
+        import hermes_dir_acl
+
+        granted.clear()
+        hermes_dir_acl._granted.clear()
+
+    def test_the_home_as_target_is_repaired_once_and_never_created(self, profile_env, granted, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+        assert mkdir_under_hermes_home(home) == home and mkdir_under_hermes_home(home) == home
+        assert granted == [home]
+
+        fired = TestMkdirBoundaryNeverRecreatesNamedHome._after_liveness_check(monkeypatch, lambda: _delete("worker"))
+        mkdir_under_hermes_home(home)  # removed after the check: the repair sees nothing to grant
+        assert fired and not home.exists() and granted == [home]
+
+    def test_existing_ancestors_are_not_granted_on_the_way_to_the_leaf(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        (home / "cache" / "media").mkdir(parents=True)
+        self._forget_creation(granted)
+
+        mkdir_under_hermes_home(home / "cache" / "media" / "new" / "leaf")
+        assert granted == [home / "cache" / "media" / "new", home / "cache" / "media" / "new" / "leaf"]
+        mkdir_under_hermes_home(home / "cache" / "media")
+        mkdir_under_hermes_home(home / "cache" / "media")
+        assert granted[2:] == [home / "cache" / "media"]  # an existing leaf: repaired once per object
+
+    def test_default_home_grant_selection_is_unchanged(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        root = profile_env / ".hermes"
+        mkdir_under_hermes_home(root / "x" / "y")
+        assert granted == [root / "x", root / "x" / "y"]

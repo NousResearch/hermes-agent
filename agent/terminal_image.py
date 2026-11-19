@@ -155,10 +155,18 @@ def cell_box(image) -> tuple[int, int]:
 
 
 def _kitty_apc(ctrl: str, data: str) -> str:
-    """kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces (``m=1`` = more chunks follow)."""
+    """kitty APC escape for *data*, chunked into ≤4096-byte ``m`` pieces (``m=1`` = more chunks follow).
+
+    Later chunks carry only ``m`` and the ``q`` key: unquieted, Zellij answers a later chunk of a
+    transmit it rejected with ``EINVAL``, which lands in the prompt as typed text.
+    """
     pieces = [data[i : i + 4096] for i in range(0, len(data), 4096)] or [""]
     last = len(pieces) - 1
-    return "".join(f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)};{piece}\x1b\\" for i, piece in enumerate(pieces))
+    quiet = "".join(f",{kv}" for kv in ctrl.split(",") if kv.startswith("q="))
+    return "".join(
+        f"\x1b_G{ctrl + ',' if i == 0 else ''}m={int(i != last)}{quiet if i else ''};{piece}\x1b\\"
+        for i, piece in enumerate(pieces)
+    )
 
 
 def encode_kitty(image) -> str:

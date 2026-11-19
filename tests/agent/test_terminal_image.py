@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 
 import pytest
 
@@ -93,6 +95,18 @@ def test_zellij_auto_uses_half_blocks_whatever_terminal_hosts_it(monkeypatch, ho
     assert resolve_inline_mode("auto") == "unicode"  # TUI
     assert resolve_inline_mode("kitty", overlays=True) == "kitty"
     assert resolve_inline_mode("iterm", overlays=True) == "iterm"
+
+
+def test_quiet_kitty_transmit_mutes_every_chunk():
+    # Zellij answers a later chunk of a rejected transmit with "EINVAL: dimensions missing", which
+    # lands in the prompt unless that chunk carries q=2 too; kitty's spec allows only m= and q= there.
+    noise = PIL.frombytes("RGB", (64, 64), random.Random(0).randbytes(64 * 64 * 3))
+    seq = terminal_image.encode_kitty_virtual(noise, image_id=0x8001, cols=8, rows=4)
+    controls = [dict(kv.split("=", 1) for kv in c.split(",")) for c in re.findall(r"\x1b_G([^;]*);", seq)]
+    assert len(controls) > 2
+    assert {"a": "T", "U": "1", "q": "2"}.items() <= controls[0].items()
+    assert all(c == {"m": "1", "q": "2"} for c in controls[1:-1])
+    assert controls[-1] == {"m": "0", "q": "2"}
 
 
 def test_wezterm_is_not_placeholder_capable(monkeypatch):

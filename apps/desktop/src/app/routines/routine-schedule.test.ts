@@ -9,6 +9,7 @@ import {
   describeSchedule,
   machineZoneNote,
   pickForSchedule,
+  runDay,
   type SchedulePick
 } from './routine-schedule'
 import { routinesCopy } from './routines-copy'
@@ -105,6 +106,16 @@ describe('the plain-words read-back', () => {
 
   it('leaves Custom words unread rather than guessing', () => {
     expect(describePick(pick({ custom: 'every 2h', frequency: 'custom' }), words)).toBeNull()
+  })
+})
+
+describe('the day a run happened', () => {
+  it('is today, yesterday, or its date (with the year once it is not this year)', () => {
+    expect(runDay(new Date(2026, 10, 12, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 12', kind: 'today' })
+    expect(runDay(new Date(2026, 10, 11, 23).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 11', kind: 'yesterday' })
+    expect(runDay(new Date(2026, 10, 3, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Nov 3', kind: 'date' })
+    expect(runDay(new Date(2025, 11, 30, 7).getTime(), 'en-US', NOW)).toEqual({ date: 'Dec 30, 2025', kind: 'date' })
+    expect(runDay('not a date', 'en-US', NOW)).toBeNull()
   })
 })
 

@@ -9,7 +9,7 @@ import type { AutomationBlueprint, CronJob, ProfileInfo } from '@/hermes'
 import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
-import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
+import { $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { $interfaceMode } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { $profiles } from '@/store/profile'
@@ -17,26 +17,20 @@ import { $shellChoice } from '@/store/shell-variant'
 
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 
-import { AgentRoutines } from './agent-routines'
+import { $heldRoutine } from './routine-held-delete'
+import { RUNS_BATCH } from './routine-runs'
 import { routinesByAgent } from './routines-by-agent'
 import { routinesCopy } from './routines-copy'
 import { RoutinesPage } from './routines-page'
-import {
-  $routineOverviewQuery,
-  $routineRename,
-  $routineSelection,
-  closeRoutineEditor,
-  selectRoutine
-} from './routines-store'
+import { $routineSelection, $routineSheet, closeRoutineSheet, openRoutineSheet, selectRoutine } from './routines-store'
 
 const api = vi.hoisted(() => ({
   createCronJob: vi.fn(),
-  getAgentRoutines: vi.fn(),
+  deleteCronJob: vi.fn(),
   getAutomationBlueprints: vi.fn(),
   getCronJobRuns: vi.fn(),
   getCronJobs: vi.fn(),
   getOwnerCronDeliveryTargets: vi.fn(),
-  instantiateAutomationBlueprint: vi.fn(),
   pauseCronJob: vi.fn(),
   resumeCronJob: vi.fn(),
   triggerCronJob: vi.fn(),
@@ -44,10 +38,6 @@ const api = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hermes', async importOriginal => ({ ...(await importOriginal<typeof HermesApi>()), ...api }))
-vi.mock('../agent-settings/data', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  getAgentRoutines: () => api.getAgentRoutines()
-}))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/lib/model-options', () => ({ requestModelOptions: vi.fn(async () => ({ providers: [] })) }))
 
@@ -65,11 +55,14 @@ const brief = {
   state: 'scheduled'
 } as CronJob
 
+const review = { ...brief, id: 'job-review', name: 'Weekly review' } as CronJob
+
 const failing = {
   ...brief,
-  failure_streak: 3,
+  failure_streak: 1,
   id: 'job-flights',
   last_error: 'RuntimeError: The request timed out. Retry later.',
+  last_run_at: new Date(Date.now() - 86_400_000).toISOString(),
   latest_execution: { id: 'e1', status: 'failed' },
   name: 'Flight price monitor',
   profile: 'ops'
@@ -77,18 +70,31 @@ const failing = {
 
 const paused = { ...brief, enabled: false, id: 'job-follow', name: 'Candidate follow-ups', state: 'paused' } as CronJob
 
-const blueprint: AutomationBlueprint = {
+const workday: AutomationBlueprint = {
   appUrl: '',
   category: 'daily',
-  command: '/blueprint morning-brief',
-  description: 'A short daily briefing.',
-  fields: [
-    { default: '08:00', help: '', label: 'What time?', name: 'time', optional: false, options: [], type: 'time' },
-    { default: 'origin', help: '', label: 'Deliver', name: 'deliver', optional: false, options: [], type: 'text' }
-  ],
-  key: 'morning-brief',
+  command: '/blueprint workday-start',
+  description: 'A weekday nudge with your agenda.',
+  fields: [],
+  key: 'workday-start',
+  prefill: {
+    deliver: 'origin',
+    name: 'Workday start reminder',
+    prompt: 'Give the user a brief weekday start-of-day nudge.',
+    schedule: '0 9 * * 1-5',
+    skills: ['google-workspace']
+  },
   tags: [],
-  title: 'Morning briefing'
+  title: 'Workday start reminder'
+}
+
+const inbox: AutomationBlueprint = {
+  ...workday,
+  category: 'email',
+  description: 'Ping only about mail that needs attention.',
+  key: 'important-mail',
+  prefill: null,
+  title: 'Important-mail monitor'
 }
 
 function LocationProbe() {
@@ -97,10 +103,10 @@ function LocationProbe() {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
 }
 
-function renderPage() {
+function renderPage(path = '/cron') {
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
         <RoutinesPage onClose={vi.fn()} />
         <LocationProbe />
       </MemoryRouter>
@@ -108,36 +114,71 @@ function renderPage() {
   )
 }
 
+const panel = () => screen.getByRole('complementary')
+const heading = () => screen.getByRole('heading', { level: 1 })
+const sheet = () => screen.getByRole('dialog')
+
 async function openNewRoutine() {
-  fireEvent.click(screen.getAllByRole('button', { name: en.cron.newCron })[0])
-  await screen.findByText(copy.pickDescription)
+  fireEvent.click(within(panel()).getByRole('button', { name: en.cron.newCron }))
+
+  return screen.findByRole('dialog', { name: copy.createTitle })
 }
+
+/** Focus `element` as Tab does: keyboard focus is what opens a tooltip (jsdom has no :focus-visible). */
+function keyboardFocus(element: HTMLElement) {
+  const matches = Element.prototype.matches
+
+  vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+    return selector === ':focus-visible' ? this === element : matches.call(this, selector)
+  })
+  act(() => element.focus())
+  vi.mocked(Element.prototype.matches).mockRestore()
+}
+
+/** IntersectionObserver for the run history's "load more" edge: a test reaches it by hand. */
+let reachEnd: () => void = () => undefined
 
 beforeAll(() => {
   HTMLElement.prototype.scrollIntoView ??= () => undefined
   HTMLElement.prototype.hasPointerCapture ??= () => false
+  HTMLElement.prototype.releasePointerCapture ??= () => undefined
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(callback: IntersectionObserverCallback) {
+        reachEnd = () => callback([{ isIntersecting: true } as IntersectionObserverEntry], this as never)
+      }
+
+      observe() {}
+
+      disconnect() {}
+    }
+  )
 })
 
 beforeEach(() => {
+  localStorage.clear()
   $shellChoice.set(true)
   $profiles.set([{ name: 'default' }, { name: 'ops' }] as ProfileInfo[])
   setCronJobs([brief, failing, paused])
   api.getCronJobs.mockResolvedValue([brief, failing, paused])
   api.getCronJobRuns.mockResolvedValue([])
-  api.getAutomationBlueprints.mockResolvedValue({ blueprints: [blueprint] })
+  api.getAutomationBlueprints.mockResolvedValue({ blueprints: [workday, inbox] })
   api.getOwnerCronDeliveryTargets.mockResolvedValue([
     { home_env_var: null, home_target_set: true, id: 'local', name: 'Local (save only)' },
     { home_env_var: null, home_target_set: true, id: 'bot-chat:default', name: 'Bot Chat (default)' }
   ])
+  api.pauseCronJob.mockResolvedValue(brief)
+  api.resumeCronJob.mockResolvedValue(brief)
+  api.deleteCronJob.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
   cleanup()
   queryClient.clear()
-  closeRoutineEditor()
+  closeRoutineSheet()
   selectRoutine(null)
-  $routineRename.set(null)
-  $routineOverviewQuery.set('')
+  $heldRoutine.set(null)
   setCronFocusJobId(null)
   setCronJobs([])
   $interfaceMode.set('advanced')
@@ -146,257 +187,305 @@ afterEach(() => {
 })
 
 describe('the Routines page', () => {
-  it('groups every agent’s routines by status in the panel, with the problem on top of the overview', async () => {
+  it('lists every routine by state in the panel, and opens the first one with nothing selected', async () => {
     renderPage()
-    const panel = await screen.findByRole('complementary')
 
-    expect(within(panel).getByText(`${copy.groups.attention} · 1`)).toBeTruthy()
-    expect(within(panel).getByText(`${copy.groups.scheduled} · 1`)).toBeTruthy()
-    expect(within(panel).getByText(`${copy.groups.paused} · 1`)).toBeTruthy()
-    expect(within(panel).queryByText(new RegExp(copy.groups.finished))).toBeNull()
-    // The banner names the problem in plain words, with the first sentence of the error and Retry.
-    expect(screen.getByText(copy.banner.failedStreak('Flight price monitor', 3))).toBeTruthy()
-    expect(screen.getByText(/^The request timed out\. ·/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: copy.actions.retry })).toBeTruthy()
+    expect(within(panel()).getByText(`${copy.groups.attention} · 1`)).toBeTruthy()
+    expect(within(panel()).getByText(`${copy.groups.scheduled} · 1`)).toBeTruthy()
+    expect(within(panel()).getByText(`${copy.groups.paused} · 1`)).toBeTruthy()
+    // No "All routines" row and no table of every routine: the panel is the list.
+    expect(screen.queryByText('All routines')).toBeNull()
+    expect(screen.queryByRole('table', { name: /routines/i })).toBeNull()
+    // The first in the list (Needs attention) is on the stage, marked current in the panel.
+    expect(heading().textContent).toContain('Flight price monitor')
+    expect(within(panel()).getByRole('button', { name: /Flight price monitor/ }).getAttribute('aria-current')).toBe('page')
   })
 
-  it('creates a blank routine in the chosen agent through the one editor', async () => {
-    const created = { ...brief, id: 'job-new', name: 'Morning brief' }
-    api.createCronJob.mockResolvedValue(created)
+  it('says there are no routines yet, with New routine, when there are none', async () => {
+    setCronJobs([])
+    api.getCronJobs.mockResolvedValue([])
     renderPage()
-    await openNewRoutine()
-    fireEvent.click(screen.getByRole('button', { name: copy.startBlank }))
-    fireEvent.change(await screen.findByLabelText(copy.name), { target: { value: 'Morning brief' } })
-    fireEvent.change(screen.getByLabelText(copy.instruction), { target: { value: 'Summarize my inbox' } })
-    // The read-back says the default schedule in words.
-    expect(screen.getByText('Every day at 9:00 AM')).toBeTruthy()
+
+    expect(await screen.findByText(en.cron.emptyTitleNew)).toBeTruthy()
+    expect(screen.getByText(copy.emptyDescription)).toBeTruthy()
+  })
+
+  it('offers Run now and Pause on a routine that is on, Run routine and Resume on a paused one', async () => {
+    selectRoutine({ id: brief.id, profile: 'default' })
+    const { unmount } = renderPage()
+
+    expect(screen.getByRole('button', { name: copy.actions.runNow })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.cron.pause }))
+    await waitFor(() => expect(api.pauseCronJob).toHaveBeenCalledWith(brief.id, { profile: 'default' }))
+    unmount()
+
+    selectRoutine({ id: paused.id, profile: 'default' })
+    renderPage()
+
+    expect(screen.getByRole('button', { name: copy.actions.runRoutine })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.cron.pause })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: en.cron.resume }))
+    await waitFor(() => expect(api.resumeCronJob).toHaveBeenCalledWith(paused.id, { profile: 'default' }))
+  })
+
+  it('explains each header action in a tooltip that keyboard focus opens too', async () => {
+    selectRoutine({ id: brief.id, profile: 'default' })
+    renderPage()
+
+    const tips: [string, string][] = [
+      [copy.actions.runNow, copy.actions.runNowHint],
+      [en.cron.pause, en.cron.pause],
+      [en.cron.edit, en.cron.edit]
+    ]
+
+    for (const [name, tip] of tips) {
+      keyboardFocus(screen.getByRole('button', { name }))
+      expect((await screen.findByRole('tooltip')).textContent).toBe(tip)
+      act(() => screen.getByRole('button', { name }).blur())
+      await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+    }
+  })
+
+  it('says which run failed and why, and retries it', async () => {
+    api.triggerCronJob.mockResolvedValue(failing)
+    renderPage()
+
+    expect(screen.getByText(copy.banner.failed.yesterday(''))).toBeTruthy()
+    expect(screen.getByText(/^The request timed out\./)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: copy.actions.retry }))
+    await waitFor(() => expect(api.triggerCronJob).toHaveBeenCalledWith(failing.id, { profile: 'ops' }))
+  })
+
+  it('shows what the routine does beside when it runs and where results go', async () => {
+    selectRoutine({ id: brief.id, profile: 'default' })
+    renderPage()
+    const summary = screen.getByRole('region', { name: 'Daily brief' })
+
+    expect(within(summary).getByText('Brief me')).toBeTruthy()
+    expect(within(summary).getByText(copy.frequency)).toBeTruthy()
+    expect(within(summary).getByText(copy.lastRan)).toBeTruthy()
+    expect(within(summary).getByText(copy.notRunYet)).toBeTruthy()
+    expect(within(summary).getByText(copy.keptInRuns)).toBeTruthy()
+  })
+})
+
+describe('the run history', () => {
+  const run = (id: string, patch: Record<string, unknown> = {}) => ({
+    ended_at: 1_700_000_052,
+    id,
+    source: 'cron',
+    started_at: 1_700_000_000,
+    ...patch
+  })
+
+  it('offers each run’s View in the row, and says what went wrong in place for a run with no chat', async () => {
+    api.getCronJobRuns.mockResolvedValue([
+      run('cron_job-brief_1'),
+      { id: 'cron_output:job-brief:1', source: 'cron_output', started_at: 1_699_990_000, title: 'FAILED · Script exited 1' }
+    ])
+    selectRoutine({ id: brief.id, profile: 'default' })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <RoutinesPage onClose={vi.fn()} onOpenSession={vi.fn()} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const table = await screen.findByRole('table')
+    const [, first, second] = within(table).getAllByRole('row')
+
+    expect(within(first).getByText('52s')).toBeTruthy()
+    expect(within(first).getByRole('button', { name: copy.actions.view })).toBeTruthy()
+    expect(within(second).getByText(copy.runChips.failed)).toBeTruthy()
+    fireEvent.click(within(second).getByRole('button', { name: copy.actions.viewError }))
+    expect(screen.getByText('Script exited 1')).toBeTruthy()
+  })
+
+  it('loads the next batch as the end of the history scrolls into view', async () => {
+    api.getCronJobRuns.mockImplementation(async (_id: string, limit: number) =>
+      Array.from({ length: limit }, (_, index) => run(`cron_job-brief_${index}`, { started_at: 1_700_000_000 - index }))
+    )
+    selectRoutine({ id: brief.id, profile: 'default' })
+    renderPage()
+    await screen.findByRole('table')
+
+    expect(api.getCronJobRuns).toHaveBeenLastCalledWith(brief.id, RUNS_BATCH, { profile: 'default' })
+    act(() => reachEnd())
+    await waitFor(() => expect(api.getCronJobRuns).toHaveBeenLastCalledWith(brief.id, 2 * RUNS_BATCH, { profile: 'default' }))
+    await waitFor(() => expect(within(screen.getByRole('table')).getAllByRole('row')).toHaveLength(2 * RUNS_BATCH + 1))
+  })
+})
+
+describe('creating a routine', () => {
+  it('shows nothing but where to start until a start is picked', async () => {
+    renderPage()
+    const created = await openNewRoutine()
+
+    expect(within(created).getByLabelText(copy.agent)).toBeTruthy()
+    expect(within(created).getByRole('radio', { name: new RegExp(copy.blank) })).toBeTruthy()
+    expect(within(created).queryByLabelText(copy.instruction)).toBeNull()
+    expect(within(created).queryByText(/^First run/)).toBeNull()
+  })
+
+  it('needs no agent choice with only one agent', async () => {
+    $profiles.set([{ name: 'default' }] as ProfileInfo[])
+    renderPage()
+    const created = await openNewRoutine()
+
+    expect(within(created).queryByLabelText(copy.agent)).toBeNull()
+  })
+
+  it('asks for a frequency, then says when it first runs, and creates it in its agent', async () => {
+    api.createCronJob.mockResolvedValue({ ...brief, id: 'job-new', name: 'Inbox sweep' })
+    renderPage()
+    const created = await openNewRoutine()
+    fireEvent.click(within(created).getByRole('radio', { name: new RegExp(copy.blank) }))
+    fireEvent.change(within(created).getByLabelText(new RegExp(`^${copy.name}`)), { target: { value: 'Inbox sweep' } })
+    fireEvent.change(within(created).getByLabelText(copy.instruction), { target: { value: 'Summarize my inbox' } })
+
+    // No frequency yet: no read-back and no first run, and Create asks for one.
+    expect(screen.queryByText(/^First run/)).toBeNull()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.createAction })))
+    expect(within(created).getByText(copy.scheduleRequired)).toBeTruthy()
+    expect(api.createCronJob).not.toHaveBeenCalled()
+
+    fireEvent.click(within(created).getByRole('combobox', { name: copy.frequency }))
+    fireEvent.click(await screen.findByRole('option', { name: copy.frequencies.daily }))
+    expect(within(created).getByText('Every day at 9:00 AM')).toBeTruthy()
+    expect(screen.getByText(/^First run: (today|tomorrow), 9:00 AM$/)).toBeTruthy()
 
     await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.createAction })))
 
     expect(api.createCronJob).toHaveBeenCalledWith(
-      { deliver: 'local', name: 'Morning brief', prompt: 'Summarize my inbox', schedule: '0 9 * * *' },
+      { deliver: 'local', name: 'Inbox sweep', prompt: 'Summarize my inbox', schedule: '0 9 * * *' },
+      { profile: 'default' }
+    )
+    expect(vi.mocked(notify)).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success', title: en.cron.created }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect($routineSelection.get()).toEqual({ id: 'job-new', profile: 'default' })
+  })
+
+  it('starts from a template: searched by category, everything it can fill already filled', async () => {
+    api.createCronJob.mockResolvedValue({ ...brief, id: 'job-workday', name: 'Workday start reminder' })
+    renderPage()
+    const created = await openNewRoutine()
+    fireEvent.click(within(created).getByRole('radio', { name: new RegExp(copy.template) }))
+
+    expect(await within(created).findByRole('region', { name: copy.templateCategories.daily })).toBeTruthy()
+    expect(within(created).getByRole('region', { name: copy.templateCategories.email })).toBeTruthy()
+    fireEvent.change(within(created).getByPlaceholderText(copy.searchTemplates), { target: { value: 'weekday' } })
+    expect(within(created).queryByRole('region', { name: copy.templateCategories.email })).toBeNull()
+    fireEvent.click(within(created).getByRole('button', { name: /Workday start reminder/ }))
+
+    expect((within(created).getByLabelText(new RegExp(`^${copy.name}`)) as HTMLInputElement).value).toBe('Workday start reminder')
+    expect((within(created).getByLabelText(copy.instruction) as HTMLTextAreaElement).value).toBe(
+      'Give the user a brief weekday start-of-day nudge.'
+    )
+    expect(within(created).getByText('Monday to Friday at 9:00 AM')).toBeTruthy()
+    expect(screen.getByText(/^First run: /)).toBeTruthy()
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.createAction })))
+
+    expect(api.createCronJob).toHaveBeenCalledWith(
+      expect.objectContaining({ deliver: 'local', schedule: '0 9 * * 1-5', skills: ['google-workspace'] }),
       { profile: 'default' }
     )
   })
 
-  it('keeps the rail page to quick actions: editing goes to the routine in its agent’s settings', async () => {
-    selectRoutine({ id: failing.id, profile: 'ops' })
+  it('opens for the agent an agent’s page asked for', async () => {
+    openRoutineSheet({ mode: 'create', profile: 'ops' })
     renderPage()
-    await screen.findAllByText(copy.whatItDoes)
+    const created = await screen.findByRole('dialog', { name: copy.createTitle })
 
-    expect(screen.queryByRole('button', { name: copy.actions.change })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: copy.editInAgent('ops') }))
+    expect(within(created).getByRole('combobox', { name: copy.agent }).textContent).toBe('ops')
+  })
+})
 
-    const target = new URLSearchParams(screen.getByTestId('location').textContent!.split('?')[1])
+describe('editing a routine', () => {
+  it('opens its sheet from the pencil, keeps the agent fixed, and saves to its owner', async () => {
+    api.updateCronJob.mockResolvedValue({ ...failing, name: 'Flights' })
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: en.cron.edit }))
+    const edit = await screen.findByRole('dialog', { name: copy.editTitle('Flight price monitor') })
 
-    expect(screen.getByTestId('location').textContent).toMatch(/^\/settings\?/)
-    expect(Object.fromEntries(target)).toMatchObject({
-      agentProfile: 'ops',
-      edit: '1',
-      panel: 'settings',
-      routine: 'job-flights',
-      tab: 'agent:schedules'
+    const agent = within(edit).getByLabelText(copy.agent) as HTMLInputElement
+    expect(agent.readOnly && agent.getAttribute('aria-disabled')).toBe('true')
+    keyboardFocus(agent)
+    // The sheet is modal, so everything outside it (the tooltip's portal too) is aria-hidden.
+    expect((await screen.findByRole('tooltip', { hidden: true })).textContent).toBe(copy.agentLocked)
+
+    fireEvent.change(within(edit).getByLabelText(new RegExp(`^${copy.name}`)), { target: { value: 'Flights' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.saveRoutine })))
+
+    expect(api.updateCronJob).toHaveBeenCalledWith(failing.id, expect.objectContaining({ name: 'Flights' }), {
+      profile: 'ops'
     })
+    expect(vi.mocked(notify)).toHaveBeenCalledWith(expect.objectContaining({ title: en.cron.updated }))
   })
+})
 
-  it('lists a refused run under Runs as soon as the routine records it, in one plain sentence', async () => {
-    const raw =
-      "GatewayUnavailableError: Gateway inaccessible: profile_parked (profile(s) 'ops' still run their own gateway; fold them with `hermes gateway migrate --multiplex`)"
+describe('deleting a routine', () => {
+  async function confirmDelete(name: string) {
+    fireEvent.click(screen.getByRole('button', { name: en.cron.edit }))
+    const edit = await screen.findByRole('dialog', { name: copy.editTitle(name) })
+    fireEvent.click(within(edit).getByRole('button', { name: copy.deleteRoutine }))
 
-    const quiet = { ...brief, id: 'job-watch', name: 'Competitor news watch', profile: 'ops' } as CronJob
-    setCronJobs([brief, quiet, paused])
-    api.getCronJobs.mockResolvedValue([brief, quiet, paused])
-    selectRoutine({ id: quiet.id, profile: 'ops' })
+    return edit
+  }
+
+  it('asks in the footer first, and Keep it changes nothing', async () => {
+    selectRoutine({ id: brief.id, profile: 'default' })
     renderPage()
-    await screen.findByText(copy.noRuns)
+    const edit = await confirmDelete('Daily brief')
 
-    // Run now: the scheduler refuses the attempt up front and writes its output, with no cron.changed.
-    api.getCronJobRuns.mockResolvedValue([
-      { id: 'cron_output:job-watch:1', source: 'cron_output', started_at: 1_700_000_000, title: `FAILED · ${raw}` }
-    ])
-    act(() =>
-      setCronJobs([
-        brief,
-        { ...quiet, last_error: raw, latest_execution: { error: raw, id: 'attempt-1', status: 'failed' } },
-        paused
-      ])
-    )
-
-    const plain = copy.banner.agentNotRunning('ops')
-    // The run is listed with its status, and the banner says what happened in words.
-    await waitFor(() => expect(screen.queryByText(copy.noRuns)).toBeNull())
-    expect(screen.getByText(plain)).toBeTruthy()
-    expect(screen.getByText(new RegExp(`^${plain} ·`))).toBeTruthy()
-    // The backend's own text stays behind Details, never in the banner's sentence.
-    const details = screen.getByText(copy.banner.details).closest('details')!
-    expect(details.open).toBe(false)
-    expect(within(details).getByText(raw)).toBeTruthy()
-    expect(screen.getAllByText(/migrate --multiplex/)).toHaveLength(1)
-  })
-
-  it('renames a routine as a rail quick action, in its own agent', async () => {
-    api.updateCronJob.mockResolvedValue({ ...brief, name: 'Morning brief' })
-    $routineRename.set(brief)
-    renderPage()
-    const name = await screen.findByLabelText(copy.name)
-
-    fireEvent.change(name, { target: { value: 'Morning brief' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.rename })))
-
-    expect(api.updateCronJob).toHaveBeenCalledWith('job-brief', { name: 'Morning brief' }, { profile: 'default' })
-  })
-
-  it('renames a Bots routine under its bot tag, and starts an unnamed routine from an empty name', async () => {
-    const botJob = { ...brief, id: 'job-bot', name: '[bot:ops] Standup digest' } as CronJob
-    api.updateCronJob.mockResolvedValue({ ...botJob, name: '[bot:ops] Team digest' })
-    $routineRename.set(botJob)
-    const { unmount } = renderPage()
-    const name = (await screen.findByLabelText(copy.name)) as HTMLInputElement
-
-    expect(name.value).toBe('Standup digest')
-    fireEvent.change(name, { target: { value: 'Team digest' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.rename })))
-
-    expect(api.updateCronJob).toHaveBeenCalledWith('job-bot', { name: '[bot:ops] Team digest' }, { profile: 'default' })
-    unmount()
-
-    $routineRename.set({ ...brief, id: 'job-unnamed', name: '' } as CronJob)
-    renderPage()
-
-    expect(((await screen.findByLabelText(copy.name)) as HTMLInputElement).value).toBe('')
-  })
-
-  it('opens the routine a sidebar link names, and drops a link that names none once routines loaded', async () => {
-    const spaced = { ...paused, name: 'Candidate follow-ups ' } as CronJob
-    setCronFocusJobId('Candidate follow-ups')
-    setCronJobs([brief, failing, spaced])
-    api.getCronJobs.mockResolvedValue([brief, failing, spaced])
-    const { unmount } = renderPage()
-
-    await waitFor(() => expect($routineSelection.get()).toEqual({ id: paused.id, profile: 'default' }))
-    expect($cronFocusJobId.get()).toBeNull()
-    unmount()
-    selectRoutine(null)
-
-    setCronFocusJobId('job-that-was-deleted')
-    renderPage()
-
-    await waitFor(() => expect($cronFocusJobId.get()).toBeNull())
-    expect($routineSelection.get()).toBeNull()
-  })
-
-  it('offers Resume, not Pause, on a routine that was switched off', async () => {
-    const off = { ...brief, enabled: false, id: 'job-off', name: 'Switched off', state: undefined } as CronJob
-    setCronJobs([brief, off])
-    api.getCronJobs.mockResolvedValue([brief, off])
-    api.resumeCronJob.mockResolvedValue({ ...off, enabled: true })
-    selectRoutine({ id: off.id, profile: 'default' })
-    renderPage()
-    await screen.findAllByText(copy.whatItDoes)
-
-    expect(screen.queryByRole('button', { name: en.cron.pauseTitle })).toBeNull()
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.resumeTitle })))
-
-    expect(api.resumeCronJob).toHaveBeenCalledWith('job-off', { profile: 'default' })
+    expect(within(edit).getByText(copy.deleteConfirm)).toBeTruthy()
+    expect(within(edit).getByText(copy.deleteConfirmHint)).toBeTruthy()
+    expect(edit.ownerDocument.activeElement).toBe(within(edit).getByRole('button', { name: copy.keepIt }))
+    fireEvent.click(within(edit).getByRole('button', { name: copy.keepIt }))
+    expect(within(edit).getByRole('button', { name: copy.deleteRoutine })).toBeTruthy()
     expect(api.pauseCronJob).not.toHaveBeenCalled()
   })
 
-  it('starts from a ready-made routine: its own fields, seeded, created by the backend', async () => {
-    api.instantiateAutomationBlueprint.mockResolvedValue({ ...brief, id: 'job-bp', name: 'Morning briefing' })
+  it('holds it paused and out of the list, lands on the next routine, and Undo brings it back as it was', async () => {
+    setCronJobs([brief, review, paused])
+    api.getCronJobs.mockResolvedValue([brief, review, paused])
+    selectRoutine({ id: brief.id, profile: 'default' })
     renderPage()
-    await openNewRoutine()
-    fireEvent.click(await screen.findByRole('button', { name: `${copy.use}: Morning briefing` }))
+    const edit = await confirmDelete('Daily brief')
+    await act(async () => fireEvent.click(within(edit).getByRole('button', { name: copy.actions.delete })))
 
-    const time = (await screen.findByLabelText('What time?')) as HTMLInputElement
+    // Every hold call reaches the routine's owner: its agent, on this window's machine.
+    expect(api.pauseCronJob).toHaveBeenCalledWith(brief.id, { connectionId: null, profile: 'default' })
+    expect(api.deleteCronJob).not.toHaveBeenCalled()
+    expect(within(panel()).queryByRole('button', { name: /Daily brief/ })).toBeNull()
+    expect(heading().textContent).toContain('Weekly review')
+    expect(screen.getByText(copy.deleted('Daily brief'))).toBeTruthy()
 
-    expect(time.value).toBe('08:00')
-    expect(screen.getByRole('heading', { name: 'Morning briefing' })).toBeTruthy()
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.createAction })))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.actions.undo })))
 
-    expect(api.instantiateAutomationBlueprint).toHaveBeenCalledWith(
-      { blueprint: 'morning-brief', values: { deliver: 'local', time: '08:00' } },
-      'default',
-      null
-    )
-    expect(api.createCronJob).not.toHaveBeenCalled()
+    expect(api.resumeCronJob).toHaveBeenCalledWith(brief.id, { connectionId: null, profile: 'default' })
+    expect(api.deleteCronJob).not.toHaveBeenCalled()
+    expect(heading().textContent).toContain('Daily brief')
+    expect(screen.queryByText(copy.deleted('Daily brief'))).toBeNull()
   })
 
-})
+  it('makes it final when the banner is dismissed, or the page left', async () => {
+    selectRoutine({ id: paused.id, profile: 'default' })
+    const { unmount } = renderPage()
+    let edit = await confirmDelete('Candidate follow-ups')
+    await act(async () => fireEvent.click(within(edit).getByRole('button', { name: copy.actions.delete })))
 
-describe('Agent › Settings › Routines', () => {
-  function renderAgent(search: string) {
-    return render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/settings${search}`]}>
-          <AgentRoutines owner={{ profile: 'ops' }} />
-        </MemoryRouter>
-      </QueryClientProvider>
-    )
-  }
+    // It was already paused: nothing to pause, and nothing to resume later.
+    expect(api.pauseCronJob).not.toHaveBeenCalled()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.common.close })))
+    expect(api.deleteCronJob).toHaveBeenCalledWith(paused.id, { connectionId: null, profile: 'default' })
 
-  it('opens the linked routine in the one editor and saves it in that agent', async () => {
-    api.getAgentRoutines.mockResolvedValue([failing])
-    api.updateCronJob.mockResolvedValue({ ...failing, name: 'Fares' })
-    renderAgent('?agentProfile=ops&panel=settings&tab=agent%3Aschedules&routine=job-flights&edit=1')
-    const name = (await screen.findByLabelText(copy.name)) as HTMLInputElement
+    selectRoutine({ id: brief.id, profile: 'default' })
+    edit = await confirmDelete('Daily brief')
+    await act(async () => fireEvent.click(within(edit).getByRole('button', { name: copy.actions.delete })))
+    await act(async () => unmount())
 
-    expect(name.value).toBe('Flight price monitor')
-    fireEvent.change(name, { target: { value: 'Fares' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.saveChanges })))
-
-    expect(api.updateCronJob).toHaveBeenCalledWith(
-      'job-flights',
-      expect.objectContaining({ name: 'Fares', schedule: '0 7 * * *' }),
-      { connectionId: null, profile: 'ops' }
-    )
-    expect(api.updateCronJob.mock.calls[0][1]).not.toHaveProperty('repeat')
-  })
-
-  it('never reopens a dialog the rail page left open, bound to another machine', async () => {
-    api.getAgentRoutines.mockResolvedValue([failing])
-    $routineRename.set(brief)
-    const rail = renderPage()
-    await screen.findByLabelText(copy.name)
-    rail.unmount()
-
-    renderAgent('')
-    await screen.findAllByText('Flight price monitor')
-
-    expect(screen.queryByLabelText(copy.name)).toBeNull()
-  })
-
-  it('says nothing more about a Run now once the page that started it has closed', async () => {
-    let finish: (value: CronJob) => void = () => undefined
-    api.getAgentRoutines.mockResolvedValue([failing])
-    api.triggerCronJob.mockReturnValue(new Promise<CronJob>(resolve => (finish = resolve)))
-    const { unmount } = renderAgent('?routine=job-flights')
-    await screen.findAllByText(copy.whatItDoes)
-
-    fireEvent.click(screen.getByRole('button', { name: copy.actions.runNow }))
-    await waitFor(() => expect(api.triggerCronJob).toHaveBeenCalled())
-    unmount()
-    await act(async () => finish(failing))
-
-    expect(vi.mocked(notify)).not.toHaveBeenCalledWith(expect.objectContaining({ title: en.cron.triggered }))
-  })
-
-  it('shows the cron expression and routine id only in developer mode', async () => {
-    api.getAgentRoutines.mockResolvedValue([{ ...brief, profile: 'ops' }])
-    $interfaceMode.set('simple')
-    const { unmount } = renderAgent('?routine=job-brief')
-    await screen.findAllByText(copy.whatItDoes)
-
-    expect(screen.queryByText('job-brief')).toBeNull()
-    expect(screen.queryByText(copy.expression)).toBeNull()
-    expect(screen.getAllByText(/Every day at 7:00 AM/).length).toBeGreaterThan(0)
-    unmount()
-
-    $interfaceMode.set('advanced')
-    renderAgent('?routine=job-brief')
-    await screen.findAllByText(copy.whatItDoes)
-
-    expect(screen.getByText('job-brief')).toBeTruthy()
-    expect(screen.getByText('0 7 * * *')).toBeTruthy()
+    expect(api.deleteCronJob).toHaveBeenLastCalledWith(brief.id, { connectionId: null, profile: 'default' })
   })
 })
 
@@ -438,4 +527,8 @@ describe('the rail’s Routines destination', () => {
 
     expect(quiet.container.querySelector('[data-slot="rail-alert"]')).toBeNull()
   })
+})
+
+it('keeps the sheet closed until something opens it', () => {
+  expect($routineSheet.get()).toEqual({ mode: 'closed' })
 })

@@ -100,14 +100,14 @@ afterEach(() => {
   $shellChoice.set(null)
 })
 
-it('returns keyboard focus to New routine after cancelling the redesign editor', async () => {
+it('returns keyboard focus to New routine after closing the redesign’s routine sheet with Esc', async () => {
   $shellChoice.set(true)
   await renderCron()
   await screen.findAllByText('Status report')
   const opener = screen.getAllByRole('button', { name: en.cron.newCron })[0]
   opener.focus()
   fireEvent.click(opener)
-  await screen.findByText(routinesCopy('en').pickDescription)
+  await screen.findByText(routinesCopy('en').createTitle)
   fireEvent.keyDown(window.document.activeElement!, { key: 'Escape' })
   await waitFor(() => expect(window.document.activeElement).toBe(opener))
 })

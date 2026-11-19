@@ -15,7 +15,7 @@ import { $settingsScopeOverride } from '@/store/settings-scope'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { routinesCopy } from '../routines/routines-copy'
-import { closeRoutineEditor } from '../routines/routines-store'
+import { $routineSelection, $routineSheet, closeRoutineSheet, selectRoutine } from '../routines/routines-store'
 
 import { SettingsView } from './entry'
 import { $lastViewedAgent } from './landing'
@@ -159,21 +159,29 @@ afterEach(() => {
   $apiRequestScope.set({ profile: null, connectionId: null })
   $settingsScopeOverride.set(null)
   $shellChoice.set(false)
-  closeRoutineEditor()
+  closeRoutineSheet()
+  selectRoutine(null)
 })
+
+function LocationProbe() {
+  const location = useLocation()
+
+  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>
+}
 
 function mount(path: string) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <SettingsView onClose={() => {}} />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
   )
 }
 
 it.each(['', '&connection=beta'])(
-  'pins every real overview request and routine write to one native owner (%s)',
+  'pins every real overview request to one native owner (%s)',
   async connection => {
     mount(`/settings?agentProfile=default${connection}&tab=plugins&agent=image_gen%2Ffal`)
     await screen.findByText('Owner instructions')
@@ -189,16 +197,6 @@ it.each(['', '&connection=beta'])(
         expect(request?.profile).toBe('default')
       }
     })
-    fireEvent.click(screen.getByRole('button', { name: en.cron.newCron }))
-    fireEvent.click(await screen.findByRole('button', { name: routines.startBlank }))
-    fireEvent.change(await screen.findByLabelText(routines.name), { target: { value: 'Review' } })
-    fireEvent.change(screen.getByLabelText(routines.instruction), { target: { value: 'Review notes' } })
-    fireEvent.click(screen.getByRole('button', { name: en.cron.createAction }))
-    await waitFor(() => expect(api.mock.calls.some(([request]) => request.method === 'POST')).toBe(true))
-    const write = api.mock.calls.find(([request]) => request.method === 'POST')![0]
-
-    expect(write.connectionId).toBe('beta')
-    expect(write.profile).toBe('default')
     act(() => $apiRequestScope.setKey('connectionId', 'alpha'))
     expect(await screen.findByRole('button', { name: 'Open agent' })).toBeTruthy()
     expect(screen.queryByText('Owner instructions')).toBeNull()
@@ -489,40 +487,33 @@ it('opens a link naming this machine as "local" in place, without the Open agent
   expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
 })
 
-it('shows a routine created in Settings › Routines on the Overview it returns to', async () => {
-  // The window's own machine, named by nobody: the page and its editors must still agree on one owner.
+it('lists the agent’s routines read only in Settings › Routines, each opening on the Routines page', async () => {
+  // The window's own machine, named by nobody: the links stay on this window's Routines page.
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
-  let jobs: unknown[] = []
-  api.mockImplementation(async (request: Request) => {
-    if (request.path.split('?')[0] === '/api/cron/jobs') {
-      if (request.method === 'POST') {
-        const job = {
-          id: 'review',
-          name: 'Review',
-          prompt: 'Review notes',
-          enabled: true,
-          profile: 'default',
-          schedule: { expr: '0 9 * * *', kind: 'cron' }
-        }
 
-        jobs = [job]
+  const review = {
+    enabled: true,
+    id: 'review',
+    name: 'Review',
+    profile: 'default',
+    prompt: 'Review notes',
+    schedule: { expr: '0 9 * * *', kind: 'cron' },
+    state: 'scheduled'
+  }
 
-        return job
-      }
+  api.mockImplementation(async (request: Request) =>
+    request.path.split('?')[0] === '/api/cron/jobs' ? [review] : defaultApi(request)
+  )
+  mount('/settings?agentProfile=default&panel=settings&tab=agent:schedules')
 
-      return jobs
-    }
+  // No editor here: no instruction to type, no Save.
+  fireEvent.click(await screen.findByRole('button', { name: /^Review/ }))
+  expect(screen.queryByLabelText(routines.instruction)).toBeNull()
+  expect($routineSelection.get()).toEqual({ id: 'review', profile: 'default' })
+  expect(screen.getByTestId('location').textContent).toBe('/cron')
 
-    return defaultApi(request)
-  })
+  cleanup()
   mount('/settings?agentProfile=default&panel=settings&tab=agent:schedules')
   fireEvent.click(await screen.findByRole('button', { name: en.cron.newCron }))
-  fireEvent.click(await screen.findByRole('button', { name: routines.startBlank }))
-  fireEvent.change(await screen.findByLabelText(routines.name), { target: { value: 'Review' } })
-  fireEvent.change(screen.getByLabelText(routines.instruction), { target: { value: 'Review notes' } })
-  fireEvent.click(screen.getByRole('button', { name: en.cron.createAction }))
-  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-  fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
-
-  expect(await screen.findByRole('button', { name: /^Review/ })).toBeTruthy()
+  expect($routineSheet.get()).toEqual({ mode: 'create', profile: 'default' })
 })

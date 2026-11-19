@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { cancelCronJobRun, type CronJob, deleteCronJob, pauseCronJob, resumeCronJob, triggerCronJob } from '@/hermes'
+import { cancelCronJobRun, type CronJob, pauseCronJob, resumeCronJob, triggerCronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -21,8 +21,6 @@ export interface RoutineActions {
   runNow: (job: CronJob) => Promise<void>
   pauseResume: (job: CronJob) => Promise<void>
   stop: (job: CronJob) => Promise<void>
-  /** Throws on failure, so the confirm dialog reports it inline and stays open. */
-  remove: (job: CronJob) => Promise<void>
   /** A run is in flight (ledger) or this window's Run now is still waiting on it. */
   isLive: (job: CronJob) => boolean
   isBusy: (job: CronJob) => boolean
@@ -131,14 +129,6 @@ export function useRoutineActions(source: RoutineSource): RoutineActions {
     }
   }
 
-  async function remove(job: CronJob) {
-    const done = await mutate(() => deleteCronJob(job.id, scopeFor(job)))
-
-    if (done) {
-      notify({ kind: 'success', title: c.deleted, message: title(job) })
-    }
-  }
-
   const isLive = (job: CronJob) => jobRunInFlight(job) || triggering.has(routineKey(job))
   const anyLive = source.jobs.some(isLive) || stopping.size > 0
 
@@ -162,7 +152,6 @@ export function useRoutineActions(source: RoutineSource): RoutineActions {
     isLive,
     isStopping: job => stopping.has(routineKey(job)),
     pauseResume,
-    remove,
     runNow,
     stop
   }

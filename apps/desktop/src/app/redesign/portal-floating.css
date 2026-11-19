@@ -149,7 +149,7 @@
 
 /* ── Dialogs ──────────────────────────────────────────────────────────────── */
 
-:root[data-shell='portal'] [data-slot='dialog-overlay'] {
+:root[data-shell='portal'] :is([data-slot='dialog-overlay'], [data-slot='sheet-overlay']) {
   background-color: var(--portal-surface-scrim);
   backdrop-filter: none;
 }

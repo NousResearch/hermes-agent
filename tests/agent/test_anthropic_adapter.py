@@ -1828,7 +1828,14 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
         is_oauth=True,
     )
 
-    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    # Under OAuth the sanitized prompt is relocated to a <system_context> preamble on the
+    # first user message; system[] carries only the Claude Code identity line.
+    from agent.anthropic_adapter import _CLAUDE_CODE_SYSTEM_PREFIX
+
+    assert [block["text"] for block in kwargs["system"]] == [_CLAUDE_CODE_SYSTEM_PREFIX]
+    first_user = next(m for m in kwargs["messages"] if m["role"] == "user")
+    relocated = [b for b in first_user["content"] if isinstance(b, dict) and b.get("type") == "text"]
+    system_text = "\n".join(block["text"] for block in relocated)
     assert "Claude Code by Anthropic uses claude-code skills." in system_text
     assert "https://hermes-agent.nousresearch.com/docs" in system_text
     # Paths and repo slugs are addresses too: a subagent told to run
@@ -1839,7 +1846,7 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert "skill_view(name='hermes-agent')" in system_text  # a quoted slug is an identifier
     assert "built by claude-code." in system_text  # a sentence-final dot is prose
     assert "claude-code's docs" in system_text  # so is a possessive
-    assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
+    assert relocated[0]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
 
 
 def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monkeypatch):

@@ -1242,9 +1242,8 @@ jobs:
             image: ubuntu:22.04
             python: python3.11
             alsa: libasound2
-            setup-shell: bash scripts/ci/linux_x64_userland.sh setup {0}
-            build-shell: bash scripts/ci/linux_x64_userland.sh build {0}
     env: &linux-env
+      LINUX_BUNDLE_TARGET: ${{ matrix.target.label }}
       DEBIAN_FRONTEND: noninteractive
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
@@ -1275,7 +1274,7 @@ jobs:
       # native probe starts the downloaded Electron, which loads GTK, NSS, GBM
       # and ALSA even as node; 24.04 renamed ALSA's package libasound2t64.
       - name: Install the build userland
-        shell: ${{ matrix.target.setup-shell }}
+        shell: bash scripts/ci/linux_bundle_shell.sh setup {0}
         env:
           BOOTSTRAP_PYTHON: ${{ matrix.target.python }}
           ALSA_PACKAGE: ${{ matrix.target.alsa }}
@@ -1309,7 +1308,7 @@ jobs:
 
       - name: Prepare the complete desktop build
         id: prepare
-        shell: ${{ matrix.target.build-shell }}
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
         run: |
           args=(--tag "$HERMES_PAYLOAD_TAG")
           if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
@@ -1329,7 +1328,7 @@ jobs:
           key: ${{ steps.build-cache.outputs.cache-key }}
 
       - name: Build and package
-        shell: ${{ matrix.target.build-shell }}
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
         timeout-minutes: 200
         env:
           PYTHONUTF8: '1'
@@ -1345,7 +1344,7 @@ jobs:
 
       - name: Audit bundle architecture
         # The pinned Node needs libatomic1, installed in the builder, not the runner host.
-        shell: ${{ matrix.target.build-shell }}
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
         run: |
           MATRIX_LABEL="${{ matrix.target.label }}"
           node apps/desktop/scripts/audit-bundle-arch.mjs \
@@ -1410,8 +1409,6 @@ jobs:
             image: ubuntu:24.04
             python: python3.12
             alsa: libasound2t64
-            setup-shell: bash
-            build-shell: bash
     env: *linux-env
     steps: *linux-steps
 

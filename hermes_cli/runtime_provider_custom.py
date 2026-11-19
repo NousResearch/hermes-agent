@@ -87,10 +87,10 @@ def main_endpoint_key_for(model_cfg: Any, base_url: str) -> str:
     this URL takes the named route (the pool owning it, then the entry's own credential;
     ``model.key_env`` never applies); a bare ``custom`` route takes the pool owning the URL, then
     the first usable ``model.api_key`` / ``model.key_env``, then an owning entry's or the
-    host-gated env keys. Elsewhere it is only an approximation, never another host's key:
-    ``auto`` / unset gets the first usable model-block or host-gated env key (at openrouter.ai the
-    runtime sends ``OPENROUTER_API_KEY`` instead of ``model.api_key``), and any other provider gets
-    the model block's own usable key; their built-in env/OAuth resolution is not replayed here.
+    host-gated env keys. One exception is openrouter.ai without an owning pool: on the bare
+    ``custom`` and implicit routes, inference uses OpenRouter credential precedence rather than
+    the model block's. Elsewhere ``auto`` / unset gets the first usable model-block or host-gated
+    env key; other providers get the model block's usable key, not their built-in env/OAuth lookup.
 
     Not ``resolve_runtime_provider`` itself: a probe must not count or rotate a pool row, mint a
     ``key_cmd`` token or install a plugin. So a pool yields the row its strategy would select

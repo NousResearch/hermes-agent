@@ -95,3 +95,23 @@ def test_a_multimodal_row_still_takes_its_list_override_after_appended_context()
     agent._apply_persist_user_message_override(messages)
 
     assert messages[1]["content"] == [{"type": "text", "text": ask}]
+
+def test_a_stale_merge_prefix_does_not_rescue_a_compacted_head():
+    """The merge metadata outlives a row whose content the engine replaced: the recorded prefix is no
+    longer in the content, so it must not certify that the row still holds this turn's ask."""
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "fix the flaky test"},
+        {"role": "assistant", "content": "running the suite"},
+    ]
+    agent = _agent(1, "fix the flaky test")
+    note_persist_user_anchor(agent, messages)
+
+    # A todo snapshot was absorbed onto this ask (empty tail), then the engine compacted the row in place
+    # and kept the row dict — the merge metadata survives the content swap.
+    messages[1][MERGED_TURN_PREFIX] = "fix the flaky test"
+    messages[1]["content"] = SUMMARY_HEAD
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages[1]["content"] == SUMMARY_HEAD

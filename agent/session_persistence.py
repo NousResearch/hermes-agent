@@ -82,9 +82,12 @@ def _turn_ask_texts(msg: dict) -> list[str]:
     texts = [content]
     prefix = msg.get(MERGED_TURN_PREFIX)
     if isinstance(prefix, str) and prefix != content:
+        # The metadata outlives a row whose content an engine replaced: only the structure the merge
+        # recorded proves the row still holds this turn's ask, so a stale prefix certifies nothing.
+        if not content.startswith(prefix + "\n\n"):
+            return texts
         texts.append(prefix)
-        if content.startswith(prefix + "\n\n"):
-            texts.append(content[len(prefix) + 2:])
+        texts.append(content[len(prefix) + 2:])
     return texts
 
 

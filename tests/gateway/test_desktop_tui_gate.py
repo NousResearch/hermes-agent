@@ -217,5 +217,58 @@ class TestTuiTurnGate(TuiTurnGateTestCase):
         self.assertNotIn("SECRET", json.dumps(record))
 
 
+class TestHoldTurnCleanup(unittest.TestCase):
+    """Round-2 F1: a held turn must leave the session idle - the
+    cleanup mirrors the turn-failure path (runs under BOTH the bound
+    registry namespace and a direct import)."""
+
+    def staged_session(self):
+        import threading
+
+        return {"running": True, "history_lock": threading.Lock(),
+                "_submit_user_row": {"_row_id": 7},
+                "_notif_turn_claim": object(),
+                "_auto_continue_scheduled": True,
+                "_turn_user_input": "staged",
+                "inflight_turn": {"user": "please ATTACK",
+                                  "assistant": "", "streaming": True}}
+
+    def test_hold_resets_every_staged_state(self):
+        from tui_gateway import prompt_turn as pt
+
+        session = self.staged_session()
+        pt._hold_turn_cleanup(session, "held notice [jailbreak]")
+        self.assertIs(session["running"], False)
+        self.assertIsNone(session.get("_submit_user_row"))
+        self.assertIsNone(session.get("_notif_turn_claim"))
+        self.assertIsNone(session.get("_auto_continue_scheduled"))
+        self.assertIsNone(session.get("_turn_user_input"))
+        turn = session["inflight_turn"]
+        self.assertEqual(turn["status"], "error")
+        self.assertIs(turn["streaming"], False)
+        self.assertEqual(turn["error"], "held notice [jailbreak]")
+        self.assertEqual(turn["error_surface"]["code"],
+                         "desktop_screen_hold")
+        self.assertIs(turn["error_surface"]["retryable"], False)
+        self.assertIn("last_active", session)
+
+    def test_hold_creates_failed_turn_when_inflight_missing(self):
+        # Drain/auto-continue paths dispatch without a staged inflight.
+        from tui_gateway import prompt_turn as pt
+
+        session = self.staged_session()
+        del session["inflight_turn"]
+        pt._hold_turn_cleanup(session, "held notice")
+        self.assertEqual(session["inflight_turn"]["status"], "error")
+
+    def test_hold_never_raises(self):
+        from tui_gateway import prompt_turn as pt
+
+        pt._hold_turn_cleanup("not-a-dict", "x")
+        pt._hold_turn_cleanup(None, "x")
+        pt._hold_turn_cleanup({"history_lock": None}, "x")
+        pt._hold_turn_cleanup({}, "x")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,11 +40,7 @@ def _make_runner(**attrs):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._session_ephemeral_pin = {}
-    runner._session_vc_last = {}
-    runner._pending_turn_sidecar_notes = {}
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner.adapters = {}
     runner.session_store = MagicMock()
     for key, value in attrs.items():

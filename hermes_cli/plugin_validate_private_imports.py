@@ -11,60 +11,27 @@ standard library and third-party packages are never flagged; neither are ``TYPE_
 from __future__ import annotations
 
 import ast
+import json
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 
+from hermes_agent.compat.moves import MOVES
+from hermes_agent.compat.paths import current_globs, current_module, original_module
 from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
+from hermes_cli._startup_fast import project_root_str
 
-# WHY: "public" must mean what Hermes documents for plugin authors, not a reviewer's taste.
-# Derived from every Hermes-module ``import`` in website/docs/developer-guide/**/*.md and
-# website/docs/user-guide/features/plugins*.md code blocks (plus extending-the-dashboard.md, which
-# desktop-plugin-sdk.md names as the plugin backend reference), and what PluginContext hands out in
-# hermes_cli/plugins.py (property/return types, base classes its ``register_*`` methods check), and
-# the names those plugin pages tell authors to call, raise, return or subclass in prose. ``module`` entries allow the module (underscore names excepted);
-# ``module:Name`` entries allow one name. Re-harvest when those docs or PluginContext change.
-_PUBLIC = frozenset({
-    # developer-guide / plugins docs
-    "agent.account_usage", "agent.acp_client", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
-    "agent.delegation_backends", "agent.delegation_provider", "hermes_cli.auth_model_picker:prompt_model_selection",
-    "hermes_cli.auth:resolve_external_process_provider_credentials", "hermes_cli.model_setup",
-    "agent.image_gen_provider", "agent.memory_manager", "agent.memory_provider", "agent.secret_scope",
-    "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.terminal_env_provider",
-    "agent.transports", "agent.transports.chat_completions", "agent.video_gen_provider",
-    "agent.web_search_provider", "cli", "gateway.config", "gateway.platform_registry",
-    "gateway.platforms._shared", "gateway.platforms.base", "gateway.platforms.event",
-    "gateway.platforms.helpers", "gateway.status", "hermes_cli.auth_oauth_pkce_plugin",
-    "hermes_cli.config", "hermes_cli.plugin_events", "hermes_cli.plugin_provider_requests",
-    "hermes_constants", "hermes_platform", "hermes_state", "plugins.plugin_storage", "plugins.plugin_utils", "pm",
-    "providers", "providers.base", "tools.browser_supervisor", "tools.browser_supervisor_capture",
-    "tools.computer_use.backend", "tools.registry",
-    # PluginContext (hermes_cli/plugins.py)
-    "agent.context_references", "agent.plugin_llm", "agent.transcription_provider", "agent.tts_provider",
-    "cron.execution_identity",
-    "hermes_cli.dashboard_auth", "hermes_cli.platform_actions", "hermes_cli.plugins:PluginContext",
-    "hermes_cli.plugins_ledger:PluginRegistration", "hermes_cli.plugins_state:PluginState",
-    # prose in memory-provider / model-provider / terminal-environment plugin pages
-    "agent.runtime_cwd:resolve_agent_cwd", "agent.usage_pricing:CostResult", "hermes_cli.auth_constants:AuthError",
-    "tools.environments.base:BaseEnvironment", "tools.environments:BaseEnvironment",  # package ``__all__``
-    "utils:atomic_json_write", "utils:read_json_or_empty",
-    # adding-platform-adapters.md § Public helpers for platform plugins
-    "gateway.platforms.access_policy_mixin:OwnAccessPolicyMixin", "tools.approval:resolve_gateway_approval",
-    "tools.clarify_gateway:get_pending", "tools.clarify_gateway:resolve_gateway_clarify",
-    "tools.clarify_gateway:mark_awaiting_text", "tools.clarify_gateway:SKIPPED",
-    "tools.url_safety:is_safe_url", "tools.url_safety:create_ssrf_safe_async_client",
-    "gateway.platforms._http_client_limits:platform_httpx_limits",
-    "hermes_cli.gateway_setup_wizard:print_setup_header", "hermes_cli.gateway_setup_wizard:confirm_reconfigure",
-    "hermes_cli.gateway_setup_wizard:offer_home_channel", "hermes_cli.gateway_setup_wizard:save_env_values",
-    "hermes_cli.gateway_setup_wizard:prompt_csv", "hermes_cli.setup:prompt", "hermes_cli.setup:prompt_choice",
-    "hermes_cli.setup:prompt_yes_no", "hermes_cli.cli_output",
-    # plugins/index.md § Read the skill catalog
-    "tools.skills_tool:find_all_skills", "tools.skills_tool:sort_skills", "tools.skills_tool:skill_search_dirs",
-    "tools.skills_tool:locate_skill", "tools.skills_tool:skill_lookup_path_error",
-    "tools.skills_sync:dir_hash", "tools.skill_usage:read_skill_name",
-    # plugins/index.md § platform plugins: read session identity through the task-local context
-    "gateway.session_context:get_session_env",
-})
+_PLUGIN_API = Path(__file__).resolve().parent / "data" / "plugin_api.json"
+
+
+@lru_cache(maxsize=1)
+def _public_api() -> frozenset:
+    """The published plugin API (``hermes_cli/data/plugin_api.json``): ``module`` entries allow the
+    module (underscore names excepted), ``module:Name`` entries allow one name. The docs page
+    ``developer-guide/plugins/public-api.md`` is generated from the same file."""
+    data = json.loads(_PLUGIN_API.read_text(encoding="utf-8-sig"))
+    return frozenset(entry for group in data["groups"] for entry in group["entries"])
+
 
 _SHOWN = 10
 
@@ -73,13 +40,14 @@ _SHOWN = 10
 def _hermes_packages() -> frozenset:
     """Hermes-owned top-level names: pyproject's ``packages.find`` includes plus the root modules
     setup.py ships as ``py-modules`` (every root ``*.py``)."""
-    root = Path(__file__).resolve().parents[1]
+    root = Path(project_root_str())
     try:
         pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
         packages = {name.split(".")[0] for name in pyproject["tool"]["setuptools"]["packages"]["find"]["include"]}
     except (OSError, KeyError, ValueError):
         packages = set(_hermes_top_level()) - {"hermes_plugins", "tests", "evals"}
-    return frozenset((packages | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
+    moved = {name.split(".")[0] for name in MOVES}
+    return frozenset((packages | moved | {p.stem for p in root.glob("*.py")}) - {"setup", "conftest"})
 
 
 def _local_modules(rels) -> set[str]:
@@ -115,7 +83,7 @@ def _imported(node: ast.AST) -> list[tuple[str, str]]:
 
 @lru_cache(maxsize=512)
 def _core_module_exists(module: str) -> bool:
-    path = Path(__file__).resolve().parents[1].joinpath(*module.split("."))
+    path = Path(project_root_str()).joinpath(*current_module(module).split("."))
     return path.with_suffix(".py").is_file() or path.is_dir()
 
 
@@ -132,8 +100,9 @@ def _private_target(module: str, name: str, core: frozenset, local: set[str]) ->
     target = f"{module}.{name}" if name else module
     own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
     hermes = module.split(".")[0] in core and module not in local and not own
-    public = target in _PUBLIC or f"{module}:{name}" in _PUBLIC \
-        or (module in _PUBLIC and not name.startswith("_"))  # ``from gateway.platforms import base`` too
+    public_api, old = _public_api(), original_module(module)
+    public = original_module(target) in public_api or f"{old}:{name}" in public_api \
+        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
     return target if hermes and not public else ""
 
 
@@ -179,15 +148,90 @@ def private_import_findings(plugin_dir: Path) -> list[str]:
 # facade + sibling files. Calling one of their private methods (``db._execute_write(...)``,
 # ``runner._evict_cached_agent(...)``) couples the plugin to core internals exactly like a private
 # import, but no import names it, so the import pass above cannot see it.
-_CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", "agent/turn_*.py",
-                        "gateway/run.py", "gateway/run_*.py", "hermes_cli/plugins.py")
+_CORE_HANDLE_SOURCES = ("run_agent.py", "agent/turn_*.py", "gateway/run.py", "gateway/run_*.py",
+                        "hermes_cli/plugins.py")
+# The removed session store's private method names (main's ``hermes_state.py`` and ``hermes_state_*.py``); they go
+# with the ``hermes_state`` stand-in.
+_REMOVED_STORE_PRIVATE_METHODS = (
+    "_acquire_path_permit", "_acquire_process_permit", "_active_clause", "_active_transcript_counts",
+    "_advance_message_uid_backfill", "_append_detached_result", "_append_messages_in_transaction",
+    "_apply_claimed_batch", "_apply_token_batch", "_archive_and_compact_on_conn", "_archive_named_rows",
+    "_attach_import_parents", "_auto_archive_lineage", "_backfill_gateway_metadata_from_sessions_json",
+    "_backfill_progress", "_bump_conversation_generation", "_bump_session_counters", "_canonical_replayed_user_content",
+    "_capture_retired_generation", "_carried_tail_ids", "_carried_tail_slots", "_carry_parent_timestamps",
+    "_chain_search_where", "_check_transcript_write_guards", "_checkout_read_conn", "_claim_stored_copy",
+    "_clone_message_rows", "_close_conn_logged", "_close_connection_quietly", "_close_read_conn",
+    "_coalesce_token_deltas", "_coerce_or", "_compact_session_cols", "_compile_like_boolean_query",
+    "_compression_tip_on", "_connect_and_init", "_connect_and_init_with_lock_patience", "_connect_read_only",
+    "_contains_cjk", "_copy_of_current_row", "_corrupt_error", "_count_cjk", "_db_file_was_replaced",
+    "_db_has_legacy_inline_fts", "_db_has_trigram_tool_calls_projection", "_db_needs_fts_storage_upgrade",
+    "_decode_content", "_decode_display_metadata", "_decoded_repair_row", "_dedupe_display_generations",
+    "_dedupe_legacy_system_prompts", "_dedupe_replayed_user", "_defer_stale_fts_for_holders",
+    "_delete_routing_entries_for_sessions", "_delete_unreferenced_system_prompts", "_demote_legacy_fts_to_trash",
+    "_describe_search_path", "_disable_close_time_checkpoint", "_display_dedupe_key", "_display_identity",
+    "_display_messages_from_conn", "_display_rows_from_conn", "_display_set", "_drain_token_queue_at_exit",
+    "_drop_all_fts_triggers", "_drop_fts_triggers", "_drop_shadowed_checkpoint_rows", "_encode_content",
+    "_encode_display_metadata", "_end_and_bump", "_ensure_db_file_generation", "_ensure_display_order",
+    "_ensure_fts_schema", "_ensure_unique_title_index", "_ensure_v23_fts_tables", "_enter_fts_fail_open",
+    "_evict_one_idle_read_conn", "_exact_replayed_user_clone_key", "_execute_ddl_script_transactional",
+    "_execute_ddl_skipping_settled_triggers", "_execute_transcript_write", "_execute_write",
+    "_expand_compression_lineage", "_fetch_conversation_rows", "_finalize_search_matches",
+    "_find_duplicate_replayed_user_message", "_find_foreign_import_on_conn", "_fold_summary_carrier",
+    "_foreign_state_db_holders", "_freelist_ratio", "_fts_external_index_empty_with_messages",
+    "_fts_index_is_misaligned_source", "_fts_index_known_empty", "_fts_match_sql", "_fts_rebuild_finish",
+    "_fts_table_exists", "_fts_table_probe", "_fts_teardown_start_table", "_fts_teardown_trash_step",
+    "_fts_triggers_missing", "_fts_update_trigger_needs_narrowing", "_get_read_conn", "_get_session_rich_row",
+    "_get_session_rich_rows_batch", "_guarded_ids", "_halt_db_corrupt", "_halt_if_db_generation_changed",
+    "_handle_quarantine_if_invalid", "_has_fts_trash", "_has_short_cjk_token", "_heal_gateway_routing_pk",
+    "_heal_reset_rows_carrying_a_delegate_marker", "_heal_session_model_usage_pk", "_import_float_or_finite",
+    "_import_int_or_bounded", "_import_int_or_none", "_import_json_object_or_none", "_import_load_json",
+    "_import_non_finite_path", "_import_session_row", "_import_text_or_none", "_index_healed_rows_for_trigram",
+    "_index_held_dicts", "_inherit_parent_session_metadata", "_init_fts", "_init_schema", "_insert_message_rows",
+    "_insert_row", "_insert_session_row", "_is_compression_ancestor", "_is_compression_child_row",
+    "_is_explicit_branch_session", "_is_explicit_fork_child_row", "_is_fts5_unavailable_error",
+    "_is_fts_write_corruption_error", "_is_model_only_row", "_is_structural_corruption_error",
+    "_is_trigram_unavailable_error", "_ledgered_session_ids", "_legacy_display_page", "_like_rows", "_list_row",
+    "_live_pk_columns", "_loaded_view_content", "_match_rows", "_matching_active_ids", "_matching_retired_ids",
+    "_merge_fts_incrementally", "_merge_model_config_json", "_merged_user_run", "_message_column_names",
+    "_message_row_params", "_migrate_broad_fts_update_triggers", "_migrate_misaligned_fts_source",
+    "_migrate_trigram_cron_exclusion", "_migrate_v22_session_model_usage", "_next_chunk_rows",
+    "_normalize_import_message", "_normalize_import_session", "_open_read_only", "_open_writer", "_open_writer_conn",
+    "_optimize_drive", "_optimize_settle", "_optimize_vacuum", "_or_relaxed_query", "_own_profile_name",
+    "_page_pragmas", "_parse_schema_columns", "_pin_connection", "_pinned_read_conn", "_plan_refused_retention",
+    "_present_fts_tables", "_proved_coverage", "_prune_filter_where", "_prune_shadowed_checkpoints", "_prune_where",
+    "_publish_child_session_row", "_publish_compression_child_on_conn", "_quarantine_reason", "_raise_if_db_corrupt",
+    "_raise_if_db_replaced", "_reaction_list", "_reaction_row_query", "_read_all", "_read_ctx", "_read_one",
+    "_read_retrying_ioerr", "_read_rows", "_read_session_number", "_reap_inactive_orphan_desktop_holders",
+    "_reasoning_json_text", "_rebuild_fts_indexes", "_rebuild_table", "_rebuild_table_statements", "_reconcile_columns",
+    "_reconcile_display_orders", "_record_db_file_identity", "_record_model_usage", "_recover_stale_fts",
+    "_recover_stale_fts_locked", "_refresh", "_refresh_fts_stale_state", "_remove_session_files",
+    "_removed_todo_copies", "_reopen_after_close_locked", "_repair_optimize_bookkeeping", "_replays_as",
+    "_reseed_missing_progress", "_reset_fts_index_to_empty", "_resolve_carried_row_ids", "_resolve_title_conflict",
+    "_resume_count_scope", "_resume_lineage_ids", "_retire_canonical_bot_chat_in_transaction", "_retire_donor_segment",
+    "_retire_undrained_queue_rows_conn", "_rewrite_explains", "_rewritten_carry", "_rich_row",
+    "_routing_entries_for_sessions", "_row_identity", "_row_to_message_dict", "_rows_to_conversation", "_run",
+    "_run_admitted_startup_rebuild", "_run_data_migrations", "_sanitize_fts5_query", "_search_cjk",
+    "_search_message_fields", "_search_messages_impl", "_search_messages_like_fallback", "_search_unindexed_gap",
+    "_seed_fts_rebuild_markers", "_serialized_message_row", "_session_lineage_root_to_tip", "_session_row_dict",
+    "_session_turn_lease_key", "_session_turn_lease_key_on_conn", "_set_lineage_column",
+    "_set_lineage_column_in_transaction", "_set_session_title", "_set_session_title_in_transaction",
+    "_settle_lost_generation_locked", "_sleep_before_write_retry", "_split_rewind_target", "_sqlite_supports_fts5",
+    "_sqlite_table_exists", "_stamp_kept_live_prefix", "_stamp_settled_fts_layout", "_stamp_tool_call_uids",
+    "_stop_token_writer", "_store_system_prompt", "_tail_originals", "_tail_rows_after_watermark", "_title_rank",
+    "_todo_copies", "_todo_copy_removed", "_token_writer_loop", "_topic_read", "_topic_read_all", "_topic_read_one",
+    "_transcript_cursor_slot", "_transcript_durable_firsts", "_trigram_eligible_tokens", "_trigram_route_ok",
+    "_trigram_tokenizer_available", "_try_checkpoint", "_try_incremental_merge_fts", "_try_wal_checkpoint",
+    "_uids_active_outside", "_unarchive_auto_archived_lineage", "_uncounted_merged_rows",
+    "_update_token_counts_in_transaction", "_validate_import_message_content", "_validate_import_payload",
+    "_validate_import_session", "_wal_generation_was_lost", "_warn_fts5_unavailable", "_warn_trigram_unavailable",
+    "_with_messages", "_with_removed_identities", "_write_generation", "_write_guards_reject",
+    "_write_model_config_patch", "_write_rowcount", "_write_session_column", "_write_sql", "_write_sql_logged",
+)
 
 
-@lru_cache(maxsize=1)
-def _core_private_methods() -> frozenset:
-    root = Path(__file__).resolve().parents[1]
+def _private_method_names(root: Path, patterns) -> frozenset:
     names: set[str] = set()
-    for pattern in _CORE_HANDLE_SOURCES:
+    for pattern in (found for source in patterns for found in current_globs(source)):
         for path in root.glob(pattern):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8-sig"))
@@ -197,6 +241,12 @@ def _core_private_methods() -> frozenset:
                       if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                       and item.name.startswith("_") and not item.name.startswith("__")}
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def _core_private_methods() -> frozenset:
+    root = Path(project_root_str())
+    return _private_method_names(root, _CORE_HANDLE_SOURCES) | frozenset(_REMOVED_STORE_PRIVATE_METHODS)
 
 
 def _own_names(files: list[tuple[Path, ast.AST]]) -> set[str]:

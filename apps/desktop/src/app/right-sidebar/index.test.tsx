@@ -134,4 +134,21 @@ describe('RightSidebarPane', () => {
       expect(repoStatus).toHaveBeenCalledWith('/repo-tile')
     })
   })
+
+  // #55358: the collapse-all glyph must be the symmetric three-line one from
+  // the codicon vocabulary. `collapse-all` draws two offset rounded squares —
+  // at 13px its top edge reads as an asymmetric hamburger line. The header
+  // action group must also stay on the shared Codicon primitive (DESIGN.md
+  // iconography: no third icon set / hand-rolled SVGs inside a control group).
+  it('renders the collapse-all affordance with the symmetric three-bars glyph', async () => {
+    setCurrentCwd('/repo')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    const collapse = await screen.findByRole('button', { name: 'Collapse all folders' })
+    const glyph = collapse.querySelector('.codicon')
+    expect(glyph).not.toBeNull()
+    expect(glyph?.classList.contains('codicon-three-bars')).toBe(true)
+    expect(collapse.querySelector('svg')).toBeNull()
+  })
 })

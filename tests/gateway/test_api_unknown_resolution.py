@@ -12,10 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
+from gateway.session_authority import admission_row, initialize_session_authority
 from gateway.session_api import restore_api_session
-from hermes_state import SessionDB
-from hermes_state_runtime import claim_session_input, list_session_admissions
 
 
 _OWNER = ContextVar("test_api_unknown_owner", default="owner")
@@ -53,7 +51,6 @@ def _adapter(runner, db):
 async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    db = SessionDB(tmp_path / "state.db")
     executed = []
 
     async def answer(event):
@@ -64,12 +61,14 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         execution_result.get()["result"] = result
         return result["final_response"]
 
+    from persistence_assembly import open_persistence, profile_scope
     runner = SimpleNamespace(
-        _session_db=db,
         session_store=store,
         _draining=False,
         _handle_message=answer,
+        persistence=open_persistence(profile_scope(home=tmp_path)),
     )
+    db = runner.persistence
     first = await initialize_session_authority(
         runner, profile_id="default", instance_id="api-owner-1"
     )
@@ -101,15 +100,15 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         tasks = list(adapter._active_run_tasks.values())
         await asyncio.sleep(0)
 
-        rows = list_session_admissions(db, session_id="api-session")
-        head = claim_session_input(db, epoch=first.epoch, session_id="api-session")
-        assert head["admission_id"] == rows[0]["admission_id"]
+        rows = [admission_row(row) for row in db.admissions.list(session_id="api-session")]
+        head = db.admissions.claim(epoch=first.epoch, session_id="api-session")
+        assert head.admission_id == rows[0]["admission_id"]
 
         restarted = await initialize_session_authority(
             runner, profile_id="default", instance_id="api-owner-2"
         )
         restore_api_session(restarted, "api-session")
-        rows = list_session_admissions(db, session_id="api-session")
+        rows = [admission_row(row) for row in db.admissions.list(session_id="api-session")]
         assert [row["status"] for row in rows] == ["unknown", "queued"]
         await client.close()
 
@@ -124,6 +123,7 @@ async def _restarted_api_runs(tmp_path, monkeypatch, *, idempotent=True):
         await client.close()
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
+        runner.persistence.close()
         store.close_all_db_handles()
         raise
 
@@ -138,7 +138,7 @@ async def _close_fixture(client, adapters, store, tasks):
     for adapter in adapters:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-    adapters[-1].gateway_runner.session_authority.db.close()
+    adapters[-1].gateway_runner.persistence.close()
     store.close_all_db_handles()
 
 
@@ -174,8 +174,8 @@ async def test_http_resolve_unknown_releases_follower_once_without_replaying_hea
         await owner.sessions["api-session"].task
         assert executed == ["FOLLOWER"]
         statuses = {
-            row["admission_id"]: (row["status"], row["outcome"])
-            for row in list_session_admissions(owner.db, session_id="api-session", pending_only=False)
+            row.admission_id: (row.status, row.outcome)
+            for row in owner.persistence.admissions.list(session_id="api-session", pending_only=False)
         }
         assert statuses[unknown["admission_id"]] == ("terminal", "interrupted")
         assert statuses[follower["admission_id"]] == ("terminal", "completed")
@@ -239,8 +239,8 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
         if drain is not None:
             await asyncio.wait_for(drain, 10)
         rows = {
-            row["admission_id"]: row["status"]
-            for row in list_session_admissions(owner.db, session_id="api-session")
+            row.admission_id: row.status
+            for row in owner.persistence.admissions.list(session_id="api-session")
         }
         assert rows == {
             unknown["admission_id"]: "unknown",

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli.sizefmt import format_bytes as _fmt_bytes
@@ -44,7 +43,7 @@ def _orphan_label(p: dict, *, pre_v2: bool = False) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    from tools.checkpoint_maintenance import store_status
+    from agent.checkpoints.maintenance import store_status
 
     info = store_status()
     base = info["base"]
@@ -119,7 +118,7 @@ def _print_archives(archives) -> None:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    from tools.checkpoint_maintenance import prune_checkpoints, store_status
+    from agent.checkpoints.maintenance import prune_checkpoints, store_status
 
     delete_orphans = not args.keep_orphans
 
@@ -203,11 +202,11 @@ def _confirmed(args: argparse.Namespace, prompt: str) -> bool:
 
 
 def cmd_clear(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import CHECKPOINT_BASE
-    from tools.checkpoint_maintenance import clear_all, store_status
+    from agent.checkpoints.manager import _resolve_checkpoint_base
+    from agent.checkpoints.maintenance import clear_all, store_status
 
     info = store_status()
-    if info["total_size_bytes"] == 0 and not Path(CHECKPOINT_BASE).exists():
+    if info["total_size_bytes"] == 0 and not _resolve_checkpoint_base().exists():
         print("Nothing to clear — checkpoint base does not exist.")
         return 0
 
@@ -229,7 +228,7 @@ def cmd_clear(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_legacy(args: argparse.Namespace) -> int:
-    from tools.checkpoint_maintenance import clear_legacy, store_status
+    from agent.checkpoints.maintenance import clear_legacy, store_status
 
     info = store_status()
     legacy = info.get("legacy_archives", [])

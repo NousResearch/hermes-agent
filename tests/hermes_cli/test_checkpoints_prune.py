@@ -66,7 +66,7 @@ _BLANK_MARKER_PRE_V2_STATUS = {
 
 
 def _patch_checkpoint_manager(monkeypatch, status: dict, prune_calls: list):
-    import tools.checkpoint_maintenance as ckpt_mgr
+    import agent.checkpoints.maintenance as ckpt_mgr
 
     monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: status)
 
@@ -239,7 +239,7 @@ def test_cmd_status_names_v2_row_by_hash_when_workdir_missing(monkeypatch, capsy
         "pre_v2_projects": [], "legacy_archives": [],
     }
     monkeypatch.setattr(
-        "tools.checkpoint_maintenance.store_status", lambda *a, **k: status,
+        "agent.checkpoints.maintenance.store_status", lambda *a, **k: status,
     )
 
     rc = checkpoints_cli.cmd_status(_ns())
@@ -272,7 +272,7 @@ def test_orphan_verdict_layout_rules():
     was two mirrored implementations (store_status vs prune_checkpoints) that
     could drift. It is now one shared _orphan_verdict; this pins both layouts'
     rules so the single implementation stays correct."""
-    import tools.checkpoint_maintenance as cm
+    import agent.checkpoints.maintenance as cm
 
     v = cm._orphan_verdict
     # Pre-v2 (no parent-identity channel, blank workdir kept).
@@ -299,7 +299,7 @@ def test_unreachable_reason_parent_gone_wording(tmp_path):
     parent-identity metadata channel, so "no parent identity recorded" is a
     category error there — it gets the same conservative wording as v2, while
     a v2 record that *could* have recorded one keeps the specific message."""
-    import tools.checkpoint_maintenance as cm
+    import agent.checkpoints.maintenance as cm
 
     workdir = str(tmp_path / "gone" / "proj")
     assert cm._workdir_unreachable_reason(
@@ -342,7 +342,7 @@ def test_cmd_status_lists_pre_v2_shadow_repos(monkeypatch, capsys):
         "legacy_archives": [],
     }
     monkeypatch.setattr(
-        "tools.checkpoint_maintenance.store_status", lambda *a, **k: status,
+        "agent.checkpoints.maintenance.store_status", lambda *a, **k: status,
     )
 
     rc = checkpoints_cli.cmd_status(_ns())

@@ -408,19 +408,3 @@ web:
 ### `web_extract` 返回截断内容并附有 `[TRUNCATED]` 尾注
 
 对于超出字符预算的页面这是预期行为。尾注会给出保存完整干净文本的磁盘文件，以及分页读取被省略中间部分的确切 `read_file` 调用。若要内联查看更多内容，请在 `config.yaml` 中调大 `web.extract_char_limit`，或在调用时传入更大的 `char_limit`。
-
----
-
-## 可选技能：`searxng-search`
-
-对于需要直接通过 `curl` 使用 SearXNG 的 agent（例如作为网页工具集不可用时的回退），请安装 `searxng-search` 可选技能：
-
-```bash
-hermes skills install official/research/searxng-search
-```
-
-这将添加一个技能，教 agent 如何：
-- 通过 `curl` 或 Python 调用 SearXNG JSON API
-- 按分类筛选（`general`、`news`、`science` 等）
-- 处理分页和错误情况
-- 在 SearXNG 不可达时优雅降级

@@ -21,7 +21,6 @@ def isolate_skills(tmp_path, monkeypatch):
     """Redirect SKILLS_DIR to a temp directory."""
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return skills_dir

@@ -305,7 +305,9 @@ export const zhHantChrome = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
-      fastFailed: '快速模式更新失敗'
+      fastFailed: '快速模式更新失敗',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失敗'
     },
     gatewayMenu: {
       gateway: '閘道',
@@ -399,6 +401,15 @@ export const zhHantChrome = {
           subagent_definitions: '子代理定義',
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
+        },
+        compact: {
+          action: '壓縮對話',
+          busyHint: '請先完成或停止目前的回覆',
+          confirm: '壓縮',
+          hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
+          question: '將此對話壓縮為摘要？',
+          questionNamed: title => `將「${title}」壓縮為摘要？`,
+          working: '正在壓縮…'
         },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',

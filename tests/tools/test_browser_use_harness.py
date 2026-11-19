@@ -30,8 +30,13 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
     from tools import browser_session, browser_supervisor
 
     probe = tmp_path / "probe.py"
+    # The child's view goes to a file: browser_exec output is redacted, so an env dump on stdout
+    # would show its API keys as *** rather than what the child actually received.
+    child_view = tmp_path / "child.json"
     probe.write_text("import json, os, sys\n"
-                     "print(json.dumps({'argv': sys.argv, 'stdin': sys.stdin.read(), 'env': dict(os.environ)}))\n",
+                     f"open({str(child_view)!r}, 'w', encoding='utf-8').write(json.dumps("
+                     "{'argv': sys.argv, 'stdin': sys.stdin.read(), 'env': dict(os.environ)}))\n"
+                     "print('ok')\n",
                      encoding="utf-8")
     monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(probe)])
     monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
@@ -55,7 +60,7 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("ANONYMIZED_TELEMETRY", raising=False)
     result = json.loads(bu.browser_exec("print('payload')", session="research", task_id="owner"))
     assert result["success"], result
-    child = json.loads(result["output"])
+    child = json.loads(child_view.read_text(encoding="utf-8"))
     assert child["stdin"] == "print('payload')"
     for key in ("PYTHONHOME", "OPENAI_API_KEY", "BROWSERBASE_API_KEY", "_HERMES_BU_PRIVATE_BROWSER"):
         assert key not in child["env"]

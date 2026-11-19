@@ -1,0 +1,45 @@
+name: solverforge-routing
+repo: https://github.com/blackopsrepl/hermes-solverforge-routing
+sha: 6f8ea8251881a30fcd86f9607509034a60848de9
+title: "SolverForge Routing"
+description: "Personal multi-stop driving trips: tell Hermes where you need to go, review the places it finds, and a SolverForge constraint solver orders the stops on OpenStreetMap roads. Change plans in the conversation (skip a stop, choose the first visit, add a place, finish elsewhere) and the trip is repaired, keeping visited stops, the next stop and before rules; an older solve never overwrites a newer edit, and results are labelled best-found, not proven optimal. Desktop: the road map beside the chat, a route card, a status-bar chip, Google Maps, Apple Maps and OpenStreetMap links, and one QR code at a time for the phone. Disclosure — `hermes solverforge-routing install` (or /routing install) downloads one engine binary for your platform from this repository's own engine-v0.2.2 GitHub release, built by its release workflow with a GitHub build attestation, and refuses it unless its SHA-256 matches the value pinned in engine_bin.py; the agent cannot start that download. Place searches the user asks for send the query and region to Nominatim (configurable with geocoder_url). The first solve in a new area sends a bounding box to Overpass to download OpenStreetMap roads; each solve then runs the engine once as a subprocess (JSON on stdin and stdout). The map pane loads OpenStreetMap tiles, which reveal the visible area and your IP to the tile servers. Opening a navigation link or scanning its QR code sends the stop coordinates to that provider. The route database, road cache and engine stay in <hermes home>/plugin-data/solverforge-routing/; a geocoder pacing lock file (a timestamp only, shared by all profiles) is kept in ~/.cache/hermes-solverforge-routing/. No credentials, no location tracking, no telemetry, no background process."
+maintainer: blackopsrepl
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "0.2.2"
+docs_url: https://github.com/blackopsrepl/hermes-solverforge-routing#readme
+image: https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-routing/6f8ea8251881a30fcd86f9607509034a60848de9/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-routing/6f8ea8251881a30fcd86f9607509034a60848de9/docs/screenshots/route-pane.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-routing/6f8ea8251881a30fcd86f9607509034a60848de9/docs/screenshots/navigation.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-routing/6f8ea8251881a30fcd86f9607509034a60848de9/docs/architecture.png
+readme: true
+platforms:
+  - linux
+  - macos
+known_issues:
+  - "Run `hermes solverforge-routing install` once after installing the plugin: the engine binary is downloaded separately (about 10 MB) and checked against a pinned SHA-256"
+  - "Engine builds exist for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x86_64)"
+  - "Hermes builds a session's tool list from the plugins it saw at the previous launch, so the first session right after installing has no routing tools: start Hermes once more"
+  - "Not turn-by-turn navigation: no live traffic, and turn restrictions, barriers and conditional access are not modelled yet; check the route in your navigation app"
+capabilities:
+  provides_tools:
+    - route_search_locations
+    - route_confirm_location
+    - route_plan_places
+    - route_confirm_plan
+    - route_status
+    - route_current
+    - route_set_origin
+    - route_set_end
+    - route_set_round_trip
+    - route_add_stop
+    - route_remove_stop
+    - route_mark_visited
+    - route_set_next
+    - route_precedence
+    - route_solve
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

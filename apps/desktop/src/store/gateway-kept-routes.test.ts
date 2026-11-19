@@ -22,6 +22,14 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+// A redial reopens a scope that has opened before, which loads this module on demand. The real
+// graph is a cold ~1 s transform here (and then fails on the partial session mock), outlasting
+// vi.waitFor's budget under load.
+vi.mock('@/store/session-states', () => ({
+  reconcileBusyStatesOnReconnect: vi.fn(),
+  resetRouteOwnedTileRuntimeBindings: vi.fn(),
+  resetTileRuntimeBindings: vi.fn()
+}))
 
 const {
   closeSecondaryGateways,

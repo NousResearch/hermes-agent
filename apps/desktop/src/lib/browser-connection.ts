@@ -5,11 +5,11 @@ import { webappSignInRequired } from '@/lib/browser-launch-session'
 import { signInSavedConnection, signOutSavedConnection } from '@/lib/browser-saved-connection-oauth'
 import type { BrowserSavedConnections } from '@/lib/browser-saved-connections'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, UnservedProfileError } from '@/lib/browser-served-profiles'
+import { logoutBrowserSession } from '@/lib/browser-session'
 import {
   type AudioSocketPath,
   type BrowserBootstrap,
   BrowserReauthRequiredError,
-  endpointUrl,
   gatewaySocketUrl,
   navigateToBrowserLogin,
   ticketedWebsocketUrl
@@ -378,14 +378,7 @@ export function createBrowserConnectionBridge({
           : { connected: false, error: 'Only this gateway can be signed out here.', ok: false }
       }
 
-      const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {
-        credentials: 'same-origin',
-        method: 'POST'
-      })
-
-      if (!response.ok) {
-        throw new Error(`Sign out failed (${response.status})`)
-      }
+      await logoutBrowserSession(bootstrap.basePath)
 
       const login = new URL(`${bootstrap.basePath}/login`, window.location.origin)
       navigateToBrowserLogin(new BrowserReauthRequiredError('Signed out', login.href))

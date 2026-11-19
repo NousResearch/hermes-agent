@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import { clerkBrowserEnabled, clerkEnabled, clerkPublishableKey } from '@/lib/clerk-config'
 
+import { BrowserClerkAuthGate } from './browser-clerk-auth-gate'
 import { ClerkSessionBridge } from './clerk-session-bridge'
 
 const AUTH_CHANNEL = 'unitalk-auth'
@@ -20,14 +21,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     )
   }
 
-  // Browser-hosted Desktop has no Electron bridge and no full-page auth gate:
-  // mount Clerk so host.clerk can open its sign-in modal from the user panel,
-  // while the app itself keeps rendering.
   if (clerkBrowserEnabled) {
     return (
       <BrowserClerkProvider publishableKey={clerkPublishableKey}>
-        {children}
-        <ClerkSessionBridge />
+        <BrowserClerkAuthGate>{children}</BrowserClerkAuthGate>
       </BrowserClerkProvider>
     )
   }

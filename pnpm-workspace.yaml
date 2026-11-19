@@ -35,6 +35,8 @@ minimumReleaseAge: 20160
 minimumReleaseAgeExclude:
   - electron@44.10.2  # CVE-2026-111497 (Node2Shell, CISA KEV): 44.9.3 bundles vulnerable Node 24.22.0; 44.10.2 bundles 24.22.2
   - pele@1.13.0  # the desktop diagram swap was parity-checked on it (math labels need 1.8.0+)
+  - ox@0.14.65  # approved existing Clerk lockfile dependency for Webapp instance handoff validation
+  - viem@2.57.19  # approved existing Clerk lockfile dependency for Webapp instance handoff validation
 
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7

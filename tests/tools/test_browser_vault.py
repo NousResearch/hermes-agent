@@ -46,6 +46,11 @@ def store(tmp_path):
     return VaultStore(base_dir=tmp_path / "vault")
 
 
+# The identifier box of an identifier-first step: the trusted-typing tests drive their keystrokes
+# through it, since the password never goes through Input.insertText.
+_EMAIL_BOX = {"autocomplete": "email", "formIndex": 0, "index": 1, "label": "", "name": "email", "type": "email"}
+
+
 def _add_login(store, origin="https://example.com", password="s3cret-pw"):
     return store.add_item(
         kind="login",
@@ -490,13 +495,12 @@ class TestBrowserVaultTools:
         ]
 
     def test_trusted_typing_types_the_secret_once_when_focus_holds(self, store):
-        """A controlled input accepts a TRUSTED keystroke: the password goes in through the browser,
+        """A controlled input accepts a TRUSTED keystroke: the identifier goes in through the browser,
         not through a JS value write, and the read-back is what reports the fill."""
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
-                     "label": "", "name": "pw", "type": "password"}]
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
         typed, secret_exprs = [], []
         patches = self._trusted_harness(controls, focus_result={"focused": 1},
                                         verify_result={"landed": 1, "reverted": 0, "missing": []},
@@ -506,17 +510,16 @@ class TestBrowserVaultTools:
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is True and out["filled_fields"] == 1
-        assert typed == ["s3cret-pw"]  # one keystroke per text field, and it is the secret
+        assert typed == ["user@example.com"]  # one keystroke per text field
         assert "s3cret-pw" not in raw
 
     def test_trusted_typing_aborts_on_focus_drift_and_types_nothing(self, store):
-        """Input.insertText hits whatever holds focus. If the target does not hold it, the secret is
+        """Input.insertText hits whatever holds focus. If the target does not hold it, the value is
         never typed — the fill refuses instead of gambling on the focused element."""
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
-                     "label": "", "name": "pw", "type": "password"}]
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
         typed, secret_exprs = [], []
         patches = self._trusted_harness(controls,
                                         focus_result={"refused": "focus_lost", "tag": "INPUT", "found": "BODY"},
@@ -535,8 +538,7 @@ class TestBrowserVaultTools:
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
-                     "label": "", "name": "pw", "type": "password"}]
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
         typed, secret_exprs = [], []
         patches = self._trusted_harness(controls, focus_result={"focused": 1},
                                         verify_result={"landed": 0, "reverted": 1, "missing": []},
@@ -547,18 +549,17 @@ class TestBrowserVaultTools:
         out = json.loads(raw)
         assert out["success"] is False and out["error_type"] == "fill_reverted"
         # The bulk insert, then one retype key by key: still rejected, so the fill aborts
-        assert typed[0] == "s3cret-pw"
-        assert typed[1:] == list("s3cret-pw")
+        assert typed[0] == "user@example.com"
+        assert typed[1:] == list("user@example.com")
 
     def _per_key_harness(self, store, sup, *, focus_answers, verify_answers):
-        """A one-password page whose bulk insert reads back wrong, so the fill retypes key by key.
+        """An identifier step whose bulk insert reads back wrong, so the fill retypes key by key.
         ``focus_answers`` / ``verify_answers`` are consumed one per check (the last repeats); a callable
         focus answer gets the supervisor and the focus script."""
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
-                     "label": "", "name": "pw", "type": "password"}]
+        controls = [_EMAIL_BOX]
 
         def fake_eval(task_id, expression):
             if "location.href" in expression:
@@ -623,11 +624,11 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False and out["error_type"] == "focus_lost"
         # the bulk insert, then the first retyped key; focus was gone before the second
-        assert [t for t, _ in sup.typed] == ["s3cret-pw", "s"]
+        assert [t for t, _ in sup.typed] == ["user@example.com", "u"]
 
     def test_keystrokes_never_follow_the_supervisor_to_another_session(self, store):
         """The focus check validated the page on session S1; when another tool retargets the
-        supervisor before the keystroke, the secret is not typed into the new session."""
+        supervisor before the keystroke, the value is not typed into the new session."""
         from tools import browser_vault_tool
 
         sup = self._SessionSup()
@@ -663,7 +664,7 @@ class TestBrowserVaultTools:
 
         def focus_check(_sup, expression):
             nonce = re.search(r'const nonce = "([0-9a-f]+)"', expression).group(1)
-            fill = [{"index": 1, "token": "current-password"}]
+            fill = [{"index": 1, "token": "email"}]
             if expression == build_focus_js(fill, nonce, expected_origin="https://example.com"):
                 page["focused"] = True  # this check focuses the field first
             return {"focused": 1} if page["focused"] else {"refused": "focus_lost", "tag": "INPUT", "found": "INPUT"}
@@ -674,7 +675,7 @@ class TestBrowserVaultTools:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False and out["error_type"] == "focus_lost"
-        assert [t for t, _ in sup.typed] == ["s3cret-pw", "s"]
+        assert [t for t, _ in sup.typed] == ["user@example.com", "u"]
 
     def test_every_secret_script_is_pinned_to_the_session_the_fill_started_on(self, store):
         """The read-back carries the expected values and runs while the page may move on: it, the
@@ -1100,7 +1101,7 @@ class TestBrowserVaultTools:
         assert any("s3cret-pw" in e for e in secret_exprs)
         assert not any("user@example.com" in e or '"index": 0' in e for e in secret_exprs)
 
-    def test_an_unlabelled_identifier_box_is_typed_like_the_password(self, store):
+    def test_an_unlabelled_identifier_box_is_typed_not_written_by_js(self, store):
         """The fallback's box is unclassified, but it is a text field: with a working supervisor it
         is typed (trusted input), not written by the JS path a controlled form re-renders empty."""
         from tools import browser_vault_tool
@@ -1108,8 +1109,7 @@ class TestBrowserVaultTools:
         sup = self._SessionSup()
         meta, patches = self._per_key_harness(
             store, sup, focus_answers=[lambda _s, e: {"focused": int(re.search(r'"index": (\d+)', e).group(1))}],
-            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}, {"landed": 1, "reverted": 0, "missing": []},
-                            {"landed": 2, "reverted": 0, "missing": []}])
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}, {"landed": 2, "reverted": 0, "missing": []}])
         controls = [{"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
                     {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
                      "type": "password"}]
@@ -1123,11 +1123,11 @@ class TestBrowserVaultTools:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is True, out
-        assert sorted(t for t, _ in sup.typed) == sorted(["user@example.com", "s3cret-pw"])
+        assert [t for t, _ in sup.typed] == ["user@example.com"]  # the password goes by the JS write
 
     def test_fill_writes_the_identifier_by_default(self, store):
-        """A login fill covers both fields of a login. The identifier goes through the same trusted
-        path as the password: a normal input tool writes the value into the DOM without the
+        """A login fill covers both fields of a login. The identifier is typed as trusted input (the
+        password goes by the guarded JS write): a normal input tool writes the value into the DOM without the
         framework accepting it, and a controlled form then re-renders the field empty."""
         from tools import browser_vault_tool
 
@@ -1136,7 +1136,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
             {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
         ]
-        typed = []
+        typed, secret_exprs = [], []
 
         def fake_eval(task_id, expression):
             if "location.href" in expression:
@@ -1144,6 +1144,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps(controls)}
 
         def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
             if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
                 return {"success": True, "result": json.dumps({"ok": True})}
             if 'refused: "focus_lost"' in expression:
@@ -1176,8 +1177,8 @@ class TestBrowserVaultTools:
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is True
-        # The password is filled first (it anchors the form lookup), the identifier second
-        assert typed == ["s3cret-pw", "user@example.com"]
+        assert typed == ["user@example.com"]
+        assert any("s3cret-pw" in e and "filled }" in e for e in secret_exprs)
         assert out["filled_fields"] == 2
         assert "s3cret-pw" not in raw
 
@@ -1188,8 +1189,7 @@ class TestBrowserVaultTools:
         from tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
-                     "label": "", "name": "pw", "type": "password"}]
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
         typed = []
         verifies = []
 
@@ -1232,8 +1232,8 @@ class TestBrowserVaultTools:
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is True
-        assert typed[0] == "s3cret-pw"              # the bulk insert
-        assert typed[1:] == list("s3cret-pw")       # the retype, one key at a time
+        assert typed[0] == "user@example.com"              # the bulk insert
+        assert typed[1:] == list("user@example.com")       # the retype, one key at a time
         assert out["filled_fields"] == 1
 
     def test_fill_toctou_navigation_writes_nothing(self, store):

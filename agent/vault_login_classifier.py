@@ -441,10 +441,11 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     and pulling it back would hide that it did. The fill script's origin guard runs first: the next
     keystroke goes wherever focus is, so focus is only vouched for on ``expected_origin``.
 
-    Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
+    Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field, and
+    never a password: secrets go by :func:`build_fill_js` on their stamped control, not by keystroke.
     Returns (by value): ``{"focused": <index>}`` or
     ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
-    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}`` /
+    ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}`` /
     ``{"refused": "frame_on_page"}`` (a frame can take focus before the keystroke lands).
     """
     payload = json.dumps(
@@ -468,10 +469,6 @@ __ORIGIN_GUARD__
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
   if (!el) return { __proto__: null, refused: "not_found" };
-  // Same guard as the fill script: a password fill never lands in a text box.
-  if (f.token === "current-password" && el.type !== "password") {
-    return { __proto__: null, refused: "not_password" };
-  }
   // Selecting the field's text makes the next Input.insertText replace a prefilled value, not prefix it.
   if (__REFOCUS__) { try { el.focus(); el.select(); } catch (e) { /* focus can throw on a detached node */ } }
   let active = document.activeElement;

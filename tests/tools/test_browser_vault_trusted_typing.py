@@ -22,7 +22,11 @@ from tests.bot_desktop_lease import reset_lease
 from tools.bot_desktop import lease, runtime
 
 PASSWORD = "s3cret-pw"
+IDENTIFIER = "user-7731@example.com"
+# A login form: the identifier box is typed as trusted input, the password goes by the guarded JS write.
+_ID = {"autocomplete": "username", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"}
 _PW = {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"}
+_LOGIN = [_ID, _PW]
 
 
 class _Supervisor:
@@ -60,6 +64,8 @@ class _Supervisor:
             return {"landed": expression.count('"index"'), "reverted": 0, "missing": []}
         if "unstamped" in expression:
             return {"unstamped": True}
+        if "filled }" in expression:
+            return {"filled": expression.count('"index"')}
         return self.controls
 
     def insert_text(self, text, *, session_id, document=None, **kwargs):
@@ -79,12 +85,12 @@ def _fresh_lease(monkeypatch):
     reset_lease()
 
 
-def _fill(sup, tmp_path, *, bot_desktop=False, page=lambda t: None, with_identifier=False):
+def _fill(sup, tmp_path, *, bot_desktop=False, page=lambda t: None, with_identifier=True):
     from tools import browser_vault_tool
 
     store = VaultStore(base_dir=tmp_path / "vault")
     meta = store.add_item(kind="login", label="Example", origin="https://example.com",
-                          secret={"identifier_type": "phone", "identifier": "+48600100200",
+                          secret={"identifier_type": "email", "identifier": IDENTIFIER,
                                   "password": PASSWORD, "origin": "https://example.com"})
     with ExitStack() as stack:
         stack.enter_context(patch("agent.vault_store.get_vault_store", return_value=store))
@@ -98,7 +104,7 @@ def _fill(sup, tmp_path, *, bot_desktop=False, page=lambda t: None, with_identif
 def test_a_redirect_between_the_focus_check_and_the_keystroke_types_nothing(tmp_path):
     """The session id survives a navigation; the document does not. The keystroke carries the
     document the focus check ran on, so the redirected page's focused input never gets it."""
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
 
     def redirect():
         sup.document += 1  # e.g. a login page that redirects on focus, same tab, same session
@@ -110,10 +116,10 @@ def test_a_redirect_between_the_focus_check_and_the_keystroke_types_nothing(tmp_
     assert PASSWORD not in json.dumps(out)
 
 
-def test_without_a_redirect_the_password_is_typed(tmp_path):
-    sup = _Supervisor([_PW])
+def test_without_a_redirect_the_identifier_is_typed(tmp_path):
+    sup = _Supervisor(_LOGIN)
     out = _fill(sup, tmp_path)
-    assert out["success"] is True and sup.typed == [PASSWORD]
+    assert out["success"] is True and sup.typed == [IDENTIFIER]
 
 
 class _FramedPage(_Supervisor):
@@ -136,14 +142,14 @@ def test_a_page_with_a_frame_gets_the_js_write_not_a_keystroke(tmp_path):
     """A frame can take focus from its own process between the focus check and the keystroke, and
     Input.insertText would type the password into it. Such a page gets the JS fill, which writes
     the stamped control itself."""
-    sup = _FramedPage([_PW])
+    sup = _FramedPage(_LOGIN)
     out = _fill(sup, tmp_path)
     assert out["success"] is True and sup.typed == []
-    assert any(PASSWORD in s and "filled }" in s for s in sup.scripts)
+    assert any(PASSWORD in s and IDENTIFIER in s and "filled }" in s for s in sup.scripts)
 
 
 def test_a_frame_that_appears_after_the_probe_stops_the_keystroke(tmp_path):
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     answer = sup._answer
     sup._answer = lambda e: {"refused": "frame_on_page"} if 'refused: "focus_lost"' in e else answer(e)
     out = _fill(sup, tmp_path)
@@ -153,7 +159,7 @@ def test_a_frame_that_appears_after_the_probe_stops_the_keystroke(tmp_path):
 def test_a_takeover_during_the_focus_check_stops_the_keystroke(tmp_path):
     """A human can take the Bot Desktop screen while a focus check is in flight. The keystroke is a
     write like any secret script: it is admitted again right before it is sent."""
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     sup.on_focus = lambda: lease.acquire("human")
     out = _fill(sup, tmp_path, bot_desktop=True)
     assert out["success"] is False and out["error_type"] == "human_has_control"
@@ -163,7 +169,7 @@ def test_a_takeover_during_the_focus_check_stops_the_keystroke(tmp_path):
 def test_a_session_moved_during_the_focus_check_reports_the_move(tmp_path):
     """The supervisor moved to another tab while the focus check ran: the fill says the browser
     moved (retry), not that focus was lost on the page."""
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     real = sup.evaluate_runtime
 
     def moving(expression, **kwargs):
@@ -180,7 +186,7 @@ def test_a_session_moved_during_the_focus_check_reports_the_move(tmp_path):
 def test_a_channel_change_during_the_focus_check_reports_the_move(tmp_path):
     """A plugin page that appears mid-fill takes the operation off its checked channel: the next
     script is refused with supervisor_required, and that is the cause the fill reports."""
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     plugin: dict[str, Any] = {"page": None}
 
     class _Plugin:
@@ -252,7 +258,7 @@ def test_a_page_defined_then_cannot_answer_the_checks_before_a_keystroke(tmp_pat
     and the password would be typed into it. The checks' own refusal decides instead. Two layers stop
     it, each on its own: the verdicts have no prototype to inherit ``then`` from, and the vault evals
     are not awaited, so even an ordinary object literal comes back as the script returned it."""
-    sup = _ThenablePage([_PW], null_prototype=null_prototype)
+    sup = _ThenablePage(_LOGIN, null_prototype=null_prototype)
     out = _fill(sup, tmp_path)
     assert out["success"] is False and out["error_type"] == "origin_changed", out
     assert sup.typed == []
@@ -262,7 +268,7 @@ def test_a_page_defined_then_cannot_answer_the_checks_before_a_keystroke(tmp_pat
 def test_a_takeover_between_two_keys_of_a_retype_stops_the_next_key(tmp_path):
     """A masked field is retyped one key at a time, 60 ms apart and each behind its own focus check:
     a human who takes the screen between two keys gets none of the keys after it."""
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     verifies = {"n": 0}
     real = sup._answer
 
@@ -285,7 +291,7 @@ def test_a_takeover_between_two_keys_of_a_retype_stops_the_next_key(tmp_path):
     with patch("tools.browser_vault_tool._TYPE_PER_KEY_DELAY_S", 0):
         out = _fill(sup, tmp_path, bot_desktop=True)
     assert out["success"] is False and out["error_type"] == "human_has_control", out
-    assert sup.typed == [PASSWORD, PASSWORD[0]]
+    assert sup.typed == [IDENTIFIER, IDENTIFIER[0]]
 
 
 def test_a_moved_channel_is_reported_with_hermes_text_not_the_browser_error(tmp_path):
@@ -293,7 +299,7 @@ def test_a_moved_channel_is_reported_with_hermes_text_not_the_browser_error(tmp_
     the browser's (a page exception's message is in it), so the fill reports Hermes's fixed text."""
     from tools.browser_vault_tool import _MOVED
 
-    sup = _Supervisor([_PW])
+    sup = _Supervisor(_LOGIN)
     real = sup.evaluate_runtime
 
     def page_error(expression, **kwargs):
@@ -306,3 +312,36 @@ def test_a_moved_channel_is_reported_with_hermes_text_not_the_browser_error(tmp_
     assert out["success"] is False and out["error_type"] == "supervisor_required", out
     assert out["error"] == _MOVED["error"]
     assert sup.typed == []
+
+
+@pytest.mark.parametrize("mangled", [False, True], ids=["bulk", "per-key-retype"])
+def test_the_password_is_never_sent_as_a_keystroke(tmp_path, mangled):
+    """Input.insertText lands wherever focus is when the browser processes it, and a frame no page
+    script can see (inside a closed shadow root) can take focus after the check. The password goes by
+    the guarded JS write on its stamped control on every path; only the identifier is typed, as one
+    insert or, when a mask mangled it, key by key."""
+    sup = _Supervisor(_LOGIN)
+    scripts: list[str] = []
+    answer = sup._answer
+    reads = {"n": 0}
+
+    def recording(expression):
+        scripts.append(expression)
+        if "reverted" in expression and mangled:
+            reads["n"] += 1
+            if reads["n"] == 1:  # the identifier's bulk insert reads back wrong: retype key by key
+                return {"landed": 0, "reverted": 1, "missing": []}
+        return answer(expression)
+
+    sup._answer = recording
+    with patch("tools.browser_vault_tool._TYPE_PER_KEY_DELAY_S", 0):
+        out = _fill(sup, tmp_path)
+    assert out["success"] is True and out["filled_fields"] == 2, out
+    assert sup.typed == ([IDENTIFIER] + list(IDENTIFIER) if mangled else [IDENTIFIER])
+    assert any(PASSWORD in s and "filled }" in s for s in scripts)  # written by the guarded JS fill
+
+
+def test_a_password_only_step_types_nothing(tmp_path):
+    sup = _Supervisor([_PW])
+    out = _fill(sup, tmp_path)
+    assert out["success"] is True and sup.typed == []

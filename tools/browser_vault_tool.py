@@ -633,9 +633,10 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
 def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = True) -> str:
     """Fill the current page's login from a vault handle: the identifier and the password.
 
-    Both fields go through the same path, so both are typed as trusted browser input and read
-    back. That matters on a framework-controlled form: a normal input tool writes the value into
-    the DOM without React/Vue/MUI accepting it, and the page then re-renders the field empty.
+    The identifier is typed as trusted browser input: a normal input tool writes the value into
+    the DOM without React/Vue/MUI accepting it, and the page then re-renders the field empty. The
+    password goes by the guarded JS write on its stamped control (never a keystroke, which lands
+    wherever focus is). Both are read back.
     Pass ``with_identifier=False`` to write the password only.
     The password is resolved server-side and never enters a result; the result reports only
     counts and metadata.
@@ -728,7 +729,7 @@ def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
 def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[str, Any]],
                          js_fills: list[dict[str, Any]], page_origin: str, nonce: str,
                          secret: dict[str, Any]) -> dict[str, Any]:
-    """Fill the text/password fields with CDP TRUSTED typing (``Input.insertText``).
+    """Fill the non-secret text fields (the identifier) with CDP TRUSTED typing (``Input.insertText``).
 
     A framework-controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
     JS value write: the page sees the same ``input`` event a human keystroke produces.
@@ -739,8 +740,8 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     (``build_fill_verify_js``). A focus that drifted, or a value the page reverted, aborts the
     whole fill: nothing further is typed and every inspection stamp is removed.
 
-    ``select`` / checkbox / radio controls keep the JS path (``build_fill_js``): they are not
-    text inputs and trusted typing cannot address them.
+    ``js_fills`` (the password, ``select`` / checkbox / radio controls) go by the guarded JS write
+    (``build_fill_js``) on their stamped controls, never by keystroke.
 
     Returns ``{"ok": True, "filled": n, "landed": n, "reverted": n}`` or
     ``{"ok": False, "success": False, "error_type": ..., "error": ...}``.
@@ -813,7 +814,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                       f"before the value could be typed (now on {found or 'unknown'}). Nothing was written.")
 
     filled = 0
-    # Non-text controls (select, checkbox, radio) keep the JS path.
+    # The password and non-text controls (select, checkbox, radio) go by the JS write.
     if js_fills:
         js_result = _script(build_fill_js(js_fills, expected_origin=page_origin, nonce=nonce))
         if not isinstance(js_result, dict):
@@ -1098,8 +1099,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
-    # Trusted typing (CDP ``Input.insertText``) is preferred when the task's CDP supervisor is
-    # available: a controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
+    # Trusted typing (CDP ``Input.insertText``) types the identifier when the task's CDP supervisor
+    # is available: a controlled input (React/Vue/MUI) accepts a trusted input event and rejects a
     # JS value write. ``Input.insertText`` types into whatever holds focus, so the focus is
     # asserted immediately before every single keystroke (build_focus_js) and the value is read
     # back after it. A page backend (plugin browser) has no CDP channel: that path stays on JS.
@@ -1108,9 +1109,14 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # inspection stamped (no plugin page backend in front of it).
     trusted = (bool(callable(insert_text)) and page_backend is None
                and _eval_js(effective_task_id, _FRAME_PROBE).get("result") is not True)
+    # Only non-secret text is typed: Input.insertText lands wherever focus is when the browser
+    # processes it, and a frame inside a closed shadow root (which no page script can see) can take
+    # focus after the check. The password and card values go by the guarded JS write, which
+    # addresses the stamped control itself.
     type_fills = [f for f in fills
                   if f["index"] in type_by_index
-                  and type_by_index[f["index"]] not in ("select", "checkbox", "radio")]
+                  and type_by_index[f["index"]] not in ("select", "checkbox", "radio")
+                  and meta.kind != "payment" and f.get("token") != "current-password"]
     js_fills = [f for f in fills if f not in type_fills]
 
     if trusted and type_fills:

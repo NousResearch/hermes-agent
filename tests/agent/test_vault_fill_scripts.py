@@ -471,8 +471,7 @@ class TestForgedVerdicts:
     @pytest.mark.parametrize(("fills", "control", "refused"), [
         ([], "password", "not_found"),                     # no field to check
         ([{"index": 1, "token": "current-password"}], "", "not_found"),  # the stamp is gone
-        ([{"index": 1, "token": "current-password"}], "text", "not_password"),
-    ], ids=["no-field", "stamp-gone", "not-a-password-box"])
+    ], ids=["no-field", "stamp-gone"])
     def test_a_focus_refusal_is_not_turned_into_focus(self, fills, control, refused, page):
         setup = ((f'stamp(add(document, "input", {{ type: "{control}" }}), 1).focus();' if control
                   else 'add(document, "input", { type: "password" }).focus();') + _LYING_PAGES[page])

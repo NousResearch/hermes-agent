@@ -267,6 +267,28 @@ def test_refresh_rebuilds_a_selection_with_plugin_members_instead_of_booting_the
     assert rebuilt
 
 
+def test_refresh_rebuilds_a_generation_holding_an_extra_its_ledger_lacks(install, monkeypatch):
+    """A rebuild keeps an SDK the old generation holds (#96180): booting the image would drop it."""
+    import pm.client
+    import pm.extras
+    import pm.install
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.recovery import refresh_dependencies
+
+    root, store = install
+    Facts(store / "facts.json").record_state("venv", "stamp:all,fal,messaging", ["all", "fal", "messaging"])
+    Facts(runtime_facts_path(root)).record_state("venv", "previous-image", ["fal"])
+    monkeypatch.setattr(pm.extras, "pre_pm_baseline", lambda project_root: [])
+    monkeypatch.setattr(pm.extras, "committed_generation_extras", lambda project_root: ["azure-identity"])
+    rebuilt = []
+    monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: rebuilt.append(a))
+    monkeypatch.setattr(pm.install, "venv_is_current", lambda **kwargs: False)
+
+    assert refresh_dependencies(root) == "restored all, messaging"
+    assert rebuilt
+
+
 def _disk(free: int):
     from types import SimpleNamespace
 

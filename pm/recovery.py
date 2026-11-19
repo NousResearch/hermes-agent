@@ -99,9 +99,10 @@ def _image_covers_selection(root: Path, missing: list[str]) -> bool:
     """Whether the image's own environment is exactly the selection a rebuild would reach.
 
     The target is the one ``sync_venv`` computes (recorded extras still declared, the
-    restored baseline, the enabled plugin members), compared by stamp with the selection
-    the image recorded for its sealed venv.
+    restored baseline, the extras the generation it replaces holds, the enabled plugin
+    members), compared by stamp with the selection the image recorded for its sealed venv.
     """
+    from pm.carried_extras import with_pre_pm_baseline
     from pm.environments import runtime_facts_path
     from pm.install import _facts, _target_selection
     from pm.lock import Facts
@@ -110,8 +111,11 @@ def _image_covers_selection(root: Path, missing: list[str]) -> bool:
     image = _facts().get("venv")
     if not isinstance(image, dict) or not image.get("stamp"):
         return False
+    package = Venv(root)
     fact = Facts(runtime_facts_path(root), strict=True).get("venv") or {}
-    _, stamp, _ = _target_selection(Venv(root), fact, extras=missing, inputs={}, repair=False,
+    # A rebuild keeps an SDK the old generation holds and the ledger lacks (#96180); so must this.
+    extras, _, _ = with_pre_pm_baseline(package, missing or None, carried=None, automatic=None, plugins=None)
+    _, stamp, _ = _target_selection(package, fact, extras=extras, inputs={}, repair=False,
                                     shipped=None, frozen=None)
     return stamp == image["stamp"]
 

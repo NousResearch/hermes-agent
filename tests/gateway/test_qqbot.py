@@ -53,6 +53,17 @@ class TestQQAdapterInit:
         adapter = self._make(app_id="a", client_secret="b", allow_from="x, y , z")
         assert adapter._allow_from == ["x", "y", "z"]
 
+    def test_upload_part_timeout_defaults_and_reads_platform_config(self):
+        assert self._make(app_id="a", client_secret="b")._upload_part_timeout_seconds == 300.0
+        assert self._make(
+            app_id="a", client_secret="b", upload_part_timeout_seconds="73.5"
+        )._upload_part_timeout_seconds == 73.5
+
+    @pytest.mark.parametrize("value", [None, 0, -1, True, "not-a-number", float("nan"), float("inf")])
+    def test_upload_part_timeout_rejects_invalid_platform_config(self, value):
+        with pytest.raises(ValueError, match="platforms.qqbot.extra.upload_part_timeout_seconds"):
+            self._make(app_id="a", client_secret="b", upload_part_timeout_seconds=value)
+
 
 
 
@@ -517,6 +528,7 @@ class TestChunkedUploaderFlow:
 
     @pytest.mark.asyncio
     async def test_full_upload_two_parts_success(self, tmp_path):
+        from plugins.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
         from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
 
         # Two-part file.
@@ -527,7 +539,7 @@ class TestChunkedUploaderFlow:
         api_calls = []
 
         async def fake_api_request(method, path, *, body=None, timeout=None):
-            api_calls.append((method, path, body))
+            api_calls.append((method, path, body, timeout))
             if path.endswith("/upload_prepare"):
                 return {
                     "upload_id": "uid-xyz",
@@ -550,28 +562,39 @@ class TestChunkedUploaderFlow:
             status_code = 200
             text = ""
 
-        async def fake_put(url, data=None, headers=None):
-            put_calls.append((url, len(data), headers))
+        async def fake_put(url, data=None, headers=None, timeout=None):
+            put_calls.append((url, len(data), headers, timeout))
             return _FakeResp()
 
         uploader = ChunkedUploader(
             api_request=fake_api_request,
             http_put=fake_put,
             log_tag="QQBot:TEST",
+            part_upload_timeout_seconds=17.5,
         )
-        result = await uploader.upload(
-            chat_type="c2c",
-            target_id="user-openid-1",
-            file_path=str(f),
-            file_type=2,  # MEDIA_TYPE_VIDEO
-            file_name="vid.mp4",
-        )
+        original_wait_for = asyncio.wait_for
+        outer_timeouts = []
+
+        async def recording_wait_for(awaitable, timeout=None):
+            outer_timeouts.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout)
+
+        with mock.patch("plugins.platforms.qqbot.chunked_upload.asyncio.wait_for", new=recording_wait_for):
+            result = await uploader.upload(
+                chat_type="c2c",
+                target_id="user-openid-1",
+                file_path=str(f),
+                file_type=2,  # MEDIA_TYPE_VIDEO
+                file_name="vid.mp4",
+            )
 
         assert result["file_info"] == "FILEINFO_TOKEN"
         # Two PUTs, one per part.
         assert len(put_calls) == 2
         assert put_calls[0][0] == "https://cos.example/p1"
         assert put_calls[1][0] == "https://cos.example/p2"
+        assert [call[3] for call in put_calls] == [17.5, 17.5]
+        assert outer_timeouts == [17.5, 17.5]
         # Prepare + 2 part_finish + complete = 4 api calls.
         assert len(api_calls) == 4
         assert api_calls[0][1].endswith("/upload_prepare")
@@ -580,6 +603,45 @@ class TestChunkedUploaderFlow:
         # complete path reuses /files.
         assert api_calls[3][1].endswith("/files")
         assert api_calls[3][2] == {"upload_id": "uid-xyz"}
+        assert [call[3] for call in api_calls] == [FILE_UPLOAD_TIMEOUT] * 4
+
+    @pytest.mark.asyncio
+    async def test_adapter_upload_uses_configured_part_timeout(self, tmp_path):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+
+        file_path = tmp_path / "clip.mp4"
+        file_path.write_bytes(b"clip")
+        adapter = QQAdapter(_make_config(
+            app_id="app-id", client_secret="s", upload_part_timeout_seconds=47))
+        put_timeouts = []
+
+        class _FakeResp:
+            status_code = 200
+            text = ""
+
+        class _FakeClient:
+            async def put(self, url, *, data, headers, timeout=None):
+                put_timeouts.append(timeout)
+                return _FakeResp()
+
+        async def fake_api_request(method, path, body=None, timeout=None):
+            if path.endswith("/upload_prepare"):
+                return {
+                    "upload_id": "uid-config",
+                    "block_size": 4,
+                    "parts": [{"part_index": 1, "presigned_url": "https://cos.example/part"}],
+                }
+            if path.endswith("/upload_part_finish"):
+                return {}
+            return {"file_info": "FI-CONFIG"}
+
+        adapter._http_client = _FakeClient()
+        adapter._api_request = fake_api_request
+        result = await adapter._upload_local_file(
+            "c2c", "user-openid", str(file_path), file_type=2, file_name="clip.mp4")
+
+        assert result["file_info"] == "FI-CONFIG"
+        assert put_timeouts == [47.0]
 
     @pytest.mark.asyncio
     async def test_group_paths(self, tmp_path):
@@ -607,7 +669,10 @@ class TestChunkedUploaderFlow:
             status_code = 200
             text = ""
 
-        async def fake_put(url, data=None, headers=None):
+        put_timeouts = []
+
+        async def fake_put(url, data=None, headers=None, timeout=None):
+            put_timeouts.append(timeout)
             return _R()
 
         u = ChunkedUploader(fake_api_request, fake_put, "QQBot:T")
@@ -621,6 +686,29 @@ class TestChunkedUploaderFlow:
         assert all("/v2/groups/" in p for p in seen_paths)
         assert any(p.endswith("/upload_prepare") for p in seen_paths)
         assert any(p.endswith("/files") for p in seen_paths)
+        assert put_timeouts == [300.0]
+
+    @pytest.mark.asyncio
+    async def test_stalled_part_put_expires_with_configured_timeout(self, monkeypatch):
+        from plugins.platforms.qqbot import chunked_upload
+        from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
+
+        monkeypatch.setattr(chunked_upload, "_PART_UPLOAD_MAX_RETRIES", 0)
+        put_timeouts = []
+
+        async def stalled_put(url, *, data, headers, timeout=None):
+            put_timeouts.append(timeout)
+            await asyncio.Future()
+
+        uploader = ChunkedUploader(
+            api_request=mock.AsyncMock(),
+            http_put=stalled_put,
+            part_upload_timeout_seconds=2.0)
+        with pytest.raises(RuntimeError, match="failed after 1 attempts"):
+            async with asyncio.timeout(4.0):
+                await uploader._put_to_presigned_url("https://cos.example/stalled", b"x", 1, 1)
+
+        assert put_timeouts == [2.0]
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import time
 from gateway.platforms._shared import request_never_left
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from gateway.outbound.senders import _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success
+from .config import DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS, resolve_upload_part_timeout_seconds
 
 logger = logging.getLogger("tools.send_message_tool")
 
@@ -50,7 +51,10 @@ async def _qqbot_api_json(client, headers: dict, method: str, path: str,
     return data if isinstance(data, dict) else {}
 
 
-async def _qqbot_upload_local_file(client, headers, chat_type, chat_id, media_path, file_type) -> dict:
+async def _qqbot_upload_local_file(
+    client, headers, chat_type, chat_id, media_path, file_type,
+    upload_part_timeout_seconds=DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS,
+) -> dict:
     """Chunked-upload a local file; returns the ``/files`` complete response."""
     from pathlib import Path as _Path
     from .chunked_upload import ChunkedUploader
@@ -65,7 +69,11 @@ async def _qqbot_upload_local_file(client, headers, chat_type, chat_id, media_pa
     async def _api_request(method, path, body=None, timeout=FILE_UPLOAD_TIMEOUT):
         return await _qqbot_api_json(client, headers, method, path, body, timeout=timeout)
 
-    uploader = ChunkedUploader(api_request=_api_request, http_put=client.put, log_tag="send_message.qqbot")
+    uploader = ChunkedUploader(
+        api_request=_api_request,
+        http_put=client.put,
+        log_tag="send_message.qqbot",
+        part_upload_timeout_seconds=upload_part_timeout_seconds)
     return await uploader.upload(
         chat_type=chat_type, target_id=chat_id, file_path=str(local_path),
         file_type=file_type, file_name=local_path.name)
@@ -127,7 +135,8 @@ async def _qqbot_send_text_message(client, headers, chat_id, message: str, outco
 
 
 async def _qqbot_deliver_one_media(client, headers, chat_id, media_path, is_voice,
-                                   caption=None) -> dict:
+                                   caption=None,
+                                   upload_part_timeout_seconds=DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS) -> dict:
     """Upload one attachment and send it, trying C2C then group (no guild)."""
     from pathlib import Path as _Path
     from urllib.parse import urlparse
@@ -144,7 +153,8 @@ async def _qqbot_deliver_one_media(client, headers, chat_id, media_path, is_voic
                     file_name=_Path(urlparse(media_path).path).name or "media")
             else:
                 upload = await _qqbot_upload_local_file(
-                    client, headers, chat_type, chat_id, media_path, file_type)
+                    client, headers, chat_type, chat_id, media_path, file_type,
+                    upload_part_timeout_seconds=upload_part_timeout_seconds)
             file_info = _qqbot_extract_file_info(upload)
             if not file_info:
                 errors.append(f"{chat_type}: upload returned no file_info: {upload}")
@@ -181,13 +191,15 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
     from gateway.platforms._shared import get_scoped_secret
     from .constants import FILE_UPLOAD_TIMEOUT
     extra = pconfig.extra or {}
+    media_files = media_files or []
+    upload_part_timeout_seconds = (
+        resolve_upload_part_timeout_seconds(extra) if media_files else DEFAULT_UPLOAD_PART_TIMEOUT_SECONDS)
     appid = extra.get("app_id") or get_scoped_secret("QQ_APP_ID", "")
     secret = pconfig.token or extra.get("client_secret") or get_scoped_secret("QQ_CLIENT_SECRET", "")
     if not appid or not secret:
         return {**_error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured."), "retryable": True}
 
     from gateway.platforms._shared import DeliveryOutcome
-    media_files = media_files or []
     sent_any, outcome = False, DeliveryOutcome()
     # Longer timeout when uploading; text-only stays snappy.
     client_timeout = FILE_UPLOAD_TIMEOUT if media_files else 15.0
@@ -230,7 +242,8 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
                             logger.warning(warnings[-1])
                             continue
                     result = await _qqbot_deliver_one_media(
-                        client, headers, chat_id, media_path, bool(is_voice), caption=media_caption)
+                        client, headers, chat_id, media_path, bool(is_voice), caption=media_caption,
+                        upload_part_timeout_seconds=upload_part_timeout_seconds)
                     if isinstance(result, dict) and result.get("error"):
                         # Media failure must not discard the send (main degraded to text +
                         # omission warning): collect it and keep delivering.

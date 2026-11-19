@@ -171,6 +171,8 @@ class TestSendQqbotMedia:
                 "chat_type": "c2c",
             }
         )
+        pconfig = _pconfig()
+        pconfig.extra["upload_part_timeout_seconds"] = 53
 
         with patch.dict("sys.modules", {"httpx": _HttpxMod()}), patch(
             "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
@@ -178,7 +180,7 @@ class TestSendQqbotMedia:
         ):
             result = asyncio.run(
                 _send_qqbot(
-                    _pconfig(),
+                    pconfig,
                     "user-openid",
                     "",
                     media_files=[(str(img), False)],
@@ -192,9 +194,39 @@ class TestSendQqbotMedia:
         assert kwargs.get("caption") == "see this" or (
             len(_args) >= 6 and _args[5] == "see this"
         )
+        assert kwargs.get("upload_part_timeout_seconds") == 53.0
         # chat_id + path
         assert "user-openid" in _args
         assert str(img) in _args
+
+    def test_media_path_uses_default_upload_part_timeout(self, tmp_path):
+        img = tmp_path / "default.png"
+        img.write_bytes(b"png-data")
+        deliver = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "qqbot",
+                "chat_id": "user-openid",
+                "message_id": "m-default",
+                "chat_type": "c2c",
+            }
+        )
+
+        with patch.dict("sys.modules", {"httpx": _token_client(_token_ok())}), patch(
+            "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
+            new=deliver,
+        ):
+            result = asyncio.run(
+                _send_qqbot(
+                    _pconfig(),
+                    "user-openid",
+                    "",
+                    media_files=[(str(img), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert deliver.await_args.kwargs["upload_part_timeout_seconds"] == 300.0
 
     def test_deliver_one_media_falls_back_c2c_to_group(self, tmp_path):
         from plugins.platforms.qqbot.send import _qqbot_deliver_one_media
@@ -204,9 +236,9 @@ class TestSendQqbotMedia:
         calls = []
 
         async def _fake_upload_local(
-            client, headers, chat_type, chat_id, media_path, file_type
+            client, headers, chat_type, chat_id, media_path, file_type, upload_part_timeout_seconds=None
         ):
-            calls.append(("upload", chat_type, file_type))
+            calls.append(("upload", chat_type, file_type, upload_part_timeout_seconds))
             if chat_type == "c2c":
                 raise RuntimeError("c2c rejected")
             return {"file_info": "FI-99"}
@@ -232,13 +264,14 @@ class TestSendQqbotMedia:
                     media_path=str(img),
                     is_voice=False,
                     caption="cap",
+                    upload_part_timeout_seconds=47.0,
                 )
             )
 
         assert result["success"] is True
         assert result["chat_type"] == "group"
-        assert ("upload", "c2c", MEDIA_TYPE_IMAGE) in calls
-        assert ("upload", "group", MEDIA_TYPE_IMAGE) in calls
+        assert ("upload", "c2c", MEDIA_TYPE_IMAGE, 47.0) in calls
+        assert ("upload", "group", MEDIA_TYPE_IMAGE, 47.0) in calls
         assert ("send", "group", "FI-99", "cap") in calls
 
 
@@ -275,7 +308,9 @@ class TestQqbotMediaFailureFallsBackToText:
         img = tmp_path / "big.png"
         img.write_bytes(b"png")
 
-        async def _deliver(client, headers, chat_id, media_path, is_voice, caption=None):
+        async def _deliver(
+            client, headers, chat_id, media_path, is_voice, caption=None, upload_part_timeout_seconds=None
+        ):
             return {"error": "QQBot media send failed (guild/channel native media is unsupported; "
                              "tried c2c and group): c2c: QQ Bot API error [400] "
                              "/v2/users/user-openid/files: daily upload quota exceeded"}

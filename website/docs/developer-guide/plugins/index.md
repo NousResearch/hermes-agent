@@ -1318,6 +1318,10 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
+### Serve a skill catalog (experimental)
+
+Provider-aware routing applies to request bodies up to 256 KiB; larger bodies are handled exactly as a host without providers handles them.
+
 ### Read the skill catalog
 
 A plugin that shows which skills the agent can see (a catalog view, "open this skill", drift checks

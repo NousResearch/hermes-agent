@@ -141,13 +141,42 @@ async def delegate(request, stock):
     return await _delegate(request, stock)
 
 
+async def _bounded_body(request):
+    """Buffer at most 256 KiB for routing; replay received chunks on stock bypass.
+
+    ASGI delivers whole transport-owned chunks. Keep references for replay, but
+    never copy or decode an over-limit chunk, nor request the remaining tail.
+    """
+    from collections import deque
+    from starlette.requests import ClientDisconnect
+    receive = request.receive
+    buffered = bytearray()
+    while True:
+        message = await receive()
+        if message['type'] == 'http.disconnect':
+            raise ClientDisconnect()
+        chunk = message.get('body', b'')
+        if len(buffered) + len(chunk) > 256 * 1024:
+            messages = deque((dict(type='http.request', body=bytes(buffered), more_body=True), message))
+            async def replay():
+                return messages.popleft() if messages else await receive()
+            request._receive = replay
+            return None
+        buffered.extend(chunk)
+        if not message.get('more_body', False):
+            request._body = bytes(buffered)
+            return request._body
+
+
 async def _delegate(request, stock):
     provider_deadline = time.monotonic() + 5
     route = request.url.path.rsplit('/', 1)[-1]
     if not request.url.path.startswith('/api/skills/hub/'):
         return await stock(request)
     query_profile = request.query_params.get('profile')
-    raw = await request.body() if request.method == 'POST' else b''
+    raw = await _bounded_body(request) if request.method == 'POST' else b''
+    if raw is None:
+        return await stock(request)
     # Keep every selector until optional-provider admission has resolved it.
     # Providerless requests retain the stock last-value/body-profile behavior.
     service = await _selected_service(request, _hint(raw), provider_deadline)

@@ -321,24 +321,19 @@ class TestNamedProfileHome:
 
 
 class TestMkdirBoundaryNeverRecreatesNamedHome:
-    """``mkdir_under_hermes_home`` checks the home is live, then creates. A delete or rename landing in
-    between must make the write fail, never let the boundary re-create the home itself: a config save
-    then left a live duplicate of a renamed profile under its old name (no tombstone on a plain
-    rename). Only the directories strictly below a named home are ever created."""
-
     @staticmethod
     def _after_liveness_check(monkeypatch, action):
-        """Run *action* (a real delete/rename) right after the boundary's real liveness check passes."""
         import hermes_constants
 
         real = hermes_constants.assert_named_profile_home_live
         fired = []
 
         def check_then_act(path):
-            real(path)
+            home = real(path)
             if not fired:
                 fired.append(path)
                 action()
+            return home
 
         monkeypatch.setattr(hermes_constants, "assert_named_profile_home_live", check_then_act)
         return fired
@@ -373,6 +368,33 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
         assert fired and not profile_dir.exists()
         assert "worker" not in _named_homes(profile_env)
 
+    def test_custom_root_losing_its_marker_mid_call_does_not_recreate_the_home(self, tmp_path, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        root = tmp_path / "custom"
+        home = root / "profiles" / "worker"
+        home.mkdir(parents=True)
+        (root / "config.yaml").write_text("x", encoding="utf-8")
+
+        def delete_marker_and_home():
+            (root / "config.yaml").unlink()
+            home.rmdir()
+
+        fired = self._after_liveness_check(monkeypatch, delete_marker_and_home)
+        with pytest.raises(FileNotFoundError):
+            mkdir_under_hermes_home(home / "logs")
+        assert fired and not home.exists()
+
+    def test_regular_file_at_named_home_is_not_a_successful_mkdir(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        home.rename(home.with_name("moved"))
+        home.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(FileExistsError):
+            mkdir_under_hermes_home(home)
+        assert home.read_text(encoding="utf-8") == "not a directory"
+
     def test_live_named_home_creates_only_below_it(self, profile_env, monkeypatch):
         from hermes_constants import mkdir_under_hermes_home
 
@@ -396,10 +418,7 @@ class TestMkdirBoundaryNeverRecreatesNamedHome:
 
 
 class TestMkdirBoundaryElevatedGrantSelection:
-    """Which dirs an elevated Windows process would grant through ``mkdir_under_hermes_home``: the same
-    as the ``parents=True`` call it replaced (fresh dirs, an existing leaf once per object, the home
-    when it is the target) and never an existing ancestor merely on the way to the leaf. Elevation is
-    the host fact and the grant a recorder, as in tests/test_hermes_dir_acl.py; no ACL is written."""
+    """Grant recorder under forced elevation (as in tests/test_hermes_dir_acl.py); no ACL is written."""
 
     @pytest.fixture()
     def granted(self, monkeypatch):
@@ -413,7 +432,6 @@ class TestMkdirBoundaryElevatedGrantSelection:
 
     @staticmethod
     def _forget_creation(granted):
-        """Drop what creating the fixture profile granted (and memoized), as a later process sees it."""
         import hermes_dir_acl
 
         granted.clear()
@@ -428,7 +446,7 @@ class TestMkdirBoundaryElevatedGrantSelection:
         assert granted == [home]
 
         fired = TestMkdirBoundaryNeverRecreatesNamedHome._after_liveness_check(monkeypatch, lambda: _delete("worker"))
-        mkdir_under_hermes_home(home)  # removed after the check: the repair sees nothing to grant
+        mkdir_under_hermes_home(home)
         assert fired and not home.exists() and granted == [home]
 
     def test_existing_ancestors_are_not_granted_on_the_way_to_the_leaf(self, profile_env, granted):
@@ -442,7 +460,16 @@ class TestMkdirBoundaryElevatedGrantSelection:
         assert granted == [home / "cache" / "media" / "new", home / "cache" / "media" / "new" / "leaf"]
         mkdir_under_hermes_home(home / "cache" / "media")
         mkdir_under_hermes_home(home / "cache" / "media")
-        assert granted[2:] == [home / "cache" / "media"]  # an existing leaf: repaired once per object
+        assert granted[2:] == [home / "cache" / "media"]
+
+    def test_dotdot_through_a_missing_dir_never_repairs_the_home_tree(self, profile_env, granted):
+        from hermes_constants import mkdir_under_hermes_home
+
+        home = create_profile("worker", no_alias=True, no_skills=True)
+        self._forget_creation(granted)
+
+        mkdir_under_hermes_home(home / "missing" / ".." / "dest")
+        assert granted == [home / "dest"] and (home / "dest").is_dir() and not (home / "missing").exists()
 
     def test_default_home_grant_selection_is_unchanged(self, profile_env, granted):
         from hermes_constants import mkdir_under_hermes_home

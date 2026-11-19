@@ -3,7 +3,9 @@ pre/post_tool_call, timeout clamped to [1, 60], name) -> notify-only callbacks o
 manager, so every ``invoke_hook()`` site can POST lifecycle events (mirror of
 ``gateway/platforms/webhook.py``).  Fire-and-forget through a bounded queue + one daemon worker,
 so a target can never block a tool call or influence agent flow.  HMAC-SHA256 signed
-(``X-Hermes-Signature-256: sha256=<hex>`` over the raw body) when a secret is configured;
+(``X-Hermes-Signature-256: sha256=<hex>`` over the raw body, plus the generic V2 pair
+``X-Webhook-Timestamp`` / ``X-Webhook-Signature-V2`` that Hermes's own inbound webhook routes verify)
+when a secret is configured;
 ``HERMES_SAFE_MODE=1`` skips registration; registration is idempotent.
 """
 
@@ -259,13 +261,22 @@ def _serialize_payload(event: str, kwargs: dict[str, Any], delivery_id: str) -> 
 
 
 def _build_delivery(event: str, target: WebhookTarget, body: bytes, delivery_id: str) -> dict[str, Any]:
+    # X-Request-ID repeats the delivery id under the header inbound webhook routes dedupe on, so the
+    # sender's retry (MAX_DELIVERY_ATTEMPTS) of the same delivery is reported duplicate, not run twice.
     headers = {
         "Content-Type": "application/json", "User-Agent": "Hermes-Agent-Outbound-Webhook",
-        "X-Hermes-Event": event, "X-Hermes-Delivery": delivery_id,
+        "X-Hermes-Event": event, "X-Hermes-Delivery": delivery_id, "X-Request-ID": delivery_id,
     }
     if target.secret:
-        digest = hmac.new(target.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        key = target.secret.encode("utf-8")
+        digest = hmac.new(key, body, hashlib.sha256).hexdigest()
         headers["X-Hermes-Signature-256"] = f"sha256={digest}"
+        # Generic V2 (HMAC of "<timestamp>.<body>"): the timestamp-bound scheme a Hermes inbound route
+        # accepts (body-only MACs are rejected as replayable, #154153), so Hermes -> Hermes works (#127471).
+        timestamp = str(int(time.time()))
+        headers["X-Webhook-Timestamp"] = timestamp
+        headers["X-Webhook-Signature-V2"] = hmac.new(
+            key, timestamp.encode("utf-8") + b"." + body, hashlib.sha256).hexdigest()
     return {"url": target.url, "label": target.label, "event": event, "body": body, "headers": headers, "timeout": target.timeout}
 
 

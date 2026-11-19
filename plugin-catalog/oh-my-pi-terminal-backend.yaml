@@ -1,18 +1,7 @@
 name: oh-my-pi-terminal-backend
 repo: https://github.com/Thaeland/oh-my-pi-terminal-backend
 sha: 6e0b736d1223d58e0d75ff52694d103b2e7e5993
-description: >
-  oh-my-pi (omp) terminal backend for Hermes Agent: Hermes's terminal, file
-  and code tools run each task's commands through one long-lived
-  `omp --mode rpc` session shell on this host, with lossless output transfer
-  past omp's inline caps. Select with `terminal.backend: oh-my-pi-terminal-backend`.
-  Disclosure — no Python dependencies and no network calls of its own (the
-  spawned omp CLI may reach the model provider you configured for omp): it
-  drives the `omp` CLI you install yourself
-  (`npm install -g @oh-my-pi/pi-coding-agent bun`), spawns one long-lived
-  `omp --mode rpc` process per Hermes task, and spools command output, a
-  per-env config overlay and optional stdin through temp files under your
-  scratch directory (plus a live-observation log at `~/.hermes/omp-live/`).
+description: "oh-my-pi (omp) terminal backend for Hermes Agent: Hermes's terminal, file and code tools run each task's commands through one long-lived `omp --mode rpc` session shell on this host, with lossless output transfer past omp's inline caps. Select with `terminal.backend: oh-my-pi-terminal-backend`. Disclosure — no Python dependencies and no network calls of its own (the spawned omp CLI may reach the model provider you configured for omp): it drives the `omp` CLI you install yourself, spawns one long-lived `omp --mode rpc` process per Hermes task on this host with Hermes' command approval left on, gives that process only a minimal environment (PATH, HOME, user, shell, terminal, locale and temp vars) plus any variable names you list in the plugin's `env_passthrough` setting, spools command output, a per-env config overlay and optional stdin through private temp files in your scratch directory, and keeps a private live-observation log of the last command's text and full output under your Hermes home's `omp-live/` (0700/0600)."
 maintainer: Thaeland
 tier: community
 category: tools

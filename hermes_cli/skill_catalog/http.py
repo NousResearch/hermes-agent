@@ -6,18 +6,16 @@ references never reach that handler while this profile has live catalogs.
 """
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
-from hermes_constants import get_hermes_home
 from hermes_cli.skill_catalog.installed import installed_records
-from hermes_cli.skill_catalog.service import Service
 from hermes_cli.skill_catalog.validation import CatalogError
 from hermes_cli.web_routers._common import destructive_profile
-from hermes_cli.web_server_profiles import _config_profile_scope
 
 
 class CatalogRoute(APIRoute):
@@ -32,10 +30,9 @@ class CatalogRoute(APIRoute):
         return handle
 
 
-def _service(profile):
-    with _config_profile_scope(profile):
-        service = Service(get_hermes_home())
-        return service if service.entries() else None
+def _service(profile, *, deadline=None):
+    from hermes_cli.skill_catalog.bootstrap import lookup
+    return lookup(profile, deadline=deadline)
 
 
 def _body(raw):
@@ -62,11 +59,11 @@ def _profile(body, query):
     return selected or query
 
 
-def _invoke(service, method, *args):
+def _invoke(service, method, *args, **kwargs):
     # Hydration belongs to this worker, never the ASGI/gateway event loop.
     from hermes_cli.plugins_loader import _plugin_home_scope
     with _plugin_home_scope(Path(service.home)):
-        return getattr(service, method)(*args)
+        return getattr(service, method)(*args, **kwargs)
 
 
 async def _provider_action(service, route, body):
@@ -89,6 +86,21 @@ async def _provider_action(service, route, body):
 
 
 async def delegate(request, stock):
+    if request.url.path == '/api/skills/hub/search' and not request.query_params.get('source', '').startswith('plugin.'):
+        public = asyncio.create_task(stock(request))
+        async def completed(_request):
+            return await public
+        try:
+            return await _delegate(request, completed)
+        finally:
+            if not public.done():
+                public.cancel()
+                await asyncio.gather(public, return_exceptions=True)
+    return await _delegate(request, stock)
+
+
+async def _delegate(request, stock):
+    provider_deadline = time.monotonic() + 5
     route = request.url.path.rsplit('/', 1)[-1]
     if not request.url.path.startswith('/api/skills/hub/'):
         return await stock(request)
@@ -105,7 +117,7 @@ async def delegate(request, stock):
         if await asyncio.to_thread(_service, query_profile) is not None:
             raise CatalogError('invalid_request', 'Conflicting catalog profiles.')
     lookup_profile = body_profile if type(body_profile) is str and body_profile else query_profile
-    service = await asyncio.to_thread(_service, lookup_profile)
+    service = await asyncio.to_thread(_service, lookup_profile, deadline=provider_deadline)
     if service is None:
         return await stock(request)
     if request.method == 'POST':
@@ -117,7 +129,7 @@ async def delegate(request, stock):
     if route in ('review', 'confirm', 'operation'):
         return await _extension(service, route, body)
     if route == 'search':
-        return await _search(request, stock, service)
+        return await _search(request, stock, service, provider_deadline)
     identifier = body.get('identifier')
     if type(identifier) is str and identifier.startswith('plugin.'):
         return await _provider_action(service, route, body)
@@ -128,13 +140,13 @@ async def delegate(request, stock):
         return response
     data = json.loads(response.body)
     if route in ('official', 'sources'):
-        sources = await asyncio.to_thread(_invoke, service, 'sources')
+        sources = await asyncio.to_thread(_invoke, service, 'sources', deadline=provider_deadline)
         if sources:
             if route == 'official':
                 data['provider_sources'] = sources
             else:
                 data['sources'].extend(sources)
-                data['installed'].update(await asyncio.to_thread(_installed_map, service))
+                data['installed'].update(await asyncio.to_thread(_installed_map, service, deadline=provider_deadline))
     elif route in ('updates', 'update'):
         updates, errors = await asyncio.to_thread(_updates, service)
         if route == 'updates':
@@ -147,7 +159,7 @@ async def delegate(request, stock):
     return JSONResponse(data, status_code=response.status_code, headers=headers)
 
 
-async def _search(request, stock, service):
+async def _search(request, stock, service, deadline):
     from hermes_cli.skill_catalog.search import start
     params = request.query_params
     source = params.get('source', 'all')
@@ -158,10 +170,10 @@ async def _search(request, stock, service):
         limit = int(params.get('limit', '20'))
     except ValueError:
         raise CatalogError('invalid_request', 'Invalid catalog search limit.') from None
-    provider = asyncio.create_task(start(service, query, source, limit, params.get('cursor')))
+    provider = asyncio.create_task(start(service, query, source, limit, params.get('cursor'), deadline=deadline))
     if source.startswith('plugin.'):
         result = await provider
-        result['installed'] = await asyncio.to_thread(_installed_map, service)
+        result['installed'] = await asyncio.to_thread(_installed_map, service, deadline=deadline)
         return JSONResponse(result)
     # Public fan-out including its index-miss fallback executes unchanged and
     # concurrently. No provider waiter occupies a public worker or its deadline.
@@ -199,10 +211,11 @@ async def _extension(service, route, body):
     return JSONResponse(result)
 
 
-def _installed_map(service):
+def _installed_map(service, *, deadline=None):
     rows = {}
+    deadline = deadline if deadline is not None else time.monotonic() + 3
     for entry in service.entries():
-        for record in installed_records(entry):
+        for record in installed_records(entry, deadline=deadline):
             rows[record['identifier']] = record['name']
     return rows
 

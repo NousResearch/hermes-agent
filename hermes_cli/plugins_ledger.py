@@ -261,6 +261,7 @@ class PluginLedgerMixin:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration
         — including on_unload callbacks and supervised tasks — is disposed in reverse acquisition order with
         identity-conditional inverses. Returns ``True`` when anything was found."""
+        self._catalog_epoch = getattr(self, '_catalog_epoch', 0) + 1
         unload_all = plugin is None
         if unload_all:
             target_keys = set(self._ownership_ledger) | set(self._plugins)

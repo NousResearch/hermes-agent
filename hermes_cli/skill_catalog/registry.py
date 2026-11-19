@@ -33,6 +33,7 @@ class Entry:
     mutations: object = None
     projection_handle: object = None
     initialization: object = None
+    manager: object = None
 
     def authorized(self) -> bool:
         try:
@@ -72,9 +73,13 @@ def registration_key(ctx, provider) -> str:
 def register_catalog(ctx, provider, *, scope=None):
     from hermes_cli.plugins_manifest import manifest_key
 
+    from hermes_cli.skill_catalog.activation import current
+    if not current(getattr(ctx, '_manager', None)):
+        raise ValueError("Catalog bootstrap generation changed.")
     key = registration_key(ctx, provider)
     descriptor = _descriptor(provider)
-    entry = Entry(key, manifest_key(ctx.manifest), descriptor, provider, hermes_home_key(scope), ctx.manifest)
+    entry = Entry(key, manifest_key(ctx.manifest), descriptor, provider, hermes_home_key(scope), ctx.manifest,
+                  manager=getattr(ctx, '_manager', None))
     if "skills.catalog" not in ctx.manifest.capabilities or not entry.authorized():
         raise ValueError("Catalog capability is not declared and granted.")
     with _lock:
@@ -121,6 +126,9 @@ def publish(key, *, scope=None):
 
     with _lock:
         row = _entries[hermes_home_key(scope)][key]
+    from hermes_cli.skill_catalog.activation import allowed
+    if not allowed(row.manager) or not row.authorized():
+        raise CatalogError('provider_unavailable', 'Catalog bootstrap authority changed.')
     projection = Projection(Path(row.scope))
     row.projection_handle = projection.start(row)
     row.mutations = Mutations(row, projection)

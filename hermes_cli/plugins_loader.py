@@ -564,6 +564,9 @@ class PluginLoaderMixin:
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
         """Load one plugin with the manager's home bound as current."""
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
+        from hermes_cli.skill_catalog.activation import allowed
+        if not allowed(self):
+            return
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)
         logger.debug(
@@ -587,7 +590,9 @@ class PluginLoaderMixin:
         in_host = self._runs_in_plugin_host(manifest)
 
         def _import_and_register() -> bool:
-            """Import + register() — the part a plugin controls, so the part the deadline covers."""
+            """Import + register() within the owning loader deadline and isolation policy."""
+            if not allowed(self):
+                raise RuntimeError('Catalog bootstrap isolation or manager changed.')
             # Declared language packs register before any plugin code runs, inside the same ledger slice
             # so a failing register() unwinds them too.
             self._register_declared_locales(manifest, ctx)

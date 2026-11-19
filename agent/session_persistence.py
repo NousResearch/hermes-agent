@@ -108,12 +108,14 @@ def _row_holds_anchored_ask(anchor: Any, msg: dict) -> bool:
     fingerprint) keeps the historical behaviour; an anchored one only while the row still holds this turn's
     ask — a compaction head does not, and rewriting it would erase the summary from the live context.
 
-    The ask counts as held when it is a whole candidate, at the row's head (a built-in mutation that appends
-    to the ask — ``_fold_todo_snapshot`` folding the live todo list in, ``_append_multimodal_context``) or a
-    whole candidate of the merge structure; a compaction head matches none of them."""
+    A candidate must equal the ask or append Hermes's own todo snapshot directly after it. An arbitrary
+    continuation can be an ask-prefixed compaction summary and must not certify the row."""
     if anchor is None:
         return True
-    return any(text == anchor or text.startswith(anchor + "\n\n") for text in _turn_ask_texts(msg))
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    return any(text == anchor or text.startswith(anchor + "\n\n" + TODO_INJECTION_HEADER)
+               for text in _turn_ask_texts(msg))
 
 
 def _content_with_turn_override(msg: dict, content: Any, override: Any) -> Any:

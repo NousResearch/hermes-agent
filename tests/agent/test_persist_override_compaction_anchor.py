@@ -43,6 +43,42 @@ def test_an_in_place_compacted_head_row_keeps_its_summary():
     assert messages[1]["content"] == SUMMARY_HEAD
 
 
+def test_an_ask_prefixed_compaction_summary_is_preserved():
+    messages = [{"role": "user", "content": "actual question"}]
+    agent = _agent(0, "actual question")
+    note_persist_user_anchor(agent, messages)
+    compacted = (
+        "actual question\n\n"
+        "<summary>Tests already ran; preserve the deployment decision.</summary>"
+    )
+    messages[0]["content"] = compacted
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages[0]["content"] == compacted
+
+
+def test_a_real_todo_fold_starts_with_the_header_and_takes_the_clean_override():
+    from agent.conversation_compression import _fold_todo_snapshot
+    from tools.todo_tool import TODO_INJECTION_HEADER, TodoStore
+
+    staged = "[API-only guidance]\n\nactual question"
+    messages = [{"role": "user", "content": staged}]
+    agent = _agent(0, "actual question")
+    agent._todo_store = TodoStore()
+    agent._todo_store.write([{"id": "1", "content": "run tests", "status": "pending"}])
+    snapshot = agent._todo_store.format_for_injection()
+    assert snapshot is not None
+    assert snapshot.startswith(TODO_INJECTION_HEADER)
+    note_persist_user_anchor(agent, messages)
+
+    _fold_todo_snapshot(agent, messages)
+
+    assert messages[0]["content"] == staged + "\n\n" + snapshot
+    agent._apply_persist_user_message_override(messages)
+    assert messages[0]["content"] == "actual question"
+
+
 def test_a_normal_turn_still_gets_the_clean_override():
     """Negative control: the anchored row still holds the API variant, so the clean text replaces it."""
     live = "[gateway note] observed context\n\nactual question"

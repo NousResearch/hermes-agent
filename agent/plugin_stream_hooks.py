@@ -193,6 +193,8 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                             manager._report_hook_failure,
                             dispatcher.hook_name, callback, payload, exc,
                         )
+                    else:
+                        logger.warning("retired plugin observer callback failed; continuing dispatcher")
                 except BaseException:  # health: allow BLE001 -- reporter failures must not kill the worker
                     try:
                         logger.debug(

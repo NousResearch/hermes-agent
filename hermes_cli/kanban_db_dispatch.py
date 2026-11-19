@@ -88,45 +88,25 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 
 @dataclass
 class DispatchResult:
-    """Outcome of a single ``dispatch`` pass.
-
-    ``kanban.default_assignee`` applied this tick before spawning (#27145). Surfaces the auto-assignment to
-    telemetry / CLI / dashboard so the operator can see when the dispatcher is acting on the fallback rule
-    ``kanban.max_in_progress_per_profile`` (#21582). Each entry is ``(task_id, assignee,
-    current_running_count)``. NOT an operator-actionable failure — the task will be picked up on a
-    subsequent tick when the assignee has capacity. Separate bucket so telemetry / dashboards can show "this
-    profile is busy" vs
-    the board's dispatch lock (issue #35240). A losing dispatcher does no DB writes this tick — the lock
-    holder is making progress on the same board. This is the steady-state signal that a single-writer guard
-    is
-    """
+    """Outcome of a single ``dispatch`` pass. Per-field notes carry the
+    operator semantics (busy vs stuck vs auto-blocked)."""
 
     reclaimed: int = 0
     promoted: int = 0
     reconciled_orphans: list[str] = field(default_factory=list)
-    """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
-    claim bookkeeping, dead/gone worker)."""
+    """``running`` cards requeued by :func:`reconcile_orphaned_running`."""
     reaped_terminal_workers: list[str] = field(default_factory=list)
-    """Task ids whose worker outlived its closed run and was terminated by
-    :func:`reap_terminal_workers`."""
+    """Task ids whose worker outlived its closed run."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
-    """Ready task ids with no assignee at all — operator-actionable (usually a
-    misfiled task waiting for routing)."""
+    """Ready task ids with no assignee at all."""
     auto_assigned_default: list[str] = field(default_factory=list)
-    """Unassigned task ids that had ``kanban.default_assignee`` applied this
-    tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
-    acting on the fallback rule rather than explicit assignments."""
+    """Unassigned task ids that had ``kanban.default_assignee`` applied."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
-    """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
-    Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
-    on multi-lane setups, NOT operator-actionable; tracked apart so health
-    telemetry can tell "stuck" from "correctly idle"."""
+    """Ready task ids whose assignee is a control-plane lane, not a profile."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
-    """``(task_id, assignee, current_running_count)`` deferred because the
-    assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
-    tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    """``(task_id, assignee, running_count)`` deferred at the per-profile cap."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -136,13 +116,9 @@ class DispatchResult:
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
-    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
-    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    """``(task_id, reason)`` skipped by the respawn guard."""
     rate_limited: list[str] = field(default_factory=list)
-    """Task ids whose workers bailed on a provider rate-limit / quota wall
-    (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
-    a failure — a long quota window must never trip the circuit breaker."""
+    """Task ids released to ready on a rate-limit without counting a failure."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -1990,6 +1966,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_board: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -2013,6 +1990,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_board=max_in_progress_per_board,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2207,6 +2185,7 @@ def _tick_spawn_budget(
     *,
     max_spawn: Optional[int],
     max_in_progress: Optional[int],
+    max_in_progress_per_board: Optional[int] = None,
     board: Optional[str],
 ) -> tuple[bool, Optional[int]]:
     """``(may_spawn, spawn_budget)`` for this tick; ``budget None`` = uncapped.
@@ -2216,13 +2195,16 @@ def _tick_spawn_budget(
     by N every tick. ``max_in_progress`` is a HOST-level cap: running workers on
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
+    ``max_in_progress_per_board`` is the opt-in fair-share allocation for THIS
+    board; it bounds this board's own running workers before the host budget is
+    consulted (see ``kanban.board_fair_share``).
     """
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker makes a terminal
     # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
     running_count = 0
     spawn_budget: Optional[int] = None
-    if max_spawn is not None or max_in_progress is not None:
+    if max_spawn is not None or max_in_progress is not None or max_in_progress_per_board is not None:
         running_count = count_running_tasks(conn)
 
     # Both ready and review loops consume from the same budget.
@@ -2235,9 +2217,19 @@ def _tick_spawn_budget(
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
             return False, None
-        remaining = max_in_progress - total_running
-        if spawn_budget is None or spawn_budget > remaining:
-            spawn_budget = remaining
+        host_remaining = max_in_progress - total_running
+        if spawn_budget is None or spawn_budget > host_remaining:
+            spawn_budget = host_remaining
+
+    # Fair-share: this board may not exceed its allocated slot. Deferred tasks
+    # stay ready and are picked up on a later tick when the slot frees. Applied
+    # last so it can only tighten — never widen — the other caps.
+    if max_in_progress_per_board is not None:
+        if running_count >= max_in_progress_per_board:
+            return False, None
+        board_remaining = max_in_progress_per_board - running_count
+        if spawn_budget is None or spawn_budget > board_remaining:
+            spawn_budget = board_remaining
 
     # Memory-pressure guard: a static cap can't see the host's actual state.
     # critical -> spawn nothing this tick; elevated -> at most one new worker.
@@ -2334,6 +2326,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_board: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2347,7 +2340,8 @@ def _dispatch_once_locked(
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
-        conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
+        conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress,
+        max_in_progress_per_board=max_in_progress_per_board, board=board,
     )
     if not may_spawn:
         return result

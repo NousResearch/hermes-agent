@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createNode, createTextNode, type DOMElement, type ElementNames } from './dom.js'
-import { squashTextNodesToSegments, stripOsc8 } from './squash-text-nodes.js'
+import squashTextNodes, { squashTextNodesToSegments } from './squash-text-nodes.js'
 import type { TextStyles } from './styles.js'
 
 const ESC = '\u001b'
@@ -17,7 +17,24 @@ const seeded = (seed: number) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 
-describe('stripOsc8', () => {
+const text = (value: string) => createTextNode(value) as unknown as DOMElement
+
+const element = (name: ElementNames, children: DOMElement[], textStyles?: TextStyles, href?: string) => {
+  const node = createNode(name)
+
+  node.childNodes = children
+  node.textStyles = textStyles
+
+  if (href) {
+    node.attributes['href'] = href
+  }
+
+  return node
+}
+
+describe('squashTextNodes with one text node', () => {
+  const stripOsc8 = (value: string) => squashTextNodes(element('ink-text', [text(value)]))
+
   it('never leaves an OSC 8 opener, for any mix of escape fragments, in linear time', () => {
     // Whole tokens as well as single chars, so openers, terminators and their fragments all
     // show up often enough to exercise the strip (single chars alone almost never spell one).
@@ -68,21 +85,6 @@ describe('stripOsc8', () => {
     expect(stripOsc8(`a ${OPEN};https://x`)).toBe('a ;https://x')
   })
 })
-
-const text = (value: string) => createTextNode(value) as unknown as DOMElement
-
-const element = (name: ElementNames, children: DOMElement[], textStyles?: TextStyles, href?: string) => {
-  const node = createNode(name)
-
-  node.childNodes = children
-  node.textStyles = textStyles
-
-  if (href) {
-    node.attributes['href'] = href
-  }
-
-  return node
-}
 
 describe('squashTextNodesToSegments', () => {
   const segmentsOf = (node: DOMElement) =>

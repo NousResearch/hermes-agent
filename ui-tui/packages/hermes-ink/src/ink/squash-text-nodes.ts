@@ -78,13 +78,6 @@ const keptIndices = (value: string, ends: readonly number[]) => {
   return out
 }
 
-export const stripOsc8 = (value: string) =>
-  value.includes(OSC8_OPEN)
-    ? keptIndices(value, [value.length])
-        .map(i => value[i])
-        .join('')
-    : value
-
 /**
  * A segment of text with its associated styles.
  * Used for structured rendering without ANSI string transforms.

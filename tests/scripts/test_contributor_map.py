@@ -64,6 +64,8 @@ def test_attribution_audit_treats_a_case_variant_as_mapped(tmp_path, monkeypatch
     assert audit_pr_attribution.is_mapped("jane.doe@example.com")
     assert audit_pr_attribution.is_mapped("legacy@example.com")
     assert not audit_pr_attribution.is_mapped("someone-else@example.com")
+    (emails / "folder@example.com").mkdir()  # release notes read files only
+    assert not audit_pr_attribution.is_mapped("Folder@example.com")
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────

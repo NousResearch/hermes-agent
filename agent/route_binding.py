@@ -237,10 +237,6 @@ def reinstall_primary_runtime(
         # Once an assignment is recorded, the live value wins over its snapshot
         # even when it happens to equal the fallback bind marker.
         edit = (current,)
-    if edit is not None:
-        agent._reasoning_explicit_none = current is None
-    if edit is None and marker_present:
-        edit = (vars(agent).get("_fallback_reasoning_primary"),)
     if edit is None and not marker_present:
         # Zero trust: the markers are the only record that a value was installed by a
         # fallback rather than chosen by the session, and ``_fallback_activated`` can be set
@@ -255,6 +251,11 @@ def reinstall_primary_runtime(
         saved = rt.get("reasoning_config")
         if saved is not None and (type(current) is not type(saved) or current != saved):
             edit = (current,)
+    if edit is not None:
+        agent._reasoning_explicit_none = current is None
+    elif marker_present:
+        # The original primary value is a baseline, not necessarily a session edit.
+        edit = (vars(agent).get("_fallback_reasoning_primary"),)
     if edit is not None:
         current = copy.deepcopy(edit[0])
     with internal_reasoning_assignment(agent):

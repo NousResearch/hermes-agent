@@ -845,6 +845,50 @@ def test_unset_profile_none_still_resolves_for_fallback():
             assert agent.reasoning_config is None
 
 
+def test_reset_explicit_none_to_unset_profile_allows_fallback_override():
+    from agent.route_binding import bind_route_entry
+
+    cfg = {"agent": {"reasoning_overrides": {"openrouter/model-b": "high"}}}
+    agent = _make_agent(fallback_model={"provider": "openrouter", "model": "model-a"})
+    agent.reasoning_config = agent._primary_runtime["reasoning_config"] = None
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._try_activate_fallback()
+        agent.reasoning_config = None  # Explicit edit during fallback.
+        assert agent._restore_primary_runtime()
+        assert agent._reasoning_explicit_none
+        baseline = resolve_reasoning_config(cfg, "primary")
+        assert baseline is None
+        agent.reasoning_config = baseline  # Reset to the unset profile, same value.
+        assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                "openrouter", "model-b")
+        assert agent.reasoning_config["effort"] == "high"
+        assert agent._restore_primary_runtime()
+        assert agent.reasoning_config is None
+
+
+def test_markerless_none_restore_survives_subsequent_fallbacks():
+    from agent.route_binding import bind_route_entry
+
+    cfg = {"agent": {"reasoning_overrides": {"openrouter/model-b": "high"}}}
+    agent = _make_agent()
+    agent._primary_runtime["reasoning_config"] = {"enabled": True, "effort": "low"}
+    agent.reasoning_config = None
+    agent._fallback_activated = True  # /model --once restore without bind markers
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)), \
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime()
+        assert agent.reasoning_config is None
+        for _ in range(2):
+            assert bind_route_entry(agent, {"provider": "openrouter", "model": "model-b"},
+                                    "openrouter", "model-b")
+            assert agent.reasoning_config is None
+            assert agent._restore_primary_runtime()
+            assert agent.reasoning_config is None
+
+
 @pytest.mark.parametrize("nested", [False, True])
 def test_assigned_profile_mutated_to_bind_value_survives_restore(nested):
     from agent.route_binding import bind_route_entry

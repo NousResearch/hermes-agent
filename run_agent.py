@@ -236,9 +236,9 @@ class AIAgent(
         # Record a SNAPSHOT, never the caller's object: a caller that keeps mutating
         # the dict it assigned would otherwise rewrite the recorded edit in place.
         if not self.__dict__.get("_internal_reasoning_assignment", False):
-            # A subsequent assignment replaces any previously restored None pin.
-            if value is not None:
-                self.__dict__.pop("_reasoning_explicit_none", None)
+            # A new assignment replaces the restored pin, even when an unset
+            # profile baseline is also None. Edits on a fallback are recorded below.
+            self.__dict__.pop("_reasoning_explicit_none", None)
             if "_fallback_reasoning_at_bind" in self.__dict__:
                 self._fallback_reasoning_session_edit = (copy.deepcopy(value),)
             voice = self.__dict__.get("_voice_route_state")

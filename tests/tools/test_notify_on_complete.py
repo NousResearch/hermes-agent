@@ -10,6 +10,7 @@ Covers:
 
 import json
 import os
+import re
 import time
 import pytest
 from unittest.mock import patch
@@ -392,8 +393,24 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     from tools.process_registry import PROCESS_SCHEMA
     assert f"{PROCESS_SCHEMA['name']}(action=" in hint
     assert hint, "Silent background process must include a hint field"
-    assert "notify_on_complete" in hint, (
-        "Hint must name the corrective flag so the agent can self-correct"
+
+    # The hint must name the flag the agent can actually SET. The schema
+    # advertises `notify` (upstream #95937 unified notify_on_complete +
+    # watch_patterns into `notify` and kept the old names handler-only), so
+    # the hint has to name THAT one: telling the agent to pass an
+    # unadvertised legacy arg is the same drift #95937 fixed for the
+    # `background` param description.
+    from tools.terminal_tool import TERMINAL_SCHEMA
+    props = TERMINAL_SCHEMA["parameters"]["properties"]
+    assert "notify" in props, "the schema must advertise the notify flag"
+    # \b so the legacy `notify_on_complete` cannot satisfy this by prefix.
+    assert re.search(r"\bnotify\b", hint), (
+        "Hint must name the advertised notify flag so the agent can self-correct: "
+        f"{hint!r}"
+    )
+    assert "notify_on_complete" not in hint, (
+        "Hint must not name the unadvertised legacy alias notify_on_complete: "
+        f"{hint!r}"
     )
 
 

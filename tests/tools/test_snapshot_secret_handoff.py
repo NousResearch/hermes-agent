@@ -69,7 +69,8 @@ def test_secret_exports_never_reach_the_snapshot_file(env):
 def test_secret_exports_still_carry_to_the_next_command(env):
     env.execute("export CAROL_CLIENT_SECRET='SYNTH-a b' MULTI_TOKEN=$'SYNTH-l1\\nSYNTH-l2' KEEP_ME=ordinary")
     # 80 KB of quotes: its declaration doubles past one env entry's limit, so it must not ride env.
-    env.execute("printf -v BIG_TOKEN '%80000s' ''; BIG_TOKEN=${BIG_TOKEN// /\\\"}; export BIG_TOKEN")
+    # Built without `printf -v` / `${x//}`: macOS /bin/bash is 3.2, which lacks the first.
+    env.execute("export BIG_TOKEN=\"$(head -c 80000 /dev/zero | tr '\\0' '\"')\"")
     with shell_state_scope(("child",)):
         assert env.execute('echo "[$CAROL_CLIENT_SECRET]"')["output"].strip() == "[SYNTH-a b]"
         env.execute("export CHILD_API_KEY=SYNTH-child")

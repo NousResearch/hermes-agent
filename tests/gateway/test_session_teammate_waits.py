@@ -145,7 +145,7 @@ def test_owner_join_reports_working_and_waiting_on_you(tmp_path, monkeypatch):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a 0o000 file")
 def test_a_receipt_that_cannot_be_read_fails_the_poll_instead_of_vanishing(tmp_path):
     root = tmp_path / "hermes"
     _profile(root, "default")

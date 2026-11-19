@@ -15,7 +15,7 @@ import pytest
 from gateway.run_turn_runner import TurnRunner
 
 
-def _wire(user_config, *, agent=None, reasoning_config=None, **runner_attrs):
+def _wire(user_config, *, agent=None, reasoning_config=None, profile_reasoning_unset=False, **runner_attrs):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     agent = agent if agent is not None else types.SimpleNamespace()
     ctx = types.SimpleNamespace(
@@ -56,7 +56,8 @@ def _wire(user_config, *, agent=None, reasoning_config=None, **runner_attrs):
         _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
     )
-    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, reasoning_config, None, None, False)
+    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, reasoning_config, None, None, False,
+                                          profile_reasoning_unset=profile_reasoning_unset)
     return agent
 
 

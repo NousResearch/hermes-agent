@@ -8,7 +8,9 @@ lets maintainers update model lists without shipping a Hermes release.
 
 OpenRouter and Nous Portal are read as the whole list. Every other provider's
 block only adds picker rows to the list an install already ships (see
-``hermes_cli.model_catalog.merge_remote_models``).
+``hermes_cli.model_catalog.merge_remote_models``). ``model_metadata`` and
+``context_lengths`` publish the built-in metadata and context-window tables
+the same way: an install reads them only for a model it has no entry for.
 
 The runtime fetcher falls back to the same in-repo hardcoded lists if the
 manifest is unreachable, so this script is a convenience for keeping the
@@ -37,6 +39,9 @@ sys.path.insert(0, REPO_ROOT)
 # Ensure HERMES_HOME is set for imports that touch it at module level.
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
+from agent.bedrock_adapter import BEDROCK_CONTEXT_LENGTHS
+from agent.model_metadata import _CODEX_OAUTH_CONTEXT_FALLBACK, DEFAULT_CONTEXT_LENGTHS
+from agent.models_dev import _BUILTIN_MODEL_METADATA
 from hermes_cli.model_catalog import OWN_LIST_ROWS
 from hermes_cli.models import (
     OPENROUTER_MODELS,
@@ -70,6 +75,14 @@ def _provider_blocks() -> dict:
         for provider in _PROVIDER_MODELS
         if provider not in OWN_LIST_ROWS and _PROVIDER_MODELS[provider]
     }
+
+
+def _model_metadata() -> dict:
+    """``_BUILTIN_MODEL_METADATA`` as ``{models.dev provider id: {model id: entry}}``."""
+    tables: dict = {}
+    for (provider, model), entry in _BUILTIN_MODEL_METADATA.items():
+        tables.setdefault(provider, {})[model] = entry
+    return tables
 
 
 def build_catalog() -> dict:
@@ -110,6 +123,13 @@ def build_catalog() -> dict:
                 ],
             },
             **_provider_blocks(),
+        },
+        # Read only for a model the install has no entry or row for.
+        "model_metadata": _model_metadata(),
+        "context_lengths": {
+            "default": dict(DEFAULT_CONTEXT_LENGTHS),
+            "bedrock": dict(BEDROCK_CONTEXT_LENGTHS),
+            "codex_oauth": dict(_CODEX_OAUTH_CONTEXT_FALLBACK),
         },
     }
 

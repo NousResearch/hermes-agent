@@ -6,7 +6,8 @@
 whose callers fall back to the in-repo lists on ``None``.
 
 ``cached_manifest()`` is the read every other provider goes through: it never opens a socket, and
-what it returns only ADDS to what the install already ships (``merge_remote_models``).
+what it returns only ADDS to what the install already ships (``merge_remote_models`` for picker
+rows, ``manifest_model_metadata`` and ``extend_context_lengths`` for a model no table knows).
 """
 
 from __future__ import annotations
@@ -493,6 +494,41 @@ def merge_remote_models(
     note_supplied(added, gated=gated)
     return [*added, *builtin]
 
+
+
+def manifest_table(*path: str) -> dict[str, Any]:
+    """The mapping at ``path`` in the cached manifest; ``{}`` when it is absent or not a mapping."""
+    node: Any = cached_manifest()
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def manifest_model_metadata(provider: str, model: str) -> dict[str, Any] | None:
+    """The models.dev-shaped entry the cached manifest publishes for a models.dev provider id and a
+    lowercased model id, for a model no other catalog knows. An entry without a usable ``limit`` is
+    no entry: a model is known with a real window or it is unknown, never known with a default.
+    ``cost`` is dropped, since this entry also reaches the pricing lookup and prices are not its job."""
+    entry = manifest_table("model_metadata", provider).get(model)
+    limits = entry.get("limit") if isinstance(entry, dict) else None
+    if not isinstance(limits, dict) or "context" not in limits:
+        return None
+    if any(type(limits[key]) is not int or limits[key] <= 0 for key in ("context", "input", "output") if key in limits):
+        return None
+    return {key: value for key, value in entry.items() if key != "cost"}
+
+
+def extend_context_lengths(name: str, builtin: dict[str, int]) -> dict[str, int]:
+    """``builtin`` plus the rows the cached manifest adds to the ``name`` context-length table. A key
+    the install ships keeps its value and its place under any casing. An added key is lowercased,
+    because every reader matches it against a lowercased model id, and a blank one is dropped: as a
+    substring it would match every model."""
+    shipped = {key.lower() for key in builtin}
+    added: dict[str, int] = {}
+    for key, value in manifest_table("context_lengths", name).items():
+        if key.strip() and key.lower() not in shipped and type(value) is int and value > 0:
+            added.setdefault(key.lower(), value)
+    return {**builtin, **added} if added else builtin
 
 
 def _default_model_from_block(block: dict[str, Any] | None) -> str | None:

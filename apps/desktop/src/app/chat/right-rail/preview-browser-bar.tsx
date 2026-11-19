@@ -34,13 +34,17 @@ interface PreviewBrowserBarProps {
   canGoForward: boolean
   commentCount?: number
   consoleOpen: boolean
+  designBusy?: boolean
+  designMode?: boolean
   devToolsOpen: boolean
+  hasDesignSelection?: boolean
   loading: boolean
   onBack: () => void
   /** The pane's Close — the one visible way out of a full-width Browser. */
   onClose?: () => void
   onFlushComments?: () => void
   onForward: () => void
+  onInsertDesignSelection?: () => void
   onNavigate: (url: string) => void
   onOpenExternal?: () => void
   onPopIn?: () => void
@@ -48,6 +52,7 @@ interface PreviewBrowserBarProps {
   onReload: () => void
   onToggleAnnotate?: () => void
   onToggleConsole: () => void
+  onToggleDesign?: () => void
   onToggleDevTools: () => void
   /** The Browser tab this bar drives; set = offer the saved-login key button. */
   tabId?: string
@@ -112,12 +117,16 @@ export function PreviewBrowserBar({
   canGoForward,
   commentCount = 0,
   consoleOpen,
+  designBusy = false,
+  designMode = false,
   devToolsOpen,
+  hasDesignSelection = false,
   loading,
   onBack,
   onClose,
   onFlushComments,
   onForward,
+  onInsertDesignSelection,
   onNavigate,
   onOpenExternal,
   onPopIn,
@@ -125,6 +134,7 @@ export function PreviewBrowserBar({
   onReload,
   onToggleAnnotate,
   onToggleConsole,
+  onToggleDesign,
   onToggleDevTools,
   tabId,
   url
@@ -237,6 +247,22 @@ export function PreviewBrowserBar({
           icon={<Codicon name="comment" size="0.8125rem" />}
           label={annotateMode ? copy.annotateOn : copy.annotate}
           onSelect={onToggleAnnotate}
+        />
+      ) : null}
+      {onToggleDesign ? (
+        <PaneStripGlyph
+          active={designMode}
+          disabled={designBusy}
+          icon={<Codicon name="inspect" size="0.8125rem" />}
+          label={designBusy ? t.preview.design.starting : designMode ? t.preview.design.stop : t.preview.design.start}
+          onSelect={onToggleDesign}
+        />
+      ) : null}
+      {designMode && hasDesignSelection && onInsertDesignSelection ? (
+        <PaneStripGlyph
+          icon={<Codicon name="insert" size="0.8125rem" />}
+          label={t.preview.design.addSelection}
+          onSelect={onInsertDesignSelection}
         />
       ) : null}
       {annotateMode ? (

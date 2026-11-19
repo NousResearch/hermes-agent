@@ -1049,6 +1049,31 @@ export function openBrowserTab() {
   openPreview(current?.target ?? blankPage())
 }
 
+/** Show the Browser owned by one conversation, never an active pinned tab
+ * from another conversation. Design Mode uses this stricter route because its
+ * selection must not cross a chat boundary. */
+export function openOwnedBrowserTab(ownerSessionId: null | string): RightRailTabId {
+  const owner = currentSessionId(ownerSessionId)
+  const existing = $previewTabs
+    .get()
+    .findLast(tab => !tab.pinned && tab.target.kind === 'url' && currentSessionId(tab.sessionId) === owner)
+  const id = existing?.id ?? mintBrowserTabId()
+
+  recordFeatureUse('browser_pane')
+
+  if (!existing) {
+    $previewTabs.set([
+      ...$previewTabs.get(),
+      { id, pinned: false, sessionId: owner ?? undefined, target: blankPage() }
+    ])
+  }
+
+  noteExplicitPreviewOpen(id)
+  selectRightRailTab(id)
+
+  return id
+}
+
 /** ⌘⇧L is a TOGGLE: show the Browser when it's away, fold it away when it's
  *  the thing on screen. "Away" includes dismissed (Close/⌘W), hidden, or
  *  parked behind a sibling tab — each re-opens through openBrowserTab's reveal

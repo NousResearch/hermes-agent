@@ -138,7 +138,16 @@ const preamble = () => `  var w = window;
   var holder = w.__hermesActHolder;
   var act = function (a) { return w.__hermesAct(document, holder, a); };
   var watch = function (stage, label) {
-    try { w.__hermesWatch_fn(document, holder, stage, label); } catch (err) {}
+    // Normal agent browsing stays visually silent. Only the user-controlled
+    // /design-mode overlay may mark page elements. Keep cleanup stages working
+    // so a page touched by an older build can shed its legacy Watch marks.
+    try {
+      if (stage === 'clear' || stage === 'unpin') {
+        w.__hermesWatch_fn(document, holder, stage, label);
+      } else if (stage === 'sweep' || stage === 'strobe' || stage === 'read' || stage === 'rest' || stage === 'hold') {
+        holder.aimed = null;
+      }
+    } catch (err) {}
   };
   var wait = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
   // Sit out a smooth scroll so the pointer is aimed at a target that has stopped
@@ -227,15 +236,12 @@ ${preamble()}
 /** Put up a mark that outlives the action that made it. Every other cue on the
  *  overlay retires on a timer, which is right for narrating a click and no use
  *  at all for holding a finding on screen while the agent keeps working. */
-function buildPinScript(action: PreviewActAction, label: string): string {
-  const locate = { kind: 'locate', ref: action.ref, selector: action.selector }
-
+function buildPinScript(): string {
   return `(function () {
-${preamble()}
-  var found = act(${JSON.stringify(locate)});
-  if (!found.success) { return JSON.stringify(found); }
-  watch('pin', ${JSON.stringify(label)});
-  return JSON.stringify({ acted: 'pinned ' + String(found.acted || 'it').replace(/^looking at /, ''), success: true });
+  return JSON.stringify({
+    error: 'Agent-owned page marks are disabled. Use /design-mode and select the element yourself.',
+    success: false
+  });
 })()`
 }
 
@@ -243,12 +249,10 @@ ${preamble()}
  *  the overlay has both the field to draw and the refs to number it by. */
 function buildHoldScript(): string {
   return `(function () {
-${preamble()}
-  var found = act({ kind: 'elements' });
-  if (!found.success) { return JSON.stringify(found); }
-  watch('hold');
-  found.acted = 'held the field';
-  return JSON.stringify(found);
+  return JSON.stringify({
+    error: 'Agent-owned page marks are disabled. Use /design-mode and select the element yourself.',
+    success: false
+  });
 })()`
 }
 
@@ -286,7 +290,7 @@ ${
 }
 
 const ANNOTATION_SCRIPTS = new Map<string, (action: PreviewActAction) => string>([
-  ['pin', action => buildPinScript(action, action.text || '')],
+  ['pin', buildPinScript],
   ['unpin', buildUnpinScript],
   ['hold', buildHoldScript],
   ['strobe', buildStrobeScript]

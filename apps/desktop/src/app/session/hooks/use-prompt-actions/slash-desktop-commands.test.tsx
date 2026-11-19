@@ -6,6 +6,7 @@ import { fr } from '@/i18n/fr'
 import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
+import { $previewTabs, $visiblePreviewTabs } from '@/store/preview'
 import { $connection } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
 
@@ -88,6 +89,24 @@ describe('desktop surfaces for /rollback /agents /config /history', () => {
     })) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'action', action })
     }
+  })
+})
+
+describe('/design-mode', () => {
+  it('opens the existing Browser without sending a prompt or slash.exec', async () => {
+    $previewTabs.set([])
+    const requestGateway = gateway(() => undefined)
+    const handle = await mount(requestGateway)
+
+    expect(resolveDesktopCommand('/design-mode')?.surface).toEqual({ kind: 'action', action: 'design-mode' })
+    await handle.submitText('/design-mode')
+
+    const browsers = $visiblePreviewTabs.get().filter(tab => tab.target.kind === 'url')
+    expect(browsers).toHaveLength(1)
+    expect(browsers[0]?.target.url).toBe('about:blank')
+    expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
+    expect(callsOf(requestGateway, 'command.dispatch')).toEqual([])
   })
 })
 

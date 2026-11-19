@@ -285,6 +285,19 @@ export function useSlashCompletions(options: {
             meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta))
           }))
 
+        if (
+          !isArgCompletion &&
+          '/design-mode'.startsWith(text.toLowerCase()) &&
+          !decorated.some(item => item.text.toLowerCase() === '/design-mode')
+        ) {
+          decorated.push({
+            text: '/design-mode',
+            display: '/design-mode',
+            group: 'Commands',
+            meta: desktopSlashDescription('/design-mode')
+          })
+        }
+
         // Keep each group contiguous so headers render once: Commands before
         // Skills (stable within a group, preserving backend relevance order).
         // Do not re-sort skills by usage here — complete.slash already ranked
@@ -302,7 +315,12 @@ export function useSlashCompletions(options: {
 
         return { items, query }
       } catch {
-        return { items: [], query }
+        return {
+          items: '/design-mode'.startsWith(text.toLowerCase())
+            ? [{ text: '/design-mode', display: '/design-mode', group: 'Commands', meta: desktopSlashDescription('/design-mode') }]
+            : [],
+          query
+        }
       }
     },
     [gateway, skinThemes, activeSkin, keysFor, sessionParams]

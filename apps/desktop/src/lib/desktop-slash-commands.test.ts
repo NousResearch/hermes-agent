@@ -268,11 +268,13 @@ describe('desktop slash command curation', () => {
 
     expect(filtered.categories).toEqual([
       { name: 'Session', pairs: [['/new', 'Start a new desktop chat']] },
-      { name: 'User commands', pairs: [['/ship-it', 'Run release checklist']] }
+      { name: 'User commands', pairs: [['/ship-it', 'Run release checklist']] },
+      { name: 'Browser', pairs: [['/design-mode', 'Inspect the current Browser with DOM Layers']] }
     ])
     expect(filtered.pairs).toEqual([
       ['/new', 'Start a new desktop chat'],
-      ['/ship-it', 'Run release checklist']
+      ['/ship-it', 'Run release checklist'],
+      ['/design-mode', 'Inspect the current Browser with DOM Layers']
     ])
     // skill_count is recomputed from the filtered output (only /ship-it is an
     // extension command — /new is a built-in) so the /help footer matches what
@@ -291,7 +293,7 @@ describe('desktop slash command curation', () => {
       skill_count: 12
     })
 
-    expect(filtered.pairs?.map(([cmd]) => cmd)).toEqual(['/new', '/gif-search', '/ship-it'])
+    expect(filtered.pairs?.map(([cmd]) => cmd)).toEqual(['/new', '/gif-search', '/ship-it', '/design-mode'])
     expect(filtered.skill_count).toBe(2)
   })
 

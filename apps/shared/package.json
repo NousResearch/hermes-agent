@@ -27,6 +27,7 @@
     "./model-search-text": "./src/model-search-text.ts",
     "./plan-usage": "./src/plan-usage.ts",
     "./prompt-history": "./src/node/prompt-history.ts",
+    "./preview-design": "./src/preview-design.ts",
     "./provider-names": "./src/provider-names.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
     "./reconnect-backoff": "./src/reconnect-backoff.ts",

@@ -26,8 +26,8 @@ def _snapshot_text(env: LocalEnvironment) -> str:
     return "".join(open(path).read() for path in glob.glob(env._snapshot_path[:-3] + "*.sh"))
 
 
-@pytest.fixture
-def env(tmp_path, monkeypatch):
+@pytest.fixture(params=[{}, {"SHELLOPTS": "errexit"}], ids=["plain", "errexit"])
+def env(tmp_path, monkeypatch, request):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("PORTAL_CLIENT_SECRET=SYNTH-dotenv\nODD_CUSTOM_NAME=SYNTH-dotenv-custom\n")
@@ -35,7 +35,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PORTAL_CLIENT_SECRET", "SYNTH-dotenv")
     monkeypatch.setenv("ODD_CUSTOM_NAME", "SYNTH-dotenv-custom")
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    environment = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    # An inherited errexit must not end a command in the wrapper before it runs.
+    environment = LocalEnvironment(cwd=str(tmp_path), timeout=30, env=request.param)
     yield environment
     environment.cleanup()
 

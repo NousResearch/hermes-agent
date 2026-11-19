@@ -187,9 +187,11 @@ def _secret_restore_lines(restore_fd: str) -> str:
     """Run right after the snapshot is sourced: read the secret declarations the backend wrote to
     fd *restore_fd* (a pipe, never process env: an escaped value doubles in ``declare -p`` and one
     oversize env entry would make every later spawn fail) and ``eval`` them, then drop the marker.
-    ``read -d ''`` + ``eval``, not ``source /dev/fd/N``: bash 3.2 sources nothing from a pipe."""
+    ``read -d ''`` + ``eval``, not ``source /dev/fd/N``: bash 3.2 sources nothing from a pipe.
+    ``read`` returns 1 at the EOF it always reaches (the set holds no NUL), so ``|| :`` keeps an
+    inherited ``errexit`` from ending the command before it runs."""
     return (
-        f"IFS= builtin read -r -d '' __hermes_d <&{restore_fd}; builtin eval \"${{__hermes_d-}}\"; "
+        f"IFS= builtin read -r -d '' __hermes_d <&{restore_fd} || :; builtin eval \"${{__hermes_d-}}\"; "
         "builtin unset __hermes_d __hermes_sgen")
 
 

@@ -143,3 +143,10 @@ def test_aux_pricing_mints_nothing_for_a_credential_source_client(monkeypatch):
     finally:
         aux_accounting.reset_accounting_context(token)
     assert keys == [None] and minted == []
+
+
+def test_a_serving_credential_never_shows_its_key_in_repr():
+    cred = aux_accounting.ServingCredential.of(SimpleNamespace(base_url="http://127.0.0.1:47970/v1",
+                                                                api_key="serving-key-2222"))
+    assert cred.api_key == "serving-key-2222"
+    assert "serving-key-2222" not in repr(cred) and "serving-key-2222" not in str(cred)

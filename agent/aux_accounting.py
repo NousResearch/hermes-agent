@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,10 +30,10 @@ class ServingCredential:
     """The credential an aux attempt that succeeded authenticated with, bound to the URL it went to.
 
     ``api_key`` is the client's static key, or None when a credential source (``key_cmd``, Entra ID)
-    served it: pricing never mints a token of its own. Accounting-only; never persisted.
+    served it: pricing never mints a token of its own. Accounting-only; never persisted or repr'd.
     """
     base_url: str
-    api_key: Optional[str]
+    api_key: Optional[str] = field(repr=False)
 
     @classmethod
     def of(cls, client: Any) -> Optional[ServingCredential]:

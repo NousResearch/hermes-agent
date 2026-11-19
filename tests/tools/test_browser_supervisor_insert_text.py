@@ -24,6 +24,7 @@ class _FakeCDP:
         self.evaluates: list[tuple[str, str | None]] = []  # (expression, sessionId)
         self.attaches = 0
         self.url = ""
+        self.before_evaluate_reply: list[dict] = []  # CDP events sent ahead of the next evaluate's reply
         self.loop = asyncio.new_event_loop()
         ready = threading.Event()
         threading.Thread(target=self._serve, args=(ready,), daemon=True).start()
@@ -67,6 +68,9 @@ class _FakeCDP:
             msg = json.loads(raw)
             handler = handlers.get(msg["method"])
             result = handler(msg) if handler else {}
+            if msg["method"] == "Runtime.evaluate":
+                while self.before_evaluate_reply:
+                    await ws.send(json.dumps(self.before_evaluate_reply.pop(0)))
             await ws.send(json.dumps({"id": msg["id"], "result": result}))
 
 
@@ -124,6 +128,20 @@ def test_insert_refuses_once_the_checked_document_was_replaced(supervisor):
     assert cdp.inserts == []
     # A check on the new document vouches for that one.
     assert sup.insert_text("x", session_id=pinned, document=_checked(sup, pinned)) == {"ok": True}
+
+
+def test_a_navigation_while_the_focus_check_runs_refuses_the_keystroke(supervisor):
+    """The check ran on the document that was current when it was sent. A redirect that commits while
+    it runs (its event arrives before the check's reply) is a document the check never looked at."""
+    sup, cdp = supervisor
+    pinned = sup.current_page_session()
+    cdp.before_evaluate_reply.append({"method": "Page.frameNavigated", "sessionId": pinned, "params": {
+        "frame": {"id": "main", "url": "https://evil.test/phish", "securityOrigin": "https://evil.test"}}})
+    document = _checked(sup, pinned)
+
+    out = sup.insert_text("s3cret", session_id=pinned, document=document)
+    assert out["ok"] is False and out["code"] == "document_changed"
+    assert cdp.inserts == []
 
 
 def test_a_subframe_navigation_does_not_cancel_typing(supervisor):

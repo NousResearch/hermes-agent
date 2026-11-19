@@ -105,6 +105,10 @@ _fill_pin: ContextVar[Optional[_Pin]] = ContextVar("vault_fill_pin", default=Non
 _MOVED = {"success": False, "error_type": "supervisor_required",
           "error": "The browser moved to another tab or is reconnecting since the page origin was checked. "
                    "Nothing was written; retry in a moment."}
+# The same move refused at a keystroke: by then the JS write (the password) and any earlier keys are on
+# the page the origin check passed, so only what is left is withheld.
+_MOVED_WHILE_TYPING = ("The browser moved to another tab or is reconnecting since the page origin was checked. "
+                       "Nothing further was typed; retry in a moment.")
 
 # Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
 # one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
@@ -841,7 +845,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # origin check ran on (a plugin page that took the task during the focus check leaves the CDP
         # session and document as they were), and the screen a human can have taken since.
         if _eval_channel(task_id)[2] is not None:
-            return _abort("supervisor_required", _MOVED["error"])
+            return _abort("supervisor_required", _MOVED_WHILE_TYPING)
         taken = _human_lease_refusal(task_id)
         if taken is not None:
             return _abort("human_has_control", taken["error"])
@@ -950,7 +954,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
 
 # ``insert_text`` refusals that name a page move, mapped to the cause the fill reports.
 _INSERT_REFUSALS = {
-    "session_changed": ("supervisor_required", _MOVED["error"]),
+    "session_changed": ("supervisor_required", _MOVED_WHILE_TYPING),
     "document_changed": ("page_navigated", "The page navigated after the focus check, before the value could be "
                                            "typed. Nothing further was typed; retry once the page settles."),
 }

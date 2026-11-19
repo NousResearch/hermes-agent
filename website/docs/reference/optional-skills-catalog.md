@@ -27,6 +27,12 @@ To uninstall:
 hermes skills uninstall <skill-name>
 ```
 
+## agent-safety
+
+| Skill | Description |
+|-------|-------------|
+| [**credibility-action-gate**](/user-guide/skills/optional/agent-safety/agent-safety-credibility-action-gate) | Gate uncertain claims before bounded agent action |
+
 ## autonomous-ai-agents
 
 | Skill | Description |

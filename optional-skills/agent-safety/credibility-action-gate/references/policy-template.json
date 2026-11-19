@@ -1,0 +1,35 @@
+{
+  "policy_name": "example-operator-policy",
+  "policy_version": "0.1.0",
+  "action_domain": "general",
+  "requested_action": {
+    "type": "bounded_action",
+    "size": 1,
+    "unit": "configured_unit",
+    "is_repeat_action": false
+  },
+  "authority": {
+    "max_autonomous_action_size": 10,
+    "small_test_action_size": 1,
+    "serious_action_threshold": 5
+  },
+  "required_lanes": ["evidence", "external_context"],
+  "required_lanes_for_serious_action": ["evidence", "external_context", "graph_history"],
+  "hard_blocker_codes": [
+    "POLICY_AUTHORITY_EXCEEDED",
+    "DOMAIN_HARD_BLOCKER",
+    "CONTRADICTION_IN_RECORD"
+  ],
+  "disposition_preferences": {
+    "reject_on_any_critical": true,
+    "reject_on_any_high": true,
+    "missing_required_lane": "monitor_until_new_evidence",
+    "missing_required_lane_for_serious_action": "monitor_until_new_evidence",
+    "multiple_medium_concerns": "eligible_for_small_test_action",
+    "repeat_action_without_fresh_reason": "monitor_until_new_evidence"
+  },
+  "notes": [
+    "The operator policy owns mission priorities and authority limits.",
+    "The coordinator is analysis-only and does not execute the action."
+  ]
+}

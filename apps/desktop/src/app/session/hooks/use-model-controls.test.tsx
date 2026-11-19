@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import { $modelSwitchPending } from '@/store/model-switch-pending'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -96,6 +97,7 @@ describe('useModelControls', () => {
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
+    $modelSwitchPending.set({})
     SessionStates.$sessionStates.set({})
   })
 
@@ -107,6 +109,7 @@ describe('useModelControls', () => {
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
+    $modelSwitchPending.set({})
     SessionStates.$sessionStates.set({})
   })
 
@@ -306,6 +309,9 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('grok-4.5')
     expect($currentProvider.get()).toBe('xai')
+    // A deferred answer is an answer: the pill stops spinning and applies the
+    // deferred toast instead of hanging on a request nobody will complete.
+    expect($modelSwitchPending.get()).toEqual({})
     expect(invalidate).not.toHaveBeenCalled()
     expect(notifyError).not.toHaveBeenCalled()
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'grok-4.5 applies from your next message' }))
@@ -316,7 +322,9 @@ describe('useModelControls', () => {
     setCurrentModel('old')
     setCurrentProvider('xai')
     const refusal = Object.assign(new Error('model_resolution_failed'), { data: { reason: 'model_resolution_failed' } })
-    const requestGateway = vi.fn(async () => { throw refusal })
+    const requestGateway = vi.fn(async () => {
+      throw refusal
+    })
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
@@ -962,5 +970,160 @@ describe('useModelControls', () => {
     // A provider-class pick can never be shadowed by a custom:<key> default, so
     // the sticky path must not pay for a /api/model/info round trip.
     expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+
+  // ── In-flight switch (pill spinner) ──────────────────────────────────────
+  // `config.set model` is a gateway round trip. While it is unanswered the
+  // composer pill must show work in progress instead of a model name that may
+  // still roll back — the mark lives per live session, in `$modelSwitchPending`.
+  it('marks a live-session switch pending until the gateway answers', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const answer = deferred<{ key: string; value: string }>()
+    const requestGateway = vi.fn(() => answer.promise as never)
+    let controls!: Controls
+    let applied: boolean | undefined
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await act(async () => {
+      void controls.selectModel({ model: 'grok-4.5', provider: 'xai' }).then(value => (applied = value))
+      await Promise.resolve()
+    })
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect($modelSwitchPending.get()['session-1']).toBe(1)
+    expect(applied).toBeUndefined()
+
+    await act(async () => {
+      answer.resolve({ key: 'model', value: 'grok-4.5' })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(applied).toBe(true))
+    expect($modelSwitchPending.get()['session-1']).toBeUndefined()
+  })
+
+  it('clears the pending mark when the switch fails', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const answer = deferred<{ key: string; value: string }>()
+    const requestGateway = vi.fn(() => answer.promise as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await act(async () => {
+      void controls.selectModel({ model: 'bogus', provider: 'xai' })
+      await Promise.resolve()
+    })
+
+    expect($modelSwitchPending.get()['session-1']).toBe(1)
+
+    await act(async () => {
+      answer.reject(new Error('no such model'))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect($modelSwitchPending.get()['session-1']).toBeUndefined())
+  })
+
+  it('never marks a draft pick pending: no live session, no gateway round trip', async () => {
+    const requestGateway = vi.fn()
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })).resolves.toBe(true)
+
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($modelSwitchPending.get()).toEqual({})
+  })
+
+  it('keeps a pick pending while the confirm dialog waits, then marks the confirmed retry', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+
+    const confirmed = deferred<{ key: string; value: string }>()
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ confirm_message: 'Trains on your data.', confirm_required: true })
+      .mockImplementationOnce(() => confirmed.promise as never)
+
+    const answer = deferred<boolean>()
+    confirmMock.mockReturnValueOnce(answer.promise)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
+
+    // The first request is over; the pill waits on a human, not the gateway.
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect($modelSwitchPending.get()['session-1']).toBeUndefined()
+
+    await act(async () => {
+      answer.resolve(true)
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    expect($modelSwitchPending.get()['session-1']).toBe(1)
+
+    await act(async () => {
+      confirmed.resolve({ key: 'model', value: 'muse-spark-1.2-contributor' })
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect($modelSwitchPending.get()['session-1']).toBeUndefined())
+    expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
+  })
+
+  it('does not let an older answer clear a newer pick’s pending mark', async () => {
+    $activeSessionId.set('session-1')
+
+    const first = deferred<{ key: string; value: string }>()
+    const second = deferred<{ key: string; value: string }>()
+
+    const requestGateway = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise as never)
+      .mockImplementationOnce(() => second.promise as never)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    const older = controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    await waitFor(() => expect($modelSwitchPending.get()['session-1']).toBe(1))
+
+    const newer = controls.selectModel({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+
+    await waitFor(() => expect($modelSwitchPending.get()['session-1']).toBe(2))
+
+    await act(async () => {
+      first.resolve({ key: 'model', value: 'grok-4.5' })
+      await older
+    })
+
+    // Still one request in flight: the newer pick's spinner must stay up.
+    expect($modelSwitchPending.get()['session-1']).toBe(1)
+
+    await act(async () => {
+      second.resolve({ key: 'model', value: 'claude-sonnet-4.6' })
+      await newer
+    })
+
+    expect($modelSwitchPending.get()['session-1']).toBeUndefined()
   })
 })

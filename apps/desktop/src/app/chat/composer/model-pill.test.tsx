@@ -8,6 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { registry } from '@/contrib/registry'
 import { formatModelPillLabel } from '@/lib/model-status-label'
+import { $modelSwitchPending, beginModelSwitchPending, endModelSwitchPending } from '@/store/model-switch-pending'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
 import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
@@ -265,5 +266,69 @@ describe('ModelPill label providers', () => {
 
     expect(screen.getByText('first wins')).toBeTruthy()
     expect(second).not.toHaveBeenCalled()
+  })
+})
+
+// A model switch is a gateway round trip (`config.set`), and until the answer
+// lands the pill's job is to say "working" — not to keep presenting a model
+// name the switch may still roll back. The pending flag is its own session-
+// scoped state; the pill's only other spinner is the cold-start empty model.
+describe('ModelPill in-flight model switch', () => {
+  afterEach(() => $modelSwitchPending.set({}))
+
+  it('replaces the model name with a spinner while the switch is in flight', () => {
+    $activeSessionId.set('live-1')
+    setCurrentModel('old-model')
+    beginModelSwitchPending('live-1')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'old-model', provider: 'xai' })} />)
+
+    expect(screen.queryByText(formatModelPillLabel('old-model'))).toBeNull()
+    expect(screen.getByRole('status')).toBeTruthy()
+    // The accessible name must not keep announcing the model being replaced.
+    expect(screen.getByRole('button').getAttribute('aria-label')).not.toMatch(/Old Model/i)
+
+    // The mark is per request: it survives until the switch settles.
+    endModelSwitchPending('live-1')
+  })
+
+  it('brings the model name back once the switch settles', () => {
+    $activeSessionId.set('live-1')
+    setCurrentModel('new-model')
+    beginModelSwitchPending('live-1')
+
+    const { rerender } = render(<ModelPill disabled={false} model={modelState({ model: 'new-model' })} />)
+
+    expect(screen.getByRole('status')).toBeTruthy()
+
+    act(() => endModelSwitchPending('live-1'))
+
+    rerender(<ModelPill disabled={false} model={modelState({ model: 'new-model' })} />)
+
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText(formatModelPillLabel('new-model'))).toBeTruthy()
+  })
+
+  it('ignores a pending switch on another session', () => {
+    $activeSessionId.set('live-1')
+    setCurrentModel('old-model')
+    beginModelSwitchPending('live-2')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'old-model' })} />)
+
+    expect(screen.getByText(formatModelPillLabel('old-model'))).toBeTruthy()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('never spins for a draft pick: no live session, no gateway request', () => {
+    $activeSessionId.set(null)
+    setCurrentModel('draft-model')
+    // A stale mark from a session this surface is no longer showing.
+    beginModelSwitchPending('gone-session')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'draft-model' })} />)
+
+    expect(screen.getByText(formatModelPillLabel('draft-model'))).toBeTruthy()
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })

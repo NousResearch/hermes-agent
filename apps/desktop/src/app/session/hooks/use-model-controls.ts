@@ -14,6 +14,7 @@ import {
   requestModelOptions
 } from '@/lib/model-options'
 import { noteQueuedLaunchPick } from '@/store/composer-queued-pick'
+import { beginModelSwitchPending, endModelSwitchPending } from '@/store/model-switch-pending'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -374,13 +375,24 @@ export function useModelControls({
       const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
       const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
 
-      const requestSwitch = (confirmExpensiveModel = false) =>
-        requestGateway<ModelSwitchResponse>('config.set', {
-          session_id: liveSessionId,
-          key: 'model',
-          value: `${selection.model} --provider ${selection.provider}${scope}`,
-          ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
-        })
+      // Bracket EVERY `config.set model` request — the first attempt and the
+      // confirmed retry — so the composer pill spins exactly while the gateway
+      // owes an answer: not for a draft pick (no request), not while the
+      // confirm dialog waits on the user (the first request already settled).
+      const requestSwitch = async (confirmExpensiveModel = false) => {
+        beginModelSwitchPending(liveSessionId)
+
+        try {
+          return await requestGateway<ModelSwitchResponse>('config.set', {
+            session_id: liveSessionId,
+            key: 'model',
+            value: `${selection.model} --provider ${selection.provider}${scope}`,
+            ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
+          })
+        } finally {
+          endModelSwitchPending(liveSessionId)
+        }
+      }
 
       const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
         noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection : null, composerScope, token)

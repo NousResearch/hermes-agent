@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-24T04:45:58Z",
+  "updated_at": "2026-11-24T04:46:04Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -2261,6 +2261,941 @@
       "gpt-5.4": 272000,
       "gpt-5.2": 272000,
       "gpt-5": 272000
+    }
+  },
+  "pricing": {
+    "official_docs": {
+      "openai": {
+        "gpt-5.6-sol": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-4o": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "1.25",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4o-mini": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.50",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1-mini": {
+          "input_cost_per_million": "0.40",
+          "output_cost_per_million": "1.60",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1-nano": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.40",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "o3": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "2.50",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "o3-mini": {
+          "input_cost_per_million": "1.10",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.55",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-6-astra": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "50.00",
+          "cache_read_cost_per_million": "1.00",
+          "cache_write_cost_per_million": "12.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+          "pricing_version": "openai-gpt-6-astra-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "20.00",
+          "output_cost_per_million_above": "75.00",
+          "cache_read_cost_per_million_above": "2.00",
+          "cache_write_cost_per_million_above": "25.00"
+        },
+        "gpt-6-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6.1-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-luna": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6.2-astra": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.40",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+          "pricing_version": "openai-gpt-6.2-2026-11",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "16.00",
+          "output_cost_per_million_above": "60.000",
+          "cache_read_cost_per_million_above": "0.80",
+          "cache_write_cost_per_million_above": "20.00"
+        },
+        "gpt-6.2-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+          "pricing_version": "openai-gpt-6.2-2026-11",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.000",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-5.6-sol-pro": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-sol-900k": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra-pro": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra-900k": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna-pro": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna-900k": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-6-sol-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-sol-900k": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-luna-pro": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6-luna-900k": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6.1-sol-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6.1-sol-900k": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        }
+      },
+      "anthropic": {
+        "claude-opus-4-8": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-7": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-7-20250507": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-6": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-6-20250414": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-6": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-6-20250414": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-20250514": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-5-sonnet-20241022": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-haiku-4-5": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "5.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-20250514": {
+          "input_cost_per_million": "15.00",
+          "output_cost_per_million": "75.00",
+          "cache_read_cost_per_million": "1.50",
+          "cache_write_cost_per_million": "18.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-opus-20240229": {
+          "input_cost_per_million": "15.00",
+          "output_cost_per_million": "75.00",
+          "cache_read_cost_per_million": "1.50",
+          "cache_write_cost_per_million": "18.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-5-haiku-20241022": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.08",
+          "cache_write_cost_per_million": "1.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-haiku-20240307": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.25",
+          "cache_read_cost_per_million": "0.03",
+          "cache_write_cost_per_million": "0.30",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-8-fast": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "50.00",
+          "cache_read_cost_per_million": "1.00",
+          "cache_write_cost_per_million": "12.50",
+          "source_url": "https://openrouter.ai/anthropic/claude-opus-4.8-fast",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-5": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-06-intro"
+        },
+        "claude-opus-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-09"
+        },
+        "claude-opus-5-5": {
+          "input_cost_per_million": "4.00",
+          "output_cost_per_million": "20.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "5.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-09"
+        },
+        "claude-fable-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-11"
+        },
+        "claude-mythos-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-11"
+        }
+      },
+      "deepseek": {
+        "deepseek-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-v4-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-chat": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-reasoner": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-v4-pro": {
+          "input_cost_per_million": "0.66",
+          "output_cost_per_million": "1.98",
+          "cache_read_cost_per_million": "0.022",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        }
+      },
+      "google": {
+        "gemini-4-neon": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-18"
+        },
+        "gemini-4-hydrogen": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "7.50",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-12"
+        },
+        "gemini-4-carbon": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-10"
+        },
+        "gemini-4-argon": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-10-13"
+        },
+        "gemini-3.8-flash": {
+          "input_cost_per_million": "0.75",
+          "output_cost_per_million": "3.75",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-09-02"
+        },
+        "gemini-3.7-flash": {
+          "input_cost_per_million": "0.75",
+          "output_cost_per_million": "3.75",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-09-02"
+        },
+        "gemini-3.6-flash": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "7.50",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-07-28"
+        },
+        "gemini-3.5-flash-lite": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "2.50",
+          "cache_read_cost_per_million": "0.03",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-07-28"
+        },
+        "gemini-3.5-flash": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "9.00",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3.1-flash-lite": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.50",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3-pro-preview": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3-flash-preview": {
+          "input_cost_per_million": "0.50",
+          "output_cost_per_million": "3.00",
+          "cache_read_cost_per_million": "0.05",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-2.5-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.015",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-2.0-flash": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.40",
+          "cache_read_cost_per_million": "0.01",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3.1-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "18.00",
+          "cache_read_cost_per_million_above": "0.40"
+        },
+        "gemini-2.5-pro": {
+          "input_cost_per_million": "1.25",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.125",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "2.50",
+          "output_cost_per_million_above": "15.00"
+        },
+        "gemini-3.1-pro-preview": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "18.00",
+          "cache_read_cost_per_million_above": "0.40"
+        },
+        "gemini-3.1-flash-lite-preview": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.50",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        }
+      },
+      "bedrock": {
+        "anthropic.claude-opus-4-8": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-4-7": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-4-6": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-09"
+        },
+        "anthropic.claude-opus-5-5": {
+          "input_cost_per_million": "4.00",
+          "output_cost_per_million": "20.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "5.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-09"
+        },
+        "anthropic.claude-fable-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-11"
+        },
+        "anthropic.claude-sonnet-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-06"
+        },
+        "anthropic.claude-sonnet-4-6": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "anthropic.claude-sonnet-4-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "anthropic.claude-haiku-4-5": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.08",
+          "cache_write_cost_per_million": "1.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-pro": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "3.20",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-lite": {
+          "input_cost_per_million": "0.06",
+          "output_cost_per_million": "0.24",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-micro": {
+          "input_cost_per_million": "0.035",
+          "output_cost_per_million": "0.14",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        }
+      },
+      "minimax": {
+        "minimax-m2.7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "pricing_version": "minimax-pricing-2026-04"
+        }
+      },
+      "minimax-cn": {
+        "minimax-m2.7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "pricing_version": "minimax-pricing-2026-04"
+        }
+      },
+      "fireworks": {
+        "kimi-k2p6": {
+          "input_cost_per_million": "0.95",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.16",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p7-code": {
+          "input_cost_per_million": "0.95",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.19",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p2": {
+          "input_cost_per_million": "1.40",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.14",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "deepseek-v4-pro": {
+          "input_cost_per_million": "1.74",
+          "output_cost_per_million": "3.48",
+          "cache_read_cost_per_million": "0.145",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "deepseek-v4-flash": {
+          "input_cost_per_million": "0.14",
+          "output_cost_per_million": "0.28",
+          "cache_read_cost_per_million": "0.028",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "qwen3p7-plus": {
+          "input_cost_per_million": "0.40",
+          "output_cost_per_million": "1.60",
+          "cache_read_cost_per_million": "0.08",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "minimax-m3": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "cache_read_cost_per_million": "0.06",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "gpt-oss-120b": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.015",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "gpt-oss-20b": {
+          "input_cost_per_million": "0.07",
+          "output_cost_per_million": "0.30",
+          "cache_read_cost_per_million": "0.035",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p1": {
+          "input_cost_per_million": "1.40",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.26",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "minimax-m2p7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "cache_read_cost_per_million": "0.06",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p6-fast": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.30",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p6-turbo": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.30",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p7-code-fast": {
+          "input_cost_per_million": "1.90",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.38",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p2-fast": {
+          "input_cost_per_million": "2.10",
+          "output_cost_per_million": "6.60",
+          "cache_read_cost_per_million": "0.21",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p1-fast": {
+          "input_cost_per_million": "2.80",
+          "output_cost_per_million": "8.80",
+          "cache_read_cost_per_million": "0.52",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        }
+      }
+    },
+    "anthropic_fast_mode": {
+      "claude-opus-4-8": {
+        "input_cost_per_million": "10.00",
+        "output_cost_per_million": "50.00",
+        "cache_read_cost_per_million": "1.00",
+        "cache_write_cost_per_million": "12.50",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-opus-5": {
+        "input_cost_per_million": "10.00",
+        "output_cost_per_million": "50.00",
+        "cache_read_cost_per_million": "1.00",
+        "cache_write_cost_per_million": "12.50",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-opus-5-5": {
+        "input_cost_per_million": "8.00",
+        "output_cost_per_million": "40.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "10.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-fable-5-2": {
+        "input_cost_per_million": "16.00",
+        "output_cost_per_million": "80.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "20.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-mythos-5-2": {
+        "input_cost_per_million": "16.00",
+        "output_cost_per_million": "80.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "20.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      }
+    },
+    "openai_ultrafast": {
+      "gpt-6-astra": {
+        "input_cost_per_million": "60.00",
+        "output_cost_per_million": "300.00",
+        "cache_read_cost_per_million": "6.00",
+        "cache_write_cost_per_million": "75.00",
+        "source_url": "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
+        "pricing_version": "openai-ultrafast-2026-09",
+        "tier_threshold_tokens": 272000,
+        "input_cost_per_million_above": "120.00",
+        "output_cost_per_million_above": "450.00",
+        "cache_read_cost_per_million_above": "12.00",
+        "cache_write_cost_per_million_above": "150.00"
+      },
+      "gpt-6.1-sol": {
+        "input_cost_per_million": "12.00",
+        "output_cost_per_million": "60.00",
+        "cache_read_cost_per_million": "0.60",
+        "cache_write_cost_per_million": "15.00",
+        "source_url": "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
+        "pricing_version": "openai-ultrafast-2026-10-08",
+        "tier_threshold_tokens": 272000,
+        "input_cost_per_million_above": "24.00",
+        "output_cost_per_million_above": "90.00",
+        "cache_read_cost_per_million_above": "1.20",
+        "cache_write_cost_per_million_above": "30.00"
+      }
     }
   }
 }

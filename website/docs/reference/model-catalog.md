@@ -64,7 +64,7 @@ Field notes:
 - **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this.
 - **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship. Only the OpenRouter and Nous Portal blocks carry the label; on any other block it is ignored.
 - **`requires`** — optional list on a model entry, for the added-row providers. It names the model sets (below) the model cannot be driven correctly without. A build that does not read one of them skips the entry, so an older release never lists a model it cannot drive.
-- **Pricing** is not supplied by the model catalog manifest.
+- **Pricing:** the manifest's `pricing` section can fill a missing standard or fast-tier rate without replacing a bundled rate for that tier. See [Pricing for new models](#pricing-for-new-models) for the lookup order.
 - **Context length and capabilities** still come from live provider APIs and models.dev first. The manifest's `context_lengths` and `model_metadata` tables extend the last fallback; see below for how context keys match and which entry wins.
 
 ## Providers other than OpenRouter and Nous Portal
@@ -165,7 +165,43 @@ A picker entry for a model in a set marked as required for driving it (`openai_g
 
 The publisher derives `requires` from these exact-id sets only. When a model's handling lives somewhere else (a provider plugin, a prefix check), nothing derives it. The release that adds that handling should register a required set for the model's ids, even if the code keeps matching by prefix, so that the picker row is gated the same way.
 
-Fast-tier *prices* for a model added this way are not in the manifest, so its fast-tier cost shows as unknown until a release carries it.
+## Pricing for new models
+
+`pricing` publishes the bundled rate snapshots on `main`, so the cost of a model released after your install does not read "unknown" until the next release:
+
+```json
+{
+  "pricing": {
+    "official_docs": {
+      "openai": {
+        "gpt-6.2-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+          "pricing_version": "openai-gpt-6.2-2026-11"
+        }
+      }
+    },
+    "anthropic_fast_mode": {"claude-opus-5-5": {"input_cost_per_million": "8.00", "output_cost_per_million": "40.00"}},
+    "openai_ultrafast":    {"gpt-6.1-sol":     {"input_cost_per_million": "12.00", "output_cost_per_million": "60.00"}}
+  }
+}
+```
+
+- **`official_docs`** is the standard-tier snapshot, keyed by billing provider (`openai`, `anthropic`, `google`, `bedrock`, ...) and lowercased model id. Field names are the ones the code uses for a rate entry; rates are decimal strings. Token rates are USD per million tokens; `request_cost` is USD per request.
+- **`anthropic_fast_mode`** and **`openai_ultrafast`** are the fast-tier snapshots, keyed by model id. They are used when the response reports it was served at that tier.
+
+Rules:
+
+- **A bundled rate is never replaced.** The manifest is consulted only after the install's own snapshot has no row for the model, under the same name normalizing (dotted Anthropic versions, Bedrock region prefixes). Price corrections still ship with a release.
+- **Standard rates are tried in order:** the install's bundled snapshot, the configured endpoint's `/models` price, the published manifest snapshot, then models.dev on eligible first-party routes. If a relay supplies no price, a vendor snapshot can still produce an estimate; it does not establish what the relay charges.
+- **Malformed rates are ignored.** Each rate must be a finite, non-negative decimal, and a manifest entry needs both input and output token rates. A `tier_threshold_tokens` that is set must be a positive integer, and `*_above` rates require one. Hermes discards the whole entry if it fails validation. The cost is unknown only if no usable rate is available for the usage being estimated.
+- OpenRouter costs and subscription-included routes do not read this section.
+- GPT-6.2's fast-tier rates are computed from its standard rates in code (they carry a dated launch discount), so they are not in these tables. A later model on the same contract uses the same calculation, but only on a vendor snapshot rate (bundled or published). When the standard rate came from somewhere else, such as an endpoint's own listing or models.dev, the Priority, Fast and Ultrafast costs show as unknown: that rate says nothing about the tier price.
 
 ## Fetch behavior
 

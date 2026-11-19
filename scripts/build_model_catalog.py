@@ -13,6 +13,7 @@ block only adds picker rows to the list an install already ships (see
 the same way: an install reads them only for a model it has no entry for.
 ``model_sets`` publishes the id sets that gate request handling, so a model
 that fits an existing contract is driven correctly before its release ships.
+``pricing`` publishes the bundled rate snapshots under the same rule.
 
 The runtime fetcher falls back to the same in-repo hardcoded lists if the
 manifest is unreachable, so this script is a convenience for keeping the
@@ -33,7 +34,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import fields
 from datetime import datetime, timezone, UTC
+from decimal import Decimal
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -49,6 +52,11 @@ from agent.model_metadata import (
 )
 from agent.models_dev import _BUILTIN_MODEL_METADATA
 from agent.reasoning_effort import GPT62_MODEL_IDS
+from agent.usage_pricing import (
+    _ANTHROPIC_FAST_MODE_PRICING,
+    _OFFICIAL_DOCS_PRICING,
+    _OPENAI_ULTRAFAST_PRICING,
+)
 from hermes_cli.model_catalog import MODEL_SETS, OWN_LIST_ROWS
 from hermes_cli.models_catalog_static import _OPENAI_ULTRAFAST_MODELS
 from hermes_cli.models_fast_regions import _FAST_REGION_MODELS
@@ -117,6 +125,26 @@ def _model_metadata() -> dict:
     return tables
 
 
+def _pricing_entry(entry) -> dict:
+    """A ``PricingEntry`` as JSON: its set fields under their own names, rates as decimal strings."""
+    return {
+        field.name: str(value) if isinstance(value, Decimal) else value
+        for field in fields(entry)
+        if field.name not in ("source", "fetched_at") and (value := getattr(entry, field.name)) is not None
+    }
+
+
+def _pricing() -> dict:
+    official: dict = {}
+    for (provider, model), entry in _OFFICIAL_DOCS_PRICING.items():
+        official.setdefault(provider, {})[model] = _pricing_entry(entry)
+    return {
+        "official_docs": official,
+        "anthropic_fast_mode": {m: _pricing_entry(e) for m, e in _ANTHROPIC_FAST_MODE_PRICING.items()},
+        "openai_ultrafast": {m: _pricing_entry(e) for m, e in _OPENAI_ULTRAFAST_PRICING.items()},
+    }
+
+
 def build_catalog() -> dict:
     return {
         "version": CATALOG_VERSION,
@@ -164,6 +192,7 @@ def build_catalog() -> dict:
             "bedrock": dict(BEDROCK_CONTEXT_LENGTHS),
             "codex_oauth": dict(_CODEX_OAUTH_CONTEXT_FALLBACK),
         },
+        "pricing": _pricing(),
     }
 
 

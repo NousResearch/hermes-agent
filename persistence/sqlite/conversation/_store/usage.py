@@ -86,8 +86,12 @@ def update_session_billing_route(
 
     See #48173, #48248.
     """
+    from persistence.core.errors import StoreContention
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
     # Barrier against queued token deltas — see update_session_model.
-    holder.flush_token_counts()
+    if not holder.flush_token_counts():
+        raise StoreContention("Session accounting is unsettled; billing metadata was not updated")
 
     def _do(conn):
         conn.execute("""UPDATE sessions SET
@@ -95,7 +99,8 @@ def update_session_billing_route(
                    billing_base_url = ?,
                    billing_mode = COALESCE(?, billing_mode)
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
-    holder._execute_write(_do)
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def update_token_counts(
@@ -279,7 +284,12 @@ def record_auxiliary_usage(
                 "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                 (own_profile, session_id))
         _record_model_usage(holder, conn, session_id, task=task, **usage)
-    holder._execute_write(_write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+    from persistence.sqlite._state.accounting_markers import require_legacy_accounting_clear
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id, holder._TRANSCRIPT_WRITE_PATIENCE_S) as remaining:
+        require_legacy_accounting_clear(holder)
+        holder._execute_write(_write, patience_s=remaining)
 
 
 def auxiliary_usage_by_task(holder: StoreHolder, session_id: str) -> dict[str, dict[str, float]]:

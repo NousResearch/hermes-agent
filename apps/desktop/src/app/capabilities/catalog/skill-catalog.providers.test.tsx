@@ -434,3 +434,47 @@ it('drops a late provider response when the connection changes', async () => {
   expect(screen.queryByText('Team skills')).toBeNull()
   expect(api.mock.calls.filter(([request]) => request.path.includes('/search'))).toHaveLength(0)
 })
+
+it('providerless refresh removes cached hub descriptors after disable', async () => {
+  setup([{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await teamCard()
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], stock) })
+  await waitFor(() => expect(screen.queryByText('Team skills')).toBeNull())
+  expect(screen.queryByRole('button', { name: 'Team skills' })).toBeNull()
+})
+
+it('a delayed pre-disable hub reply cannot resurrect a source the newer official reply retired', async () => {
+  let resolveHub!: (value: unknown) => void
+  let disabled = false
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => {
+    if (request.path.endsWith('/sources')) { return new Promise(done => { resolveHub = done }) }
+
+    if (request.path.endsWith('/official')) { return Promise.resolve(disabled ? stock : official) }
+
+    return original(request)
+  })
+  setup([{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await teamCard()
+  await waitFor(() => expect(resolveHub).toBeTruthy())
+  disabled = true
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: ['official-skills'] }) })
+  await waitFor(() => expect(screen.queryByText('Team skills')).toBeNull())
+  const searches = api.mock.calls.filter(([request]) => request.path.includes('/search')).length
+  await act(async () => resolveHub({ sources: [source], installed: {}, featured: [] }))
+  await act(async () => { await new Promise(done => setTimeout(done, 20)) })
+  expect(screen.queryByText('Team skills')).toBeNull()
+  expect(api.mock.calls.filter(([request]) => request.path.includes('/search'))).toHaveLength(searches)
+})
+
+it('retires the source facet selection together with the descriptor', async () => {
+  setup([{ name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  await teamCard()
+  fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Team skills' }))
+  expect(screen.getAllByRole('article')).toHaveLength(1)
+  await act(async () => { queryClient.setQueryData(['official-skills', 'local::alice'], stock) })
+  await waitFor(() => expect(screen.queryAllByText('Team skills')).toHaveLength(0))
+  expect(screen.queryByText('No matches')).toBeNull()
+  expect(screen.getAllByRole('article').some(article => article.textContent?.includes('Public lookalike'))).toBe(true)
+})

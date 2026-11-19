@@ -35,7 +35,7 @@ import {
   relatedEntries,
   sortCatalog, sourceFacetValues } from './catalog-query'
 import { $catalogCardView } from './store'
-import { useCatalogFilters } from './use-catalog-filters'
+import { useCatalogFilters, useSourceRetirement } from './use-catalog-filters'
 
 interface CatalogBrowserProps {
   kind: CatalogKind
@@ -353,6 +353,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const filters = useCatalogFilters(kind, resetSelection)
   const { facets, sort } = filters
+  useSourceRetirement(sources, facets.sources, filters.dropSources)
 
   // Clearing the query only widens results, and a deep link clears it while selecting its target.
   useEffect(() => {

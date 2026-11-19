@@ -8,7 +8,6 @@ import { useI18n } from '@/i18n'
 import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify } from '@/store/notifications'
 import type { SkillHubSourcesResponse, SkillInfo } from '@/types/hermes'
-import type { CatalogSource } from '@/types/skill-catalog'
 
 import { skillSearchTerms } from '../skills/skills-data'
 
@@ -20,6 +19,7 @@ import { useProviderCatalog } from './provider-catalog'
 import { ProviderActions, ProviderDetail, ProviderNotices } from './provider-detail'
 import { ProviderReviewDialog } from './provider-review-dialog'
 import { buildSkillCatalog } from './skill-catalog-data'
+import { useSourceLifecycle } from './source-lifecycle'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
@@ -72,13 +72,16 @@ function ScopedSkillCatalog({
     }
   }, [])
 
+  const lifecycle = useSourceLifecycle()
+
   const {
     data: officialData,
+    dataUpdatedAt: officialUpdatedAt,
     error: officialError,
     refetch: refreshOfficial
   } = useQuery({
     queryKey: [...OFFICIAL_SKILLS_KEY, profileScopeKey(profile)],
-    queryFn: () => getOfficialSkills(profile),
+    queryFn: () => lifecycle.issue('official', () => getOfficialSkills(profile)),
     staleTime: 60_000,
     retry: false
   })
@@ -87,6 +90,7 @@ function ScopedSkillCatalog({
 
   const {
     data: hubData,
+    dataUpdatedAt: hubUpdatedAt,
     isPending: hubPending,
     error: hubError,
     refetch: refreshHub
@@ -96,11 +100,13 @@ function ScopedSkillCatalog({
     // lock map rather than guessing identity from a community skill's name.
     // The older getSkillHubSources helper cannot carry a connection pin.
     queryFn: () =>
-      window.hermesDesktop.api<SkillHubSourcesResponse>({
-        ...capabilityScoped(profile),
-        path: '/api/skills/hub/sources',
-        timeoutMs: 45_000
-      }),
+      lifecycle.issue('hub', () =>
+        window.hermesDesktop.api<SkillHubSourcesResponse>({
+          ...capabilityScoped(profile),
+          path: '/api/skills/hub/sources',
+          timeoutMs: 45_000
+        })
+      ),
     enabled: hasHubSkills,
     staleTime: 60_000,
     retry: false
@@ -116,8 +122,12 @@ function ScopedSkillCatalog({
     retry: false
   })
 
-  const hubProviders = (hubData?.sources ?? []).filter((source): source is typeof source & CatalogSource => 'provider' in source)
-  const providerSources = [...new Map([...hubProviders, ...(officialData?.provider_sources ?? [])].map(source => [source.id, source])).values()].filter(source => source.state !== 'hidden')
+  const published = lifecycle.publish(
+    { data: officialData, dataUpdatedAt: officialUpdatedAt, enabled: true },
+    { data: hubData, dataUpdatedAt: hubUpdatedAt, enabled: hasHubSkills }
+  )
+
+  const providerSources = published.sources
   const providers = useProviderCatalog(providerSources, profile, query ?? '')
   const providerAction = useProviderAction(profile)
   const catalog = buildSkillCatalog(skills, hubData, officialData, updatesData, providerSources)

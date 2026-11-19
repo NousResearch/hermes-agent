@@ -31,6 +31,8 @@ export function useCatalogFilters(kind: CatalogKind, onChange: () => void) {
       onChange()
     },
     toggleSource: toggle('sources'),
+    // A source whose descriptor was retired leaves the rail with its selection.
+    dropSources: (ids: string[]) => update(current => ({ ...current, sources: current.sources.filter(id => !ids.includes(id)) })),
     toggleCategory: toggle('categories'),
     toggleTag: toggle('tags'),
     toggleInstalled: () => update(current => ({ ...current, installedOnly: !current.installedOnly })),
@@ -38,5 +40,26 @@ export function useCatalogFilters(kind: CatalogKind, onChange: () => void) {
     // Cards and "See all" drill into one category rather than toggling it.
     chooseCategory: (value: string) => update(current => ({ ...current, categories: [value], tags: [] })),
     clear: () => update(() => EMPTY_FACETS)
+  }
+}
+
+/** Descriptor-driven sources come and go with their provider. A retired source
+ *  leaves the rail together with its selection, so the list does not stay
+ *  narrowed to a source that no longer exists. Derived during render from the
+ *  previously offered set, so there is no effect and no extra frame. */
+export function useSourceRetirement(sources: Record<string, string> | undefined, selected: string[], drop: (ids: string[]) => void) {
+  const offered = Object.keys(sources ?? {})
+  const offeredKey = offered.join('\n')
+  const [knownKey, setKnownKey] = useState(offeredKey)
+
+  if (knownKey === offeredKey) {
+    return
+  }
+
+  setKnownKey(offeredKey)
+  const retired = knownKey.split('\n').filter(id => id && !offered.includes(id) && selected.includes(id))
+
+  if (retired.length) {
+    drop(retired)
   }
 }

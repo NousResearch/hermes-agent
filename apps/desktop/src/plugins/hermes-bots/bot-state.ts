@@ -213,9 +213,8 @@ export function reconcileSelectionToFocusedChat(): void {
     return
   }
 
-  // A cold open is in flight — its click already owns the selection and the
-  // "+" target; adopting the still-focused chat would overwrite the pick
-  // before the open lands. What bounds the defer is in the docstring.
+  // A cold open is in flight — the docstring above carries the why and the
+  // bounds.
   if ($pendingBotOpen.get()) {
     return
   }

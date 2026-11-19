@@ -18,7 +18,8 @@ interface Store<T> {
   listen: (listener: (value: T) => void) => () => void
 }
 
-const { state } = vi.hoisted(() => ({
+const { pluginCtx, state } = vi.hoisted(() => ({
+  pluginCtx: { storage: { set: vi.fn() } },
   state: {
     activeConnectionId: '' as string,
     connectionId: 'source-a',
@@ -61,7 +62,9 @@ vi.mock('./shared', async () => {
 
   return {
     $pendingBotOpen: atom<null | { generation: number; key: string }>(null),
-    getPluginCtx: () => null,
+    // A real ctx shape so the adoption case can spy that reconcile never
+    // persists — only saveSelectedRosterBot writes selected-roster-bot-v1.
+    getPluginCtx: () => pluginCtx,
     ID: 'hermes-bots'
   }
 })
@@ -82,6 +85,7 @@ const roster = [
 ]
 
 beforeEach(() => {
+  pluginCtx.storage.set.mockClear()
   state.activeConnectionId = ''
   state.connectionId = 'source-a'
   state.focusedOwner = null
@@ -114,15 +118,26 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
     // The Routines tile scope follows too — botSelectionKey for a
     // source-scoped row is the same source-qualified key.
     expect($selectedBot.get()).toBe('source-b::worker')
+    // Transient adoption never persists: the durable selection stays with
+    // the user's last click (saveSelectedRosterBot), reconcile touches
+    // atoms only.
+    expect(pluginCtx.storage.set).not.toHaveBeenCalled()
   })
 
   it('leaves the selection when no session owns the workspace', async () => {
     state.focusedOwner = { connectionId: 'source-b', profile: 'worker' }
 
-    const { $botChatFocused, $lastRoster, $selectedRosterKey, reconcileSelectionToFocusedChat } = await load()
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
 
     $lastRoster.set(roster)
     $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
     $botChatFocused.set(false)
 
     reconcileSelectionToFocusedChat()
@@ -134,10 +149,17 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
     state.focusedProfile = 'worker'
     state.profile = 'default'
 
-    const { $botChatFocused, $lastRoster, $selectedRosterKey, reconcileSelectionToFocusedChat } = await load()
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
 
     $lastRoster.set(roster)
     $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
     $botChatFocused.set(true)
 
     reconcileSelectionToFocusedChat()
@@ -148,10 +170,17 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
   it('leaves the selection when the focused owner has no roster row', async () => {
     state.focusedOwner = { connectionId: 'source-z', profile: 'ghost' }
 
-    const { $botChatFocused, $lastRoster, $selectedRosterKey, reconcileSelectionToFocusedChat } = await load()
+    const {
+      $botChatFocused,
+      $lastRoster,
+      $selectedRosterHydrated,
+      $selectedRosterKey,
+      reconcileSelectionToFocusedChat
+    } = await load()
 
     $lastRoster.set(roster)
     $selectedRosterKey.set('source-a::alpha')
+    $selectedRosterHydrated.set(true)
     $botChatFocused.set(true)
 
     reconcileSelectionToFocusedChat()
@@ -200,7 +229,15 @@ describe('reconcileSelectionToFocusedChat — the selection follows the chat on 
     $selectedRosterKey.set('source-a::alpha')
     $selectedRosterHydrated.set(true)
     $botChatFocused.set(true)
-    // The flight settled (success, failure, or a bump) — ambient adoption resumes.
+    // One graph, both edges of the flight: the click's pick stands while the
+    // open is in flight, ambient adoption resumes the moment it settles —
+    // success, failure, and a bump all land here through the same settle.
+    $pendingBotOpen.set({ generation: 1, key: 'source-a::alpha' })
+
+    reconcileSelectionToFocusedChat()
+
+    expect($selectedRosterKey.get()).toBe('source-a::alpha')
+
     $pendingBotOpen.set(null)
 
     reconcileSelectionToFocusedChat()

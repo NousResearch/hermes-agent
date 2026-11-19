@@ -6590,6 +6590,7 @@ def _build_call_kwargs(
 
 def _validate_llm_response(
     response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    serving: Any = None,
 ) -> Any:
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
@@ -6600,7 +6601,8 @@ def _validate_llm_response(
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
     hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    an empty route. See #23270. *serving* (:class:`agent.aux_accounting.ServingCredential`) is the
+    credential of the client that produced *response*, for the cost lookup only.
     """
     if response is None:
         raise RuntimeError(
@@ -6608,7 +6610,7 @@ def _validate_llm_response(
         )
     response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    record_aux_usage(response, task, provider=provider, base_url=base_url, serving=serving)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -8050,7 +8052,9 @@ def _call_llm_impl(
             ),
             task, **validate_kw,
         )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info)
+    from agent.aux_accounting import ServingCredential
+    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info,
+                         serving=ServingCredential.of(client))
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8204,7 +8208,9 @@ async def _async_call_llm_impl(
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
             client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
+    from agent.aux_accounting import ServingCredential
+    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info,
+                                         serving=ServingCredential.of(client)))
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

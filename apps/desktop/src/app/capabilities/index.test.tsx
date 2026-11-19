@@ -134,11 +134,17 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   it('renders when the browser has no idle callback APIs', async () => {
     vi.stubGlobal('requestIdleCallback', undefined)
     vi.stubGlobal('cancelIdleCallback', undefined)
-    vi.spyOn(queryClient, 'prefetchQuery').mockResolvedValue(undefined)
+    const prefetchSpy = vi.spyOn(queryClient, 'prefetchQuery').mockResolvedValue(undefined)
 
-    await renderSkills()
+    try {
+      await renderSkills()
 
-    expect(await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })).toBeTruthy()
+      expect(await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })).toBeTruthy()
+    } finally {
+      cleanup()
+      prefetchSpy.mockRestore()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('renders a switch for each toolset and toggles it off', async () => {

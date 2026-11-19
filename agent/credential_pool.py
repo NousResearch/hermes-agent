@@ -297,7 +297,7 @@ class PooledCredential:
                     isinstance(token, str)
                     and token.strip()
                     and auth_mod._nous_invoke_jwt_is_usable(
-                        token, scope=getattr(self, "scope", None), expires_at=expires_at,
+                        token, scope=getattr(self, "scope", None), expires_at=expires_at, obtained_at=getattr(self, "obtained_at", None),
                     )
                 ):
                     return token.strip()

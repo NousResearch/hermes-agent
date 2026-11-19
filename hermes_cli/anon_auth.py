@@ -461,13 +461,13 @@ def exchange_anon_jwt(
 def apply_exchange_to_state(state: dict[str, Any], exchanged: dict[str, Any]) -> None:
     """Write a fresh exchange result into a guest state in place: an inference token (token, expiry,
     routing) into the state itself, a connectors-only one into ``connectors_token`` beside it."""
-    from hermes_cli.auth_nous import _validate_nous_inference_url_from_network
+    from hermes_cli.auth_nous import _nous_jwt_deadline, _validate_nous_inference_url_from_network
     access_token = exchanged["access_token"]
     claims = _decode_jwt_claims(access_token)
     now = datetime.now(UTC)
-    exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
-        expires_at = datetime.fromtimestamp(float(exp), tz=UTC)
+    deadline = _nous_jwt_deadline(claims, now.isoformat())
+    if deadline is not None:
+        expires_at = datetime.fromtimestamp(deadline, tz=UTC)
     else:
         expires_at = now + timedelta(seconds=int(exchanged.get("expires_in") or 900))
     if is_connectors_only(access_token):

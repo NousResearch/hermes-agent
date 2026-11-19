@@ -74,6 +74,10 @@ mcp_servers:
 | `spend_limit` | number | both | Per-chat budget for this server's costed tools (`0`/absent = no limit). A costed call that would take the chat past it asks first, even on a `trust: full` server, and is refused where nobody can answer (cron, `chat -q`) |
 | `cost_unit` | string | both | Label shown with costs and totals (default: `credits`) |
 
+Use a YAML list for `args`. Legacy quoted JSON/Python-list strings and plain
+shell-style strings are normalized at spawn time; structured strings that do
+not decode to a list fail with a clear configuration error.
+
 ## Environment variable references
 
 String values anywhere in a server entry (`env`, `headers`, `args`, `url`, …) may reference environment variables with `${VAR}` or the Cursor-style SecretRef form `${env:VAR}` — both resolve to the same variable, so MCP snippets copied from Cursor / Claude configs work unchanged:

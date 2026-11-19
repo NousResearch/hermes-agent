@@ -149,6 +149,7 @@ def _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, optio
     )
     if handle is not None and key_override is not None:
         handle.publish = lambda: registry.publish(key_override, scope=ctx._manager.scope_key)
+        handle.prepare_dispose = lambda: registry.prepare_unload(key_override, provider, scope=ctx._manager.scope_key)
         ctx._staged.append(handle)
     return handle
 

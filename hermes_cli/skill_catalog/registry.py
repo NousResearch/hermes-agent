@@ -95,18 +95,26 @@ def snapshot_registration(name, *, scope=None):
         return entry.provider if entry else None
 
 
+def prepare_unload(name, current, *, scope=None):
+    """Fence dispatch, then drain without forgetting a busy registration or its leases."""
+    with _lock:
+        entry = _entries.get(hermes_home_key(scope), {}).get(name)
+        if entry is None or entry.provider is not current:
+            return
+        entry.stopped = True
+    if entry.mutations is not None:
+        entry.mutations.close()
+    if entry.projection_handle is not None:
+        entry.projection_handle.close()
+
+
 def restore_registration(name, current, previous, *, scope=None):
+    prepare_unload(name, current, scope=scope)
     with _lock:
         rows = _entries.get(hermes_home_key(scope), {})
         entry = rows.get(name)
         if entry is None or entry.provider is not current:
             return False
-        entry.stopped = True
-    if entry.projection_handle is not None:
-        entry.projection_handle.close()
-    if entry.mutations is not None:
-        entry.mutations.close()
-    with _lock:
         if rows.get(name) is entry:
             rows.pop(name)
     return True

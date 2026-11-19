@@ -46,6 +46,8 @@ class PluginRegistration:
     # Staged change applied only once the plugin's load succeeded (``_publish_staged_registrations``); a failed
     # or timed-out load disposes the handle first, so the change is never applied.
     publish: Optional[Callable[[], Any]] = None
+    # Optional host-owned drain that must succeed before irreversible ledger disposal.
+    prepare_dispose: Optional[Callable[[], None]] = field(default=None, repr=False)
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
@@ -58,6 +60,8 @@ class PluginRegistration:
         """Release this registration once; repeated disposal is harmless."""
         if self._disposed:
             return
+        if self.prepare_dispose is not None:
+            self.prepare_dispose()
         self._disposed = True
         try:
             self.release()
@@ -277,6 +281,9 @@ class PluginLedgerMixin:
                 r for key in target_keys for r in self._ownership_ledger.get(key, []) if r.persistent and r.active
             )
         found = bool(target_keys or registrations)
+        for registration in registrations:
+            if registration.active and registration.prepare_dispose is not None:
+                registration.prepare_dispose()
         self._dispose_registrations(registrations)
         self._forget_registrations(registrations)
         if unload_all:

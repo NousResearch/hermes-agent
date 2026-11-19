@@ -549,17 +549,16 @@ DEFAULT_CONFIG = {
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
         "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
-        "hard_stop_after": {
-            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
-        },
+        "hard_stop_after": {"exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5},
         # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
         # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
-        # pathological, hence low defaults. 0 = unlimited.
-        "loop_caps": {
-            "max_web_searches": 50,   # web_search calls per turn
-            "max_subagents": 50,      # subagents spawned per turn
-        },
+        # pathological, hence low defaults. 0 = unlimited. web_search calls / subagents spawned per turn.
+        "loop_caps": {"max_web_searches": 50, "max_subagents": 50},
     },
+    # Reasoning that keeps restating itself is cut mid-stream, then re-issued with feedback up to
+    # recovery.max_attempts times per turn (0 = end the turn on the first cut). agent/circling_guard.py.
+    "repetition_guard": {"circling": {"enabled": True, "window_units": 60, "stale_ratio": 0.95, "repeat_count": 3,
+                                      "min_chars": 8000}, "recovery": {"max_attempts": 1, "reasoning": "keep"}},
 
     "compression": {
         "enabled": True,

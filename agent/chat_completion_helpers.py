@@ -50,6 +50,7 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
     separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
+from agent.circling_guard import ReasoningStreamWatch
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -2982,10 +2983,7 @@ class _StreamingCall(StreamingWaitMonitor):
         relay_response = RelayChatAccumulator()
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
         # gateway turns register no stream callback, so nothing else sees a loop mid-stream.
-        content_watch, reasoning_watch = RunawayStreamWatch(), RunawayStreamWatch()
-        # Own watch: the display takes one reasoning representation per chunk, but the plain
-        # field is persisted either way and need not mirror the details.
-        detail_watch = RunawayStreamWatch()
+        content_watch, reasoning_watch = RunawayStreamWatch(), ReasoningStreamWatch(self.agent)
         runaway = None
 
         llamacpp = _streams_llamacpp(self.agent)
@@ -3089,7 +3087,7 @@ class _StreamingCall(StreamingWaitMonitor):
             display_reasoning = detail_text or reasoning_text
             if display_reasoning:
                 self._emit_reasoning(display_reasoning)
-                if reasoning_watch.feed(reasoning_text) or detail_watch.feed(detail_text):
+                if reasoning_watch.feed(reasoning_text, detail_text):
                     runaway = "reasoning"
                     break
             # Not routed to the live display: the transport promotes a sole-payload
@@ -3135,7 +3133,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")
-            self._log_runaway_cut(runaway)
+            self._log_runaway_cut(runaway, reasoning_watch)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
@@ -3148,15 +3146,14 @@ class _StreamingCall(StreamingWaitMonitor):
             refusal_parts=refusal_parts)
         carriers.apply(response)
         if runaway:
-            # Cut, not finished: the length path ends the turn on this mark instead of continuing.
-            response._runaway_repetition = True
+            reasoning_watch.mark_cut(response, runaway)
         return response
 
-    def _log_runaway_cut(self, channel: str) -> None:
+    def _log_runaway_cut(self, channel: str, watch: ReasoningStreamWatch) -> None:
         logger.warning(
-            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
+            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s, %s).",
             getattr(self.agent, "log_prefix", ""), channel, self.api_kwargs.get("model", "unknown"),
-            getattr(self.agent, "provider", "") or "unknown")
+            getattr(self.agent, "provider", "") or "unknown", watch.cut(channel).describe())
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch this
@@ -3324,7 +3321,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self._attempt_request_client = request_client
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
-        text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        text_watch, thinking_watch = RunawayStreamWatch(), ReasoningStreamWatch(self.agent)
         runaway = None
 
         from agent import relay_llm
@@ -3412,11 +3409,11 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:
             return None
         if runaway:
-            self._log_runaway_cut(runaway)
+            self._log_runaway_cut(runaway, thinking_watch)
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"
-            message._runaway_repetition = True  # same hand-off as the chat_completions wire
+            thinking_watch.mark_cut(message, runaway)  # same hand-off as the chat_completions wire
             return message
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)

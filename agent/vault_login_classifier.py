@@ -314,9 +314,13 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
 # its source text, literal values included, with it. Then the origin, before any value is referenced:
 # a page that navigated (a login that submits on input, a retargeted tab) gets a refusal and nothing
 # else. ``window.location`` is unforgeable, so the page cannot answer this check for another origin.
+# Every script after this point returns its verdict as an object literal, never through a page-owned
+# function: a page that replaced ``JSON.stringify`` or ``String`` would otherwise write the answer
+# (``{"focused": 1}`` from the redirected tab) the tool decides on. A literal's own data properties
+# are set without touching the page's prototypes, and CDP ``returnByValue`` serialises them natively.
 _ORIGIN_GUARD_JS = """  "use strict";
   if (window.location.origin !== __EXPECTED_ORIGIN__) {
-    return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
+    return { refused: "origin_changed", found: window.location.origin };
   }"""
 
 
@@ -373,7 +377,7 @@ __OPTION_MATCH__
   }
   // Stamps stay on the controls: this script cannot tell whether a controlled input kept the value,
   // because the framework re-renders after it returns. build_fill_verify_js reads back and unstamps.
-  return JSON.stringify({ filled });
+  return { filled };
 })()"""
 
 
@@ -426,7 +430,7 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
     keystroke goes wherever focus is, so focus is only vouched for on ``expected_origin``.
 
     Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
-    Returns JSON: ``{"focused": <index>}`` or
+    Returns (by value): ``{"focused": <index>}`` or
     ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
     ``{"refused": "not_password"}`` / ``{"refused": "not_found"}`` / ``{"refused": "origin_changed"}``.
     """
@@ -442,7 +446,7 @@ __ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
   const f = fills[0];
-  if (!f) return JSON.stringify({ refused: "not_found" });
+  if (!f) return { refused: "not_found" };
   const roots = [];
   (function walk(root) {
     roots.push(root);
@@ -450,17 +454,17 @@ __ORIGIN_GUARD__
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
-  if (!el) return JSON.stringify({ refused: "not_found" });
+  if (!el) return { refused: "not_found" };
   // Same guard as the fill script: a password fill never lands in a text box.
   if (f.token === "current-password" && el.type !== "password") {
-    return JSON.stringify({ refused: "not_password" });
+    return { refused: "not_password" };
   }
   if (__REFOCUS__) { try { el.focus(); } catch (e) { /* focus can throw on a detached node */ } }
   let active = document.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
-  if (active === el) return JSON.stringify({ focused: f.index });
-  return JSON.stringify({ refused: "focus_lost", tag: el.tagName,
-                          found: active ? active.tagName : null });
+  if (active === el) return { focused: f.index };
+  return { refused: "focus_lost", tag: el.tagName,
+                          found: active ? active.tagName : null };
 })()"""
 
 
@@ -472,8 +476,8 @@ def build_origin_check_js(expected_origin: str) -> str:
     pre-check and the keystrokes, nothing is typed.
     """
     return ("(() => { if (window.location.origin !== " + json.dumps(expected_origin) + ") "
-            "return JSON.stringify({ refused: 'origin_changed', found: window.location.origin }); "
-            "return JSON.stringify({ ok: true }); })()")
+            "return { refused: 'origin_changed', found: window.location.origin }; "
+            "return { ok: true }; })()")
 
 
 def build_unstamp_js(nonce: str = "") -> str:
@@ -486,7 +490,7 @@ def build_unstamp_js(nonce: str = "") -> str:
             "for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot); "
             "})(document); const find = (s) => roots.flatMap((r) => Array.from(r.querySelectorAll(s))); "
             "find('[data-hermes-vault-slot]').forEach((n) => n.removeAttribute('data-hermes-vault-slot')); "
-            "return JSON.stringify({ unstamped: true }); })()")
+            "return { unstamped: true }; })()")
 
 
 _CLEAR_JS_TEMPLATE = """(() => {
@@ -511,7 +515,7 @@ __ORIGIN_GUARD__
     el.dispatchEvent(new Event("change", { bubbles: true }));
     cleared += 1;
   }
-  return JSON.stringify({ cleared });
+  return { cleared };
 })()"""
 
 
@@ -584,5 +588,5 @@ __OPTION_MATCH__
     if (holds(f, String(el.value))) landed += 1; else reverted += 1;
   }
   if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ landed, reverted, missing });
+  return { landed, reverted, missing };
 })()"""

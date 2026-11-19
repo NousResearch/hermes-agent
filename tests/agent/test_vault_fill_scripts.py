@@ -13,7 +13,13 @@ import subprocess
 
 import pytest
 
-from agent.vault_login_classifier import build_clear_js, build_fill_js, build_fill_verify_js, build_focus_js
+from agent.vault_login_classifier import (
+    build_clear_js,
+    build_fill_js,
+    build_fill_verify_js,
+    build_focus_js,
+    build_origin_check_js,
+)
 
 NODE = shutil.which("node")
 
@@ -25,6 +31,22 @@ ORIGIN = "https://example.com"  # the synthetic page's origin
 # A DOM just large enough for the vault scripts: elements with attributes, open shadow roots,
 # querySelectorAll for "*" and the stamp attribute, focus with shadow-host retargeting, <select>.
 _FAKE_DOM = r"""
+// The harness reads a script's answer the way CDP ``returnByValue`` does: natively, own data
+// properties only, never through the page's JSON, String, toJSON or prototype accessors. Captured
+// before any page setup runs, so a hostile page cannot answer for the harness either.
+const __str = JSON.stringify, __own = Object.getOwnPropertyNames, __isArray = Array.isArray;
+function __byValue(v) {
+  if (v === undefined) return "null";
+  if (v === null || typeof v !== "object") return __str(v);
+  let s = "";
+  if (__isArray(v)) {
+    for (let i = 0; i < v.length; i++) s += (i ? "," : "") + __byValue(v[i]);
+    return "[" + s + "]";
+  }
+  const keys = __own(v);
+  for (let i = 0; i < keys.length; i++) s += (i ? "," : "") + __str(keys[i]) + ":" + __byValue(v[keys[i]]);
+  return "{" + s + "}";
+}
 class Node {
   constructor(tag, props) {
     Object.assign(this, { tagName: tag.toUpperCase(), attrs: {}, children: [], shadowRoot: null,
@@ -88,12 +110,27 @@ function select(root, options, selected) {
 """
 
 
+def _verdict(raw: str):
+    """What the vault tool makes of a script's by-value answer (``_parse_json_result``, twice)."""
+    value = json.loads(raw)
+    for _ in range(2):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                break
+    return value
+
+
+def _node(setup: str, expression: str) -> str:
+    code = (_FAKE_DOM.replace("__NONCE__", NONCE) + setup
+            + "\nprocess.stdout.write(__byValue(" + expression + "));")
+    return subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True, timeout=30).stdout
+
+
 def _run(setup: str, expression: str) -> dict:
     """Build the page with ``setup`` (JS using the fake-DOM helpers), evaluate ``expression``."""
-    code = (_FAKE_DOM.replace("__NONCE__", NONCE) + setup
-            + "\nprocess.stdout.write(String(" + expression + "));")
-    out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True, timeout=30)
-    return json.loads(out.stdout)
+    return _verdict(_node(setup, expression))
 
 
 class TestFocusAssertion:
@@ -242,12 +279,11 @@ class TestOriginGuard:
           globalThis.window.location.origin = "https://other.test";
           stamp(add(document, "input", { type: "password", value: "" }), 1);
         """
-        expr = ("(() => { const r = " + _secret_scripts()[script] + "; return [r, __seen.some((s) => s.includes('" + _SENTINEL + "'))].join('|'); })()")
-        code = _FAKE_DOM.replace("__NONCE__", NONCE) + setup + "\nprocess.stdout.write(String(" + expr + "));"
-        out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True, timeout=30).stdout
-        verdict, saw = out.rsplit("|", 1)
-        assert json.loads(verdict)["refused"] == "origin_changed"
-        assert saw == "false"
+        expr = ("(() => { const r = " + _secret_scripts()[script] + "; return { r, saw: __seen.some((s) => s.includes('"
+                + _SENTINEL + "')) }; })()")
+        out = json.loads(_node(setup, expr))
+        assert _verdict(__import__("json").dumps(out["r"]))["refused"] == "origin_changed"
+        assert out["saw"] is False
 
     def test_the_same_page_still_reads_back(self):
         setup = f'stamp(add(document, "input", {{ type: "password", value: "{_SENTINEL}" }}), 1);'
@@ -267,3 +303,57 @@ class TestOriginGuard:
         out = _run(setup, build([{"index": 1, "token": "current-password"}]))
         assert out["refused"] == "origin_changed"
 
+
+
+# Pages on ANOTHER origin that try to answer a check for the checked page. The guard refuses before
+# anything else runs, so the only thing such a page can still touch is how that refusal is returned:
+# every global and prototype the old scripts reached on the way out.
+_FORGED = '{"focused":1,"ok":true,"filled":1,"landed":1,"reverted":0,"missing":[],"cleared":1}'
+_LYING_PAGES = {
+    "json-stringify": "JSON.stringify = () => " + json.dumps(_FORGED) + ";",
+    "string": "globalThis.String = () => " + json.dumps(_FORGED) + ";",
+    "to-json": "Object.prototype.toJSON = function () { return " + _FORGED + "; };",
+    "prototype-setters": """
+      for (const k of ["refused", "found"]) Object.defineProperty(Object.prototype, k, { set() {}, configurable: true });
+    """,
+    "everything": """
+      JSON.stringify = () => '__FORGED__';
+      globalThis.String = () => '__FORGED__';
+      Object.prototype.toJSON = function () { return JSON.parse('__FORGED__'); };
+    """.replace("__FORGED__", _FORGED),
+}
+
+_GUARDED_SCRIPTS = {
+    "origin-check": lambda: build_origin_check_js(ORIGIN),
+    "focus": lambda: build_focus_js([{"index": 1, "token": "current-password"}], nonce=NONCE, expected_origin=ORIGIN),
+    "clear": lambda: build_clear_js([{"index": 1}], nonce=NONCE, expected_origin=ORIGIN),
+    "fill": lambda: _secret_scripts()["fill"],
+    "read-back": lambda: _secret_scripts()["read-back"],
+}
+
+
+class TestForgedVerdicts:
+    @pytest.mark.parametrize("page", sorted(_LYING_PAGES))
+    @pytest.mark.parametrize("script", sorted(_GUARDED_SCRIPTS))
+    def test_a_page_on_another_origin_cannot_answer_for_the_checked_one(self, script, page):
+        """The focus and origin checks decide whether a trusted keystroke carrying the password is
+        sent. A tab that redirected to another origin before the check must get a refusal through,
+        whatever its own JSON/String/prototypes say: the verdict is a value, not a page call."""
+        setup = """
+          globalThis.window.location.origin = "https://other.test";
+          const pw = stamp(add(document, "input", { type: "password", value: "" }), 1);
+          pw.focus();
+        """ + _LYING_PAGES[page]
+        out = _run(setup, _GUARDED_SCRIPTS[script]())
+        assert isinstance(out, dict) and out.get("refused") == "origin_changed", out
+        assert out.get("found") == "https://other.test"
+        assert not ({"focused", "ok", "filled", "landed", "cleared"} & set(out)), out
+
+    @pytest.mark.parametrize("script", sorted(_GUARDED_SCRIPTS))
+    def test_on_the_checked_origin_the_scripts_still_answer(self, script):
+        setup = f"""
+          const pw = stamp(add(document, "input", {{ type: "password", value: "{_SENTINEL}" }}), 1);
+          pw.focus();
+        """
+        out = _run(setup, _GUARDED_SCRIPTS[script]())
+        assert isinstance(out, dict) and "refused" not in out, out

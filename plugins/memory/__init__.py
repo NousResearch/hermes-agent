@@ -590,19 +590,23 @@ def active_memory_provider_commands() -> set[str]:
 
 
 def parked_provider_notice(name: str) -> Optional[str]:
-    """The user-facing reason a configured provider is not loading because ``plugins.disabled`` parks
-    it, naming the update that did so when there was one; None when it is not parked."""
+    """The user-facing reason a provider is not loading because ``plugins.disabled`` parks it, naming
+    the update that did so when there was one; None when it is not parked. Only the selected provider
+    turns external memory off, and the enable command names the active home's profile."""
     provider_dir = find_provider_dir(name)
     if provider_dir is None or not _explicitly_disabled(name, provider_dir):
         return None
     from hermes_cli.config import load_config
+    from hermes_constants import profile_cli_selector
     from pm.plugins_state import RECORD
     record = cfg_get(load_config(), "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
     why = (f" An update turned it off ({recorded.get('reason')}) and a later update retries it."
            if isinstance(recorded, dict) and recorded.get("reason") else "")
-    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so external memory is off "
-            f"(built-in memory still works).{why} Turn it back on with `hermes plugins enable {name}`.")
+    effect = (", so external memory is off (built-in memory still works)"
+              if _get_active_memory_provider() == name else "")
+    return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it{effect}.{why} "
+            f"Turn it back on with `hermes {profile_cli_selector()}plugins enable {name}`.")
 
 
 def _explicitly_disabled(name: str, provider_dir: Path) -> bool:

@@ -449,8 +449,11 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
             sync_manager.sync(force=True)
         except Exception:  # health: allow BLE001 -- a failed push leaves the read to report what the sandbox has
             logger.debug("Archive sync before read failed for %s", path, exc_info=True)
+    # The sandbox resolves its own ``~`` and cwd: _resolved expanded them with the host's, so a sandbox
+    # gets the path as the model gave it, like the ordinary read in read_file_tool.
+    byte_path = str(_resolved) if _file_ops_uses_host_paths(file_ops) else path
     try:
-        binary = file_ops.read_file_bytes(str(_resolved), max_bytes=MAX_DOCUMENT_BYTES)
+        binary = file_ops.read_file_bytes(byte_path, max_bytes=MAX_DOCUMENT_BYTES)
         if binary.error or binary.base64_content is None:
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)

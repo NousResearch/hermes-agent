@@ -96,3 +96,47 @@ def test_read_file_pushes_a_synced_backend_before_opening_an_archive(tmp_path, m
 
     assert forced == [True]
     assert "original body" in out.get("content", ""), out
+
+
+def test_sandbox_archive_is_read_at_the_path_the_sandbox_names(tmp_path, monkeypatch):
+    """On daytona the stub names ``~/.hermes/...``: the sandbox's ``~``, not the host's. The byte read must get that
+    path, or a one-line JSON archive falls through to the ordinary reader and comes back cut at the per-line cap."""
+    import base64
+    import json
+
+    import tools.file_tools as ft
+    from tools.file_operations import ShellFileOperations
+    from tools.file_operations_common import ReadResult
+    from tools.tool_output_limits import get_max_line_length
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    monkeypatch.setenv("HOME", str(tmp_path / "host_home"))  # the host's ~ is not the sandbox's
+    body = json.dumps({"output": "x" * (get_max_line_length() * 3)})
+    archived = write_pruned_original(body, "s1", "terminal", "call_1")
+    assert archived is not None
+    host_path, stub_path = archived
+    assert stub_path.startswith("~/.hermes/")
+    raw = open(host_path, "rb").read()
+    requested = []
+
+    class SandboxOps:
+        env = object()  # no uses_host_filesystem declaration: not the host filesystem
+        _add_line_numbers = ShellFileOperations._add_line_numbers
+
+        def read_file_bytes(self, path, max_bytes=None):
+            requested.append(path)
+            if path != stub_path:
+                return ReadResult(error=f"File not found: {path}", not_found=True)
+            return ReadResult(base64_content=base64.b64encode(raw).decode(), file_size=len(raw))
+
+        def read_file(self, path, offset=1, limit=2000):  # the ordinary reader: the line cut at the cap
+            return ReadResult(content=self._add_line_numbers(body, offset), total_lines=1, file_size=len(raw))
+
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": SandboxOps())
+
+    out = json.loads(ft.read_file_tool(stub_path, task_id="sandbox-task"))
+
+    assert requested == [stub_path], out
+    assert out.get("long_lines_wrapped_at"), out
+    assert "[truncated]" not in out["content"]

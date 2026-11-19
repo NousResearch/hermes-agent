@@ -834,10 +834,18 @@ class GatewayTurnPrepareMixin:
         # An unreadable store is not an empty conversation: stop before the agent invents continuity
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
-            history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, _quick_key, run_generation,
-            )
+            from gateway.session_stored_input import stored_input
+            claimed = stored_input(event.message_id)
+            if claimed is None:
+                history = await self.async_session_store.load_transcript(session_entry.session_id)
+                history = await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, _quick_key, run_generation,
+                )
+            else:
+                # Detached hygiene must not rotate the transcript out from under the claim.
+                history = await self.async_session_store.load_transcript(
+                    session_entry.session_id, durable_user_input=claimed[0],
+                )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
             from gateway.session_results import record_unexecuted_failure

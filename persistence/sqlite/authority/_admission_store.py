@@ -13,12 +13,14 @@ import json
 import uuid
 
 from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint
-from persistence.authority.admissions import raise_gate
-from persistence.core.errors import AuthorityRefusal
+from persistence.authority.admissions import VOICE_CLAIM_V1, ClaimedVoiceInput, raise_gate
+from persistence.core.errors import AuthorityRefusal, Conflict, NotFound
+from persistence.core.identity import MessageId, SessionId
 
 from ._admission_owner import authorize_admission, close_discarded_turn
 from ._runtime import (
     _CANCEL_QUEUED,
+    RESULT_PREFIX,
     _admission,
     _epoch,
     _json,
@@ -149,6 +151,45 @@ def latest_session_admission(holder, *, session_id: str, payload_marker: str) ->
 _ANY_HEAD = object()
 
 
+def _claim_voice_input(holder, conn, row, payload):
+    """Resolve a committed owner proof against the current physical target, on the claim connection."""
+    from ..conversation._store.live_voice import resolve_claim
+    from ..conversation._store.messages import _check_transcript_write_guards
+    from ._local import local_physical_target
+
+    proof = payload[VOICE_CLAIM_V1]
+    text = payload.get('text')
+    if (not isinstance(proof, dict) or proof.keys() != {'call_id', 'delegation_id', 'event_ids'}
+            or not isinstance(text, str) or not text.strip()
+            or not all(isinstance(proof[k], str) and proof[k] for k in ('call_id', 'delegation_id'))
+            or not isinstance(proof['event_ids'], list) or not proof['event_ids']
+            or not all(isinstance(event, str) and event for event in proof['event_ids'])):
+        raise Conflict('live voice claim proof', row['admission_id'])
+    logical = row['target_session_id']
+    target = _canonical_chain(conn, local_physical_target(conn, logical))[-1]
+    # Refuse before text consumption when either writer owns the transcript. These locks
+    # are transient, not invalid proof; do not terminalize the head on a lease conflict.
+    _check_transcript_write_guards(holder, conn, target, None, reject_active_turn_lease=True,
+                                   reject_active_compression_lock=True)
+    resolved = resolve_claim(holder, conn, session_id=target, call_id=proof['call_id'],
+                             event_ids=tuple(proof['event_ids']), admission_id=row['admission_id'],
+                             expected_prompt=text, delegation_id=proof['delegation_id'], require_pinned_tail=True)
+    return ClaimedVoiceInput(SessionId(target), MessageId(resolved.row_id), resolved.message_uid, resolved.text)
+
+
+def _reject_voice_head(conn, row, epoch):
+    """Commit a terminal, generation-free refusal for the same FIFO head, not its successor."""
+    admission_id = row['admission_id']
+    changed = conn.execute("UPDATE session_admissions SET status='terminal',outcome='rejected',owner_epoch=? "
+                           "WHERE admission_id=? AND status='queued'", (epoch, admission_id))
+    if changed.rowcount != 1:
+        raise AuthorityRefusal('stale_generation')
+    result = {'reason': 'admission_conflict', 'field': VOICE_CLAIM_V1,
+              'detail': 'Exact GPT-Live speech coverage could not be verified.'}
+    conn.execute('INSERT INTO state_meta(key,value) VALUES (?,?)', (RESULT_PREFIX + admission_id, _json(result)))
+    conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
+
+
 def claim_session_input(holder, *, epoch: int, session_id: str, gate=None, head=_ANY_HEAD) -> dict | bool | None:
     """Claim the FIFO head. ``gate`` (the owner's ``GateRefusal``, or a callable answered here on every attempt)
     refuses right after the epoch fence. ``head`` is the admission id the caller's preclaim checks validated (None: it saw nothing queued); if
@@ -173,15 +214,39 @@ def claim_session_input(holder, *, epoch: int, session_id: str, gate=None, head=
             return False
         if row is None:
             return None
+        payload = json.loads(row['payload_json'])
+        voice_input = None
+        if isinstance(payload, dict) and VOICE_CLAIM_V1 in payload:
+            from .._state.errors import CompressionSessionClosedError, SessionCompressionInProgressError, SessionTurnLeaseLostError
+
+            # A deterministic proof refusal commits only its verdict. Roll back the transcript
+            # portion first (including any stale lock cleanup by the write guard).
+            conn.execute('SAVEPOINT voice_claim')
+            try:
+                voice_input = _claim_voice_input(holder, conn, row, payload)
+            except (Conflict, NotFound, CompressionSessionClosedError):
+                conn.execute('ROLLBACK TO voice_claim')
+                conn.execute('RELEASE voice_claim')
+                _reject_voice_head(conn, row, epoch)
+                return False
+            except (SessionTurnLeaseLostError, SessionCompressionInProgressError):
+                conn.execute('ROLLBACK TO voice_claim')
+                conn.execute('RELEASE voice_claim')
+                return None
+            conn.execute('RELEASE voice_claim')
         generation = session['runtime_generation'] + 1
         conn.execute('UPDATE sessions SET runtime_generation=? WHERE id=?', (generation, session_id))
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
         if changed.rowcount != 1:
             raise AuthorityRefusal('stale_generation')
         claimed = _row(_admission(conn, row['admission_id']))
+        assert claimed is not None  # the updated row was just read by _admission
+        if voice_input is not None:
+            claimed['voice_input'] = voice_input
         # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
         # session): a row above it on this conversation was written by this turn, so settlement can
         # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
+        # A reserved voice row is already input, not an execution append; include it in the mark.
         claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
         claimed['queued_owner_epoch'] = row['owner_epoch']
         return claimed
@@ -282,6 +347,10 @@ def steer_session_input(holder, *, epoch: int, admission_id: str, generation: in
             return _row(row), False
         if row['status'] != 'queued':
             raise AuthorityRefusal('admission_started')
+        payload = json.loads(row['payload_json'])
+        if isinstance(payload, dict) and VOICE_CLAIM_V1 in payload:
+            # Steering skips FIFO claim and therefore cannot validate/own this speech.
+            raise AuthorityRefusal('admission_conflict', field=VOICE_CLAIM_V1)
         if type(generation) is not int or conn.execute(
                 "SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='started' "
                 "AND owner_epoch=? AND generation=?", (row['target_session_id'], epoch, generation)).fetchone() is None:

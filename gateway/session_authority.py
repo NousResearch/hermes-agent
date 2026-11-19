@@ -24,7 +24,7 @@ from gateway.session_pending_controls import PendingControls
 from gateway.session_persistence import authority_persistence
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
-from persistence.authority.admissions import GateRefusal
+from persistence.authority.admissions import VOICE_CLAIM_V1, GateRefusal
 from persistence.authority.vocabulary import STEERING
 from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CorruptStoreError, StoreReplaced
 
@@ -32,6 +32,15 @@ from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CorruptSto
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
 # Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
 _MARKER_RELEASE_WAIT_S = 60.0
+# A refused recorded GPT-Live claim ran nothing. Say so on the turn, without a retry:
+# resubmitting the words as plain text would bypass the exact-speech check.
+_VOICE_CLAIM_UNVERIFIED_TEXT = ('Hermes did not run this spoken request because it could not be '
+                                'matched exactly to the saved call transcript. Please ask again.')
+_VOICE_CLAIM_UNVERIFIED = {
+    'status': 'error', 'error': _VOICE_CLAIM_UNVERIFIED_TEXT,
+    'error_surface': {'layer': 'gateway', 'code': 'voice_claim_unverified', 'retryable': False,
+                      'message': _VOICE_CLAIM_UNVERIFIED_TEXT},
+}
 # True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
 # after that may still see the row commit, so it must not release the media the write commits.
 native_write_started = ContextVar('native_write_started', default=False)
@@ -152,6 +161,8 @@ class SessionAuthority:
         self.profile_id = profile_id
         self.instance_id = instance_id
         self.persistence = persistence
+        from gateway.session_voice_capture import VoiceCaptures
+        self.voice_captures = VoiceCaptures(persistence.messages, authority=self)
         self.epoch = epoch
         self.sessions = {}
         self.waiters = {}
@@ -747,13 +758,13 @@ class SessionAuthority:
                       api_target=None, hosted=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
+                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'voice_claim', 'interrupted',
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
                 or not isinstance(request.payload['text'], str)):
             raise AuthorityRefusal('invalid_params')
         from gateway.session_ingress_media import admit_attachments
         from gateway.session_finite import admit_finite
-        from gateway.session_surface import admit_surface
+        from gateway.session_surface import admit_surface, admit_voice_claim
         from gateway.session_display import admit_display
         from gateway.session_cli_turn import admit_cli_turn
         finite = admit_finite(request.payload)
@@ -764,6 +775,7 @@ class SessionAuthority:
             return admission_row(store.admissions.find(principal_id=actor.subject, session_id=request.ref.session_id,
                                                        request_id=request.request_id))
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
+                   **admit_voice_claim(request.payload, request_id=request.request_id),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
         if _kanban_card is not None:
@@ -875,7 +887,7 @@ class SessionAuthority:
             self._publish_pending(ref)
         return row
 
-    def _settle_cancelled(self, ref, admission_id, outcome='cancelled'):
+    def _settle_cancelled(self, ref, admission_id, outcome='cancelled', failure=None):
         # The only place a queued row becomes terminal: every observer kind that waits on
         # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
         # settles here, or a cancelled row that never reaches _drain blocks them forever.
@@ -888,7 +900,7 @@ class SessionAuthority:
             live.event_stream.execution = {'authority_epoch': self.epoch, 'admission_id': admission_id}
             try:
                 live.event_stream.publish(ref.session_id, {
-                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': outcome})
+                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': outcome, **(failure or {})})
             finally:
                 live.event_stream.execution = running
         # Published once: a later exact retry re-collects media but never repeats the completion.
@@ -1196,6 +1208,13 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
+            proof = first['payload'].get(VOICE_CLAIM_V1) if first else None
+            # Flush a finished call's deferred text before the next input takes its history.
+            await self.voice_captures.recover(session_id=self.physical_target(ref), event_session=ref.session_id)
+            if isinstance(proof, dict) and isinstance(proof.get('call_id'), str) and isinstance(proof.get('delegation_id'), str):
+                # The browser and sideband have independent delivery clocks. This only
+                # waits for the marker; the SQLite claim still verifies all coverage.
+                await self.voice_captures.wait_for_marker(ref.session_id, proof['call_id'], proof['delegation_id'])
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
@@ -1219,6 +1238,13 @@ class SessionAuthority:
                             except STORE_FAILURES:
                                 await asyncio.sleep(1.0)
                         raise
+                elif claimed is False and proof is not None and head is not None:
+                    # False may also mean cancellation advanced the FIFO. Publish only
+                    # the terminal proof refusal for the exact head we attempted.
+                    rejected = await asyncio.to_thread(store.admissions.get, admission_id=head)
+                    if rejected is not None and rejected.status == 'terminal' and rejected.outcome == 'rejected':
+                        self._settle_cancelled(ref, head, outcome='rejected', failure={
+                            **_VOICE_CLAIM_UNVERIFIED, 'submission_id': rejected.request_id})
                 return self._stamp_claim(ref, live, admission_row(claimed) if claimed else claimed)
             row = await tracked_write(self, lambda: store.admissions.claim(
                 epoch=self.epoch, session_id=ref.session_id, gate=self.gate_refusal(), head=head), then=stamp)
@@ -1548,6 +1574,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions
     await adopt_local_compressions(authority)
+    await authority.voice_captures.recover()
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner

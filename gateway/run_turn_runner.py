@@ -947,7 +947,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # for a reused agent bound to this exact session_id.
         # Replacing the live transcript with that shorter copy causes immediate same-session amnesia. See
         # #50502.
-        if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
+        from gateway.session_stored_input import stored_input
+        if (reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id
+                and stored_input(ctx.inbound_message_id) is None):
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
             # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
             # is the #114266 write outage and must escalate past a repeating WARNING.
@@ -1125,6 +1127,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            from gateway.session_stored_input import stored_input
+            claimed = stored_input(ctx.inbound_message_id)
+            if claimed is not None:
+                kwargs["durable_user_input"], kwargs["persist_user_message"] = claimed
             from agent.notification_presentation import notification_turn
             from gateway.session_results import execution_result
             captured = execution_result.get()

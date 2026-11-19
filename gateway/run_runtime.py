@@ -309,6 +309,9 @@ def _authority_tasks(authority):
     """Snapshot every async task family owned directly by one session authority."""
     tasks = [live.task for live in authority.sessions.values() if live.task is not None]
     tasks.extend(getattr(authority, '_bot_receipt_tasks', ()))
+    captures = getattr(authority, 'voice_captures', None)
+    if captures is not None:
+        tasks.extend(captures.tasks.values())
     from gateway.session_runtime_workers import mutation_tasks
     tasks.extend(mutation_tasks(authority))
     return list(dict.fromkeys(tasks))
@@ -416,6 +419,15 @@ async def _retire_profile_authority(authority, timeout=None):
     from gateway.session_runtime_workers import join_authority_work, stop_authority_work
     timeout = TURN_SETTLE_SECONDS if timeout is None else timeout
     authority.retiring = True
+    captures = getattr(authority, 'voice_captures', None)
+    if captures is not None:
+        captures.stop()
+        if not captures.quiescent():
+            try:
+                await asyncio.wait_for(captures.close(), timeout=timeout)
+            except TimeoutError:
+                logger.error('Profile %s voice capture did not stop; ownership retained', authority.profile_id)
+                return False
     if getattr(authority.runner, 'session_ticket_store', None) is not None:
         _publish_served_set(authority.runner)  # discovery and tickets stop naming it now
     stop_authority_work(authority)
@@ -814,6 +826,9 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     from gateway.session_llm_oneshot import stop as stop_oneshots
     for authority in authorities:
         stop_oneshots(authority)  # an answer is no durable settlement: never waited for
+        captures = getattr(authority, 'voice_captures', None)
+        if captures is not None:
+            captures.stop()
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))

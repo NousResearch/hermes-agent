@@ -10,6 +10,7 @@ from persistence.sqlite._state.errors import classify_persistence_error
 from persistence import (
     CooldownRestoreRefused, PersistenceError, RewindRefused, RowVisibility, SessionRowMissing,
 )
+from persistence.conversation.live_voice import VoiceFragment, VoiceTurn
 from persistence.conversation.messages import (
     AnchoredView, AnchoredWindow, BatchAppendProgress, BatchAppendResult, CompactionResult, CompressionCooldown, ConversationMessage,
     ConversationPeer, ConversationRequest, ConversationRevision, CooldownSnapshot, DelegationDelivery,
@@ -51,7 +52,7 @@ from ._store.search import get_anchored_view
 from ._store.todo import get_latest_todo_result
 from ._store.transcript_repair import _active_logical_message_row, transcript_row_snapshot
 from ._errors import refusals
-from ._store import stored_reads, timeline
+from ._store import live_voice, stored_reads, timeline
 
 __all__ = ["SQLiteMessageRepository"]
 
@@ -299,6 +300,41 @@ class SQLiteMessageRepository:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 message_uid=message.message_uid))
 
+    def start_voice_capture(self, session_id: SessionId, call_id: str) -> str:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            return live_voice.start(holder, session_id, call_id)
+
+    def ingest_voice_fragment(self, call_id: str, fragment: VoiceFragment) -> bool:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.ingest(holder, call_id, fragment)
+
+    def record_voice_marker(self, call_id: str, delegation_id: str, event_id: str, offset_ms: float | None) -> bool:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.record_marker(holder, call_id, delegation_id, event_id, offset_ms)
+
+    def pending_voice_fragments(self, call_id: str) -> tuple[VoiceFragment, ...]:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.pending(holder, call_id)
+
+    def pending_voice_calls(self, *, session_id: SessionId | None = None) -> tuple[tuple[str, bool], ...]:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.pending_calls(holder, session_id=session_id)
+
+    def finish_voice_capture(self, call_id: str, *, incomplete: bool) -> bool:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.finish(holder, call_id, incomplete=incomplete)
+
+    def publish_voice_turns(self, call_id: str, turns: tuple[VoiceTurn, ...]) -> int:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return live_voice.publish(holder, call_id, turns)
+
     def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *,
                      turn_lease_holder: Optional[str] = None,
                      chunk_rows: Optional[int] = None, turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:
@@ -537,7 +573,8 @@ class SQLiteMessageRepository:
             messages = get_messages_as_conversation(holder,
                 session_id, include_ancestors=request.include_lineage,
                 include_inactive=request.view is TranscriptView.ALL, repair_alternation=request.repair_alternation,
-                include_row_ids=request.include_row_ids, include_compacted=request.view is TranscriptView.DISPLAY)
+                include_row_ids=request.include_row_ids, include_compacted=request.view is TranscriptView.DISPLAY,
+                exclude_row=request.exclude_row)
         return _conversation(messages)
 
     def read_resume_conversations(self, session_id: SessionId) -> ResumeConversations:

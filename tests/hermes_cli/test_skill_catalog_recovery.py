@@ -103,6 +103,23 @@ def test_recovery_excludes_generic_same_ancestor_and_descendant_writers(tmp_path
             recovery.settle(operation(owner, op, state='pending', outcome=None))
 
 
+def test_saved_core_local_marker_allows_only_identical_reconciliation(tmp_path):
+    with admitted(tmp_path) as (projection, owner, api, admission, op):
+        with api.commit(admission, op) as commit:
+            target = tmp_path / 'skills/new'
+            target.mkdir(parents=True)
+            (target / 'SKILL.md').write_bytes(b'approved')
+            pending = operation(owner, op, state='pending', outcome=None)
+            commit.settle(pending)
+        with api.recover(op) as recovery:
+            recovery.decide(dict(kind='reconciled', journal_digest=recovery.observed_revision, result=pending))
+        assert projection.read()['reservations'][admission['reservation_id']]['local_result'] == pending
+        with pytest.raises(CatalogError):
+            with api.recover(op) as recovery:
+                recovery.decide(dict(kind='retry_effect'))
+        assert (target / 'SKILL.md').read_bytes() == b'approved'
+
+
 def test_terminal_or_foreign_operation_cannot_get_recovery_hold(tmp_path):
     with admitted(tmp_path) as (_projection, owner, api, admission, op):
         with pytest.raises(CatalogError) as caught:

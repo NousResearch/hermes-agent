@@ -278,7 +278,7 @@ class Mutations:
             self.projection._owner(self.entry, doc)
             rows = [(key, row) for key, row in doc['reservations'].items()
                     if row['registration_id'] == self.entry.registration_id
-                    and row['operation_id'] == operation_id and row.get('local_result') is None]
+                    and row['operation_id'] == operation_id]
             if len(rows) != 1:
                 raise CatalogError('review_changed', 'No pending operation is bound to this catalog.')
             key, row = rows[0]
@@ -289,7 +289,8 @@ class Mutations:
                                 admission=admission, operation_id=operation_id, settled=False)
             return dict(permit_id=permit_id, admission=admission,
                         target_relative_path=row['target_relative_path'], identifier=row['identifier'],
-                        action=row['action'], expected_path_revision=row['expected_path_revision'],
+                        action=row['action'], local_result=row.get('local_result'),
+                        expected_path_revision=row['expected_path_revision'],
                         expected_installation_revision=row['expected_installation_revision'])
         except BaseException as exc:
             transaction.__exit__(type(exc), exc, exc.__traceback__)

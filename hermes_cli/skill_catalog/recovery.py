@@ -100,6 +100,9 @@ class Recovery(Commit):
                    'retry_effect': {'kind'}, 'abandon': {'kind', 'reason'}}
         if type(kind) is not str or kind not in allowed or set(answer) != allowed[kind]:
             raise _changed()
+        if self._acquired.get('local_result') is not None:
+            if kind != 'reconciled' or answer['result'] != self._acquired['local_result']:
+                raise _changed()
         if kind == 'reconciled':
             if answer['journal_digest'] != self.observed_revision:
                 self._fail('Catalog recovery digest differs. Local files were preserved.')

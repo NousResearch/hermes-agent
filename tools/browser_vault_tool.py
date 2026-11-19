@@ -31,6 +31,7 @@ autofill (kernel-login-autofill.ts / fill_from_vault.ts).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import logging
 import time
@@ -530,7 +531,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
     identifier = str(answer["identifier"]).strip()
-    id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
+    id_type = "email" if "@" in identifier else ("phone" if _looks_like_phone(identifier) else "username")
     try:
         meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
                                                         "password": str(answer["password"])}, origin=origin)
@@ -544,6 +545,17 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                        "next": filled.get("next") or "The login is saved but the fill did not land (see fill); call "
                                                      "browser_vault action=fill with this handle once the form is ready."},
                       ensure_ascii=False)
+
+
+# Digits with the separators people type a number with ("+48 600 100 200", "(600) 100-200").
+_RE_PHONE = re.compile(r"\+?[\d\s().-]+")
+
+
+def _looks_like_phone(identifier: str) -> bool:
+    """A typed phone number, however it is grouped: the fill reads a phone back as ``tel``, which
+    lets a site's mask regroup the digits. Seven digits at least, so a short numeric handle stays a
+    username. The identifier itself is stored as typed."""
+    return bool(_RE_PHONE.fullmatch(identifier)) and sum(ch.isdigit() for ch in identifier) >= 7
 
 
 _TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "

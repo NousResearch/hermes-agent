@@ -79,6 +79,10 @@ module.exports = {
     {
       name: `${displayName} Protocol`,
       schemes: ['hermes']
+    },
+    {
+      name: `${displayName} SSO Protocol`,
+      schemes: ['unitalk-app']
     }
   ],
   // A store build is archived, never served to a feed — prefix its artifact

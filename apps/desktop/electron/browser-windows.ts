@@ -2,7 +2,7 @@
 // session-windows / hud-url: `?win=browser` MUST sit in the search string
 // before the '#', or HashRouter swallows it as part of the route.
 
-import { pathToFileURL } from 'node:url'
+import { rendererBaseUrl } from './renderer-url'
 
 export const BROWSER_WINDOW_WIDTH = 960
 export const BROWSER_WINDOW_HEIGHT = 720
@@ -16,16 +16,15 @@ export const BROWSER_WINDOW_MIN_HEIGHT = 400
  */
 export function buildBrowserWindowUrl(
   tabId: null | string | undefined,
-  { devServer, rendererIndexPath }: { devServer?: null | string; rendererIndexPath?: string } = {}
+  {
+    customScheme = false,
+    devServer,
+    rendererIndexPath
+  }: { customScheme?: boolean; devServer?: null | string; rendererIndexPath?: string } = {}
 ): string {
   const tab = typeof tabId === 'string' ? tabId.trim() : ''
   const query = `?win=browser${tab ? `&tab=${encodeURIComponent(tab)}` : ''}`
+  const base = rendererBaseUrl({ customScheme, devServer: devServer ?? null, rendererIndexPath })
 
-  if (devServer) {
-    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
-
-    return `${base}/${query}#/`
-  }
-
-  return `${pathToFileURL(rendererIndexPath!).toString()}${query}#/`
+  return `${base}${query}#/`
 }

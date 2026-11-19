@@ -2,7 +2,7 @@
 // be unit-tested (same split as session-windows.ts, and for the same reason:
 // the contract below is invisible until it breaks at runtime).
 
-import { pathToFileURL } from 'node:url'
+import { rendererBaseUrl } from './renderer-url'
 
 /**
  * Build the renderer URL for the HUD window.
@@ -20,20 +20,21 @@ import { pathToFileURL } from 'node:url'
 export function buildHudWindowUrl(
   sessionId: null | string | undefined,
   {
+    customScheme = false,
     devServer,
     profile,
     rendererIndexPath
-  }: { devServer?: null | string; profile?: null | string; rendererIndexPath?: string } = {}
+  }: {
+    customScheme?: boolean
+    devServer?: null | string
+    profile?: null | string
+    rendererIndexPath?: string
+  } = {}
 ): string {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
   const query = `?win=hud${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}`
   const route = sessionId ? `#/${encodeURIComponent(sessionId)}` : '#/'
+  const base = rendererBaseUrl({ customScheme, devServer: devServer ?? null, rendererIndexPath })
 
-  if (devServer) {
-    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
-
-    return `${base}/${query}${route}`
-  }
-
-  return `${pathToFileURL(rendererIndexPath!).toString()}${query}${route}`
+  return `${base}${query}${route}`
 }

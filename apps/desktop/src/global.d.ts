@@ -34,6 +34,11 @@ export type DesktopMachineProfile = MachineProfile
 declare global {
   interface Window {
     hermesDesktop: {
+      clerk?: {
+        enabled: boolean
+        host: string
+        scheme: string
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to dial/reuse that profile's
       // cached gateway descriptor.
@@ -660,7 +665,10 @@ declare global {
       }) => Promise<PreviewSigninsResult>
       // P2-7: the per-profile imported-sign-ins record + cookie jar live in Electron main (userData),
       // so the renderer's local profile rename/delete flow signals main to move/clear them.
-      migratePreviewSigninsForProfile?: (request: { oldProfile: string; newProfile: string }) => Promise<{ ok: boolean }>
+      migratePreviewSigninsForProfile?: (request: {
+        oldProfile: string
+        newProfile: string
+      }) => Promise<{ ok: boolean }>
       dropPreviewSigninsForProfile?: (request: { profile: string }) => Promise<{ ok: boolean }>
       setActiveConnectionRoute?: (
         route: {

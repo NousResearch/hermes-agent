@@ -1,8 +1,7 @@
-import { pathToFileURL } from 'node:url'
-
 import { BrowserWindow, screen } from 'electron'
 
 import { attachRendererConsoleCapture } from './renderer-log'
+import { rendererBaseUrl } from './renderer-url'
 import {
   normalizeWakeIndicatorState,
   selectWakeIndicatorDisplay,
@@ -13,6 +12,7 @@ import {
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 
 interface WakeIndicatorWindowOptions {
+  customScheme?: boolean
   devServer?: string
   isMac: boolean
   loadWindowUrl: (window: BrowserWindow, url: string, label: string) => void
@@ -23,6 +23,7 @@ interface WakeIndicatorWindowOptions {
 }
 
 export function createWakeIndicatorWindowController({
+  customScheme = false,
   devServer,
   isMac,
   loadWindowUrl,
@@ -35,13 +36,12 @@ export function createWakeIndicatorWindowController({
   let state: WakeIndicatorState = 'hidden'
   let window: BrowserWindow | null = null
 
-  const url = () => {
-    if (devServer) {
-      return `${devServer.endsWith('/') ? devServer.slice(0, -1) : devServer}/?win=wake#/`
-    }
-
-    return `${pathToFileURL(rendererIndex()).toString()}?win=wake#/`
-  }
+  const url = () =>
+    `${rendererBaseUrl({
+      customScheme,
+      devServer: devServer ?? null,
+      rendererIndexPath: customScheme || devServer ? undefined : rendererIndex()
+    })}?win=wake#/`
 
   const selectedDisplay = () => selectWakeIndicatorDisplay(screen.getAllDisplays(), screen.getPrimaryDisplay())
 

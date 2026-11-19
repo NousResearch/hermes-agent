@@ -3,9 +3,8 @@
 // here so they can be unit-tested with node --test (mirroring how the rest of
 // electron/*.ts splits testable logic out of the main.ts monolith).
 
-import { pathToFileURL } from 'node:url'
-
 import type { DesktopWindowLaunch } from './desktop-profile'
+import { rendererBaseUrl } from './renderer-url'
 import { computeWindowOptions } from './window-state'
 
 // Secondary windows open at the minimum usable size — a compact side panel for
@@ -73,19 +72,14 @@ function chatWindowWebPreferences(preloadPath: string) {
 // (#82768, #61286). Absent → unchanged primary adoption.
 function buildSessionWindowUrl(
   sessionId: string,
-  { connectionId, devServer, profile, rendererIndexPath, watch }: any = {}
+  { connectionId, customScheme = false, devServer, profile, rendererIndexPath, watch }: any = {}
 ) {
   const profileKey = typeof profile === 'string' ? profile.trim() : ''
   const query = `?win=secondary${watch ? '&watch=1' : ''}${profileKey ? `&profile=${encodeURIComponent(profileKey)}` : ''}${connectionId !== undefined ? `&connectionId=${encodeURIComponent(connectionId ?? '')}` : ''}`
   const route = `#/${encodeURIComponent(sessionId)}`
+  const base = rendererBaseUrl({ customScheme, devServer: devServer ?? null, rendererIndexPath })
 
-  if (devServer) {
-    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
-
-    return `${base}/${query}${route}`
-  }
-
-  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+  return `${base}${query}${route}`
 }
 
 // Full peer windows render the ordinary app shell, so they deliberately do
@@ -94,26 +88,23 @@ function buildSessionWindowUrl(
 // app window: app-launch source restoration belongs to the primary only, while
 // a peer keeps the already-running backend it joined during boot.
 interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
+  customScheme?: boolean
   devServer?: string
   rendererIndexPath?: string
 }
 
 function buildInstanceWindowUrl({
   connectionId,
+  customScheme = false,
   devServer,
   profile,
   profileWindow,
   rendererIndexPath
 }: InstanceWindowUrlOptions = {}) {
   const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
+  const base = rendererBaseUrl({ customScheme, devServer: devServer ?? null, rendererIndexPath })
 
-  if (devServer) {
-    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
-
-    return `${base}/${query}`
-  }
-
-  return `${pathToFileURL(rendererIndexPath).toString()}${query}`
+  return `${base}${query}`
 }
 
 // Full "instance" windows (⌘⇧N / the "New Window" command) open a complete app

@@ -379,6 +379,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     agentsOpen,
     chatOpen,
+    closeContributedRoute,
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
@@ -1075,6 +1076,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // identity for the app's life (memoized surfaces don't re-render on churn)
   // while every handler still closes over the latest values.
   const nextActions: WiringActions = {
+    closeContributedRoute,
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     // The row menu reuses this verb on archived rows, so it restores there

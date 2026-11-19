@@ -1,12 +1,22 @@
 name: hermes-plugin-chrome-profiles
 repo: https://github.com/anpicasso/hermes-plugin-chrome-profiles
-sha: 03d24e95e7b14125c5227797a3a6682c3d890c84
-description: Switch Hermes browser tools to a named Chromium-family profile (Chrome, Edge, Brave), local or remote, over CDP.
+sha: a9a3d50fb7fe2b54c205206d175bc7a7eebb87a4
+description: >-
+  Switch every Hermes browser surface — browser_exec, the built-in browser_*
+  tools, and browser_vault_* — to a named Chromium-family profile (Chrome,
+  Chromium, Brave, Brave Origin, Edge), local or remote, over CDP. The endpoint
+  is published as the active Hermes profile's live CDP override, cleanup and the
+  CDP supervisor are profile-scoped, and a browser the plugin launched is
+  terminated on unload. Disclosure — a launched browser is user-visible and holds
+  the user's live logged-in sessions; remote profiles connect to an endpoint the
+  user already runs.
 maintainer: anpicasso
 tier: community
 category: web
 docs_url: https://github.com/anpicasso/hermes-plugin-chrome-profiles
-version: "2.0.0"
+version: "2.0.1"
+requires_hermes: ">=0.23.1"
+image: https://raw.githubusercontent.com/anpicasso/hermes-plugin-chrome-profiles/a9a3d50fb7fe2b54c205206d175bc7a7eebb87a4/docs/banner.png
 platforms: []
 capabilities:
   provides_tools:

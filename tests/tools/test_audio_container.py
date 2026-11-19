@@ -137,7 +137,7 @@ class TestInboundCacheUsesSniffer:
         async def _fake_read(response, media_type):
             return MP3_ID3  # server sent MP3 bytes despite the .ogg claim
 
-        monkeypatch.setattr(base, "_read_httpx_body_with_limit", _fake_read)
+        monkeypatch.setattr(base, "read_httpx_body_with_limit", _fake_read)
         monkeypatch.setattr(
             "tools.url_safety.create_ssrf_safe_async_client",
             lambda **k: _FakeClient(),

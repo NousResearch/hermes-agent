@@ -1,0 +1,19 @@
+name: vail-agent-assurance
+repo: https://github.com/projectvail/vail-agent-assurance
+sha: b987cb9c459568eca591a4cdcd130fb24ea7aa15
+subdir: plugins/vail-agent-assurance
+title: VAIL Agent Assurance
+description: "Find, test and fix risky behaviors in your AI agents with the VAIL Agent Assurance Engine: upload an agent's source to scan it for behavior risks and generate probes, then run those probes against the agent locally, graded as VAIL grades them, fix what fails and rerun to prove the fix. Works on LangGraph, Hermes and OpenClaw agents, including your own Hermes profiles. Portable Agent Plugins v1 package (mcp.json + skills/): the hosted VAIL MCP server plus the agent-assurance and agent-improvement skills. Needs a VAIL account and a personal access token, set as VAIL_TOKEN (the plugin's secret setting, kept in the profile's .env). Disclosure — every call goes to agents.projectvail.com with your VAIL token; scanning uploads the agent source you choose to VAIL, which stores it as that agent's source (replacing the previous upload); the agent-improvement skill downloads VAIL's grading package (a version VAIL's server chooses at run time, sha256-checked against that server's own value), installs it into a local virtual environment, runs it, and sends test messages to the agent you name. No telemetry."
+maintainer: projectvail
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/projectvail/vail-agent-assurance#install-in-hermes
+version: "0.4.0"
+platforms: []
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -21,3 +21,20 @@ it('shows a terminal bootstrap verdict and its remedy, never "still waiting"', (
   expect(messages.some(m => m.includes('Still waiting'))).toBe(false)
   expect(statuses.some(s => s.includes('still starting'))).toBe(false)
 })
+
+// A refused ticket mint is not terminal (the client keeps retrying), so the user gets the waiting
+// warning plus the bootstrap's own verdict lines: the `ticket_unavailable` head, then the refusal's
+// cause or repair command. These are the lines gateway_bootstrap.py prints (its pytest pins them).
+it.each([
+  ['a control home with unsafe permissions', 'gateway inaccessible: /h/control has mode 0755, expected 0700; chmod 700 /h/control'],
+  ['an owner that answers ok: false', 'gateway inaccessible: invalid_control_response']
+])('shows a refused ticket mint inline for %s', (_case, cause) => {
+  reportGatewayStartTimeout(`Command failed: python3 gateway_bootstrap.py\ngateway inaccessible: ticket_unavailable\n${cause}\n`,
+    () => {})
+
+  const messages = getTurnState().activity.map(a => a.text)
+
+  expect(messages.some(m => m.includes('Still waiting'))).toBe(true)
+  expect(messages).toContain('gateway inaccessible: ticket_unavailable')
+  expect(messages).toContain(cause)
+})

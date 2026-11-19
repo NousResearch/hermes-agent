@@ -1,0 +1,26 @@
+# Entry for NousResearch/hermes-agent — plugin-catalog/anvilads.yaml
+# Schema per plugin-catalog/README.md in that repo (checked Nov 8, 2026).
+# The pinned package is "Agent Plugins v1" (plugin.json + mcp.json +
+# skills/) — the same format as aave-mcp.yaml in the catalog. Our root
+# plugin.json declares the remote MCP server (mcp.config/mcp.server)
+# and the bundled skill; mcp.json carries the server block with the
+# ${ANVILADS_API_KEY} bearer header.
+name: anvilads
+title: AnvilAds
+repo: https://github.com/anvilads-app/agent
+sha: d9e724d02da469e9a45251e70bc03fc3074b9104
+version: "1.0.0"
+description: "Read-only access to your AnvilAds Google Ads data from Hermes, via the AnvilAds Connect AI MCP server (Streamable HTTP at https://anvilads.com/mcp): connected ad accounts, campaigns from the latest stored snapshot, performance summaries (spend, clicks, conversions, CPA), the latest morning or weekly report, lead totals, and ad audit grades, plus a bundled skill teaching the morning-check workflow. AnvilAds is an AI agent that builds, launches, and optimizes Google Ads; the owner approves every launch in the AnvilAds dashboard. Disclosure — hosted-only connector with no local code: every tool call goes to anvilads.com, authenticated with your ANVILADS_API_KEY (a per-business key created in the AnvilAds dashboard, sent as a bearer header only to that host). The tool set is served by the remote server at runtime and is not covered by the pinned sha; the vendor documents it as read-only (seven tools over stored data, no writes, no live Google Ads calls)."
+maintainer: AnvilAds
+tier: community
+category: tools
+docs_url: https://anvilads.com/connect-ai
+requires_hermes: ">=0.19.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ANVILADS_API_KEY

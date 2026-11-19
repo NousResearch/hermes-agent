@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import desktop_plugin_halves as halves
 from hermes_cli import desktop_plugin_install as install
 
 URL = "https://example.invalid/acme/gizmo.git"
@@ -204,6 +205,34 @@ def test_remove_leaves_a_linked_plugin_alone_and_names_nothing_outside_the_root(
 
     assert "folder name" in install.remove_desktop_plugin("../config.yaml")["error"]
     assert "No desktop plugin named 'ghost'" in install.remove_desktop_plugin("ghost")["error"]
+
+
+def _stub_junction(monkeypatch, path: Path) -> None:
+    """Report *path* as a junction, the reparse tag Windows gives a folder linked without privilege."""
+    monkeypatch.setattr(halves, "is_junction", lambda p: os.fspath(p) == os.fspath(path))
+
+
+def test_remove_leaves_a_folder_the_host_reports_as_a_junction_alone(home, monkeypatch):
+    root = _root(home)
+    (root / "dev").mkdir(parents=True)
+    (root / "dev" / "plugin.js").write_text("export default {}\n", encoding="utf-8")
+    _stub_junction(monkeypatch, root / "dev")
+
+    result = install.remove_desktop_plugin("dev", force=True)
+
+    assert result["ok"] is False and "linked from somewhere else" in result["error"]
+    assert (root / "dev" / "plugin.js").is_file()
+
+
+def test_install_does_not_replace_a_dangling_junction_without_force(home, repo, monkeypatch):
+    # A junction whose target is gone answers False to exists() and to is_symlink().
+    sha = _commit(repo, {"plugin.js": "export default {}\n"})
+    _stub_junction(monkeypatch, _root(home) / "gizmo")
+
+    result = install.install_desktop_plugin(URL, ref=sha)
+
+    assert result["ok"] is False and "already exists" in result["error"]
+    assert not (_root(home) / "gizmo").exists()
 
 
 @pytest.mark.parametrize("name", ["C:", "C:..", "D:outside", "nul .js", "CON", "nul.txt", "Com1", "LPT¹.js", "CONIN$", "clock$.js", "gizmo."])

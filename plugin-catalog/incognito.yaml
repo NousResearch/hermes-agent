@@ -1,0 +1,38 @@
+name: incognito
+repo: https://github.com/nicolasbuelvas/hermes-incognito
+sha: 76fbfb4761b79bab99563c5cccb85c69c4a179bc
+title: Hermes Incognito
+description: "Ephemeral clean-room chats and fail-closed RAM PII masking across CLI, TUI, Gateway, and Desktop: hides active sessions, blocks memory and skill writes, strips profile and personal memory in RAM in strict mode, masks outbound personal details before sending, zero-fills transcript and hook spill files before unlinking on close or sweep, and supports confirmed Save with reversible Undo. Disclosure — deletes the database rows, transcript files and hook-output files of chats marked incognito when you burn them, when they close, or on a sweep after their idle TTL expires (file contents are zero-filled first); the model cannot trigger a burn; Save moves an incognito chat into normal history and Undo (within the undo window) returns it to incognito; while any incognito chat is active it blocks terminal, file-read, search and code tools from touching Hermes session storage in every session on the host; with Mask personal details on (off by default) it replaces detected personal details with placeholders in messages and tool results before they reach the model and blocks sends it cannot check; adds no-retention flags (`store: false`, OpenRouter `data_collection: deny`) to outbound model requests from incognito chats; stores content-free leases, save-undo metadata and receipt hashes under $HERMES_HOME/plugin-data/incognito/; makes no third-party network calls."
+maintainer: nicolasbuelvas
+tier: community
+category: tools
+version: "1.0.1"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/nicolasbuelvas/hermes-incognito#readme
+readme: true
+image: https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/social-preview.png
+screenshots:
+  - https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/incognito-desktop-demo.gif
+  - https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/draft-mask-preview.png
+  - https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/sent-to-model.png
+  - https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/privacy-control-center.png
+  - https://raw.githubusercontent.com/nicolasbuelvas/hermes-incognito/76fbfb4761b79bab99563c5cccb85c69c4a179bc/assets/burn-confirmation.png
+platforms: []
+capabilities:
+  provides_tools:
+    - incognito_control
+    - incognito_verify
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - subagent_start
+    - transform_tool_result
+    - post_compaction
+    - on_session_end
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

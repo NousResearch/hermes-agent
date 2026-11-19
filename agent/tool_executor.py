@@ -53,6 +53,7 @@ from agent.tool_dispatch_helpers import (
     _context_pruned_argument_paths, _plan_tool_batch_segments, make_tool_result_message,
 )
 from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
+from tools.delegate_tool_tasks import coerce_display_task_list
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -1665,12 +1666,16 @@ def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args
 
 def _delegate_spinner_label(function_args: dict) -> str:
     action = str(function_args.get("action") or "").strip().lower()
-    tasks = function_args.get("tasks")
     if action in ("list", "steer", "stop"):
         return f"🔀 subagent {action}"
-    if tasks and isinstance(tasks, list):
-        return f"🔀 delegating {len(tasks)} tasks · (/agents to monitor)"
-    goal_preview = (function_args.get("goal") or "")[:30]
+    task_list = coerce_display_task_list(function_args.get("tasks"))
+    if task_list:
+        if len(task_list) > 1 or not isinstance(task_list[0], dict):
+            return f"🔀 delegating {len(task_list)} tasks · (/agents to monitor)"
+        raw_goal = task_list[0].get("goal") or function_args.get("goal")
+    else:
+        raw_goal = function_args.get("goal")
+    goal_preview = str(raw_goal or "")[:30]
     return f"🔀 {goal_preview} · (/agents to monitor)" if goal_preview else "🔀 delegating · (/agents to monitor)"
 
 

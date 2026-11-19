@@ -35,6 +35,20 @@ def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[list[dict[str,
         return None, f"tasks must be a JSON array of task objects; parsed {type(parsed).__name__} instead."
     return parsed, None
 
+
+def coerce_display_task_list(tasks: Any) -> Optional[list[Any]]:
+    """Best-effort normalization of ``tasks`` (list, dict, or JSON string) for UI previews; None when empty/invalid."""
+    if isinstance(tasks, str):
+        parsed, err = _recover_tasks_from_json_string(tasks)
+        if err is not None or parsed is None:
+            return None
+        tasks = parsed
+    if isinstance(tasks, dict):
+        return [tasks]
+    if isinstance(tasks, list) and tasks:
+        return tasks
+    return None
+
 def _validate_batch_tasks(task_list: list[dict[str, Any]]) -> Optional[str]:
     """Batch-only quality gate beyond per-task goal presence; actionable error or None. No minimum count: a one-entry
     array is the canonical single-task shape (legacy top-level `goal` is wrapped into one). Duplicate goals are

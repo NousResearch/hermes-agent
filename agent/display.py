@@ -20,6 +20,7 @@ from agent.i18n import t
 from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
+from tools.delegate_tool_tasks import coerce_display_task_list
 
 logger = logging.getLogger(__name__)
 
@@ -338,9 +339,10 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
 
 def _delegate_task_goals(tasks: Any, *, per_goal_len: int) -> list[str]:
     """One truncated goal string per dict task (``?`` when missing)."""
-    if not isinstance(tasks, list):
+    task_list = coerce_display_task_list(tasks)
+    if not task_list:
         return []
-    raw_goals = (task.get("goal") for task in tasks if isinstance(task, dict))
+    raw_goals = (task.get("goal") for task in task_list if isinstance(task, dict))
     return [_tail_trunc(("?" if g is None else _oneline(str(g))) or "?", per_goal_len) for g in raw_goals]
 
 
@@ -381,13 +383,13 @@ def _preview_browser_exec(args: dict, max_len: int) -> str | None:
 
 def _preview_delegate_task(args: dict, max_len: int) -> str | None:
     action_preview = _delegate_action_preview(args)
-    tasks = args.get("tasks")
     if action_preview is not None:
         return _tail_trunc(action_preview, max_len)
-    if tasks and isinstance(tasks, list):
-        goals = _delegate_task_goals(tasks, per_goal_len=40)
+    task_list = coerce_display_task_list(args.get("tasks"))
+    if task_list:
+        goals = _delegate_task_goals(task_list, per_goal_len=40)
         preview = (t("display.preview.delegate_tasks", count=len(goals), goals=" | ".join(goals)) if goals
-                   else t("display.preview.delegate_parallel_tasks", count=len(tasks)))
+                   else t("display.preview.delegate_parallel_tasks", count=len(task_list)))
         return _tail_trunc(preview, max_len)
     goal = args.get("goal", "")
     return None if goal is None else _tail_trunc(_oneline(str(goal)), max_len) or None
@@ -1220,13 +1222,13 @@ def _cute_browser_exec(a: dict, _r) -> str:
 
 def _cute_delegate(a: dict, _r) -> str:
     action_preview = _delegate_action_preview(a)
-    tasks = a.get("tasks")
     if action_preview is not None:
         return _cute_row("🔀", "delegate", _cute_trunc(action_preview))
-    if tasks and isinstance(tasks, list):
-        goals = _delegate_task_goals(tasks, per_goal_len=30)
+    task_list = coerce_display_task_list(a.get("tasks"))
+    if task_list:
+        goals = _delegate_task_goals(task_list, per_goal_len=30)
         joined = _cute_trunc(" | ".join(goals) if goals else t("display.cute.delegate_parallel"))
-        return _cute_row("🔀", "delegate", f"{len(goals) or len(tasks)}x: {joined}")
+        return _cute_row("🔀", "delegate", f"{len(goals) or len(task_list)}x: {joined}")
     return _cute_row("🔀", "delegate", _cute_trunc(a.get("goal", "")))
 
 

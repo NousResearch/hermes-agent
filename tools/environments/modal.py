@@ -327,9 +327,11 @@ class ModalEnvironment(BaseEnvironment):
             else:
                 if restored_snapshot_id and restored_from_legacy_key:
                     _store_direct_snapshot(self._task_id, restored_snapshot_id)
-        except BaseException:
+        except BaseException as exc:
             _abandon_client_flights(self._worker._loop)
             self._worker.stop()
+            if isinstance(exc, _ClientBuildError):  # the base-image retry's own client build failed
+                raise exc.cause from None
             raise
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
         self._sync_manager = FileSyncManager(

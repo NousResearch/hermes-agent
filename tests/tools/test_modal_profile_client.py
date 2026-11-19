@@ -151,6 +151,7 @@ def test_routed_profile_without_its_own_pair_never_borrows_the_launch_account(
 
     modal_env, calls = modal_sdk
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)  # Windows reads USERPROFILE, not HOME
     (tmp_path / ".modal.toml").write_text('[default]\ntoken_id = "ak-cli"\ntoken_secret = "as-cli"\n')
     with bind_profile_scope(profiles("B", dotenv), hydrate_secrets=False), \
             pytest.raises(ValueError, match="MODAL_TOKEN_ID and MODAL_TOKEN_SECRET"):
@@ -183,6 +184,7 @@ def test_backend_selection_agrees_with_the_constructor_for_a_routed_profile(
 
     modal_env, calls = modal_sdk
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)  # Windows reads USERPROFILE, not HOME
     (tmp_path / ".modal.toml").write_text('[default]\ntoken_id = "ak-cli"\ntoken_secret = "as-cli"\n')
     with bind_profile_scope(profiles("B", dotenv), hydrate_secrets=False):
         assert has_direct_modal_credentials() is usable
@@ -202,6 +204,7 @@ def test_single_profile_host_login_still_selects_direct(tmp_path, monkeypatch):
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)  # Windows reads USERPROFILE, not HOME
     (tmp_path / ".modal.toml").write_text('[default]\ntoken_id = "ak-cli"\ntoken_secret = "as-cli"\n')
     assert has_direct_modal_credentials() is True
 
@@ -713,3 +716,25 @@ def test_snapshot_restore_failure_after_client_build_still_falls_back(
     assert calls["creates"] == ["ak-B"]
     if fail_at == "create":
         assert seen_images == ["im-bad", "image"]
+
+
+def test_base_image_retry_client_build_failure_raises_the_original_error(modal_sdk, profiles, monkeypatch):
+    """A bad snapshot falls back to the base image; when that retry's client build then fails, the
+    caller sees the client's own error, never the module's private wrapper."""
+    from agent.runtime_scope import bind_profile_scope
+
+    modal_env, calls = modal_sdk
+    home = profiles("B")
+    (home / "modal_snapshots.json").write_text(json.dumps({"direct:task-1": "im-bad"}))
+
+    def bad_from_id(image_id):
+        raise RuntimeError(f"bad snapshot {image_id}")
+
+    monkeypatch.setattr(sys.modules["modal"].Image, "from_id", bad_from_id)
+    _fake_from_credentials().failures["ak-B"] = [PermissionError("auth boom")]
+    with bind_profile_scope(home, hydrate_secrets=False), pytest.raises(PermissionError) as raised:
+        modal_env.ModalEnvironment(image="python:3.11", persistent_filesystem=True, task_id="task-1")
+    assert type(raised.value) is PermissionError and str(raised.value) == "auth boom"
+    assert calls["clients"] == ["ak-B"]
+    assert calls["creates"] == []
+    assert modal_env._client_flights == {}

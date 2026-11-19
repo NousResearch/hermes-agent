@@ -158,6 +158,21 @@ def _holds_checked_session(task_id: str, checked: Optional[str]) -> bool:
 
 
 @contextmanager
+def _stamps_removed(task_id: str, nonce: str) -> Iterator[None]:
+    """Remove the stamps of the inspection ``nonce`` on every exit of the operation that made them.
+
+    Each operation stamps under its own attribute name, so nothing else ever removes them, and a
+    stamp left behind lets a later read address the control the vault targeted. Runs inside the
+    pinned block, on the channel the operation checked; a failed removal leaves the result as is.
+    """
+    from agent.vault_login_classifier import build_unstamp_js
+    try:
+        yield
+    finally:
+        _eval_js(task_id, build_unstamp_js(nonce))
+
+
+@contextmanager
 def _pinned_page_session(task_id: str, checked: _CheckedPage) -> Iterator[Optional[dict[str, Any]]]:
     """Pin every eval inside this block to the channel the origin check ran on.
 
@@ -572,18 +587,21 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     with _pinned_page_session(effective_task_id, page) as unpinned:
         if unpinned is not None:
             return json.dumps(unpinned)
-        return _enter_code_on_page(backend, handle, meta, page.origin, effective_task_id)
+        nonce = secrets.token_hex(8)
+        with _stamps_removed(effective_task_id, nonce):
+            return _enter_code_on_page(backend, handle, meta, page.origin, effective_task_id, nonce)
 
 
-def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effective_task_id: str) -> str:
-    """Inspect the page for its code field and write the code (minted, else asked of the user)."""
+def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effective_task_id: str,
+                        nonce: str) -> str:
+    """Inspect the page for its code field (stamping under ``nonce``) and write the code (minted, else
+    asked of the user)."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import (LoginControl, build_fill_js, build_inspection_js, build_otp_fills,
-                                              build_unstamp_js, classify_otp_controls)
+                                              classify_otp_controls)
 
     site = origin.split("://", 1)[-1]
-    nonce = secrets.token_hex(8)
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
@@ -599,7 +617,6 @@ def _enter_code_on_page(backend: Any, handle: str, meta: Any, origin: str, effec
         fills = build_otp_fills(otp_controls, code)
         result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
         del code
-        _eval_js(effective_task_id, build_unstamp_js(nonce))  # the fill script leaves its stamps for a read-back
         if not result.get("success"):
             failed = {"success": False, "error": str(result.get("error") or "fill failed")[:200]}
             if result.get("error_type"):
@@ -681,7 +698,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_ident
         refusal = unpinned or snapshot_refusal(backend, handle, meta, page.origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page.origin, effective_task_id, with_identifier)
+        nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
+        with _stamps_removed(effective_task_id, nonce):
+            return _fill_bound_page(backend, handle, meta, page.origin, effective_task_id, nonce, with_identifier)
 
 
 def _identifier_fill(classified: list, raw_controls: list[dict[str, Any]],
@@ -758,7 +777,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     a key-by-key retype — and every insert is pinned to the page session the fill started on; the
     value is read back after it
     (``build_fill_verify_js``). A focus that drifted, or a value the page reverted, aborts the
-    whole fill: nothing further is typed and this fill's inspection stamps are removed.
+    whole fill: nothing further is typed (the caller removes this fill's inspection stamps).
 
     ``js_fills`` (the password, ``select`` / checkbox / radio controls) go by the guarded JS write
     (``build_fill_js``) on their stamped controls, never by keystroke.
@@ -772,7 +791,6 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         build_fill_verify_js,
         build_focus_js,
         build_origin_check_js,
-        build_unstamp_js,
     )
     from agent.vault_store import scrub_secret_from_text
 
@@ -782,9 +800,6 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # A script refused because the channel moved or a human took over names that cause, not the
         # check it broke (focus_lost, origin_changed): the caller retries or stops on it.
         moved = _channel_refusal(last["failure"])
-        # Remove this fill's stamps: a stamp left behind would let a later read address the control
-        # this fill just targeted.
-        _eval_js_secret(task_id, build_unstamp_js(nonce))
         if moved is not None:
             return {"ok": False, **moved}
         return {"ok": False, "success": False, "error_type": error_type, "filled_fields": 0,
@@ -968,7 +983,7 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
     Returns ``{"success": True}`` or a refusal dict ready to be serialised: the caller does not have
     to interpret anything. Every error string is scrubbed of the secret before it leaves.
     """
-    from agent.vault_login_classifier import build_fill_js, build_unstamp_js
+    from agent.vault_login_classifier import build_fill_js
     from agent.vault_store import scrub_secret_from_text
 
     fill_result = _eval_js_secret(task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce))
@@ -987,7 +1002,6 @@ def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce
                           f"(now on {parsed.get('found') or 'unknown'}). Nothing was written.")}
     wrote = int(parsed.get("filled", 0) or 0) if isinstance(parsed, dict) else 0
     if not wrote:
-        _eval_js(task_id, build_unstamp_js(nonce))
         return {"success": False, "error_type": "fill_not_written", "filled_fields": 0,
                 "error": "No field accepted the write: nothing was filled on this page."}
     return {"success": True}
@@ -1005,7 +1019,7 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
     write is the one that matters. Counts only — no value leaves the page. Each poll re-asserts
     ``page_origin`` in the page: a login that submits on input can land on the next page mid-poll.
     """
-    from agent.vault_login_classifier import build_fill_verify_js, build_unstamp_js
+    from agent.vault_login_classifier import build_fill_verify_js
 
     expected = len(fills)
     started = time.monotonic()
@@ -1027,7 +1041,6 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
                     "error": (f"The page left the bound origin ({page_origin}) before the fill could be read "
                               f"back (now on {verified.get('found') or 'unknown'}); treating it as failed.")}
         if not isinstance(verified, dict):
-            _eval_js(task_id, build_unstamp_js(nonce))
             return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
                     "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
         landed = int(verified.get("landed", 0) or 0)
@@ -1041,7 +1054,6 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
         held_since = now if held_since is None else held_since
         if now - held_since >= _FILL_VERIFY_STABLE_S:
             break
-    _eval_js(task_id, build_unstamp_js(nonce))  # stamps were kept across the polls; drop them once
     if landed < expected:
         return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
                 "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "
@@ -1050,9 +1062,10 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
 
 
 def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str,
-                     with_identifier: bool = False) -> str:
-    """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
-    after the origin guard passed. ``with_identifier`` also writes the login's (non-secret) identifier."""
+                     nonce: str, with_identifier: bool = False) -> str:
+    """Inspect the page (stamping under ``nonce``), resolve the item's secret and write it; runs inside
+    the backend's fill_context after the origin guard passed. ``with_identifier`` also writes the
+    login's (non-secret) identifier."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
         ClassifiedLoginControl,
@@ -1069,7 +1082,6 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     # ── Inspect + classify page controls ────────────────────────────────────
-    nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps
     inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
     if not inspect.get("success"):
         return json.dumps(

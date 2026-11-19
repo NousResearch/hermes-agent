@@ -605,10 +605,11 @@ class SignalAdapter(BasePlatformAdapter):
         return await cache(raw_data, ext), ext
 
     async def _rpc(self, method: str, params: dict, rpc_id: str | None = None, *, log_failures: bool = True,
-                   raise_on_rate_limit: bool = False, timeout: float = 30.0) -> Any:
+                   raise_on_rate_limit: bool = False, raise_transport: bool = False, timeout: float = 30.0) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli. ``log_failures=False`` logs failures at DEBUG (typing
         path: silence NETWORK_FAILURE spam); ``raise_on_rate_limit=True`` raises ``SignalRateLimitError``
-        on a 429 / RateLimitException instead of swallowing it."""
+        on a 429 / RateLimitException instead of swallowing it; ``raise_transport=True`` re-raises a
+        transport/HTTP failure so a sender can tell a request that never left from a lost response."""
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
             return None
@@ -637,11 +638,19 @@ class SignalAdapter(BasePlatformAdapter):
             raise
         except Exception as e:
             logger.log(fail_level, "Signal RPC %s failed: %s", method, e)
+            if raise_transport:
+                raise
             return None
 
     def format_message(self, content: str) -> str:
         """Plain-text fallback for the base-class send path; send() applies rich styles itself."""
         return content
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """A send whose response was lost (``_rpc_send``) may already be on screen: a retry or the
+        plain-text fallback would show it twice."""
+        raw = result.raw_response
+        return isinstance(raw, dict) and bool(raw.get("delivery_unknown"))
 
     def _validate_send_result(self, result: Any) -> tuple[bool, Optional[str]]:
         """Validate signal-cli send response results. Returns (success, error_message)."""
@@ -703,7 +712,16 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _rpc_send(self, params: dict[str, Any], fail_error: str) -> tuple[Any, Optional[SendResult]]:
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
-        if (result := await self._rpc("send", params)) is None:
+        try:
+            result = await self._rpc("send", params, raise_transport=True)
+        except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
+            if self._send_never_landed(exc):
+                return None, SendResult(success=False, error=f"{fail_error}: {exc!r}", retryable=True)
+            # The request left but its response was lost: signal-cli may have sent it, so neither a retry
+            # nor the plain-text fallback may send it again (_send_retry_is_final).
+            return None, SendResult(success=False, error=f"{fail_error}: {exc!r}",
+                                    raw_response={"delivery_unknown": True})
+        if result is None:
             return None, SendResult(success=False, error=fail_error)
         success, err_msg = self._validate_send_result(result)
         if not success:
@@ -720,6 +738,7 @@ class SignalAdapter(BasePlatformAdapter):
         base_params = await self._with_target({"account": self.account}, chat_id)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
+        delivered: list[str] = []
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
             params: dict[str, Any] = dict(base_params, message=plain_text)
             if len(text_styles) == 1:
@@ -730,7 +749,10 @@ class SignalAdapter(BasePlatformAdapter):
                         chat_id)
             last_result, err = await self._rpc_send(params, "RPC send failed")
             if err:
-                return err
+                # No resume here: after an earlier chunk landed, report a partial delivery so no retry repeats
+                # the visible head.
+                return self._split_send_failed(err, [c for c, _ in chunks[idx - 1:]], delivered, unsent=False)
+            delivered.append(str(last_result.get("timestamp") if isinstance(last_result, dict) else idx))
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
         return SendResult(success=True, message_id=None, raw_response=last_result)
 

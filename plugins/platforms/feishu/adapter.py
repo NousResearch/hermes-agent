@@ -92,7 +92,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
+from gateway.platforms.helpers import caption_is_command, prompt_id_counter
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from plugins.platforms.feishu.adapter_synthetic_events import FeishuSyntheticEventsMixin
 from gateway.status import acquire_scoped_lock
@@ -1670,6 +1670,15 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
+        return await self._send_chunks(chat_id, chunks, [], prefer_post, reply_to, metadata)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: list[str], delivered: list[Optional[str]], prefer_post: bool,
+        reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+    ) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` message ids. Every chunk's own response is checked: a
+        failure after one landed is a partial result (see :meth:`_split_send_failed`), so neither a gap
+        in the middle of the reply is reported as delivered nor the visible head sent again."""
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1680,31 +1689,49 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                 metadata=metadata,
             )
 
-        async def _send_one(chunk: str) -> SendResult:
+        result = SendResult(success=False, error="send failed")
+        for i, chunk in enumerate(chunks):
             msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
             try:
-                response = await self._feishu_send_with_retry(
-                    chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
-                )
+                try:
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
+                    )
+                except Exception as exc:
+                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        raise
+                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    response = await _send_plain(chunk)
+                if (
+                    msg_type == "post"
+                    and not self._response_succeeded(response)
+                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                ):
+                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    response = await _send_plain(chunk)
             except Exception as exc:
-                if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                    raise
-                logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                response = await _send_plain(chunk)
-            if (
-                msg_type == "post"
-                and not self._response_succeeded(response)
-                and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-            ):
-                logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                response = await _send_plain(chunk)
-            return self._finalize_send_result(response, "send failed")
+                logger.error("[Feishu] Send error: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
+                result, unsent = SendResult(success=False, error=shown or str(exc)), self._send_never_landed(exc)
+            else:
+                result = self._finalize_send_result(response, "send failed")
+                unsent = self._send_never_landed(status=getattr(getattr(response, "raw", None), "status_code", None))
+            if not result.success:
+                failed = self._split_send_failed(result, chunks[i:], delivered, unsent=unsent)
+                if self._is_partial_delivery(failed):
+                    failed.raw_response["resume_prefer_post"] = prefer_post
+                return failed
+            delivered.append(result.message_id)
+        return result
 
-        try:  # stops at the first refused chunk and marks a partial delivery: a later success never masks it
-            return await send_chunks(chunks, _send_one)
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name)))) or exc, exc_info=not shown)
-            return SendResult(success=False, error=shown or str(exc))
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self._client:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()),
+                                       bool(raw.get("resume_prefer_post")), reply_to, metadata)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""

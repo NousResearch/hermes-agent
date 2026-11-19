@@ -152,6 +152,37 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[2]["reference"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure, completes", [
+    (ConnectionResetError("Connection reset by peer"), True),  # never reached Discord: resume the tail
+    (RuntimeError("503 Service Unavailable (error code: 0): network error"), False),  # may have posted
+])
+async def test_split_send_failure_never_resends_the_delivered_head(monkeypatch, failure, completes):
+    """A later chunk of a split reply fails once. Every chunk reaches the channel at most once, and
+    the result claims success only when every chunk landed (the ledger redelivers a failure)."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    chunks = adapter.truncate_message(" ".join(f"w{i:04d}" for i in range(900)), adapter.MAX_MESSAGE_LENGTH)
+    assert len(chunks) == 3
+    screen, attempts = [], []
+
+    async def fake_send(*, content, reference=None):
+        attempts.append(content)
+        if len(attempts) == 2:
+            raise failure
+        screen.append(content)
+        return SimpleNamespace(id=1000 + len(attempts))
+
+    channel = SimpleNamespace(id=555, send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(get_channel=lambda _chat_id: channel, fetch_channel=AsyncMock())
+
+    result = await adapter._send_with_retry("555", " ".join(f"w{i:04d}" for i in range(900)), base_delay=0)
+
+    assert len(screen) == len(set(screen))
+    assert screen == (chunks if completes else chunks[:1])
+    assert result.success is completes
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

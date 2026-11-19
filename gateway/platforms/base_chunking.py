@@ -1,6 +1,8 @@
-"""Markdown-aware message chunking behind ``BasePlatformAdapter.truncate_message``."""
+"""Markdown-aware message chunking behind ``BasePlatformAdapter.truncate_message``, and the partial-delivery
+contract a split send reports when only some of its chunks landed."""
 
-from typing import Callable, Optional
+import sys
+from typing import Any, Callable, Optional
 
 from gateway.platforms.helpers import (
     fence_state_after, table_header_to_repeat, table_rollback_point, table_row_start)
@@ -133,3 +135,70 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     if len(chunks) > 1:
         chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
     return chunks
+
+
+def is_partial_delivery(result: Any) -> bool:
+    """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
+    contract split-sending adapters set via :func:`with_partial_send` and the stream consumer reads): the visible
+    head must never be sent again."""
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+
+def partial_tail_uncertain(result: Any, resumable_keys: tuple[str, ...]) -> bool:
+    """A partial delivery with no tail the adapter can resume (*resumable_keys* in its raw response): no retry
+    can finish it and the plain-text fallback would repeat the head, so it is returned as-is instead of backing off."""
+    raw = result.raw_response
+    return is_partial_delivery(result) and not any(raw.get(k) for k in resumable_keys)
+
+
+def with_partial_send(result: Any, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> Any:
+    """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
+    ``_edit_overflow_split`` sets and the stream consumer reads; every split-sending adapter shares it), so
+    no caller re-sends the visible head; ``undelivered`` (for ``_resume_partial_send``) is attached
+    only when ``tail_certain``. An uncertain failure reports ``unattempted_chunks``: the messages after
+    the one in flight, which never left."""
+    raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+    if not tail_certain and len(undelivered) > 1:
+        raw["unattempted_chunks"] = tuple(undelivered[1:])
+    if delivered:
+        raw.update({
+            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+        if tail_certain and undelivered:
+            raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
+    result.raw_response = raw or result.raw_response
+    return result
+
+
+def send_never_landed(exc: Optional[BaseException] = None, status: Optional[int] = None) -> bool:
+    """True only when a failed send certainly created nothing: HTTP 429 (refused before processing) or a
+    failed connect (the request never left), also when an SDK wraps it. A 5xx, a timeout or a dropped
+    response may have posted it."""
+    connect_errors = (ConnectionRefusedError,) + tuple(
+        cls for cls in (getattr(sys.modules.get("aiohttp"), "ClientConnectorError", None),
+                        getattr(sys.modules.get("httpx"), "ConnectError", None)) if isinstance(cls, type))
+    for _ in range(4):  # the exception and the SDK wrappers above it
+        if exc is None:
+            break
+        if isinstance(exc, connect_errors):
+            return True
+        status = status or next((s for s in (
+            getattr(getattr(exc, "response", None), "status_code", None),  # httpx, slack_sdk
+            getattr(exc, "http_status", None),  # mautrix
+            getattr(getattr(exc, "resp", None), "status", None),  # googleapiclient
+        ) if isinstance(s, int)), None)
+        exc = exc.__cause__
+    return status == 429
+
+
+def split_send_failed(result: Any, undelivered: list[str], delivered: list[Any], *, unsent: bool) -> Any:
+    """``result`` for a split send whose chunk after ``delivered`` failed (``unsent``: it certainly never
+    landed, see :func:`send_never_landed`). Once a chunk landed, the tail is kept for
+    ``_resume_partial_send`` only when ``unsent``, and only then is it retryable: a whole-payload
+    redelivery would repeat the visible head."""
+    if not delivered:
+        return result
+    result = with_partial_send(result, undelivered, delivered, tail_certain=unsent)
+    result.retryable = unsent
+    return result

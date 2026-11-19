@@ -737,23 +737,40 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        last_message_id = None
-        for chunk in self.truncate_message(self.format_message(content)):
+        return await self._send_chunks(chat_id, self.truncate_message(self.format_message(content)), [], reply_to)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: list[str], delivered: list[Optional[str]], reply_to: Optional[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` activity ids; a failure after one landed is a partial
+        result (see :meth:`_split_send_failed`), so the visible head is never sent again."""
+        for i, chunk in enumerate(chunks):
             try:
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
-                    except Exception as reply_err:
+                    except Exception as reply_err:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                         # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
                         logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err)
                         result = await self._app.send(chat_id, chunk)
                 else:
                     result = await self._app.send(chat_id, chunk)
-                last_message_id = getattr(result, "id", None)
-                self._remember_sent(result)
-            except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
-                return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e), retryable=True)
-        return SendResult(success=True, message_id=last_message_id)
+            except Exception as e:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads; the SDK's httpx client reads HTTPS_PROXY: the text may echo it
+                error = describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e)
+                return self._split_send_failed(
+                    SendResult(success=False, error=error, retryable=True), chunks[i:], delivered,
+                    unsent=self._send_never_landed(e))
+            delivered.append(getattr(result, "id", None))
+            self._remember_sent(result)
+        return SendResult(success=True, message_id=delivered[-1] if delivered else None)
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self._app:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:

@@ -188,6 +188,10 @@ class RoomMembershipConflictError(HostedRoomError):
     reason = "room_membership_conflict"
 
 
+class RoomMembershipLeadError(HostedRoomError):
+    reason = "room_membership_lead"
+
+
 class EventCursorConflictError(_OneMessage, HostedRoomError, Conflict):
     """Raised when new room events invalidate an uncommitted publication plan."""
 

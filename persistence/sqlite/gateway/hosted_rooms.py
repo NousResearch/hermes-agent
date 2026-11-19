@@ -18,8 +18,8 @@ from persistence.conversation.sessions import TitleConflict, sanitize_title
 from persistence.gateway.hosted_rooms import (
     AuthorityConflictError, EventConflictError, EventCursorConflictError, HostedMemberGuard, HostedOwnerClaim,
     HostedPlacement, HostedRoomError, HostedRoomRefusal, RoomConflictError, RoomHeldGrantsPendingError,
-    RoomHistoryExpiredError, RoomMembershipBusyError, RoomMembershipConflictError, RoomNotFoundError,
-    RoomProbeUnavailableError,
+    RoomHistoryExpiredError, RoomMembershipBusyError, RoomMembershipConflictError, RoomMembershipLeadError,
+    RoomNotFoundError, RoomProbeUnavailableError,
 )
 from session_rules.hosted_rooms import (
     CONTEXT_EVENT_KIND, CONTROL_EVENT_BYTE_RESERVE, CONTROL_EVENT_COUNT_RESERVE, DISBANDED_ROOM_RETENTION_SECONDS,
@@ -739,7 +739,7 @@ class SQLiteHostedRoomRepository:
             settings = context_from_payload(_latest_payload(conn, room_id, CONTEXT_EVENT_KIND, None))
             if settings["routing"] == "lead" and settings["lead_member_id"] not in {
                     member["member_id"] for member in members}:
-                raise HostedRoomError("Change the room's lead before removing it.")
+                raise RoomMembershipLeadError("Change the room's lead before removing it.")
             _append_locked(
                 conn, room_id=room_id, event_id=event_id, kind=kind, actor=actor, actor_json=actor_json,
                 payload_json=_payload_json({"previous_members": previous, "members": members,

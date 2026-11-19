@@ -76,6 +76,14 @@ def test_group_management_on_ordinary_authenticated_socket(tmp_path):
             assert next_log[:-1] == log['result']['events']
             assert next_log[-1]['kind'] == 'room.members_changed'
             assert next_log[-1]['actor'] == {'kind': 'system', 'id': 'room-control'}
+            lead = await rpc(ws, 'groups.context', room_id=room['room_id'], event_id='assign-lead',
+                             purpose='', notes='', routing='lead', lead_member_id='reviewer')
+            assert 'result' in lead, lead
+            without_lead = await rpc(ws, 'groups.members.update', **{
+                **edit, 'event_id': 'remove-lead', 'expected_revision': updated_room['revision'],
+                'members': members})
+            assert without_lead['error']['data']['reason'] == 'room_membership_lead', without_lead
+            assert without_lead['error']['message'] == "Change the room's lead before removing it."
             denied = await rpc(ws, 'groups.rename', profile='foreign', room_id='room-fixture', event_id='forbidden', name='Wrong')
             assert denied['error']['message'] == 'profile_mismatch', denied
             profiles = await rpc(ws, 'profiles.list', include_sessions=False)

@@ -67,6 +67,18 @@ def test_floor_refuses_attempt_even_if_app_swallows_error(tmp_path, attempt):
         check_execs(tmp_path, "probe", {cpu}, floor=True)
 
 
+def test_desktop_that_dropped_the_chromium_sandbox_is_refused(tmp_path):
+    app = "/tmp/appimage_extracted_1/Hermes Agent"
+    (tmp_path / "desktop.9").write_text(
+        f'execve("{app}", ["{app}", "--disable-setuid-sandbox"], 0x10 /* 2 vars */) = 0\n'
+        f'execve("{app}", ["{app}", "--no-sandbox"], 0x10 /* 2 vars */) = -1 ENOENT (No such file or directory)\n')
+    check_execs(tmp_path, "desktop", set(), floor=True)
+    (tmp_path / "desktop.10").write_text(
+        f'execve("{app}", ["{app}", "--type=zygote", "--no-sandbox"], 0x10 /* 2 vars */) = 0\n')
+    with pytest.raises(ValueError, match="without its sandbox"):
+        check_execs(tmp_path, "desktop", set(), floor=True)
+
+
 def test_no_trace_is_not_proof_no_engine_ran(tmp_path):
     with pytest.raises(ValueError, match="trace"):
         check_execs(tmp_path, "desktop", set(), floor=True)

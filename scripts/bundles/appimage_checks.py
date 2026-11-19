@@ -44,6 +44,8 @@ def check_execs(directory: Path, phase: str, required: set[Path], *, floor: bool
                         raise ValueError(f"{phase}: unresolved execveat in execution trace")
                     exe = str(Path(parent[1]) / exe)
                 observed = True
+                if '"--no-sandbox"' in rest.split("], ", 1)[0] and rest.rstrip().endswith(" = 0"):
+                    raise ValueError(f"{phase}: Chromium ran without its sandbox: {exe}")
                 if floor and (_GPU.search(exe) or (Path(exe).name == "llama-server" and not _ALLOWED.search(exe))):
                     raise ValueError(f"{phase}: incompatible or unidentified engine execution: {exe}")
                 if re.match(r'^\["[^"]*", "--version"\], ', rest) and rest.rstrip().endswith(" = 0"):
@@ -163,6 +165,8 @@ def wait_window(ready, timeout: float) -> None:
 
 
 def check_desktop(work: Path, image: Path) -> None:
+    if subprocess.run(["unshare", "-Ur", "true"], stderr=subprocess.DEVNULL, check=False, timeout=30).returncode:
+        raise ValueError("this container refuses the user namespace Chromium's sandbox needs")
     read_fd, write_fd = os.pipe()
     with os.fdopen(read_fd, "rb") as ready:
         with os.fdopen(write_fd, "wb") as writer:

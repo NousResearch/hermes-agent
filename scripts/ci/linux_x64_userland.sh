@@ -48,8 +48,13 @@ case "$phase" in
     for ubuntu in 22.04 24.04; do
       image=$X64_GPU_IMAGE
       start=()
-      if [[ $ubuntu == 22.04 ]]; then image=$X64_FLOOR_IMAGE; start=(xvfb-run -a); fi
-      docker run --rm --init --network none --cap-drop ALL --user "$(id -u):$(id -g)" --workdir /work \
+      policy=()
+      if [[ $ubuntu == 22.04 ]]; then
+        image=$X64_FLOOR_IMAGE; start=(xvfb-run -a)
+        # Docker's default seccomp refuses user namespaces, and AppRun then launches with --no-sandbox.
+        policy=(--security-opt "seccomp=$GITHUB_WORKSPACE/scripts/ci/linux_x64_userland.seccomp.json")
+      fi
+      docker run --rm --init --network none --cap-drop ALL "${policy[@]}" --user "$(id -u):$(id -g)" --workdir /work \
         --shm-size=512m --env HOME=/work/home --env HERMES_HOME=/work/home/.hermes --env XDG_RUNTIME_DIR=/work/runtime \
         --env UV_OFFLINE=1 --env HERMES_DISABLE_LAZY_INSTALLS=1 --env npm_config_offline=true \
         --volume "${images[0]}:/image.AppImage:ro" \

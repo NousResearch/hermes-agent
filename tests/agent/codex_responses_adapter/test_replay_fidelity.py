@@ -79,6 +79,20 @@ def test_exact_message_parts_replay_independently_of_display_text(roundtrip, par
                      "id": "msg_fixture", "content": [{"type": "output_text", "text": text} for text in parts]}]
 
 
+@pytest.mark.parametrize("parts", [[""], ["", ""]])
+def test_all_empty_message_item_is_not_replayed_before_tool_call(roundtrip, parts):
+    _, wire = roundtrip(Item(status="completed", output=[_reasoning("one"), _message(*parts), _call("call_a")]))
+    assert [item["type"] for item in wire] == ["reasoning", "function_call", "function_call_output"]
+
+
+def test_all_empty_message_item_without_call_uses_nonempty_reasoning_follower(roundtrip):
+    _, wire = roundtrip(Item(status="completed", output=[_reasoning("one"), _message("")]))
+    assert wire == [
+        {"type": "reasoning", "encrypted_content": "one", "summary": []},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": " "}]},
+    ]
+
+
 def test_checkpoint_kept_from_prior_partial_precedes_refreshed_items(agent, monkeypatch):
     from agent.codex_responses_adapter import _chat_messages_to_responses_input
 

@@ -1261,7 +1261,7 @@ class _OutputScan:
         self.saw_commentary_phase = self.saw_commentary_phase or is_commentary_phase
         self.saw_final_answer_phase = self.saw_final_answer_phase or normalized_phase in {"final_answer", "final"}
         parts = _responses_message_parts(item)
-        if not parts:
+        if not any(part["text"] for part in parts):
             return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.

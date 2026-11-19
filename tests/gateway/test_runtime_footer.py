@@ -4,15 +4,33 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 
+from copy import deepcopy
+
 import pytest
 
 from gateway.runtime_footer import (
+    FooteredReply,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
     format_runtime_footer,
     resolve_footer_config,
 )
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply — safe across the session event replay boundary
+# ---------------------------------------------------------------------------
+
+
+def test_footered_reply_survives_deepcopy_with_footer_metadata():
+    reply = FooteredReply("Finished", "gpt-5.6-sol · 42%")
+
+    copied = deepcopy({"response": reply})["response"]
+
+    assert copied == reply
+    assert isinstance(copied, FooteredReply)
+    assert copied.runtime_footer == reply.runtime_footer
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, SupportsIndex
 from urllib.parse import quote
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
@@ -133,11 +133,18 @@ class FooteredReply(str):
     """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
     rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
     runtime_footer: str
+    _body: str
 
     def __new__(cls, text: str, footer: str):
         instance = super().__new__(cls, f"{text}\n\n{footer}")
         instance.runtime_footer = footer
+        instance._body = text
         return instance
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> Any:
+        """Preserve the constructor arguments when replay frames deepcopy this reply."""
+        del protocol
+        return type(self), (self._body, self.runtime_footer)
 
 
 class _FooterCaption(str):

@@ -1131,13 +1131,22 @@ class LocalEnvironment(BaseEnvironment):
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Plus the plugins' session env names: each command gets its own session's values. Plus the
-        config-declared key holders: a key the snapshot captured before its declaration stays out."""
+        config-declared key holders: a key the snapshot captured before its declaration stays out. Plus
+        this session's client environment names, seen while bound and kept from then on: a listed
+        ``HERMES_`` pin (``client_env_passthrough``) is the client's per-session value for this backend's
+        commands only, so the first session's must not ride the shared snapshot into a later one's."""
+        from agent.session_client_env import bound_client_env
         from hermes_cli.plugins_session_env import session_env_names
+        bound = bound_client_env()
+        if bound:
+            self._client_env_names_seen.update(bound)
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
-        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(),
+                             *declared, *self._client_env_names_seen}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)
+        self._client_env_names_seen: set[str] = set()
         self._secret_handoff = SecretHandoff()
         self.init_session()
 

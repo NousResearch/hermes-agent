@@ -53,9 +53,11 @@ _VISIBILITY_FLAGS = {RowVisibility.REWOUND: (0, 0), RowVisibility.COMPACTION_ARC
 
 def _search_seed_message(store: SQLiteStore, session_id: str, role: str, content: Any, *, timestamp: float,
                          tool_name: Optional[str] = None, tool_calls: Sequence[Mapping[str, Any]] = (),
-                         display_kind: Optional[str] = None, visibility: RowVisibility = RowVisibility.ACTIVE) -> MessageId:
+                         display_kind: Optional[str] = None, visibility: RowVisibility = RowVisibility.ACTIVE,
+                         message_uid: Optional[str] = None) -> MessageId:
     """One transcript row appended through the messages verb, then given the stored ``active``/``compacted`` flags of ``visibility``."""
-    message = NewMessage(role, content, float(timestamp), tool_name=tool_name, tool_calls=tuple(tool_calls), display_kind=display_kind)
+    message = NewMessage(role, content, float(timestamp), tool_name=tool_name, tool_calls=tuple(tool_calls), display_kind=display_kind,
+                         message_uid=message_uid)
     row_id = store.messages.append(SessionId(session_id), message)
     if visibility is not RowVisibility.ACTIVE:
         _write(store, "UPDATE messages SET active = ?, compacted = ? WHERE id = ?", (*_VISIBILITY_FLAGS[visibility], row_id))

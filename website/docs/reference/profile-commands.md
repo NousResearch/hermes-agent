@@ -557,26 +557,19 @@ hermes -p work config edit
 ## `hermes completion`
 
 ```bash
-hermes completion <shell>
+hermes completion                              # interactive shell and setup-mode pickers
+hermes completion --shell bash --install        # no prompts
+hermes completion --shell zsh --manual          # instructions only; no writes
+hermes completion --shell fish --raw            # script only
 ```
 
-Generates shell completion scripts. Includes completions for profile names and profile subcommands.
+Sets up completion for commands, profile names, and profile subcommands. `--shell` accepts `bash`, `zsh`, or `fish`; `--install`, `--manual`, and `--raw` are mutually exclusive. An explicit shell and mode needs no terminal. Missing choices require both stdin and stdout to be terminals; otherwise the command fails with usage guidance.
 
-| Argument | Description |
-|----------|-------------|
-| `<shell>` | Shell to generate completions for: `bash`, `zsh`, or `fish`. |
+Installation saves a static per-user script and a small managed source block in `.bashrc` or `$ZDOTDIR/.zshrc` (default `~/.zshrc`). Zsh initializes `compinit` only if needed before sourcing. Fish uses `$XDG_CONFIG_HOME/fish/completions/hermes.fish` without changing `config.fish`. Bash/Zsh scripts respect `$XDG_DATA_HOME`; defaults and activation instructions are in the [CLI completion reference](./cli-commands.md#hermes-completion).
 
-**Examples:**
+The interactive installer previews destinations and changes before confirmation. Reruns are idempotent, preserve unrelated shell configuration and rc symlinks, and reject malformed managed blocks before writing. Start a new shell or use the printed activation instructions; rerun setup after Hermes updates to refresh static completions. Setup is per OS user, shared across Hermes profiles.
 
-```bash
-# Install completions
-hermes completion bash >> ~/.bashrc
-hermes completion zsh >> ~/.zshrc
-hermes completion fish > ~/.config/fish/completions/hermes.fish
-
-# Reload shell
-source ~/.bashrc
-```
+Existing `hermes completion bash|zsh|fish` invocations remain raw generation for redirection, pipes, and sourcing; they never prompt or write shell files. Positional shell plus an explicit mode is also supported; conflicting positional and `--shell` choices are rejected.
 
 After installation, tab completion works for:
 - `hermes profile <TAB>` — subcommands (list, use, create, etc.)

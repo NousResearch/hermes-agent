@@ -395,14 +395,15 @@ You cannot delete the default profile (`~/.hermes`). To remove everything, use `
 ## Tab completion
 
 ```bash
-# Bash
-eval "$(hermes completion bash)"
-
-# Zsh
-eval "$(hermes completion zsh)"
+hermes completion                         # choose shell, then install or manual instructions
+hermes completion --shell bash --install   # Bash, without prompts
+hermes completion --shell zsh --install    # Zsh, without prompts
+hermes completion --shell fish --install   # Fish, without prompts
 ```
 
-Add the line to your `~/.bashrc` or `~/.zshrc` for persistent completion. Completes profile names after `-p`, profile subcommands, and top-level commands.
+Automatic setup saves a static completion script, with a small managed source block for Bash/Zsh (initializing Zsh's completion system only when needed). Fish loads its completion file automatically. It respects `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, and `ZDOTDIR`, preserves unrelated shell configuration and rc symlinks, and does not duplicate initialization on reruns. Interactive setup previews changes before confirmation; cancellation and `--manual` write nothing. Explicit shell + mode works without a terminal.
+
+Start a new shell or follow the printed activation instructions. Rerun setup after updating Hermes to refresh static completions. Existing `hermes completion bash|zsh|fish` commands still print only a raw script for pipes/redirection; `--shell zsh --raw` is the explicit equivalent. See [completion setup](../reference/cli-commands.md#hermes-completion) for destinations and mode details. Completes profile names after `-p`, profile subcommands, and top-level commands.
 
 ## How it works
 

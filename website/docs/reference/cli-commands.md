@@ -110,7 +110,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes webapp` | Open the Desktop workspace in a browser, served by the gateway. |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
-| `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
+| `hermes completion` | Set up or print shell completions (bash/zsh/fish). |
 | `hermes --version` | Show version information. |
 | `hermes update` | Update to the latest stable release (or the selected channel) and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -2141,23 +2141,39 @@ hermes -p work chat -q "Hello from work profile"
 ## `hermes completion`
 
 ```bash
-hermes completion [bash|zsh|fish]
+hermes completion
+hermes completion --shell {bash,zsh,fish} {--install,--manual,--raw}
+hermes completion {bash,zsh,fish}  # legacy raw output
 ```
 
-Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
+With both stdin and stdout connected to a terminal, the bare command offers a Bash/Zsh/Fish picker, then automatic installation or manual instructions. Automatic setup shows every destination and the initialization block before asking for confirmation. Cancelling writes nothing.
 
-Examples:
+| Option | Description |
+|--------|-------------|
+| `--shell {bash,zsh,fish}` | Choose a shell explicitly (never guessed from `$SHELL`). |
+| `--install` | Install a static completion script and, for Bash/Zsh, a small managed initialization block. Fully explicit shell + mode runs without prompts, including in noninteractive sessions. |
+| `--manual` | Print safely quoted commands and initialization instructions without writing files. |
+| `--raw` | Output only the generated script to stdout, suitable for redirection or sourcing. Requires an explicit shell; diagnostics go to stderr. |
+
+The three modes are mutually exclusive. Positional `bash`, `zsh`, or `fish` still generates a raw script without prompts; a positional shell can also be combined with an explicit mode. If both positional and `--shell` are supplied, they must agree. `--shell` alone offers the mode menu only on a terminal. Missing choices in a pipe or redirected invocation fail with instructions instead of prompting.
 
 ```bash
-# Bash
-hermes completion bash >> ~/.bashrc
-
-# Zsh
-hermes completion zsh >> ~/.zshrc
-
-# Fish
-hermes completion fish > ~/.config/fish/completions/hermes.fish
+hermes completion --shell bash --install
+hermes completion --shell zsh --manual
+hermes completion --shell fish --raw > hermes.fish
 ```
+
+Automatic installation is per OS user, not per Hermes profile:
+
+| Shell | Static script | Startup configuration |
+|-------|---------------|-----------------------|
+| Bash | `$XDG_DATA_HOME/bash-completion/completions/hermes` (default `~/.local/share/bash-completion/completions/hermes`) | Managed source block in `~/.bashrc`; no bash-completion package required. |
+| Zsh | `$XDG_DATA_HOME/zsh/completions/_hermes` (default `~/.local/share/zsh/completions/_hermes`) | Managed block in `$ZDOTDIR/.zshrc` (default `~/.zshrc`); initializes `compinit` only when `compdef` is unavailable, then sources the script. |
+| Fish | `$XDG_CONFIG_HOME/fish/completions/hermes.fish` (default `~/.config/fish/completions/hermes.fish`) | Fish loads this file automatically; `config.fish` is untouched. |
+
+Set XDG paths and `ZDOTDIR` to absolute paths when overriding them. Rerunning installation refreshes the generated script and updates the same managed block without duplicating it, preserving unrelated shell configuration bytes and rc symlinks. Resolved symlink destinations are included in the plan. Malformed managed markers are rejected before any file is written; repair or remove the marked block and retry. The installer never evaluates scripts or starts a shell.
+
+Start a new shell after setup, or follow the printed activation instructions. Static completions do not run Hermes on every shell startup; rerun setup after updating Hermes to refresh available commands. Raw generation remains available for existing pipe/eval/source integrations.
 
 ## `hermes pm`
 

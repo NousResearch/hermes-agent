@@ -23,13 +23,16 @@ def _hint_command(result):
 
 @pytest.mark.parametrize(("name", "alphabet", "home_relative"), [
     ("it's a bundle.min.js", "abcdefghij", False),  # quote in the name
-    ("wide.txt", "界世漢字かなカナ한글", False),        # cut -c counts bytes, not characters
+    ("wide.txt", "界世漢字かなカナ한글😀", False),      # characters, not bytes
     ("home.min.js", "abcdefghij", True),             # a ~/ path the backend expands
+    ("keys.jsonl", "abcdefghij", False),             # a masked secret in the visible prefix
 ])
 def test_clipped_line_hint_command_returns_the_next_slice(tmp_path, monkeypatch, name, alphabet, home_relative):
     monkeypatch.setenv("HOME", str(tmp_path))
     width = get_max_line_length()
     line = "".join(alphabet[(i // 997) % len(alphabet)] for i in range(3 * width))
+    if name == "keys.jsonl":
+        line = 'token="ghp_' + "A" * 36 + '" ' + line
     target = tmp_path / name
     # line 1 ends in the marker text but is short: it must not be taken for a clamped line
     target.write_text("note... [truncated]\n" + line + "\nlast\n", encoding="utf-8")

@@ -124,47 +124,42 @@ def _clipped_line_hint(content: str, path: str) -> "str | None":
     """Where the rest of a clamped long line is, or None when no line was clamped.
 
     Without it the model only sees ``... [truncated]`` and re-reads the same page (offset pages by
-    LINE, so it never reaches past the clamp) or gives up on minified/JSONL files. The command reads
-    one character range of one line, so the model can walk a long line chunk by chunk. Inspired by
-    Muse Code 1.4.15 ("Read long text lines in full when they fit the output limit, with byte-range
+    LINE, so it never reaches past the clamp) or gives up on minified/JSONL files. Inspired by Muse
+    Code 1.4.15 ("Read long text lines in full when they fit the output limit, with byte-range
     guidance for larger lines").
 
-    A line counts as clamped only when exactly ``max_line_length`` characters precede the marker (a
-    source line that merely ends in the marker text does not). GNU ``cut -c`` counts bytes, which
-    equal characters only while the visible prefix is ASCII; otherwise the command slices decoded
-    characters with Python, decoding the way read_file does (UTF-8, BOM-tolerant, LF-delimited lines). *path* is
-    the path the backend read; a leading ``~/`` stays unquoted so the backend's shell expands it."""
+    *content* must be the text exactly as ``_add_line_numbers`` produced it (never redacted or
+    budget-trimmed): a clamped line is then exactly ``max_line_length`` characters plus the marker,
+    and nothing else has that shape. The one command form streams from that line (``tail -n +N``),
+    keeps at most ``8 * width`` bytes (enough for ``2 * width`` characters of 4-byte UTF-8; ``head``
+    closing the pipe stops ``tail``), and slices decoded characters of the first line, so it is right
+    for any text and stays bounded on a multi-GB single line. *path* is the path the backend read; a leading ``~/`` stays unquoted
+    so the backend's shell expands it."""
     from tools.tool_output_limits import get_max_line_length
     width = get_max_line_length()
-    clipped = [(int(n), prefix) for n, prefix in re.findall(
-        r'^(\d+)\|(.{' + str(width) + r'})\.\.\. \[truncated\]$', content or "", re.MULTILINE)]
+    clipped = [int(n) for n in re.findall(
+        r'^(\d+)\|.{' + str(width) + r'}\.\.\. \[truncated\]$', content or "", re.MULTILINE)]
     if not clipped:
         return None
-    shown = ", ".join(str(n) for n, _ in clipped[:5]) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
-    line, prefix = clipped[0]
+    shown = ", ".join(map(str, clipped[:5])) + (f" (+{len(clipped) - 5} more)" if len(clipped) > 5 else "")
     quoted = "~/" + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(path)
-    if prefix.isascii():
-        command = f"sed -n '{line}p' {quoted} | cut -c{width + 1}-{2 * width}"
-    else:
-        script = (f"import sys; print(open(sys.argv[1], encoding='utf-8-sig', errors='replace', newline='')"
-                  f".read().split(chr(10))[{line - 1}][{width}:{2 * width}])")
-        command = f'python3 -c "{script}" {quoted}'
+    decode = (f"import sys; print(sys.stdin.buffer.read().decode('utf-8-sig', 'replace')"
+              f".split(chr(10), 1)[0][{width}:{2 * width}])")
+    command = f"tail -n +{clipped[0]} {quoted} | head -c {8 * width} | python3 -c \"{decode}\""
     return (f"Line(s) {shown} were cut at {width:,} characters. read_file pages by line, so offset cannot "
             f"reach the rest; read the next part of a line with the terminal: {command}")
 
 
-def _add_read_size_hint(result_dict: dict, content: str, path: str, file_size: int, limit: int) -> None:
+def _add_read_size_hint(result_dict: dict, clip_hint: "str | None", file_size: int, limit: int) -> None:
     """At most one ``_hint`` about size (an earlier hint, e.g. merge conflicts, wins): a wide page of a
-    large file, else a line clamped at ``max_line_length``. A transcoded (UTF-16) read gets no slice
-    command: its bytes on disk are not the text the model saw."""
+    large file, else *clip_hint* (``_clipped_line_hint`` of the unredacted page)."""
     if (file_size and file_size > _LARGE_FILE_HINT_BYTES
             and limit > 200 and result_dict.get("truncated")):
         result_dict.setdefault("_hint", (
             f"This file is large ({file_size:,} bytes). "
             "Consider reading only the section you need with offset and limit "
             "to keep context usage efficient."))
-    elif (result_dict.get("truncated_lines") and not str(result_dict.get("hint") or "").startswith("Transcoded")
-            and (clip_hint := _clipped_line_hint(content, path))):
+    elif clip_hint:
         result_dict.setdefault("_hint", clip_hint)
 
 
@@ -763,6 +758,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
 
+        # Clamp facts come from the clamp's own output: budget trim and redaction both change it. A
+        # transcoded (UTF-16) read gets none: its bytes on disk are not the text the model saw.
+        clip_hint = (_clipped_line_hint(result.content, read_path) if result_dict.get("truncated_lines")
+                     and not str(result_dict.get("hint") or "").startswith("Transcoded") else None)
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully
         # with a next_offset instead of rejecting.
@@ -788,7 +787,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                     f"{conflicts} unresolved git merge-conflict block(s) (<<<<<<< / ======= / >>>>>>>) in this "
                     "range. Resolve them (keep one side or combine, delete the markers) before editing around them.")
 
-        _add_read_size_hint(result_dict, result.content, read_path, file_size, limit)
+        _add_read_size_hint(result_dict, clip_hint, file_size, limit)
 
         total_lines = result_dict.get("total_lines")
         if result_dict.get("truncated_by") == "bytes":

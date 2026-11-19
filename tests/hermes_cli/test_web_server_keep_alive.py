@@ -16,6 +16,7 @@ import hermes_cli.web_server as ws_mod
 from hermes_cli.web_server_lifecycle import build_listener_server
 
 _POLL_GAP_S = 6.5
+_PROXY_IDLE_TIMEOUT_S = 90
 
 
 async def _ok_app(scope, receive, send):
@@ -53,14 +54,20 @@ def _get(conn: socket.socket, path: str) -> bytes:
     length = next(int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")
                   if line.lower().startswith(b"content-length:"))
     while len(body) < length:
-        body += conn.recv(65536)
+        chunk = conn.recv(65536)
+        if not chunk:
+            return b""
+        body += chunk
     return head.split(b"\r\n", 1)[0]
 
 
 @pytest.mark.parametrize("build", [_gateway_listener, _dashboard_listener], ids=["gateway", "dashboard"])
 def test_idle_connection_outlives_a_poll_gap(monkeypatch, build):
     port = _free_port()
-    _config, server = build(monkeypatch, port)
+    config, server = build(monkeypatch, port)
+    # The proxy must close an idle connection first, or it reuses one the server is closing. The
+    # longest upstream idle timeout in front of hosted agents is the router's 90 s (k8s path).
+    assert config.timeout_keep_alive > _PROXY_IDLE_TIMEOUT_S
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:

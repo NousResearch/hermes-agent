@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _Agent:
@@ -20,6 +22,7 @@ class _Agent:
         self.model, self.provider, self.base_url = "m", "openrouter", "https://openrouter.ai/api/v1"
         self.api_key, self.api_mode = "k", "chat_completions"
         self._session_db = db
+        self.persistence = db
         self._session_db_created = True
 
 
@@ -32,17 +35,16 @@ def test_first_turn_titles_the_session_and_only_interactive_calls_the_model(ones
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
     else:
         monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session(session_id="sess-1", source="oneshot" if oneshot else "cli")
-    with patch("agent.title_generator.generate_title", return_value="Login fix") as model_title:
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    db = storage_handle(tmp_path)
+    seed_session(db, "sess-1", "oneshot" if oneshot else "cli")
+    with patch("agent.title_generator.auto_title_session") as model_upgrade:
         turn_context._maybe_title_session_at_turn_start(_Agent(db), [{"role": "user", "content": "Fix the login"}])
         wait_for_title_upgrades()
 
-    assert model_title.called is not oneshot
-    if oneshot:
-        assert (db.get_session_title("sess-1"), db.get_session_title_source("sess-1")) == ("Fix the login", "derived")
-    else:
-        assert db.get_session_title("sess-1") == "Login fix"
+    assert model_upgrade.called is not oneshot
+    assert db.sessions.get_title("sess-1") == "Fix the login"
+    assert session_row(db, "sess-1")["title_source"] == "derived"
 
 
 def test_repeated_oneshot_prompts_keep_distinct_derived_titles_without_model_calls(tmp_path, monkeypatch):
@@ -50,20 +52,16 @@ def test_repeated_oneshot_prompts_keep_distinct_derived_titles_without_model_cal
 
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    db = SessionDB(tmp_path / "state.db")
-    try:
-        with patch("agent.title_generator.generate_title") as model_title:
-            for session_id in ("sess-1", "sess-2"):
-                db.create_session(session_id=session_id, source="oneshot")
-                turn_context._maybe_title_session_at_turn_start(
-                    _Agent(db, session_id=session_id),
-                    [{"role": "user", "content": "Check the build status"}],
-                )
-            model_title.assert_not_called()
-        assert [(db.get_session_title(s), db.get_session_title_source(s))
-                for s in ("sess-1", "sess-2")] == [
-                    ("Check the build status", "derived"),
-                    ("Check the build status #2", "derived"),
-                ]
-    finally:
-        db.close()
+    db = storage_handle(tmp_path)
+    with patch("agent.title_generator.auto_title_session") as model_upgrade:
+        for session_id in ("sess-1", "sess-2"):
+            seed_session(db, session_id, "oneshot")
+            turn_context._maybe_title_session_at_turn_start(
+                _Agent(db, session_id=session_id),
+                [{"role": "user", "content": "Check the build status"}],
+            )
+        model_upgrade.assert_not_called()
+    assert [(db.sessions.get_title(s), session_row(db, s)["title_source"]) for s in ("sess-1", "sess-2")] == [
+        ("Check the build status", "derived"),
+        ("Check the build status #2", "derived"),
+    ]

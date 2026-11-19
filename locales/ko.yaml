@@ -287,6 +287,7 @@ gateway:
     level_disabled: "none (비활성화됨)"
     scope_session: "세션 재정의"
     scope_global: "전역 설정"
+    scope_channel: "채널 설정"
     status: "🧠 **추론 설정**\n\n**노력:** `{level}`\n**범위:** {scope}\n**표시:** {display}\n\n_사용법:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "켜짐 ✓"
     display_off: "꺼짐"

@@ -287,6 +287,7 @@ gateway:
     level_disabled: "none（已禁用）"
     scope_session: "会话覆盖"
     scope_global: "全局配置"
+    scope_channel: "频道配置"
     status: "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "开 ✓"
     display_off: "关"

@@ -287,6 +287,7 @@ gateway:
     level_disabled: "none (отключено)"
     scope_session: "переопределение сеанса"
     scope_global: "глобальная конфигурация"
+    scope_channel: "конфигурация канала"
     status: "🧠 **Настройки рассуждений**\n\n**Усилия:** `{level}`\n**Область:** {scope}\n**Отображение:** {display}\n\n_Использование:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on: "включено ✓"
     display_off: "выключено"

@@ -398,11 +398,15 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class ChannelOverride:
-    """Per-channel reply policy/model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel reply policy/model/provider/system_prompt/reasoning override
+    (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
     allow_silence: Optional[bool] = None
+    # Raw ``reasoning_effort`` value (a level string, ``none``/YAML false, or the dict form), parsed
+    # by ``hermes_constants.parse_reasoning_effort`` at resolution time like ``agent.reasoning_effort``.
+    reasoning_effort: Optional[Any] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}

@@ -23,7 +23,7 @@ def _png(path, size=(400, 200), color=(200, 30, 60, 255)):
 
 
 def _clear_graphics_env(monkeypatch):
-    for key in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_SESSION_ID", "WEZTERM_PANE", "TERM", "KONSOLE_VERSION"):
+    for key in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_SESSION_ID", "WEZTERM_PANE", "TERM", "KONSOLE_VERSION", "ZELLIJ"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -55,9 +55,10 @@ def test_kitty_placeholders_on_kitty_and_ghostty(monkeypatch):
     assert terminal_image.supports_kitty_placeholders() is True
 
 
-@pytest.mark.parametrize("multiplexer", ["TMUX", "STY"])
+@pytest.mark.parametrize("multiplexer", ["TMUX", "STY", "ZELLIJ"])
 def test_auto_stays_on_half_blocks_inside_a_multiplexer(monkeypatch, multiplexer):
-    # tmux and GNU screen inherit KITTY_WINDOW_ID from the outer kitty yet swallow the transmit.
+    # tmux, GNU screen and Zellij inherit KITTY_WINDOW_ID from the outer kitty, yet paint neither
+    # kitty placeholders nor iTerm2 images.
     _clear_graphics_env(monkeypatch)
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("STY", raising=False)
@@ -66,6 +67,32 @@ def test_auto_stays_on_half_blocks_inside_a_multiplexer(monkeypatch, multiplexer
     monkeypatch.setenv(multiplexer, "1")
     assert resolve_inline_mode("auto") == "unicode"
     assert resolve_inline_mode("kitty") == "kitty"
+
+
+_HOST_TERMINALS = {
+    "kitty": {"TERM": "xterm-kitty", "KITTY_WINDOW_ID": "1"},
+    "ghostty": {"TERM": "xterm-ghostty", "TERM_PROGRAM": "ghostty"},
+    "wezterm": {"TERM": "xterm-256color", "TERM_PROGRAM": "WezTerm", "WEZTERM_PANE": "0"},
+    "iterm2": {"TERM": "xterm-256color", "TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t0p0"},
+    "konsole": {"TERM": "xterm-256color", "KONSOLE_VERSION": "251203"},
+}
+
+
+@pytest.mark.parametrize("host", sorted(_HOST_TERMINALS))
+def test_zellij_auto_uses_half_blocks_whatever_terminal_hosts_it(monkeypatch, host):
+    # Zellij forwards neither kitty placeholders nor iTerm2 OSC 1337 images (#157605); it answers
+    # a U=1 transmit with "ENOTSUPPORTED: unicode placeholders are not supported".
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("STY", raising=False)
+    for key, value in _HOST_TERMINALS[host].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ZELLIJ", "0")
+    assert terminal_image.supports_kitty_placeholders() is False
+    assert resolve_inline_mode("auto", overlays=True) == "unicode"  # classic CLI
+    assert resolve_inline_mode("auto") == "unicode"  # TUI
+    assert resolve_inline_mode("kitty", overlays=True) == "kitty"
+    assert resolve_inline_mode("iterm", overlays=True) == "iterm"
 
 
 def test_wezterm_is_not_placeholder_capable(monkeypatch):

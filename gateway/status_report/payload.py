@@ -9,8 +9,8 @@ import re
 from typing import Any, Literal, Mapping
 
 from gateway.status import get_process_start_time, read_runtime_status
+from gateway.status_public import public_exit_reason, public_platform_entry
 from hermes_cli.auth import get_nous_session_validity
-from hermes_cli.web_routers.status_public import redact_status_for_unverified
 
 logger = logging.getLogger(__name__)
 
@@ -58,22 +58,17 @@ def allowlisted_status(source: Mapping[str, Any]) -> dict[str, Any]:
     ``/api/status`` caller gets. Whatever else *source* carries (install id, profile names, error
     text, counts, paths) is not copied, and a value of the wrong shape is dropped, never passed on."""
     state, platforms = source.get("gateway_state"), source.get("gateway_platforms")
-    public: dict[str, Any] = {
-        "gateway_state": state if isinstance(state, str) and _LIFECYCLE_CODE_RE.fullmatch(state) else None,
-        "gateway_exit_reason": source.get("gateway_exit_reason"),
-        "gateway_platforms": {
-            key: value for key, value in platforms.items()
-            if isinstance(key, str) and _PLATFORM_KEY_RE.fullmatch(key) and isinstance(value, dict)
-        } if isinstance(platforms, dict) else {},
-    }
-    redact_status_for_unverified(public)
+    state = state if isinstance(state, str) and _LIFECYCLE_CODE_RE.fullmatch(state) else None
+    entries = {
+        key: public_platform_entry(value) for key, value in platforms.items()
+        if isinstance(key, str) and _PLATFORM_KEY_RE.fullmatch(key) and isinstance(value, dict)
+    } if isinstance(platforms, dict) else {}
     status: dict[str, Any] = {
         "gateway_running": source.get("gateway_running") is True,
-        "gateway_state": public["gateway_state"],
-        "gateway_exit_reason": public["gateway_exit_reason"],
+        "gateway_state": state,
+        "gateway_exit_reason": public_exit_reason(source.get("gateway_exit_reason"), state=state),
         "gateway_platforms": {
-            key: {name: entry[name] for name in _PLATFORM_FIELDS if name in entry}
-            for key, entry in public["gateway_platforms"].items()
+            key: {name: entry[name] for name in _PLATFORM_FIELDS if name in entry} for key, entry in entries.items()
         },
     }
     if source.get("nous_session_valid") in _SESSION_VALIDITY:

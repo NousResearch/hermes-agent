@@ -318,3 +318,78 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+
+class TestMkdirBoundaryNeverRecreatesNamedHome:
+    """``mkdir_under_hermes_home`` checks the home is live, then creates. A delete or rename landing in
+    between must make the write fail, never let the boundary re-create the home itself: a config save
+    then left a live duplicate of a renamed profile under its old name (no tombstone on a plain
+    rename). Only the directories strictly below a named home are ever created."""
+
+    @staticmethod
+    def _after_liveness_check(monkeypatch, action):
+        """Run *action* (a real delete/rename) right after the boundary's real liveness check passes."""
+        import hermes_constants
+
+        real = hermes_constants.assert_named_profile_home_live
+        fired = []
+
+        def check_then_act(path):
+            real(path)
+            if not fired:
+                fired.append(path)
+                action()
+
+        monkeypatch.setattr(hermes_constants, "assert_named_profile_home_live", check_then_act)
+        return fired
+
+    def test_config_save_after_a_rename_leaves_no_duplicate_under_the_old_name(self, profile_env, monkeypatch):
+        from hermes_cli.profiles import rename_profile
+        from hermes_constants import named_profile_is_live
+        from utils.files import atomic_roundtrip_yaml_save
+
+        old = create_profile("before", no_alias=True, no_skills=True)
+        for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service", "_stop_bot_desktop",
+                     "_maybe_register_gateway_service"):
+            monkeypatch.setattr(f"hermes_cli.profiles.{name}", lambda *_a, **_k: None)
+        monkeypatch.setattr("hermes_cli.profiles.check_alias_collision", lambda _name: "skip")
+        fired = self._after_liveness_check(monkeypatch, lambda: rename_profile("before", "after"))
+
+        with pytest.raises(FileNotFoundError):
+            atomic_roundtrip_yaml_save(old / "config.yaml", {"model": {"default": "late-writer"}})
+
+        assert fired and not old.exists() and not named_profile_is_live(old)
+        assert _named_homes(profile_env) == ["after"]
+
+    def test_nested_write_after_a_delete_does_not_recreate_the_home(self, profile_env, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        fired = self._after_liveness_check(monkeypatch, lambda: _delete("worker"))
+
+        with pytest.raises(FileNotFoundError):
+            mkdir_under_hermes_home(profile_dir / "cache" / "deep")
+
+        assert fired and not profile_dir.exists()
+        assert "worker" not in _named_homes(profile_env)
+
+    def test_live_named_home_creates_only_below_it(self, profile_env, monkeypatch):
+        from hermes_constants import mkdir_under_hermes_home
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        before = sorted(p.name for p in profile_dir.iterdir())
+        assert mkdir_under_hermes_home(profile_dir) == profile_dir
+        assert sorted(p.name for p in profile_dir.iterdir()) == before
+
+        deep = profile_dir / "a" / "b" / "c"
+        assert mkdir_under_hermes_home(deep) == deep and deep.is_dir()
+
+        monkeypatch.chdir(profile_env / ".hermes")
+        relative = Path("profiles") / "worker" / "rel" / "d"
+        assert mkdir_under_hermes_home(relative) == relative and (profile_dir / "rel" / "d").is_dir()
+
+    def test_default_home_still_creates_missing_parents(self, profile_env):
+        from hermes_constants import mkdir_under_hermes_home
+
+        nested = profile_env / ".hermes" / "x" / "y"
+        assert mkdir_under_hermes_home(nested) == nested and nested.is_dir()

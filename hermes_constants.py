@@ -471,14 +471,27 @@ def assert_named_profile_home_live(path: str | Path) -> None:
 
 
 def mkdir_under_hermes_home(path: str | Path) -> Path:
-    """Create *path*, but never materialize a deleted/missing named profile."""
+    """Create *path*, but never materialize a deleted/missing named profile.
+
+    Under a named profile home only the directories strictly below the home are created, one at a
+    time and never the home itself: a delete or rename that removes the home after the liveness
+    check makes the first ``mkdir`` fail (``FileNotFoundError``) instead of ``parents=True``
+    re-creating the home for the caller's write (a config save then left a live duplicate of a
+    renamed profile under its old name). The default home and custom homes keep ``parents=True``.
+    """
     target = Path(path)
     assert_named_profile_home_live(target)
     # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
     # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
     # elevated grant (tests/pm/test_bootstrap_import_closure.py).
     from hermes_dir_acl import make_user_dir
-    make_user_dir(target, parents=True, exist_ok=True)
+    home = named_profile_home(target)
+    if home is None:
+        make_user_dir(target, parents=True, exist_ok=True)
+        return target
+    below = target.relative_to(home).parts
+    for depth in range(1, len(below) + 1):
+        make_user_dir(home.joinpath(*below[:depth]), exist_ok=True)
     return target
 
 

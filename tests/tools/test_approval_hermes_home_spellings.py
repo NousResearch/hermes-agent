@@ -180,9 +180,8 @@ class TestEscapedSpaceFailsClosed:
     ])
     def test_an_expansion_after_the_path_does_not_hide_it(
             self, monkeypatch, suffix, home, hermes_home, user_home, template):
-        # Bash expands `${u:+\ }` (u unset) to nothing and `{,\ }` to the name plus a spaced
-        # sibling, so each command still writes the home file: the `\ ` sits inside the expansion,
-        # it does not continue the name.
+        # An unquoted expansion can still name the original file. Bash leaves braces literal
+        # inside double quotes; those rows check that the detector errs on the side of prompting.
         monkeypatch.setenv("HOME", home)
         monkeypatch.setenv("HERMES_HOME", hermes_home)
         hermes = user_home + hermes_home[len(home):].replace(" ", "\\ ")
@@ -209,8 +208,8 @@ class TestEscapedSpaceFailsClosed:
     ])
     def test_a_stray_quote_earlier_does_not_hide_an_unquoted_escape(
             self, monkeypatch, prefix, home, hermes_home, path):
-        # Each command runs in bash and rewrites HERMES_HOME/config.yaml: the quote before it is
-        # inert (comment, heredoc body, backtick body, expansion), the path after it is unquoted.
+        # Earlier quote-like text must not prevent the detector from folding the later path,
+        # even when the prefix itself would not parse in Bash.
         monkeypatch.setenv("HOME", home)
         monkeypatch.setenv("HERMES_HOME", hermes_home)
         assert _is_dangerous(prefix + "sed -i s/a/b/ " + path) is True

@@ -38,8 +38,10 @@ def _fold_matches(pattern, command: str, replace) -> str:
       Quoted, the backslash is a literal name character and the name is no closer to the home, so
       this rule needs no quote state.
     - in a child name (``My\\ Documents``, ``.hermes/\\ x``, ``config.yaml${u:+\\ }``, ``config.yaml{,\\ }``):
-      the home is a real prefix. The match folds without its trailing backslash, so the rest of the word survives
-      after ``~/``, and an expansion that bash turns back into ``config.yaml`` still meets the patterns.
+      the home is a real prefix. Fold it and preserve the child spelling for the detector, so the rest of
+      the word survives after ``~/`` and an expansion that bash turns back into ``config.yaml`` still meets
+      the patterns. This can also prompt for a literal backup name such as ``.bashrc\\ backup``, just as
+      the home-relative spelling already does.
 
     An escaped space INSIDE the home always folds, quoted or not. Telling the two apart
     takes a full shell parse (a quote in a comment, heredoc body or backtick flips every lexical quote

@@ -5,6 +5,7 @@ must then pass the gateway authorization inbound messages get, and is refused wh
 denies or was never registered. A configured Feishu allowlist still decides on its own.
 """
 
+import asyncio
 import importlib.util
 import sys
 from types import SimpleNamespace
@@ -329,7 +330,9 @@ class TestCachedChatTypeResolution:
     @pytest.mark.parametrize(("paired", "admitted"), [(False, False), (True, True)])
     def test_cache_miss_real_gateway_check_admits_only_paired(self, paired, admitted, tmp_path, monkeypatch):
         """Uncached chat through the runner's real check + PairingStore: unpaired is refused,
-        a paired operator is still admitted."""
+        a paired operator is still admitted. Pairing recorded the open_id while the click presents
+        a tenant user_id too, so both the click gate and the loop-side recheck must try every id
+        form before the approval settles."""
         from gateway.config import GatewayConfig, Platform
         from gateway.pairing import PairingStore
         from gateway.run import GatewayRunner
@@ -349,15 +352,23 @@ class TestCachedChatTypeResolution:
         runner.pairing_store, runner.pairing_stores = store, {}
         adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.FEISHU))
 
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
-            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
+        with patch("asyncio.run_coroutine_threadsafe") as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester", user_id="u_tenant"))
 
         assert (response.card is not None) is admitted
         assert submit.call_count == int(admitted)
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as settle:
+            if admitted:
+                asyncio.run(submit.call_args.args[0])
+                settle.assert_called_once_with("sess-1", "once", request_id="req-1")
+            else:
+                settle.assert_not_called()
+        assert (1 in adapter._approval_state) is not admitted
 
-    def test_cached_group_mode_stays_group(self):
+    @pytest.mark.parametrize("info", [{"raw_type": "public", "raw_mode": "group"}, {"raw_type": "private"}])
+    def test_cached_group_or_missing_mode_stays_group(self, info):
         adapter = _make_adapter()
-        adapter._chat_info_cache["oc_group"] = {"raw_type": "public", "raw_mode": "group"}
+        adapter._chat_info_cache["oc_group"] = info
         check = _gateway_check({"ou_requester"})
         adapter.set_authorization_check(check)
 

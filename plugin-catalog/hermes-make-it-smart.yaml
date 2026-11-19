@@ -21,7 +21,7 @@ description: >-
   after a timestamped backup, and revertible in one click.
 maintainer: tesla963
 tier: community
-category: productivity
+category: general
 docs_url: https://github.com/tesla963/hermes-make-it-smart#readme
 version: "0.32.0"
 platforms: []

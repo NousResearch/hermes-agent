@@ -359,13 +359,26 @@ function PreviewDiffRows({
                   PREVIEW_DIFF_LINE_BASE,
                   DIFF_KIND_TINT[line.kind],
                   interactive && 'border-l-2',
-                  clickable && 'cursor-pointer hover:bg-(--ui-control-hover-background)',
+                  clickable &&
+                    'cursor-pointer hover:bg-(--ui-control-hover-background) focus-visible:ring-1 focus-visible:ring-(--ui-accent) focus-visible:outline-hidden focus-visible:ring-inset',
                   lineKey && interactive?.selectedKey === lineKey && 'ring-1 ring-(--ui-accent) ring-inset',
                   commented && 'shadow-[inset_0.375rem_0_0_var(--ui-accent)]'
                 )}
                 data-review-line={interactive ? (lineKey ?? undefined) : undefined}
                 key={`${index}-${line.text}`}
                 onClick={clickable ? () => interactive?.onLineClick(line) : undefined}
+                onKeyDown={
+                  clickable
+                    ? event => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          interactive?.onLineClick(line)
+                        }
+                      }
+                    : undefined
+                }
+                role={clickable ? 'button' : undefined}
+                tabIndex={clickable ? 0 : undefined}
               >
                 {rowTokens.length > 0
                   ? rowTokens.map((token, tokenIndex) => (

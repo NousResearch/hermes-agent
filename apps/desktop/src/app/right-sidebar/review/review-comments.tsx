@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
-import { requestComposerFocus, requestComposerInsert, requestComposerSubmit } from '@/app/chat/composer/focus'
+import { requestComposerFocus, requestComposerInsertAcked, requestComposerSubmit } from '@/app/chat/composer/focus'
 import { type DiffLine, diffLineKey } from '@/components/chat/diff-lines'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -75,6 +75,14 @@ export function ReviewComments() {
   const scopeTarget = useStore($reviewScopeTarget)
   const [body, setBody] = useState('')
 
+  // A cleared draft (sent, discarded, or the pane moved to another checkout)
+  // takes its half-typed text with it.
+  useEffect(() => {
+    if (!draft) {
+      setBody('')
+    }
+  }, [draft])
+
   if (!draft && comments.length === 0) {
     return null
   }
@@ -104,19 +112,27 @@ export function ReviewComments() {
 
   // Same prompt, dropped into the owning chat's draft instead of sent, so the
   // user can add context before the agent sees it.
-  const editInComposer = () => {
+  const editInComposer = async () => {
     if (comments.length === 0) {
       return
     }
 
-    requestComposerInsert(formatReviewCommentsPrompt(comments), { mode: 'block', target: scopeTarget })
+    // Keep the notes unless a composer actually took the prompt.
+    if (
+      !(await requestComposerInsertAcked(formatReviewCommentsPrompt(comments), { mode: 'block', target: scopeTarget }))
+    ) {
+      notifyError(new Error(c.agentShipUnavailable), c.editCommentsInComposer)
+
+      return
+    }
+
     requestComposerFocus(scopeTarget)
     clearReviewComments()
   }
 
   return (
     <div
-      className="flex shrink-0 flex-col gap-1.5 border-t border-(--ui-stroke-secondary) p-2"
+      className="flex min-h-0 shrink flex-col gap-1.5 overflow-y-auto border-t border-(--ui-stroke-secondary) p-2"
       data-suppress-pane-reveal-side=""
     >
       {draft && (
@@ -218,7 +234,7 @@ export function ReviewComments() {
               <Button
                 aria-label={c.editCommentsInComposer}
                 className="size-6 shrink-0"
-                onClick={editInComposer}
+                onClick={() => void editInComposer()}
                 size="icon-xs"
                 variant="ghost"
               >

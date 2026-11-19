@@ -756,7 +756,16 @@ describe('review line comments', () => {
     addReviewComment({ body: 'keep', kind: 'add', line: 1, path: 'a.ts', side: 'new', snippet: 'x' })
     revealReview('/repo-a', 'tile:a')
     expect($reviewComments.get()).toHaveLength(1)
+    startReviewComment({ kind: 'add', line: 2, path: 'a.ts', side: 'new', snippet: 'y' })
     revealReview('/repo-b', 'tile:b')
+    expect($reviewComments.get()).toEqual([])
+    expect($reviewCommentDraft.get()).toBeNull()
+
+    // Same when the main chat's own checkout moves under an unpinned pane.
+    closeReview()
+    openReview()
+    addReviewComment({ body: 'main', kind: 'add', line: 1, path: 'a.ts', side: 'new', snippet: 'x' })
+    $currentCwd.set('/repo-c')
     expect($reviewComments.get()).toEqual([])
   })
 

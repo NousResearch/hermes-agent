@@ -104,6 +104,12 @@ describe('FileDiffPanel interactive lines (review comments)', () => {
 
     removed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(onLineClick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'remove', oldNo: 2, text: 'const b = 2' }))
+
+    // Keyboard reach: rows are focusable buttons that start a comment on Enter.
+    expect(added?.getAttribute('tabindex')).toBe('0')
+    onLineClick.mockClear()
+    added?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
+    expect(onLineClick).toHaveBeenCalledWith(expect.objectContaining({ newNo: 2 }))
   })
 
   it('leaves rows inert without interactiveLines', () => {

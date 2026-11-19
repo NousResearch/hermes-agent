@@ -166,10 +166,14 @@ export function removeReviewComment(id: string): void {
   $reviewComments.set($reviewComments.get().filter(comment => comment.id !== id))
 }
 
+/** Drop every pending comment AND the open draft: both are anchored to the
+ *  checkout they were written against. */
 export function clearReviewComments(): void {
   if ($reviewComments.get().length > 0) {
     $reviewComments.set([])
   }
+
+  $reviewCommentDraft.set(null)
 }
 
 /** The prompt handed to the agent: every comment with its file/line anchor
@@ -836,6 +840,9 @@ $sessionStates.subscribe(states => {
 // straight to its loading skeleton instead of blipping the previous repo's
 // diff into the new one.
 function onReviewRepoMoved(): void {
+  // Comments quote file:line of the checkout they were written on.
+  clearReviewComments()
+
   if ($reviewOpen.get()) {
     clearReviewSelection()
     $reviewFiles.set([])

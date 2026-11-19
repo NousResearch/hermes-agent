@@ -139,21 +139,15 @@
     },
     {
       "source": "plugins/index.md § platform plugins: read session identity through the task-local context",
-      "entries": [
-        "gateway.session_context:get_session_env"
-      ]
+      "entries": ["gateway.session_context:get_session_env"]
     },
     {
       "source": "plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave)",
-      "entries": [
-        "agent.redact:redact_sensitive_text"
-      ]
+      "entries": ["agent.redact:redact_sensitive_text"]
     },
     {
       "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session",
-      "entries": [
-        "hermes_cli.plugin_session:session_client"
-      ]
+      "entries": ["hermes_cli.plugin_session:session_client"]
     },
     {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
@@ -167,10 +161,19 @@
       ]
     },
     {
-      "source": "plugins/index.md § Send a credentialed HTTP request without leaking it on redirect",
+      "source": "dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses",
       "entries": [
-        "hermes_cli.urllib_security:open_credentialed_url"
+        "hermes_cli.web_models:MCPEnabledToggle",
+        "hermes_cli.web_models:MCPServerCreate",
+        "hermes_cli.web_routers.mcp:add_mcp_server",
+        "hermes_cli.web_routers.mcp:list_mcp_servers",
+        "hermes_cli.web_routers.mcp:remove_mcp_server",
+        "hermes_cli.web_routers.mcp:set_mcp_server_enabled"
       ]
+    },
+    {
+      "source": "plugins/index.md § Send a credentialed HTTP request without leaking it on redirect",
+      "entries": ["hermes_cli.urllib_security:open_credentialed_url"]
     }
   ]
 }

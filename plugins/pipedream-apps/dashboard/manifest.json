@@ -1,0 +1,11 @@
+{
+  "name": "pipedream-apps",
+  "label": "Pipedream Apps",
+  "description": "Pipedream Connect backend for the Desktop Apps tab: app catalog, Connect tokens and connected accounts.",
+  "icon": "Plug",
+  "version": "1.0.0",
+  "tab": {
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

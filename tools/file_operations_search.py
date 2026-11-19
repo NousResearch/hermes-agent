@@ -471,7 +471,9 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
         skipped_warning = f"{error_warning} {skipped_warning}" if skipped_warning else error_warning
     if skipped_warning:
         warning = skipped_warning if not warning else f"{skipped_warning} {warning}"
-    lines = [ln for ln in payload.strip().split('\n') if ln]
+    # A files_only row is a whole file name ("report.txt " is not "report.txt"): never trim it.
+    rows = payload if output_mode == "files_only" else payload.strip()
+    lines = [ln for ln in rows.split('\n') if ln]
     # The pipeline fetches one row past the page, so a longer list means more exist.
     if output_mode == "files_only":
         return SearchResult(

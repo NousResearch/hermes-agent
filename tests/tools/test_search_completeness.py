@@ -156,6 +156,25 @@ def test_a_partial_search_still_lists_a_readable_filename_with_a_space(proj, mon
 
 
 @pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("lane", ["rg-native", "rg-shell", "grep"])
+def test_a_filename_ending_in_a_space_reads_back_the_file_that_matched(proj, monkeypatch, lane):
+    """A returned path is fed straight to read_file: trimming "report.txt " names its neighbour."""
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(proj)), cwd=str(proj))
+    if not ops._has_command("rg" if lane.startswith("rg") else "grep"):
+        pytest.skip("search engine not installed")
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1" if lane == "rg-native" else "0")
+    if lane == "grep":
+        real = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real(cmd))
+    (proj / "report.txt ").write_text("needle\n")
+    (proj / "report.txt").write_text("other\n")
+    r = ops.search("needle", path=".", output_mode="files_only")
+    assert r.error is None and len(r.files) == 1
+    content = ops.read_file(r.files[0]).content
+    assert "needle" in content and "other" not in content
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_a_search_that_skipped_unreadable_paths_claims_nothing(proj):
     if os.geteuid() == 0:
         pytest.skip("root reads mode-000 directories")

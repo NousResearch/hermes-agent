@@ -43,15 +43,16 @@ class _Entry:
         self.name, self.repo, self.sha, self.subdir = "demo", str(repo), sha, ""
 
 
-# The plugin imports one core name plainly, one through a try whose fallback is the OLD name, and one
-# public name; hermes_state_wal is a real Hermes top-level, so the parser counts it as core.
+# One core name imported plainly, and one pair of names behind a try whose fallback is the OLD module; the
+# public MemoryProvider import is a plain one too. hermes_state_wal is a real Hermes top-level, so the
+# parser counts it as core.
 PLUGIN = """\
 from agent.memory_provider import MemoryProvider
 from tools.registry import registry_helper
 try:
-    from sqlite_support import apply_wal_with_fallback
+    from sqlite_support import apply_wal_with_fallback, wal_mode
 except ImportError:
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_state_wal import apply_wal_with_fallback, wal_mode
 """
 
 
@@ -63,7 +64,12 @@ def index(tmp_path: Path) -> dict:
     sha = _commit(plugin, {"__init__.py": PLUGIN, "plugin.yaml": "name: demo\n"})
     work = tmp_path / "work"
     work.mkdir()
-    return {"demo": cci.index_entry(_Entry(plugin, sha), work)}
+    # Through the on-disk format, as the PR check reads it.
+    cci.write_index({"demo": cci.index_entry(_Entry(plugin, sha), work)}, tmp_path / "index")
+    return cci.read_index(tmp_path / "index")
+
+
+WAL = "def apply_wal_with_fallback(conn): ...\nwal_mode = 'wal'\n"
 
 
 @pytest.fixture
@@ -74,8 +80,8 @@ def core(tmp_path: Path):
     base = _commit(repo, {
         "agent/memory_provider.py": "class MemoryProvider: ...\n",
         "tools/registry.py": "def registry_helper(): ...\n",
-        "hermes_state_wal.py": "def apply_wal_with_fallback(conn): ...\n",
-        "sqlite_support.py": "def apply_wal_with_fallback(conn): ...\n",
+        "hermes_state_wal.py": WAL,
+        "sqlite_support.py": WAL,
         "hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n",
     })
     return repo, base
@@ -85,7 +91,8 @@ def _check(repo: Path, index: dict, files: dict) -> list[tuple[str, str]]:
     """The breaks a commit of ``files`` on top of the current HEAD causes."""
     base = _git(repo, "rev-parse", "HEAD")
     head = _commit(repo, files)
-    return [(b.site, b.target) for b in cci.breaks(index, cci.Tree(repo, base), cci.Tree(repo, head))]
+    return [(f"{b.site.rel}:{b.site.line}", b.target)
+            for b in cci.breaks(index, cci.Tree(repo, base), cci.Tree(repo, head))]
 
 
 def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is_not(index, core):
@@ -102,11 +109,16 @@ def test_removing_a_name_a_pinned_plugin_imports_is_named_and_a_kept_spelling_is
     assert _check(repo, index, {
         "tools/registry.py": None, "tools/registry_core.py": "def registry_helper(): ...\n",
         "hermes_agent/compat/moves.py": 'MOVES: dict[str, str] = {"tools.registry": "tools.registry_core"}\n'}) == []
-    # Removing the module the try reaches first, with its fallback already gone, breaks it: both spellings
-    # are named, since either one coming back would fix the plugin.
-    assert _check(repo, index, {"sqlite_support.py": None}) == [
-        ("__init__.py:4", "sqlite_support.apply_wal_with_fallback"),
-        ("__init__.py:6", "hermes_state_wal.apply_wal_with_fallback")]
+    # A try is judged branch by branch: with one name gone from BOTH spellings, neither import line works,
+    # even though the other name still resolves in each.
+    assert _check(repo, index, {"sqlite_support.py": "def apply_wal_with_fallback(conn): ...\n",
+                                "hermes_state_wal.py": "def apply_wal_with_fallback(conn): ...\n"}) == [
+        ("__init__.py:4", "sqlite_support.wal_mode")]
+    # Reading globals() binds no names: removing one from such a module is still a break.
+    _commit(repo, {"tools/registry.py": "def registry_helper(): ...\n", "tools/registry_core.py": None,
+                   "hermes_agent/compat/moves.py": "MOVES: dict[str, str] = {}\n"})
+    assert _check(repo, index, {"tools/registry.py": "def read():\n    return globals().get('x')\n"}) == [
+        ("__init__.py:2", "tools.registry.registry_helper")]
 
 
 def test_the_label_lets_an_intended_break_through(index, core, monkeypatch, capsys):
@@ -117,3 +129,12 @@ def test_the_label_lets_an_intended_break_through(index, core, monkeypatch, caps
     assert cci.check(base, head, []) == 1
     assert "demo __init__.py:1 imports agent.memory_provider.MemoryProvider" in capsys.readouterr().out
     assert cci.check(base, head, [cci.OVERRIDE_LABEL]) == 0
+
+
+def test_a_failed_read_or_a_moved_subdir_is_read_again(index):
+    row = next(iter(index.values()))
+    entry = _Entry(Path("."), row.sha)
+    assert row.is_current(entry)
+    entry.subdir = "media"
+    assert not row.is_current(entry)
+    assert not cci.Row(row.sha, "", row.imports, error="Could not connect to server").is_current(_Entry(Path("."), row.sha))

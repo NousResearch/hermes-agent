@@ -1456,9 +1456,9 @@ class StoreHolder:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
-        from persistence.sqlite._state.lineage_fence import session_lineage_guard
+        from persistence.sqlite._state.lineage_fence import session_write_budget
 
-        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
+        with session_write_budget(self, session_id, self._TRANSCRIPT_WRITE_PATIENCE_S):
             self._queue_owned_token_counts(session_id, kwargs)
 
     def _queue_owned_token_counts(self, session_id, kwargs):

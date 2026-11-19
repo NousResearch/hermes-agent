@@ -10,7 +10,7 @@ from typing import Any
 
 from persistence.core.errors import AuthorityRefusal
 from .._state.accounting_markers import pending_usage, require_legacy_accounting_clear
-from .._state.lineage_fence import session_lineage_guard
+from .._state.lineage_fence import DONOR_TRANSFER_PREFIX, session_lineage_guard
 from ..authority._runtime_guards import require_idle
 from ..conversation._store.sessions import _end_and_bump, _retire_undrained_queue_rows_conn, get_session
 from ._adoption_records import AdoptionConflict
@@ -125,7 +125,9 @@ class LineageTransfer:
                     "error": f"session {session_id!r} not found in donor store"}
         ids = tuple(segment["id"] for segment in segments)
         authority = None
-        if record is not None:
+        if record is None:
+            validate_fresh(self.db, segments)
+        else:
             validate_members(self.db, donor_db, record)
             authority = ownership(record, donor_db.db_path, self.db.db_path)
         with session_lineage_guard(self.db.db_path, ids, transfer_from=donor_db.db_path,
@@ -264,14 +266,21 @@ class LineageTransfer:
             with self.db._read_ctx() as target_conn:
                 record = find_in(target_conn, seg_id, donor_db, self.db)
                 member = next((m for m in record["manifest"]["members"] if m["id"] == seg_id), None) if record else None
+                if member is None:
+                    raise AdoptionConflict("Donor retirement requires the committed transfer member record")
                 covered = _adoption_history_covers(conn, target_conn, seg_id)
-                if not covered and member is not None:
+                if not covered:
                     covered = _adoption_history_covers(conn, target_conn, seg_id, retired_witness=member)
                 if not covered or not _adoption_accounting_covers(conn, target_conn, seg_id):
                     logger.warning("adoption divergence at retirement for segment %s; leaving donor unretired", seg_id)
                     return False
             if not _retire_member(donor_db, conn, seg_id):
                 return False
+            key = DONOR_TRANSFER_PREFIX + seg_id
+            marker = conn.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()
+            if marker is not None and marker[0] != record["transfer_id"]:
+                raise AdoptionConflict("Donor retirement conflicts with an existing transfer receipt")
+            conn.execute("INSERT OR IGNORE INTO state_meta(key,value) VALUES (?,?)", (key, record["transfer_id"]))
             conn.execute("UPDATE sessions SET archived=1, auto_archived=0 WHERE id=?", (seg_id,))
             return True
 

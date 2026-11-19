@@ -357,10 +357,15 @@ def test_divergent_donor_is_not_retired(stores):
     first = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
     assert first["adopted"] and first["donor_retired"]
 
-    # Donor keeps living (e.g. user kept chatting there) — un-retire + append.
-    default_db.sessions.set_archived(STRANDED_ID, False)
-    seed_messages(default_db, STRANDED_ID, {"role": "user", "content": "late question"},
-                  {"role": "assistant", "content": "late answer"})
+    # Simulate a legacy writer that did not honor the retired-donor fence.
+    def diverge(conn):
+        conn.execute("UPDATE sessions SET archived=0 WHERE id=?", (STRANDED_ID,))
+        conn.executemany("INSERT INTO messages(session_id,role,content,timestamp) VALUES (?,?,?,?)", [
+            (STRANDED_ID, "user", "late question", time.time()),
+            (STRANDED_ID, "assistant", "late answer", time.time()),
+        ])
+
+    raw_holder(default_db)._execute_write(diverge)
 
     second = adopt_session_lineage(profile_db, default_db, STRANDED_ID)
 
@@ -443,6 +448,10 @@ def test_pending_transfer_recovers_full_membership_after_one_segment_retires(sto
     assert first["adopted"] and not first["donor_retired"]
     assert session_row(default_db, root)["end_reason"] == "adopted_by_profile"
     assert session_row(default_db, tip)["ended_at"] is None
+    from persistence import PersistenceError
+
+    with pytest.raises(PersistenceError, match="Donor retirement is unsettled"):
+        profile_db.sessions.update_model(tip, "new-pick")
 
     holder._execute_write(lambda conn: conn.execute("DROP TRIGGER fail_tip_retirement"))
     # The donor no longer traverses the retired root. New handles must recover

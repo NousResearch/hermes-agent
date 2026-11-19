@@ -259,8 +259,8 @@ def validate_fresh(db, segments):
         if segment.get("end_reason") == "adopted_by_profile":
             raise AdoptionConflict("Retired donor has no complete adoption record; explicit recovery membership is required")
         target = get_session(db, segment["id"])
-        if target is not None and (segment.get("ended_at") is not None or target.get("ended_at") is not None):
-            raise AdoptionConflict("Ended target copy has no matching adoption record; verify its lineage before recovery")
+        if target is not None:
+            raise AdoptionConflict("Target already uses this session ID without a verified transfer record")
 
 
 def mark_complete(db, record, donor_db):

@@ -489,7 +489,11 @@ def reopen_session(holder: StoreHolder, session_id: str) -> None:
         )
         # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
         _unarchive_auto_archived_lineage(conn, session_id)
-    holder._execute_write(_do)
+
+    from persistence.sqlite._state.lineage_fence import session_write_budget
+
+    with session_write_budget(holder, session_id) as remaining:
+        holder._execute_write(_do, patience_s=remaining)
 
 
 def promote_to_session_reset(holder: StoreHolder, session_id: str, reason: str = "session_reset") -> bool:

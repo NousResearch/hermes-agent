@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 from persistence.core.errors import PersistenceError
-from persistence.sqlite._state.keys import profile_from_session_key
 
 
 class SessionLineageError(PersistenceError):
@@ -55,12 +54,8 @@ class FreshSessionCollision(SessionLineageError):
 @dataclass(frozen=True)
 class SessionStoreRow:
     store_path: Path
-    profile: str
     ended_at: object
     end_reason: str | None
-    profile_name: str | None
-    session_key: str | None
-    message_count: int | None
 
     @property
     def is_live(self) -> bool:
@@ -104,68 +99,17 @@ class SessionLineageSnapshot:
     current_path: Path
     rows_by_id: dict[str, tuple[SessionStoreRow, ...]]
 
-    def require_current_owner(self, session_id: str, transfer_from: str | Path | None = None,
-                              adoption: AdoptionOwnership | None = None) -> None:
+    def require_transfer_owner(self, session_id, donor_path, adoption) -> None:
         rows = self.rows_by_id.get(session_id, ())
-        if transfer_from is not None and _explicit_transfer_allowed(
-                rows, Path(transfer_from), self.current_path, session_id, adoption):
-            return
-        owner = _select_owner(session_id, rows)
-        if owner is None or _same_file(owner.store_path, self.current_path):
-            return
-        raise SessionIdOwnedElsewhereError(
-            f"Session {session_id!r} is owned by profile store {owner.profile!r}; "
-            f"refusing to create or resume it in {self.current_path}"
-        )
-
+        if not _explicit_transfer_allowed(rows, donor_path, self.current_path, session_id, adoption):
+            raise SessionLineageAmbiguousError(
+                f"Cannot verify both sides of the declared transfer for session {session_id!r}")
 
 def _same_file(left: Path, right: Path) -> bool:
     try:
         return os.path.samefile(left, right)
     except OSError:
         return left.resolve(strict=False) == right.resolve(strict=False)
-
-
-def _select_owner(session_id: str, rows: tuple[SessionStoreRow, ...]) -> SessionStoreRow | None:
-    if not rows:
-        return None
-    live = [row for row in rows if row.is_live]
-    if len(live) == 1:
-        return live[0]
-    if len(live) > 1:
-        stores = ", ".join(sorted(row.profile for row in live))
-        raise SessionLineageAmbiguousError(
-            f"Session {session_id!r} has multiple live owners ({stores}); refusing to guess"
-        )
-    if len(rows) == 1:
-        return rows[0]
-
-    # Adopted donor rows are explicitly retired by the lifecycle-aware profile migration path.
-    # Prefer the sole non-donor row; all other multi-ended cases require operator adjudication.
-    non_donors = [row for row in rows if row.end_reason != "adopted_by_profile"]
-    if len(non_donors) == 1:
-        return non_donors[0]
-
-    # A namespaced gateway key is stronger evidence than a copied profile_name field.
-    key_matches = [
-        row for row in rows
-        if row.profile is not None and profile_from_session_key(row.session_key) == row.profile
-    ]
-    if len(key_matches) == 1:
-        return key_matches[0]
-
-    profile_matches = [
-        row for row in rows
-        if row.profile is not None and row.profile_name == row.profile
-    ]
-    if len(profile_matches) == 1:
-        return profile_matches[0]
-
-    stores = ", ".join(sorted(row.profile for row in rows))
-    raise SessionLineageAmbiguousError(
-        f"Session {session_id!r} has multiple ended copies ({stores}) without a unique owner; "
-        "refusing to guess"
-    )
 
 
 def _validate_lineage_parent(path: Path, info, *, protected_by=None) -> None:
@@ -353,16 +297,6 @@ _PROCESS_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS = threading.local()
 
 
-@contextmanager
-def _lineage_inventory_deadline(deadline):
-    previous = getattr(_THREAD_LOCKS, "inventory_deadline", None)
-    _THREAD_LOCKS.inventory_deadline = deadline
-    try:
-        yield
-    finally:
-        _THREAD_LOCKS.inventory_deadline = previous
-
-
 def _drop_process_lock_reference(key: str, entry: _ProcessLockEntry) -> None:
     """Discard idle per-session locks without racing waiters that already hold a reference."""
     with _PROCESS_LOCKS_GUARD:
@@ -447,88 +381,6 @@ def _managed_root_and_current(db_path: str | Path) -> tuple[Path, Path] | None:
         raise SessionLineageInventoryError(f"Cannot resolve Hermes state-store root: {exc}") from exc
 
 
-def physical_store_candidates(root: Path | None = None, current_path: Path | None = None) -> list[tuple[Path, str]]:
-    """Every physical state.db the ownership fence inventories (incl. tombstoned profile dirs).
-
-    Shared inventory for the fence and the repair planner (review finding 3): repair must
-    see exactly the stores that can block a write, or its plan omits the blocking store.
-    ``current_path`` mode resolves the managed root from a writer's database and keeps the
-    mandatory-current-file checks. ``root``-only mode is inventory-only: no current/writer
-    database is required, so read-only repair can scan an empty or profile-only home without
-    one being created or demanded.
-    """
-    if current_path is not None:
-        managed = _managed_root_and_current(current_path)
-        if managed is None:
-            return []
-        managed_root, current = managed
-        if root is not None and root.expanduser().resolve(strict=False) != managed_root:
-            raise SessionLineageInventoryError(
-                f"Conflicting physical-store root {root} and current database {current_path}")
-        return _store_candidates(managed_root, current)
-    from persistence.sqlite.conversation._store.sessions import _session_store_install_root
-
-    managed_root = _session_store_install_root() if root is None else root.expanduser().resolve(strict=False)
-    return _store_candidates(managed_root, None)
-
-
-def _regular_file_or_none(path: Path, label: str) -> os.stat_result | None:
-    """lstat a path that must be a plain regular file; None when absent, raise on unsafe."""
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise SessionLineageInventoryError(f"Cannot inspect {label} {path}: {exc}") from exc
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-        raise SessionLineageInventoryError(f"Unsafe {label}: {path}")
-    return st
-
-
-def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path, str]]:
-    candidates: list[tuple[Path, str]] = []
-    if _regular_file_or_none(root / "state.db", "session store") is not None:
-        candidates.append((root / "state.db", "default"))
-
-    profiles_root = root / "profiles"
-    try:
-        profiles_stat = profiles_root.lstat()
-    except FileNotFoundError:
-        profiles_stat = None
-    except OSError as exc:
-        raise SessionLineageInventoryError(f"Cannot inspect profiles directory {profiles_root}: {exc}") from exc
-    if profiles_stat is not None:
-        if stat.S_ISLNK(profiles_stat.st_mode) or not stat.S_ISDIR(profiles_stat.st_mode):
-            raise SessionLineageInventoryError(f"Unsafe profiles directory: {profiles_root}")
-        try:
-            entries = sorted(profiles_root.iterdir(), key=lambda entry: entry.name)
-        except OSError as exc:
-            raise SessionLineageInventoryError(f"Cannot enumerate profiles directory {profiles_root}: {exc}") from exc
-        for profile_dir in entries:
-            try:
-                entry_stat = profile_dir.lstat()
-            except OSError as exc:
-                raise SessionLineageInventoryError(f"Cannot inspect profile entry {profile_dir}: {exc}") from exc
-            if stat.S_ISLNK(entry_stat.st_mode):
-                raise SessionLineageInventoryError(f"Cannot prove profile inventory: symlinked entry {profile_dir}")
-            if profile_dir.name == ".session-lineage-locks":
-                if _regular_file_or_none(profile_dir / "state.db", "reserved lineage namespace store") is not None:
-                    raise SessionLineageInventoryError("Unexpected state.db in reserved lineage namespace")
-                continue  # reserved shared metadata, never a profile store
-            if not stat.S_ISDIR(entry_stat.st_mode):
-                continue
-            db_path = profile_dir / "state.db"
-            if _regular_file_or_none(db_path, "session store") is not None:
-                candidates.append((db_path, profile_dir.name))
-
-    if current_path is not None and not any(_same_file(path, current_path) for path, _ in candidates):
-        if _regular_file_or_none(current_path, "current session database") is None:
-            raise SessionLineageInventoryError(f"Current session database is missing: {current_path}")
-        rel = current_path.relative_to(root)
-        candidates.append((current_path, f"custom:{rel.as_posix()}"))
-    return candidates
-
-
 def _inventory_session_columns(execute, path: Path, deadline: float) -> set[str]:
     """Wait for a sibling's startup DDL without treating an unfinished store as empty."""
     while True:
@@ -550,7 +402,7 @@ def _inventory_session_columns(execute, path: Path, deadline: float) -> set[str]
 
 
 def _rows_for_ids(
-    path: Path, profile: str, session_ids: tuple[str, ...], timeout_s: float = 2.0, *,
+    path: Path, session_ids: tuple[str, ...], timeout_s: float = 2.0, *,
     deadline: float | None = None,
 ) -> dict[str, SessionStoreRow]:
     if not session_ids:
@@ -574,8 +426,6 @@ def _rows_for_ids(
                 return name if name in columns else fallback
             wanted = ", ".join((
                 "id", "ended_at", f"{col('end_reason')} AS end_reason",
-                f"{col('profile_name')} AS profile_name", f"{col('session_key')} AS session_key",
-                f"{col('message_count')} AS message_count",
             ))
             rows: dict[str, SessionStoreRow] = {}
             for start in range(0, len(session_ids), 500):
@@ -587,12 +437,8 @@ def _rows_for_ids(
                 for row in result:
                     rows[str(row["id"])] = SessionStoreRow(
                         store_path=path,
-                        profile=profile,
                         ended_at=row["ended_at"],
                         end_reason=row["end_reason"],
-                        profile_name=row["profile_name"],
-                        session_key=row["session_key"],
-                        message_count=row["message_count"],
                     )
             return rows
         finally:
@@ -603,80 +449,105 @@ def _rows_for_ids(
         raise SessionLineageInventoryError(f"Cannot read session store {path}: {exc}") from exc
 
 
-# Unreleased ownership-fence protocol: all cooperating writers use this fixed mapping.
-# Collisions serialize writers; owner selection still uses the complete session IDs.
+# A bounded stripe table keeps import descriptor use independent of batch size.
+# A stripe represents a store-qualified ID. Transfers acquire both stores'
+# stripes together, in the same order every scoped writer uses.
 _LINEAGE_LOCK_STRIPES = 32
 
 
-def _lineage_lock_paths(root: Path, ids: Iterable[str]) -> list[Path]:
-    stripes = {int.from_bytes(hashlib.sha256(sid.encode("utf-8")).digest()[:4], "big")
-               % _LINEAGE_LOCK_STRIPES for sid in ids}
-    return [root / "profiles" / ".session-lineage-locks" / f"stripe-{index:02}.lock"
-            for index in sorted(stripes)]
+def _lineage_lock_paths(root, stores, ids):
+    separator = chr(0)
+    stripes = {
+        int.from_bytes(hashlib.sha256(f"{path}{separator}{sid}".encode("utf-8")).digest()[:4], "big") % _LINEAGE_LOCK_STRIPES
+        for path in stores for sid in ids
+    }
+    return [root / "profiles" / ".session-lineage-locks" / f"scoped-stripe-{i:02}.lock" for i in sorted(stripes)]
 
 
 @contextmanager
-def session_lineage_guard(
-    db_path: str | Path,
-    session_ids: str | Iterable[str],
-    *,
-    transfer_from: str | Path | None = None,
-    adoption: AdoptionOwnership | None = None,
-    timeout_s: float = 10.0,
-) -> Iterator[SessionLineageSnapshot | None]:
-    """Serialize ownership validation with a caller's DB write transaction.
-
-    Callers must keep this context open until their SQLite write commits or rolls back. The
-    context yields ``None`` for standalone DBs outside the active Hermes home.
-    ``adoption`` carries store-bound lifecycle evidence for a saved transfer.
-    Its additional ended-pair allowance is never granted to a plain ID set.
-    """
-    ids = (session_ids,) if isinstance(session_ids, str) else tuple(dict.fromkeys(str(s) for s in session_ids if s))
-    if not ids:
-        yield None
-        return
-    managed = _managed_root_and_current(db_path)
-    if managed is None:
-        yield None
-        return
-    root, current_path = managed
-    # All cooperating writers, including the default profile, share one namespace. Its
-    # reserved hidden directory is inside the tree excluded by the profile-isolation contract.
+def _lock_store_members(root, stores, ids, deadline):
     _lineage_lock_directory(root, create=True)
-    lock_paths = _lineage_lock_paths(root, ids)
+    lock_paths = _lineage_lock_paths(root, stores, ids)
     held = {key for key in getattr(_THREAD_LOCKS, "active", ()) if key.startswith(f"{os.getpid()}:")}
     requested = {f"{os.getpid()}:{path.resolve(strict=False)}" for path in lock_paths}
     additional = requested - held
     if held and additional and min(additional) < max(held):
         raise SessionLineageInventoryError("Nested lineage lock order would invert; acquire the complete ID set first")
-    deadline = time.monotonic() + timeout_s
     with ExitStack() as locks:
-        for lock_path in lock_paths:
-            locks.enter_context(_lock_file(lock_path, max(0.0, deadline - time.monotonic())))
-        candidates = _store_candidates(root, current_path)
-        rows_by_id: dict[str, list[SessionStoreRow]] = {session_id: [] for session_id in ids}
-        for path, profile in candidates:
-            inventory_deadline = getattr(_THREAD_LOCKS, "inventory_deadline", None)
-            read_deadline = deadline
-            if inventory_deadline is not None:
-                read_deadline = min(read_deadline, inventory_deadline)
-            rows = _rows_for_ids(path, profile, ids, deadline=read_deadline)
-            for session_id, row in rows.items():
-                rows_by_id[session_id].append(row)
-        frozen = {session_id: tuple(rows) for session_id, rows in rows_by_id.items()}
-        snapshot = SessionLineageSnapshot(current_path=current_path, rows_by_id=frozen)
-        for session_id in ids:
-            snapshot.require_current_owner(
-                session_id, transfer_from=transfer_from, adoption=adoption)
+        for path in lock_paths:
+            locks.enter_context(_lock_file(path, max(0.0, deadline - time.monotonic())))
+        yield
+
+
+@contextmanager
+def session_lineage_guard(db_path, session_ids, *, transfer_from, adoption=None, timeout_s=10.0):
+    """Hold the explicitly selected donor and target through the complete transfer."""
+    ids = tuple(dict.fromkeys(session_ids))
+    target = _managed_root_and_current(db_path)
+    donor = _managed_root_and_current(transfer_from)
+    if target is None and donor is None:
+        yield None
+        return
+    if target is None or donor is None or target[0] != donor[0] or _same_file(target[1], donor[1]):
+        raise SessionLineageInventoryError("Transfer requires distinct stores in the same managed home")
+    root, target_path = target
+    donor_path = donor[1]
+    deadline = time.monotonic() + timeout_s
+    with _lock_store_members(root, (target_path, donor_path), ids, deadline):
+        source = _rows_for_ids(donor_path, ids, deadline=deadline)
+        destination = _rows_for_ids(target_path, ids, deadline=deadline)
+        snapshot = SessionLineageSnapshot(target_path, {
+            sid: tuple(rows[sid] for rows in (source, destination) if sid in rows) for sid in ids
+        })
+        for sid in ids:
+            snapshot.require_transfer_owner(sid, donor_path, adoption)
         yield snapshot
+
+
+DONOR_TRANSFER_PREFIX = "adoption.donor.v1:"
+
+
+def _require_local_write(conn, ids):
+    """Only actual transfer evidence can close a row to ordinary scoped writes."""
+    if not ids:
+        return
+    has_journal = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='adoption_transfers'"
+    ).fetchone() is not None
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        marks = ",".join("?" for _ in chunk)
+        retired = conn.execute(
+            f"SELECT id FROM sessions WHERE id IN ({marks}) AND end_reason='adopted_by_profile' LIMIT 1", chunk
+        ).fetchone()
+        retired_marker = conn.execute(
+            f"SELECT key FROM state_meta WHERE key IN ({marks}) LIMIT 1",
+            tuple(DONOR_TRANSFER_PREFIX + sid for sid in chunk),
+        ).fetchone()
+        if retired is not None or retired_marker is not None:
+            sid = retired[0] if retired is not None else retired_marker[0][len(DONOR_TRANSFER_PREFIX):]
+            raise SessionIdOwnedElsewhereError(f"Session {sid!r} was transferred to another profile store")
+        if has_journal and conn.execute(
+            f"SELECT 1 FROM adoption_transfers WHERE member_id IN ({marks}) AND status IN ('pending','copied') LIMIT 1",
+            chunk,
+        ).fetchone():
+            raise SessionLineageInventoryError("Donor retirement is unsettled for the requested session")
 
 
 @contextmanager
 def session_write_budget(holder, ids: str | Iterable[str], patience_s: float | None = None):
-    """Hold the complete write set and pass only the remaining caller budget to SQLite."""
+    """Serialize a scoped write against transfers that explicitly name its store."""
+    from contextlib import nullcontext
+
+    ids = (ids,) if isinstance(ids, str) else tuple(dict.fromkeys(sid for sid in ids if sid))
     patience = holder._WRITE_PATIENCE_S if patience_s is None else patience_s
     deadline = time.monotonic() + patience
-    with session_lineage_guard(holder.db_path, ids, timeout_s=patience):
+    managed = _managed_root_and_current(holder.db_path)
+    locks = _lock_store_members(managed[0], (managed[1],), ids, deadline) if managed and ids else nullcontext()
+    with locks:
+        if ids:
+            with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
+                _require_local_write(conn, ids)
         yield max(0.0, deadline - time.monotonic())
 
 
@@ -686,17 +557,20 @@ def guarded_discovered_write(holder, discover, write, *, patience_s: float):
     ids: set[str] = set()
     expand = object()
     for _ in range(8):
-        with holder._read_ctx() as conn:
+        with holder._read_ctx_with_timeout(max(0.0, deadline - time.monotonic())) as conn:
             ids.update(discover(conn))
         if time.monotonic() >= deadline:
             break
         needed: set[str] = set()
-        with session_lineage_guard(holder.db_path, ids, timeout_s=max(0.0, deadline - time.monotonic())):
+        with session_write_budget(holder, ids, max(0.0, deadline - time.monotonic())) as remaining:
             def guarded(conn):
                 needed.update(discover(conn))
-                return expand if needed - ids else write(conn)
+                if needed - ids:
+                    return expand
+                _require_local_write(conn, tuple(needed))
+                return write(conn)
 
-            result = holder._execute_write(guarded, patience_s=max(0.0, deadline - time.monotonic()))
+            result = holder._execute_write(guarded, patience_s=remaining)
             if result is not expand:
                 return result
         ids.update(needed)

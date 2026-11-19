@@ -28,17 +28,27 @@ export function setPluginCtx(ctx: PluginContext | null) {
  *  live in the same module. */
 let botOpenGeneration = 0
 
-/** Cold open still in flight. Published after the fronted-tab miss and before
- *  source prep. Not chat ownership — never route or highlight from this key.
- *  The generation guards the clear: a superseded flight never releases its
- *  successor's mark. A bump (another open, a group, or Sessions) drops it.
- *  The one consumer beyond the row's opening acknowledgement: selection
- *  reconciliation defers while this is set, so an in-flight deliberate open
- *  is not overwritten by the still-focused chat. */
+/** A deliberate bot open still in flight — the canonical cold open publishes
+ *  it after the fronted-tab miss and before source prep, the recent-session
+ *  open before its own source dial. Not chat ownership — never route or
+ *  highlight from this key. The generation guards the clear: a superseded
+ *  flight never releases its successor's mark. A bump (another open, a
+ *  group, or Sessions) drops it. The one consumer beyond the row's opening
+ *  acknowledgement: selection reconciliation defers while this is set, so
+ *  an in-flight deliberate open is not overwritten by the still-focused
+ *  chat. */
 export const $pendingBotOpen = atom<null | { generation: number; key: string }>(null)
 
 export function getBotOpenGeneration() {
   return botOpenGeneration
+}
+
+/** Release the pending-open mark, but only for the flight that set it: a
+ *  superseded flight settling late must not clear its successor's mark. */
+export function settlePendingBotOpen(generation: number) {
+  if ($pendingBotOpen.get()?.generation === generation) {
+    $pendingBotOpen.set(null)
+  }
 }
 
 /** Invalidate every in-flight open; returns the generation that now owns it. */

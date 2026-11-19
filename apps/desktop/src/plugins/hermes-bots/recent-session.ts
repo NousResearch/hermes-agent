@@ -17,8 +17,10 @@ import { haptic, host } from '@hermes/plugin-sdk'
 
 import { saveSelectedRosterBot } from './bot-state'
 import { prepareBotSource, resolveExpectHistory } from './canonical-chat'
+import { botRosterKey } from './data'
 import { openRosterBot } from './roster-actions'
 import { botConnectionRoute, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { $pendingBotOpen, getBotOpenGeneration, settlePendingBotOpen } from './shared'
 import type { RosterRow } from './types'
 
 /** The listed session the menu item would open, or null when the profile has
@@ -43,6 +45,17 @@ export async function openBotRecentSession(bot: RosterRow): Promise<boolean> {
   saveSelectedRosterBot(bot)
   const ownerKey = botWorkspaceOwnerKey(bot)
   setBotsWorkspaceOwner(ownerKey, bot)
+
+  // Same defer the row click gets: while this deliberate open is in flight,
+  // ambient reconciliation must not re-point the selection at the
+  // still-focused chat and republish it over this publish (#154651 review
+  // follow-up). No generation bump — a concurrent canonical open keeps its
+  // own supersede protocol, and the settle is generation-scoped either way.
+  // Two concurrent recent-session opens share the generation, so the first
+  // settle clears the second's mark; it self-heals on the next ambient
+  // event.
+  const generation = getBotOpenGeneration()
+  $pendingBotOpen.set({ generation, key: botRosterKey(bot) })
 
   try {
     await prepareBotSource(bot)
@@ -75,5 +88,7 @@ export async function openBotRecentSession(bot: RosterRow): Promise<boolean> {
     host.notifyError?.(error, 'Could not open the recent session')
 
     return false
+  } finally {
+    settlePendingBotOpen(generation)
   }
 }

@@ -28,7 +28,7 @@ import { closeGroupChatMainTab, groupOpenOrigin } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
-import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
+import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx, settlePendingBotOpen } from './shared'
 import type { RosterRow } from './types'
 
 // last_active watermark per source-qualified bot, seeded on first poll so a
@@ -161,14 +161,6 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }).catch(() => {
     /* the next click or reclaim event re-resolves it */
   })
-}
-
-/** Release the pending-open mark, but only for the flight that set it: a
- *  superseded flight settling late must not clear its successor's mark. */
-function settlePendingBotOpen(generation: number) {
-  if ($pendingBotOpen.get()?.generation === generation) {
-    $pendingBotOpen.set(null)
-  }
 }
 
 /** Front the bot's canonical Bot Chat when it is ALREADY open as a tab —

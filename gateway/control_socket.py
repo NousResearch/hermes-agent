@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from gateway.control_dispatch import ControlRequestDispatcher
+from hermes_constants import strip_extended_length_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ _SOCKET_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP})
 
 
 def _home_hash(home: Path) -> str:
-    return hashlib.sha256(os.path.normcase(str(Path(home).expanduser().resolve(strict=False))).encode("utf-8")).hexdigest()[:16]
+    # One hash per directory: a ``\\?\``-prefixed spelling of a home names the same pipe.
+    resolved = strip_extended_length_prefix(str(Path(home).expanduser().resolve(strict=False)))
+    return hashlib.sha256(os.path.normcase(resolved).encode("utf-8")).hexdigest()[:16]
 
 
 def windows_pipe_name(home: Path) -> str:

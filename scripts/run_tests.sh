@@ -122,8 +122,8 @@ _which_store() {
 # it (setup-hermes.sh cd's there first): every symlink followed, dangling ones
 # too, a `..` taken after the link it follows, a missing part kept as written.
 # `-ef` alone stats the literal path, so `<store>/missing/..` would not match
-# <store>. Status 1 past 40 links (the kernel's limit): Path.resolve() keeps
-# going there, but refusing is the stricter choice.
+# <store>. Status 1 past 40 links (the kernel's limit; Path.resolve() keeps
+# going there, but refusing is the stricter choice) or when readlink fails.
 _resolved_path() {
   local resolved="" rest="$1" part target hops=0
   case "$rest" in /*) ;; *) resolved="$(cd -P "$REPO_ROOT" && pwd)"; resolved="${resolved%/}" ;; esac
@@ -155,7 +155,7 @@ _resolved_path() {
 _pm_store() (
   if [ -n "${HERMES_RUNTIME_DIR:-}" ]; then
     _resolved_path "$HERMES_RUNTIME_DIR" && exit
-    echo "error: faked HOME: HERMES_RUNTIME_DIR runs through more than 40 symlinks" >&2
+    echo "error: faked HOME: HERMES_RUNTIME_DIR cannot be resolved (more than 40 symlinks, or a link readlink cannot read)" >&2
     exit 1
   fi
   # Asked and resolved from the checkout, as setup asks: a relative HERMES_HOME
@@ -194,7 +194,7 @@ _avoid_account_stores() {
   ! _store_has_pins "$named" >/dev/null || return 0
   # The suffix is appended literally (hermes_constants), `..` included.
   if ! fallback="$(_resolved_path "$HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools" && printf x)"; then
-    echo "error: faked HOME: $HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools runs through more than 40 symlinks" >&2
+    echo "error: faked HOME: $HOME/.hermes${HERMES_DATA_DIR_SUFFIX:-}/tools cannot be resolved (more than 40 symlinks, or a link readlink cannot read)" >&2
     return 1
   fi
   fallback="${fallback%$'\nx'}"

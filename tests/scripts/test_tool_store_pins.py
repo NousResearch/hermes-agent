@@ -424,3 +424,20 @@ def test_runtime_dir_through_a_link_loop_is_refused(tmp_path):
     assert run.returncode != 0
     assert "more than 40 symlinks" in run.stderr
     assert _snapshot(store) == before
+
+
+@pytest.mark.platforms("posix")
+def test_runtime_dir_through_a_link_readlink_cannot_read_is_refused(tmp_path):
+    """A readlink that fails (one without ``-n``, or a link gone between the check and the read)
+    must refuse the run, not drop the link and resolve from its parent directory."""
+    _executable(tmp_path / "bin" / "readlink").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    account, home = tmp_path / "account", tmp_path / "fakehome"
+    store = _store_at_other_pins(account / ".hermes" / "tools")
+    before = _snapshot(store)
+    home.mkdir()
+    (home / "rt").symlink_to(store)
+    run, provisioned = _run_runner(tmp_path, account, home, {"HERMES_RUNTIME_DIR": str(home / "rt")})
+    assert provisioned is None, f"setup reached {provisioned}\n{run.stdout}{run.stderr}"
+    assert run.returncode != 0
+    assert "or a link readlink cannot read" in run.stderr
+    assert _snapshot(store) == before

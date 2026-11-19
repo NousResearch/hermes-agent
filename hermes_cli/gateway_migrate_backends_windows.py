@@ -255,6 +255,18 @@ def _hermes_command(home: Optional[str]) -> tuple[list[str], str]:
     return [], hermes
 
 
+def _startup_entry_aside(path: str, home: Optional[str]) -> list[str]:
+    """Move a Startup-folder shortcut to ``<home>\\backend_migration\\`` (not a rename in place: Explorer
+    opens every file in the Startup folder at sign-in), with the line that puts it back."""
+    if not home:
+        return ["# move it to a folder outside shell:startup, and move it back to undo"]
+    import ntpath
+    folder = ntpath.join(home, "backend_migration")
+    backup = ntpath.join(folder, ntpath.basename(path))
+    return [f'mkdir "{folder}"', "# (an 'already exists' error from mkdir is fine)", f'move "{path}" "{backup}"',
+            f'# to undo later: move "{backup}" "{path}"']
+
+
 def manual_steps(old_host: Optional[str], old_port: Optional[int], item, *, env_keys=(), home: Optional[str] = None,
                  public_url=None) -> list[str]:
     """One command per line, in order, each valid as typed in PowerShell and in Command Prompt (prose
@@ -288,7 +300,8 @@ def manual_steps(old_host: Optional[str], old_port: Optional[int], item, *, env_
             + ["# and Disable that task in Task Scheduler"]
     elif sup == "startup-folder" and path:
         steps += kill + ["# this Startup-folder entry starts the same command; if it is what starts this backend "
-                         "at sign-in, set it aside:", f'move "{path}" "{path}.disabled"']
+                         "at sign-in, move it out of the Startup folder (Windows tries to open any file left "
+                         "there, even a renamed one):", *_startup_entry_aside(path, home)]
     elif sup == "startup-folder":
         steps += kill + ["# more than one Startup-folder entry starts this exact command: find the one that starts "
                          "this backend (shell:startup) and move it aside"]

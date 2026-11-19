@@ -169,7 +169,8 @@ def test_steps_never_use_posix_only_syntax_and_name_env_keys_without_values(tmp_
         assert f"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD from the old backend's environment into {tmp_path / '.env'}" \
             in joined
     steps = gw.manual_steps("127.0.0.1", 9120, _item(supervisor="startup-folder", unit_path=str(entry), pid=42))
-    assert steps[4] == "taskkill /PID 42 /T /F" and steps[6] == f'move "{entry}" "{entry}.disabled"'
+    assert steps[4] == "taskkill /PID 42 /T /F"
+    assert steps[6] == "# move it to a folder outside shell:startup, and move it back to undo"  # home unknown
     assert steps[5].startswith("# this Startup-folder entry starts the same command; if it is what starts")
     steps = gw.manual_steps("127.0.0.1", 9120, _item(supervisor="scheduled-task", pid=42))  # task not named
     assert steps[4:6] == ["taskkill /PID 42 /T /F", "# and Disable that task in Task Scheduler"]
@@ -285,3 +286,19 @@ def test_a_backend_found_without_wmic_gets_its_profile_home_from_its_exact_argv(
                                  desktop_pids=set(), seen_units=set())
 
     assert Path(item.hermes_home) == root / "profiles" / "work"
+
+
+def test_a_startup_shortcut_is_moved_out_of_the_startup_folder_with_its_undo():
+    """A renamed `.lnk.disabled` left in Startup makes Windows ask which app opens it at every sign-in."""
+    startup = r"C:\Users\u\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+    entry, home = startup + r"\Hermes dashboard.lnk", r"C:\Users\u\.hermes"
+    item = _item(supervisor="startup-folder", unit="Hermes dashboard.lnk", unit_path=entry, pid=42)
+
+    steps = gw.manual_steps("127.0.0.1", 9120, item, home=home)
+
+    backup = home + r"\backend_migration\Hermes dashboard.lnk"
+    i = steps.index(f'move "{entry}" "{backup}"')
+    assert steps[i - 2] == f'mkdir "{home}\\backend_migration"'
+    assert steps[i + 1] == f'# to undo later: move "{backup}" "{entry}"'
+    assert not any(".disabled" in s for s in steps)
+    assert not any(s.startswith("move ") and startup in s.split('" "')[-1] for s in steps), steps

@@ -39,7 +39,8 @@ _VENDOR_WINDOWS = {
     "solar-mini4": 524_288,  # console.upstage.ai solar-mini-4: 512K
     "grok-4.7": 500_000,  # docs.x.ai grok-4.7
     "grok-4.20": 1_000_000, "grok-4.20-multi-agent": 1_000_000,  # docs.x.ai grok-4.20 pages
-    "glm-5.3": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.3-flashx": 1_000_000,  # docs.bigmodel.cn
+    # Zhipu documents "1M"; Nous, OpenRouter and NanoGPT (?detailed=true) all list exactly 1,048,576.
+    "glm-5.3": 1_048_576, "glm-5.3-flash": 1_048_576, "glm-5.3-flashx": 1_048_576, "z-ai/glm-5.3:thinking": 1_048_576,
 }
 
 

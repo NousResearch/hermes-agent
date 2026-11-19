@@ -303,6 +303,15 @@ export function useCatalog(kind: CatalogKind) {
 
 /** Warm a catalog while the browser is idle so switching tabs doesn't pay the fetch + parse. */
 export function prefetchCatalogWhenIdle(kind: CatalogKind) {
+  // requestIdleCallback is Chromium-only; WebKit never shipped it, and the
+  // ReferenceError escapes the workspace contribution boundary and blanks the
+  // pane (#155594). Degrade to a short timeout like idle-mount.tsx does.
+  if (typeof requestIdleCallback !== 'function') {
+    const timer = setTimeout(() => void queryClient.prefetchQuery(catalogQuery(kind)), 1)
+
+    return () => clearTimeout(timer)
+  }
+
   const id = requestIdleCallback(() => void queryClient.prefetchQuery(catalogQuery(kind)), { timeout: 5_000 })
 
   return () => cancelIdleCallback(id)

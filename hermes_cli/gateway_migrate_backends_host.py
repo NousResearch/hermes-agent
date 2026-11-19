@@ -872,11 +872,15 @@ class SystemHost:
         from hermes_cli.config import get_project_root
         argv = runtime_command(get_project_root(), flags, home=self.home)
         log.parent.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "HERMES_HOME": str(self.home)}
+        from hermes_platform.resolver import locate_command
+        from tools.environments.local import build_subprocess_env
+        # The caller's env unscrubbed (the run reads the same credentials), pinned to this home.
+        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False,
+                                   extra={"HERMES_HOME": str(self.home)})
         unit = f"hermes-backend-migration-{int(time.time())}"
-        import shutil
-        if shutil.which("systemd-run") and self.gateway_kind() == "systemd":
-            cmd = ["systemd-run", "--user", "--collect", f"--unit={unit}", "--quiet",
+        systemd_run = locate_command("systemd-run").command
+        if systemd_run and self.gateway_kind() == "systemd":
+            cmd = [systemd_run, "--user", "--collect", f"--unit={unit}", "--quiet",
                    f"--property=StandardOutput=append:{log}", f"--property=StandardError=append:{log}",
                    *(f"--setenv={k}={env[k]}" for k in ("HERMES_HOME", "PATH") if k in env),
                    *argv]

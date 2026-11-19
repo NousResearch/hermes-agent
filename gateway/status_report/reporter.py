@@ -208,9 +208,10 @@ class StatusReporter:
         except asyncio.CancelledError:
             # Cancelled while the thread is still taking the lock. When the watcher stops (a gateway
             # shutdown), run()'s cleanup can run before the thread is done and take the lock again,
-            # so the thread gives it back. A goodbye cancelled alone leaves a sender's lock held: the
+            # so it is given back. A goodbye cancelled alone leaves a sender's lock held: the
             # watcher still reports under it. Decided once the thread is done, when run() has said.
-            taking.add_done_callback(lambda done, was_sender=self._is_sender: self._give_back_if_taken(done, was_sender))
+            loop, was_sender = asyncio.get_running_loop(), self._is_sender
+            taking.add_done_callback(lambda done: self._give_back_on_loop(loop, done, was_sender))
             raise
         except OSError:
             # Permissions (gateway.status has logged the directory and its repair), a read-only or
@@ -228,9 +229,19 @@ class StatusReporter:
             self._stand_by(logging.INFO, "another gateway on this machine is the sender")
         return acquired
 
+    def _give_back_on_loop(self, loop: asyncio.AbstractEventLoop, taking: concurrent.futures.Future,
+                           was_sender: bool) -> None:
+        """On the reporter's thread, once a lock taken after a cancel is in hand. Decided and given
+        back on the event loop, before or after run()'s own release but never during it: a release
+        reads the owner and then unlinks, so two at once could unlink a lock another gateway took
+        in between. A loop that has closed runs nothing more, so then it is done here."""
+        try:
+            loop.call_soon_threadsafe(self._give_back_if_taken, taking, was_sender)
+        except RuntimeError:  # the loop has closed
+            self._give_back_if_taken(taking, was_sender)
+
     def _give_back_if_taken(self, taking: concurrent.futures.Future, was_sender: bool) -> None:
-        """On the reporter's thread, once a lock taken after a cancel is in hand: given back unless a
-        sender's watcher is still running (only a goodbye was cancelled)."""
+        """Given back unless a sender's watcher is still running (only a goodbye was cancelled)."""
         if taking.cancelled() or taking.exception() is not None or not taking.result()[0]:
             return
         if self._stopped or not was_sender:

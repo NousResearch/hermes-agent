@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from gateway import status as gateway_status
+from gateway.status_scoped_locks import release_scoped_lock
 from gateway.status_report.reporter import StatusReporter
 from gateway.status_report.target import STATUS_REPORT_URL_ENV, report_target_from_env
 from hermes_constants import get_process_hermes_home
@@ -332,7 +333,14 @@ async def test_a_sender_cancelled_while_it_confirms_its_lock_leaves_no_lock_held
         taken.append(result[0])
         return result
 
+    released_on = []
+
+    def give_back(scope, identity):
+        released_on.append(threading.current_thread().name)
+        release_scoped_lock(scope, identity)
+
     monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    monkeypatch.setattr("gateway.status_report.reporter.release_scoped_lock", give_back)
     receiver = Receiver()
     watcher = asyncio.create_task(make_reporter(receiver).run(lambda: True, tick=0.01))
     await async_wait_until(lambda: receiver.kinds == ["beat"], timeout=5, what="the first beat")
@@ -347,6 +355,10 @@ async def test_a_sender_cancelled_while_it_confirms_its_lock_leaves_no_lock_held
     assert watcher.cancelled() and taken == [True, True]
     await async_wait_until(lambda: not list(gateway_status._get_lock_dir().glob("*.lock")), timeout=5,
                            what="a cancelled sender to give back the lock its confirmation took again")
+    # The cleanup and the give-back each release it. A release reads the owner and then unlinks, so
+    # two at once on different threads could unlink a lock another gateway took in between: both
+    # run on the event loop, one after the other.
+    assert released_on == [threading.current_thread().name] * 2
 
 
 async def test_a_goodbye_still_taking_the_lock_when_the_watcher_stops_neither_takes_it_nor_is_sent(clock, monkeypatch):
@@ -406,7 +418,8 @@ async def test_a_goodbye_cancelled_while_it_confirms_the_lock_leaves_the_sender_
     goodbye.cancel()
     await asyncio.wait({goodbye}, timeout=5)
     release.set()
-    # Every piece of the reporter's work, and whatever it ran on completion, is done once its threads end.
+    # Every piece of the reporter's work is done once its threads end, and what it queued on the
+    # loop on completion runs before this resumes.
     await asyncio.to_thread(reporter._pool.shutdown, True)
 
     assert len(confirmed) == 2

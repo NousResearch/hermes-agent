@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import type { CronJob, CronOwnerScope } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -8,16 +7,15 @@ import { $cronJobs, getCronJobsSnapshotScope, invalidateCronJobsRequests } from 
 import { notifyError } from '@/store/notifications'
 import { $sessionListProfileScope, sidebarProfileForScope } from '@/store/profile'
 
-import type { AgentSettingsOwner } from '../agent-settings/data'
-import { agentOverviewQueries } from '../agent-settings/overview-queries'
 import { cronRequestScope, mutateAndRefreshCronJobs, refreshCronJobs } from '../cron/cron-actions'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 
+import { $heldRoutine } from './routine-held-delete'
+
 /**
- * Where a Routines surface reads its routines and sends its changes. The rail page and an agent's
- * Settings › Routines render the same rows, detail and editor; they differ only in this: the rail
- * lists every agent's routines from the shared `$cronJobs` snapshot (the sidebar sync already keeps
- * it at every profile in the redesign), an agent's page reads that one owner, on its own machine.
+ * Where the Routines page reads its routines and sends its changes: every agent's routines on this
+ * window's machine, from the shared `$cronJobs` snapshot (the sidebar sync already keeps it at every
+ * profile in the redesign). A routine whose delete is being held (routine-held-delete.ts) is not listed.
  */
 export interface RoutineSource {
   jobs: readonly CronJob[]
@@ -26,9 +24,6 @@ export interface RoutineSource {
   error: unknown
   /** The machine the routines live on (null = the window's own). */
   connectionId: null | string
-  /** Edits open the editor here (an agent's Settings › Routines); the rail page links there instead
-   *  (board decision, Nov 12: the rail page has quick actions only). */
-  editsInPlace: boolean
   /** Owner scope for a call about `job` (its agent, on this source's machine). */
   scopeFor: (job: CronJob) => CronOwnerScope
   /** Owner scope for creating a routine in `profile`. */
@@ -38,8 +33,29 @@ export interface RoutineSource {
   mutate: <T>(change: () => Promise<T>) => Promise<null | T>
 }
 
-/** The rail's Routines page: every agent's routines on this window's machine. */
+/** A source without the routine whose delete is being held. */
+function useHeldOut(source: RoutineSource): RoutineSource {
+  const held = useStore($heldRoutine)
+  const { connectionId, jobs: all } = source
+
+  const jobs = useMemo(
+    () =>
+      held && held.scope.connectionId === connectionId
+        ? all.filter(job => !(job.id === held.id && (job.profile ?? '') === held.scope.profile))
+        : all,
+    [all, connectionId, held]
+  )
+
+  return jobs === all ? source : { ...source, jobs }
+}
+
+/** The Routines page's routines: every agent's on this window's machine. */
 export function useRailRoutineSource(): RoutineSource {
+  return useHeldOut(useWindowRoutineSource())
+}
+
+/** Every agent's routines on this window's machine. */
+function useWindowRoutineSource(): RoutineSource {
   const { t } = useI18n()
   const jobs = useStore($cronJobs)
   const listProfile = sidebarProfileForScope(useStore($sessionListProfileScope))
@@ -87,47 +103,11 @@ export function useRailRoutineSource(): RoutineSource {
   return {
     connectionId: null,
     createScope: profile => ({ profile }),
-    editsInPlace: false,
     error,
     jobs,
     loading: !answered && jobs.length === 0,
     mutate,
     refresh,
     scopeFor: job => ({ profile: job.profile ?? null })
-  }
-}
-
-/** Agent › Settings › Routines: the same list, for one agent, read from that agent's own machine. */
-export function useAgentRoutineSource(owner: AgentSettingsOwner): RoutineSource {
-  const query = useQuery(agentOverviewQueries.routines(owner))
-  const { refetch } = query
-  const scope: CronOwnerScope = { connectionId: owner.connectionId ?? null, profile: owner.profile }
-
-  const refresh = useCallback(async () => {
-    await refetch()
-  }, [refetch])
-
-  useRefreshHotkey(refresh)
-
-  const mutate = useCallback(
-    async <T,>(change: () => Promise<T>): Promise<null | T> => {
-      const value = await change()
-      await refetch()
-
-      return value
-    },
-    [refetch]
-  )
-
-  return {
-    connectionId: owner.connectionId ?? null,
-    createScope: () => scope,
-    editsInPlace: true,
-    error: query.error,
-    jobs: query.data ?? [],
-    loading: query.isPending,
-    mutate,
-    refresh,
-    scopeFor: () => scope
   }
 }

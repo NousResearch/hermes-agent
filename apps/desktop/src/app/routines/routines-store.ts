@@ -13,53 +13,29 @@ export const routineKey = (job: Pick<CronJob, 'id' | 'profile'>) => `${job.profi
 export const sameRoutine = (job: Pick<CronJob, 'id' | 'profile'>, ref: null | RoutineRef) =>
   Boolean(ref) && job.id === ref?.id && (job.profile ?? '') === ref.profile
 
-/** What the rail page's stage shows: the overview, or one routine. In memory only, so every window
- *  keeps its own and reopening Routines returns to where this window left it (as Agents does). */
+export const refOf = (job: Pick<CronJob, 'id' | 'profile'>): RoutineRef => ({ id: job.id, profile: job.profile ?? '' })
+
+/** The routine the page's stage shows; null shows the first one (the list itself below wide). In
+ *  memory only, so every window keeps its own and reopening Routines returns to where it left off. */
 export const $routineSelection = atom<null | RoutineRef>(null)
 
 export function selectRoutine(ref: null | RoutineRef): void {
   $routineSelection.set(ref)
 }
 
-/** The one editor (R3 → R4). `pick` is "What kind of routine?"; `create` is the form, blank or seeded
- *  from a ready-made routine; `edit` changes an existing one. `lockProfile` keeps the agent fixed
- *  (an agent's own Settings › Routines). */
-export type RoutineEditor =
+/** The create / edit sheet: the Routines page is the only place a routine is created or changed.
+ *  `profile` preselects the agent of a new routine (an agent's page sends its own). */
+export type RoutineSheet =
   | { mode: 'closed' }
-  | { mode: 'create'; blueprintKey?: string; fromPick: boolean; lockProfile: boolean; profile: string }
-  | { mode: 'edit'; job: CronJob }
-  | { mode: 'pick'; lockProfile: boolean; profile: string }
+  | { mode: 'create'; profile: null | string }
+  | { mode: 'edit'; ref: RoutineRef }
 
-export const $routineEditor = atom<RoutineEditor>({ mode: 'closed' })
+export const $routineSheet = atom<RoutineSheet>({ mode: 'closed' })
 
-export function openRoutineEditor(editor: RoutineEditor): void {
-  $routineEditor.set(editor)
+export function openRoutineSheet(sheet: RoutineSheet): void {
+  $routineSheet.set(sheet)
 }
 
-export function closeRoutineEditor(): void {
-  $routineEditor.set({ mode: 'closed' })
-}
-
-/** The routine a Delete is waiting to be confirmed for. */
-export const $routinePendingDelete = atom<CronJob | null>(null)
-
-/** The routine a Rename (a rail quick action) is open for. */
-export const $routineRename = atom<CronJob | null>(null)
-
-/** Close the editor, Rename and Delete: they act through the source of the surface that hosts them. */
-export function closeRoutineDialogs(): void {
-  closeRoutineEditor()
-  $routinePendingDelete.set(null)
-  $routineRename.set(null)
-}
-
-/** A search the Routines overview opens with (the chat sidebar's per-agent chip names its agent), taken
- *  once so reopening Routines later starts unfiltered. */
-export const $routineOverviewQuery = atom('')
-
-export function takeRoutineOverviewQuery(): string {
-  const query = $routineOverviewQuery.get()
-  $routineOverviewQuery.set('')
-
-  return query
+export function closeRoutineSheet(): void {
+  $routineSheet.set({ mode: 'closed' })
 }

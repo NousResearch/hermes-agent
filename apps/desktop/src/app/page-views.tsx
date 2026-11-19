@@ -33,7 +33,11 @@ const RAIL_PAGE_PRELOADS: Record<string, (() => Promise<unknown>)[]> = {
     async () => (await import('./capabilities/prefetch')).prefetchCapabilitiesInventory()
   ],
   artifacts: [ArtifactsView.preload, async () => (await import('@/store/item-index')).refreshItemIndex()],
-  cron: [CronView.preload],
+  cron: [
+    CronView.preload,
+    // A delete a closed or crashed window was holding (Routines' Undo) is finished on the next launch.
+    async () => (await import('./routines/routine-held-delete')).commitAbandonedRoutineDeletes()
+  ],
   settings: [SettingsView.preload]
 }
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import type { CronJob } from '@/hermes'
+import type { AutomationBlueprint, CronJob } from '@/hermes'
 
 import { cronModelChoiceValue } from '../cron/cron-job-model'
 
-import { blankDraft, createPayload, draftFromJob, updatePayload, validateDraft } from './routine-draft'
+import { blankDraft, createPayload, draftFromJob, draftFromTemplate, updatePayload, validateDraft } from './routine-draft'
+import { defaultPick } from './routine-schedule'
 
 const NOW = new Date(2026, 10, 12, 12, 0).getTime()
 
@@ -22,10 +23,13 @@ const stored = {
   state: 'scheduled'
 } as CronJob
 
+const daily = defaultPick(NOW)
+
 describe('a new routine', () => {
   it('creates with only what the user set: run limit, remember last run and model when chosen', () => {
     const draft = {
-      ...blankDraft('ops', NOW),
+      ...blankDraft('ops'),
+      pick: daily,
       deliver: 'telegram',
       model: cronModelChoiceValue('openrouter', 'some/model'),
       name: ' Morning brief ',
@@ -44,18 +48,53 @@ describe('a new routine', () => {
       repeat: 5,
       schedule: '0 9 * * *'
     })
-    expect(createPayload({ ...blankDraft('ops', NOW), prompt: 'x' })).toEqual({
+    expect(createPayload({ ...blankDraft('ops'), pick: daily, prompt: 'x' })).toEqual({
       deliver: 'local',
       prompt: 'x',
       schedule: '0 9 * * *'
     })
   })
 
-  it('asks for an instruction and a schedule', () => {
-    expect(validateDraft({ ...blankDraft('ops', NOW), prompt: '' })).toBe('prompt')
-    expect(validateDraft({ ...blankDraft('ops', NOW), pick: { ...blankDraft('ops', NOW).pick, custom: '', frequency: 'custom' }, prompt: 'x' })).toBe(
+  it('starts with no frequency, and asks for a schedule, then an instruction', () => {
+    expect(blankDraft('ops').pick).toBeNull()
+    expect(validateDraft({ ...blankDraft('ops'), prompt: 'x' })).toBe('schedule')
+    expect(validateDraft({ ...blankDraft('ops'), pick: daily, prompt: '' })).toBe('prompt')
+    expect(validateDraft({ ...blankDraft('ops'), pick: { ...daily, custom: '', frequency: 'custom' }, prompt: 'x' })).toBe(
       'schedule'
     )
+  })
+
+  it('starts from a template with everything its defaults make, and keeps its skills', () => {
+    const template = {
+      category: 'daily',
+      description: 'A weekday nudge.',
+      fields: [],
+      key: 'workday-start',
+      prefill: {
+        deliver: 'origin',
+        name: 'Workday start reminder',
+        prompt: 'Give the user a brief weekday start-of-day nudge.',
+        schedule: '0 9 * * 1-5',
+        skills: ['google-workspace']
+      },
+      title: 'Workday start reminder'
+    } as unknown as AutomationBlueprint
+
+    const draft = draftFromTemplate(template, blankDraft('ops'), NOW)
+
+    expect(draft).toMatchObject({
+      deliver: 'local',
+      name: 'Workday start reminder',
+      pick: { frequency: 'weekdays', time: '09:00' },
+      profile: 'ops',
+      prompt: 'Give the user a brief weekday start-of-day nudge.'
+    })
+    expect(createPayload(draft)).toMatchObject({ schedule: '0 9 * * 1-5', skills: ['google-workspace'] })
+
+    // A backend from before `prefill`: its name and description, the frequency left to pick.
+    const older = draftFromTemplate({ ...template, prefill: undefined }, blankDraft('ops'), NOW)
+
+    expect(older).toMatchObject({ name: 'Workday start reminder', pick: null, prompt: 'A weekday nudge.', skills: [] })
   })
 
   it('lets a script-only routine keep an empty instruction', () => {
@@ -97,7 +136,7 @@ describe('editing a routine', () => {
   it('sends a changed schedule as the picker composed it', () => {
     const draft = draftFromJob(stored, NOW)
 
-    expect(updatePayload({ ...draft, pick: { ...draft.pick, frequency: 'daily', time: '07:00' } }, stored).schedule).toBe(
+    expect(updatePayload({ ...draft, pick: { ...daily, frequency: 'daily', time: '07:00' } }, stored).schedule).toBe(
       '0 7 * * *'
     )
   })

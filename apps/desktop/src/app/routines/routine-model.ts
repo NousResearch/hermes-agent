@@ -17,10 +17,6 @@ export const ROUTINE_GROUPS: readonly RoutineGroup[] = ['attention', 'scheduled'
 
 export type RoutineStatus = 'delivery' | 'failed' | 'finished' | 'on' | 'overdue' | 'paused' | 'running'
 
-export type RoutineFilter = 'all' | 'attention' | 'paused' | 'scheduled'
-
-export const ROUTINE_FILTERS: readonly RoutineFilter[] = ['all', 'attention', 'scheduled', 'paused']
-
 const RESTING = new Set(['completed', 'disabled', 'paused'])
 
 /** A routine that is not expected to fire again on its own: paused, switched off, or done. */
@@ -66,6 +62,24 @@ export function routineGroup(job: CronJob, nowMs = Date.now()): RoutineGroup {
   }
 
   return routinePaused(job) ? 'paused' : 'scheduled'
+}
+
+/** Every routine in the panel's order: its groups top to bottom, each by title. */
+export function routinesInPanelOrder(jobs: readonly CronJob[], nowMs = Date.now()): CronJob[] {
+  const groups = groupRoutines(jobs, nowMs)
+
+  return ROUTINE_GROUPS.flatMap(group => groups[group])
+}
+
+/** The routine the list lands on once `key` leaves it: the one after it, else the one before. */
+export function neighbourInList<T>(list: readonly T[], isGone: (item: T) => boolean): T | null {
+  const index = list.findIndex(isGone)
+
+  if (index < 0) {
+    return list[0] ?? null
+  }
+
+  return list[index + 1] ?? list[index - 1] ?? null
 }
 
 export function routineNeedsAttention(job: CronJob, nowMs = Date.now()): boolean {
@@ -119,27 +133,15 @@ export const STATUS_TONE: Record<RoutineStatus, 'bad' | 'good' | 'muted' | 'runn
   running: 'running'
 }
 
-const FILTER_GROUPS: Record<RoutineFilter, null | RoutineGroup> = {
-  all: null,
-  attention: 'attention',
-  paused: 'paused',
-  scheduled: 'scheduled'
-}
-
-/** The overview's rows: the segment's group, then every word of the query in the title, instruction,
- *  agent or schedule. */
+/** The panel's search: every word of the query in the title, instruction, agent or schedule. */
 export function filterRoutines(
   jobs: readonly CronJob[],
-  filter: RoutineFilter,
   query: string,
-  agentLabel: (profile: string) => string,
-  nowMs = Date.now()
+  agentLabel: (profile: string) => string
 ): CronJob[] {
-  const group = FILTER_GROUPS[filter]
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
 
   return jobs
-    .filter(job => !group || routineGroup(job, nowMs) === group)
     .filter(job => {
       if (!words.length) {
         return true
@@ -226,12 +228,13 @@ export function runLimit(job: Pick<CronJob, 'repeat'> | null | undefined): null 
 
 // ── Runs ──────────────────────────────────────────────────────────────────────────────────────────
 
-export type RunChip = 'delivery' | 'failed' | 'running' | 'stopped'
+export type RunChip = 'delivery' | 'failed' | 'missed' | 'running' | 'stopped' | 'succeeded'
 
 const EXECUTION_CHIP: Record<string, RunChip> = {
   cancelled: 'stopped',
   claimed: 'running',
   failed: 'failed',
+  missed: 'missed',
   running: 'running'
 }
 
@@ -257,7 +260,21 @@ export function runChip(run: SessionInfo, job: Pick<CronJob, 'latest_execution'>
     return null
   }
 
-  return EXECUTION_CHIP[execution.status] ?? (execution.delivery_outcome === 'failed' ? 'delivery' : null)
+  if (execution.status === 'completed') {
+    return execution.delivery_outcome === 'failed' ? 'delivery' : 'succeeded'
+  }
+
+  return EXECUTION_CHIP[execution.status] ?? null
+}
+
+/** Chip tone per outcome: problems in the danger family, a live run in the brand selection. */
+export const RUN_TONE: Record<RunChip, 'bad' | 'good' | 'muted' | 'running' | 'warn'> = {
+  delivery: 'warn',
+  failed: 'bad',
+  missed: 'warn',
+  running: 'running',
+  stopped: 'muted',
+  succeeded: 'good'
 }
 
 /** A run with no session behind it (a script-only fire's output, a ledger row) is titled by the backend
@@ -266,8 +283,10 @@ const OUTPUT_TITLE = /^([A-Z][A-Z ]*[A-Z]) · ([\s\S]*)$/
 
 const OUTPUT_CHIP: Record<string, RunChip> = {
   CANCELLED: 'stopped',
+  COMPLETED: 'succeeded',
   'DELIVERY FAILED': 'delivery',
-  FAILED: 'failed'
+  FAILED: 'failed',
+  MISSED: 'missed'
 }
 
 export function outputRunStatus(run: Pick<SessionInfo, 'source' | 'title'>): { chip: null | RunChip; reason: string } | null {

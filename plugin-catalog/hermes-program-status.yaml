@@ -1,16 +1,7 @@
 name: hermes-program-status
 repo: https://github.com/sicruse/hermes-program-status
 sha: 372583c842696b17a2c985e1025881cbb6ee5aa3
-description: >-
-  Show classic Hermes CLI sessions as agents with a live status (idle, working,
-  blocked, done, error) in terminals that read OSC 7501, the Program Status
-  Protocol, such as herdr-core in the Herdr desktop and phone apps. Works when
-  turns run in the Hermes gateway. Documented hooks only; patches nothing.
-  Disclosure: reads <HERMES_HOME>/terminal-sessions/ for the default and profile
-  homes; writes small JSON files to the shared registry under
-  <Hermes root>/plugin-data/hermes-program-status; writes
-  short OSC 7501 escape sequences to tty devices registered by a live Hermes CLI
-  of the same user. No network access, subprocesses, credentials or telemetry.
+description: "Show classic Hermes CLI sessions as agents with a live status (idle, working, blocked, done, error) in terminals that read OSC 7501, the Program Status Protocol, such as herdr-core in the Herdr desktop and phone apps. Works when turns run in the Hermes gateway. Documented hooks only; patches nothing. Disclosure — reads the Hermes terminal-session files (<HERMES_HOME>/terminal-sessions/) of the default and every profile home; writes small JSON files to a shared registry under <Hermes root>/plugin-data/hermes-program-status; writes short OSC 7501 escape sequences to tty devices registered by a live Hermes CLI of the same user. No network access, subprocesses, credentials or telemetry."
 maintainer: sicruse
 tier: community
 category: tools

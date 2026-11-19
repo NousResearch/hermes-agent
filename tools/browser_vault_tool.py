@@ -757,7 +757,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     a key-by-key retype — and every insert is pinned to the page session the fill started on; the
     value is read back after it
     (``build_fill_verify_js``). A focus that drifted, or a value the page reverted, aborts the
-    whole fill: nothing further is typed and every inspection stamp is removed.
+    whole fill: nothing further is typed and this fill's inspection stamps are removed.
 
     ``js_fills`` (the password, ``select`` / checkbox / radio controls) go by the guarded JS write
     (``build_fill_js``) on their stamped controls, never by keystroke.
@@ -781,7 +781,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
         # A script refused because the channel moved or a human took over names that cause, not the
         # check it broke (focus_lost, origin_changed): the caller retries or stops on it.
         moved = _channel_refusal(last["failure"])
-        # Remove every stamp: a stamp left behind would let a later read address the control
+        # Remove this fill's stamps: a stamp left behind would let a later read address the control
         # this fill just targeted.
         _eval_js_secret(task_id, build_unstamp_js(nonce))
         if moved is not None:
@@ -1023,7 +1023,7 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
                     "error": (f"The page left the bound origin ({page_origin}) before the fill could be read "
                               f"back (now on {verified.get('found') or 'unknown'}); treating it as failed.")}
         if not isinstance(verified, dict):
-            _eval_js(task_id, build_unstamp_js())
+            _eval_js(task_id, build_unstamp_js(nonce))
             return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
                     "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
         landed = int(verified.get("landed", 0) or 0)
@@ -1037,7 +1037,7 @@ def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str, page_origi
         held_since = now if held_since is None else held_since
         if now - held_since >= _FILL_VERIFY_STABLE_S:
             break
-    _eval_js(task_id, build_unstamp_js())  # stamps were kept across the polls; drop them once
+    _eval_js(task_id, build_unstamp_js(nonce))  # stamps were kept across the polls; drop them once
     if landed < expected:
         return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
                 "error": (f"The page did not keep the value: {reverted} of {expected} field(s) reverted "

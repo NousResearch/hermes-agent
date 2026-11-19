@@ -19,6 +19,7 @@ from agent.vault_login_classifier import (
     build_fill_js,
     build_fill_verify_js,
     build_focus_js,
+    build_inspection_js,
     build_origin_check_js,
     build_unstamp_js,
 )
@@ -102,7 +103,7 @@ function add(root, tag, props) {
 function shadowHost(root) {
   const host = add(root, "div"); host.shadowRoot = new Root(host); return host;
 }
-function stamp(n, index) { n.setAttribute("data-hermes-vault-slot", "__NONCE__:" + index); return n; }
+function stamp(n, index) { n.setAttribute("data-hermes-vault-slot-__NONCE__", String(index)); return n; }
 function select(root, options, selected) {
   const s = add(root, "select");
   s.options = options.map(([value, text]) => ({ value, textContent: text }));
@@ -269,6 +270,33 @@ class TestReadBack:
         setup = f'stamp(add(document, "input", {{ type: "{"password" if token == "current-password" else "text"}", value: {json.dumps(shown)} }}), 0);'
         js = build_fill_verify_js([{"index": 0, "token": token, "value": value}], nonce=NONCE, expected_origin=ORIGIN)
         assert _run(setup, js)["reverted"] == 1
+
+
+class TestOverlappingOperations:
+    @pytest.mark.parametrize("cleanup", ["read-back", "unstamp"])
+    def test_one_operation_keeps_its_stamps_through_another_on_the_same_page(self, cleanup):
+        """A user fill and an agent fill can overlap on one Desktop preview tab: two inspections stamp
+        the same inputs, and the first operation reads back and cleans up while the second is still
+        between its write and its read-back. Each must find its own stamps, and the first one's
+        cleanup must leave the second one's in place; the second's cleanup then leaves none."""
+        setup = """
+          globalThis.getComputedStyle = () => ({ display: "block", visibility: "visible" });
+          const id = add(document, "input", { type: "text", value: "user@example.com" });
+          id.getClientRects = () => [1];
+        """
+        fills = [{"index": 0, "token": "username", "value": "user@example.com"}]
+        first_cleanup = {"read-back": build_fill_verify_js(fills, nonce="n1", expected_origin=ORIGIN),
+                         "unstamp": build_unstamp_js("n1")}[cleanup]
+        expr = ("(() => { " + build_inspection_js("n1") + "; " + build_inspection_js("n2") + "; "
+                "const first = " + build_fill_verify_js(fills, nonce="n1", expected_origin=ORIGIN, unstamp=False) + "; "
+                + first_cleanup + "; "
+                "const second = " + build_fill_verify_js(fills, nonce="n2", expected_origin=ORIGIN, unstamp=False) + "; "
+                + build_unstamp_js("n2") + "; "
+                "const left = document.all().filter((n) => Object.keys(n.attrs).some((k) => k.startsWith("
+                "'data-hermes-vault-slot'))).length; "
+                "return { first, second, left }; })()")
+        landed = {"landed": 1, "reverted": 0, "missing": []}
+        assert json.loads(_node(setup, expr)) == {"first": landed, "second": landed, "left": 0}
 
 
 _SENTINEL = "PW-SENTINEL-42"

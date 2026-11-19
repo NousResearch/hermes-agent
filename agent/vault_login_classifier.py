@@ -226,9 +226,12 @@ def select_checkout_fills(classified: list[ClassifiedLoginControl], secret: dict
 
 # JS expression evaluated in the page to inspect candidate input controls.
 # Ported from OpenInstinct's nativeLoginControlInspectionExpression.
-# Inspection stamps every input with ``<nonce>:<index>`` under a per-inspection attribute; the fill
-# script resolves targets by the stamp of ITS OWN inspection instead of re-querying by position, so
-# neither a DOM reflow nor a second inspection in between can redirect the password into another field.
+# Inspection stamps every input with its index under an attribute named for the inspection's nonce
+# (``data-hermes-vault-slot-<nonce>``); the fill script resolves targets by the stamp of ITS OWN
+# inspection instead of re-querying by position, so neither a DOM reflow nor a second inspection in
+# between can redirect the password into another field. One attribute per operation: two operations
+# overlapping on one tab (a user fill beside an agent fill) neither overwrite nor remove each
+# other's stamps.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
 
@@ -268,7 +271,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       if (e.shadowRoot) walk(e.shadowRoot);
     }
   })(document);
-  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
+  elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot-" + nonce, String(index)));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
@@ -307,9 +310,9 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     ``expected_origin`` is asserted against ``window.location.origin`` synchronously inside the SAME
     evaluated script, immediately before any write. If the page navigated between inspection and fill
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
-    proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
-    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
-    controls (country, state, expiry month) match an option by value or visible text. The stamps stay
+    proof scope equals mutation scope (#88706). Targets resolve by the stamp of THIS inspection
+    (``data-hermes-vault-slot-<nonce>="<index>"``); a ``current-password`` fill additionally
+    requires ``type=password``; ``<select>`` controls (country, state, expiry month) match an option by value or visible text. The stamps stay
     for the read-back; every caller removes them afterwards (``build_unstamp_js``) so later
     model-driven DOM reads cannot address the filled controls deterministically.
     """
@@ -360,6 +363,7 @@ _FILL_JS_TEMPLATE = """(() => {
 __ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  const slot = "data-hermes-vault-slot-" + nonce;
   // Stamped controls may live inside a shadow root (see the inspection script's walk): collect the
   // document and every open shadow root once, then look each stamp up in those roots.
   const roots = [];
@@ -371,7 +375,7 @@ __ORIGIN_GUARD__
   let filled = 0;
 __OPTION_MATCH__
   for (const f of fills) {
-    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    const el = find("[" + slot + '="' + f.index + '"]')[0];
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -435,7 +439,7 @@ def build_focus_js(fills: list[dict[str, Any]], nonce: str = "", *, expected_ori
 
     ``Input.insertText`` types into whatever element currently has focus, so the caller MUST
     know which element that is before typing a secret into it. This script focuses the element
-    stamped ``<nonce>:<index>`` by the inspection and only reports success when
+    stamped ``data-hermes-vault-slot-<nonce>="<index>"`` and only reports success when
     ``document.activeElement`` IS that element — a page that moves focus (a re-render, a modal,
     an autofocus elsewhere) is refused instead of receiving the secret.
 
@@ -463,6 +467,7 @@ _FOCUS_JS_TEMPLATE = """(() => {
 __ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  const slot = "data-hermes-vault-slot-" + nonce;
   const f = fills[0];
   if (!f) return { __proto__: null, refused: "not_found" };
   const roots = [];
@@ -471,7 +476,7 @@ __ORIGIN_GUARD__
     for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
-  const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+  const el = find("[" + slot + '="' + f.index + '"]')[0];
   if (!el) return { __proto__: null, refused: "not_found" };
   // Selecting the field's text makes the next Input.insertText replace a prefilled value, not prefix it.
   if (__REFOCUS__) { try { el.focus(); el.select(); } catch (e) { /* focus can throw on a detached node */ } }
@@ -498,16 +503,18 @@ def build_origin_check_js(expected_origin: str) -> str:
             "return { __proto__: null, ok: true }; })()")
 
 
-def build_unstamp_js(nonce: str = "") -> str:
-    """Build a JS expression that removes every inspection stamp from the page.
+def build_unstamp_js(nonce: str) -> str:
+    """Build a JS expression that removes the stamps of the inspection ``nonce`` from the page.
 
-    Used when a fill aborts half-way: the stamps address controls deterministically, and a stamp
-    left behind would let a later read address the control the fill just targeted.
+    Every operation removes its own stamps when it ends (a read-back, enter_code, an abort): a stamp
+    left behind would let a later read address the control the fill just targeted. Another
+    operation's stamps on the same tab are left alone: it is still using them.
     """
-    return ("(() => { const roots = []; (function walk(root) { roots.push(root); "
+    return ("(() => { const slot = " + json.dumps(f"{INSPECTION_STAMP_ATTR}-{nonce}") + "; const roots = []; "
+            "(function walk(root) { roots.push(root); "
             "for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot); "
             "})(document); const find = (s) => roots.flatMap((r) => Array.from(r.querySelectorAll(s))); "
-            "find('[data-hermes-vault-slot]').forEach((n) => n.removeAttribute('data-hermes-vault-slot')); "
+            "find('[' + slot + ']').forEach((n) => n.removeAttribute(slot)); "
             "return { __proto__: null, unstamped: true }; })()")
 
 
@@ -515,6 +522,7 @@ _CLEAR_JS_TEMPLATE = """(() => {
 __ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  const slot = "data-hermes-vault-slot-" + nonce;
   const roots = [];
   (function walk(root) {
     roots.push(root);
@@ -523,7 +531,7 @@ __ORIGIN_GUARD__
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   let cleared = 0;
   for (const f of fills) {
-    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    const el = find("[" + slot + '="' + f.index + '"]')[0];
     if (!el) continue;
     if (el.tagName === "SELECT") continue;
     const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -556,6 +564,7 @@ _VERIFY_JS_TEMPLATE = r"""(() => {
 __ORIGIN_GUARD__
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  const slot = "data-hermes-vault-slot-" + nonce;
   const roots = [];
   (function walk(root) {
     roots.push(root);
@@ -596,7 +605,7 @@ __OPTION_MATCH__
   let reverted = 0;
   const missing = [];
   for (const f of fills) {
-    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    const el = find("[" + slot + '="' + f.index + '"]')[0];
     if (!el) { missing.push(f.index); continue; }
     if (el.tagName === "SELECT") {
       const selected = el.options[el.selectedIndex];
@@ -605,6 +614,6 @@ __OPTION_MATCH__
     }
     if (holds(f, String(el.value))) landed += 1; else reverted += 1;
   }
-  if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  if (__UNSTAMP__) find("[" + slot + "]").forEach((n) => n.removeAttribute(slot));
   return { __proto__: null, landed, reverted, missing };
 })()"""

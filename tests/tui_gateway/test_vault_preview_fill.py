@@ -51,7 +51,7 @@ def window(monkeypatch):
         expr = req["expression"]
         if "location.href" in expr:
             result = state["origin"] + "/signin"
-        elif "data-hermes-vault-slot\", nonce" in expr:
+        elif 'setAttribute("data-hermes-vault-slot-" + nonce' in expr:
             result = json.dumps(CONTROLS)
         elif "reverted" in expr:  # read-back pass: the page kept both values
             result = json.dumps({"landed": expr.count('"index"'), "reverted": 0, "missing": []})

@@ -246,10 +246,10 @@ class TestClassifier:
         assert "vaultSecret" not in js
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
-        assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
+        assert '"data-hermes-vault-slot-" + nonce' in js and """'="' + f.index""" in js
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
         # unmasking moved to build_fill_verify_js: the fill cannot know what the page kept
-        assert 'removeAttribute("data-hermes-vault-slot")' not in js
+        assert "removeAttribute(" not in js
 
     def test_build_fill_js_carries_the_value_in_the_input_event(self):
         # A framework-controlled input (React/Vue/MUI) reverts a value written without an `input`
@@ -772,7 +772,7 @@ class TestBrowserVaultTools:
         with p[0], p[1], p[2], p[3]:
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
         assert out["success"] is True
-        inspection = [sid for expr, sid in sup.sent if "data-hermes-vault-slot\", nonce" in expr]
+        inspection = [sid for expr, sid in sup.sent if 'setAttribute("data-hermes-vault-slot-" + nonce' in expr]
         unstamp = [sid for expr, sid in sup.sent if "unstamped" in expr]
         assert inspection == ["S1"] and unstamp == ["S1"]
 
@@ -1761,10 +1761,10 @@ class TestTwoFactor:
                          "type": "password"}]
 
         def run(expression):
-            if 'setAttribute("data-hermes-vault-slot"' in expression:
+            if 'setAttribute("data-hermes-vault-slot-"' in expression:
                 page["stamped"] = True
                 return {"success": True, "result": json.dumps(controls)}
-            if "removeAttribute('data-hermes-vault-slot')" in expression:
+            if "removeAttribute(slot)" in expression and "unstamped" in expression:
                 page["stamped"] = False
                 return {"success": True, "result": {"unstamped": True}}
             if "location.href" in expression:
@@ -1830,7 +1830,7 @@ class TestTwoFactor:
 
         def retarget_after_inspection(expression, **kw):
             out = inspect(expression, **kw)
-            if "data-hermes-vault-slot\", nonce" in expression:
+            if 'setAttribute("data-hermes-vault-slot-" + nonce' in expression:
                 sup.sid = "S2"  # e.g. focus_page from a concurrent browser call
             return out
 

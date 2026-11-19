@@ -20,7 +20,7 @@ from agent.vault_store import VaultStore
 
 PASSWORD = "s3cret-pw"
 CODE = "246810"
-_INSPECTION = 'data-hermes-vault-slot", nonce'
+_INSPECTION = 'setAttribute("data-hermes-vault-slot-" + nonce'
 _CONTROLS = {
     "fill": [{"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
               "type": "password"}],

@@ -2663,3 +2663,21 @@ def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypa
     assert result["completed"] is True
     assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
     assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")
+
+
+def test_build_api_kwargs_developer_message_follows_model_and_config(monkeypatch):
+    """c297: agent.developer_message_models reaches the transport; default only moves gpt-6.2+."""
+    prompt = " ".join(["You are Hermes."] * 40)
+    msgs = [{"role": "system", "content": prompt}, {"role": "user", "content": "Ping"}]
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-6.2-sol"
+    agent.developer_message_models = "auto"
+    on = agent._build_api_kwargs(msgs)
+    assert on["input"][0]["role"] == "developer" and on["instructions"] == "Follow the developer message."
+    agent.developer_message_models = []
+    off = agent._build_api_kwargs(msgs)
+    assert off["instructions"] == prompt and off["input"][0]["role"] == "user"
+    assert on["prompt_cache_key"] == off["prompt_cache_key"]
+    agent.developer_message_models = "auto"
+    agent.model = "gpt-6.1-sol"
+    assert agent._build_api_kwargs(msgs)["instructions"] == prompt

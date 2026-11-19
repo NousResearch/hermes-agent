@@ -1251,6 +1251,10 @@ def _apply_agent_section(agent, _agent_cfg):
         _verbosity = ""
     agent.text_verbosity = _verbosity or None
 
+    # Responses (Codex): send the system prompt as a first developer input item (full prefix caches on gpt-6.2+).
+    # "auto" = built-in gpt-6.2+ Sol/Astra/Terra/Luna list; regex string or list = those models only; [] / false = off.
+    agent.developer_message_models = _agent_section.get("developer_message_models", "auto")
+
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (

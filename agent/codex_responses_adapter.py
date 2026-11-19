@@ -942,9 +942,9 @@ def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> di
 
 
 def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
-    """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
+    """``user``/``assistant``/``developer`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
-    if role not in {"user", "assistant"}:
+    if role not in {"user", "assistant", "developer"}:
         raise ValueError(
             f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
         )

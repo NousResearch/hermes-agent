@@ -514,10 +514,12 @@ def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
     system_prompt = api_kwargs.get("system")
     if system_prompt is None:
         system_prompt = api_kwargs.get("instructions")
-    if system_prompt is None and isinstance(request_messages, list) and request_messages:
-        first = request_messages[0]
-        if isinstance(first, dict) and first.get("role") == "system":
-            system_prompt = first.get("content")
+    first = request_messages[0] if isinstance(request_messages, list) and request_messages else None
+    if isinstance(first, dict) and first.get("role") == "developer":
+        # Codex moved the prompt into a developer input item (``instructions`` holds only a stub).
+        return "".join(p.get("text", "") for p in first.get("content") or [] if isinstance(p, dict))
+    if system_prompt is None and isinstance(first, dict) and first.get("role") == "system":
+        system_prompt = first.get("content")
     return system_prompt
 
 

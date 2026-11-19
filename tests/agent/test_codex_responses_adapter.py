@@ -1047,3 +1047,19 @@ def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
     ])
 
     assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]
+
+
+def test_preflight_accepts_developer_role_message():
+    kwargs = {
+        "model": "gpt-6.2-sol", "instructions": "stub",
+        "input": [
+            {"role": "developer", "content": "be brief"},
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "x"}]},
+            {"role": "user", "content": "hi"},
+        ],
+    }
+    items = _preflight_codex_api_kwargs(kwargs)["input"]
+    assert items[0] == {"type": "message", "role": "developer", "content": "be brief"}
+    assert items[1] == {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "x"}]}
+    with pytest.raises(ValueError, match="unsupported item shape"):
+        _preflight_codex_api_kwargs({**kwargs, "input": [{"role": "system", "content": "x"}]})

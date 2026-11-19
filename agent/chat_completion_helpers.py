@@ -1426,7 +1426,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         profile_reasoning=agent._endpoint_reasoning_payload() if endpoint.profile_reasoning else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
+        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None),
+        developer_message_models=getattr(agent, "developer_message_models", None))
 
 
 

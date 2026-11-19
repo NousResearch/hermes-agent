@@ -2003,3 +2003,77 @@ class TestOpenAIReasoningWireProjection:
         assert self._reasoning(transport, "o4-mini", None) == {"effort": "medium", "summary": "auto"}
         assert self._reasoning(transport, model, {"enabled": True, "effort": "high"},
                                base_url="https://relay.example.com/v1") == {"effort": "high", "summary": "auto"}
+
+
+class TestDeveloperMessageMove:
+    """System prompt rides as the first developer input item on gpt-6.2+ (c297)."""
+
+    PROMPT = "You are Hermes. " * 40  # > 200 chars
+    MSGS = [{"role": "user", "content": "hi"}]
+
+    def _kw(self, transport, model, **params):
+        return transport.build_kwargs(model=model, messages=self.MSGS, instructions=self.PROMPT, **params)
+
+    @pytest.mark.parametrize("model", ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.3-terra", "gpt-6.10-luna", "gpt-7-sol", "gpt-6.2-sol-900k"])
+    def test_62_plus_moves_prompt(self, transport, model):
+        kw = self._kw(transport, model.removesuffix("-900k"))
+        assert kw["instructions"] == "Follow the developer message."
+        assert kw["input"][0] == {
+            "type": "message", "role": "developer", "content": [{"type": "input_text", "text": self.PROMPT}],
+        }
+        assert kw["input"][1]["role"] == "user"
+
+    @pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.5", "gpt-6.2-codex", "gpt-6.1-terra"])
+    def test_older_models_untouched(self, transport, model):
+        kw = self._kw(transport, model)
+        assert kw["instructions"] == self.PROMPT
+        assert all(i.get("role") != "developer" for i in kw["input"])
+
+    def test_stub_is_fixed_across_prompts(self, transport):
+        a = transport.build_kwargs(model="gpt-6.2-sol", messages=self.MSGS, instructions=self.PROMPT)
+        b = transport.build_kwargs(model="gpt-6.2-sol", messages=self.MSGS, instructions=self.PROMPT + " different")
+        assert a["instructions"] == b["instructions"]
+
+    def test_cache_key_hashes_full_prompt_and_matches_unmoved(self, transport):
+        on = self._kw(transport, "gpt-6.2-sol", session_id="s1")
+        off = self._kw(transport, "gpt-6.2-sol", session_id="s1", developer_message_models=[])
+        other = transport.build_kwargs(model="gpt-6.2-sol", messages=self.MSGS, session_id="s1",
+                                       instructions=self.PROMPT + " changed")
+        assert on["prompt_cache_key"] == off["prompt_cache_key"]
+        assert on["prompt_cache_key"] != other["prompt_cache_key"]
+
+    def test_config_list_off_and_custom(self, transport):
+        assert self._kw(transport, "gpt-6.2-sol", developer_message_models=[])["instructions"] == self.PROMPT
+        assert self._kw(transport, "gpt-6.2-sol", developer_message_models=False)["instructions"] == self.PROMPT
+        assert self._kw(transport, "gpt-6.2-sol", developer_message_models="")["instructions"] == self.PROMPT
+        assert self._kw(transport, "gpt-6.1-sol", developer_message_models=[r"^gpt-6\.1"])["input"][0]["role"] == "developer"
+        assert self._kw(transport, "gpt-6.2-sol", developer_message_models="auto")["input"][0]["role"] == "developer"
+
+    def test_short_prompt_not_moved(self, transport):
+        kw = transport.build_kwargs(model="gpt-6.2-sol", messages=self.MSGS, instructions="short")
+        assert kw["instructions"] == "short"
+
+    def test_provenance_marker_logged(self, transport, caplog):
+        import logging
+        with caplog.at_level(logging.DEBUG, logger="agent.transports.codex"):
+            self._kw(transport, "gpt-6.2-sol", session_id="sess-abc")
+            self._kw(transport, "gpt-6.1-sol", session_id="sess-abc")
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("codex wire:")]
+        assert "model=gpt-6.2-sol instructions_len=29 first_input_role=developer" in lines[0]
+        assert f"model=gpt-6.1-sol instructions_len={len(self.PROMPT)} first_input_role=user" in lines[1]
+
+    def test_survives_adapter_preflight(self, transport):
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        kw = self._kw(transport, "gpt-6.2-sol")
+        out = _preflight_codex_api_kwargs(kw)
+        assert out["instructions"] == "Follow the developer message."
+        assert out["input"][0] == {
+            "type": "message", "role": "developer", "content": [{"type": "input_text", "text": self.PROMPT}],
+        }
+
+    def test_hooks_still_see_full_system_prompt(self, transport):
+        from agent.conversation_loop import _system_prompt_for_hooks
+        kw = self._kw(transport, "gpt-6.2-sol")
+        assert _system_prompt_for_hooks(kw, kw["input"]) == self.PROMPT
+        off = self._kw(transport, "gpt-6.1-sol")
+        assert _system_prompt_for_hooks(off, off["input"]) == self.PROMPT

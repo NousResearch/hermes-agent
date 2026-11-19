@@ -432,6 +432,31 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
 
 
+DEVELOPER_MESSAGE_STUB = "Follow the developer message."
+# gpt-6.2+ and later majors, Sol/Astra/Terra/Luna. ``agent.developer_message_models`` replaces this list.
+DEVELOPER_MESSAGE_MODELS_DEFAULT = (
+    r"^gpt-(?:6\.(?:[2-9]|\d{2,})|[7-9]|\d{2,})(?:\.\d+)?-(?:sol|astra|terra|luna)(?:-|$)",
+)
+
+
+def _wants_developer_message(model: str, patterns: Any, instructions: str) -> bool:
+    """True when the system prompt should ride as the first developer input item.
+
+    ``patterns``: None/"auto" = default list; a regex string or list of them (re.search, case-insensitive);
+    ``[]``/False = off. A prompt no longer than the stub gains nothing and stays in ``instructions``.
+    """
+    if patterns is None or patterns == "auto":
+        patterns = DEVELOPER_MESSAGE_MODELS_DEFAULT
+    elif not patterns:
+        return False
+    elif isinstance(patterns, str):
+        patterns = (patterns,)
+    if len(instructions) <= 200:
+        return False
+    name = str(model or "").strip()
+    return any(re.search(p, name, re.IGNORECASE) for p in patterns)
+
+
 def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
     """``pck_<sha256[:24]>`` of (scope_id, instructions, name-sorted tools), or None if nothing static.
 
@@ -813,6 +838,21 @@ class ResponsesApiTransport(ProviderTransport):
         if endpoint.prompt_cache_key and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
 
+        # Sol/Astra 6.2+ bill top-level ``instructions`` uncached (appended after ``input``). Sent as the first
+        # developer item instead, the whole prefix caches. The key above already hashed the full prompt.
+        if _wants_developer_message(wire_model, params.get("developer_message_models"), instructions):
+            kwargs["input"] = [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": instructions}]},
+                *kwargs["input"],
+            ]
+            kwargs["instructions"] = DEVELOPER_MESSAGE_STUB
+        # Provenance marker: lets an A/B prove which code built the request in the process that sends it.
+        logger.debug(
+            "codex wire: model=%s instructions_len=%d first_input_role=%s session=%s",
+            wire_model, len(kwargs["instructions"]),
+            (kwargs["input"][0].get("role") or kwargs["input"][0].get("type")) if kwargs["input"] else None,
+            str(session_id or "")[:20],
+        )
         cache_retention = _default_prompt_cache_retention_for_request(model, params.get("base_url"))
         if cache_retention:
             kwargs.setdefault("prompt_cache_retention", cache_retention)

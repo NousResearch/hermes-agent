@@ -146,6 +146,9 @@ DEFAULT_CONFIG = {
         "fast_auto_seconds": 60,
         # Responses-only `text.verbosity` (never chat_completions): "" = not sent, or low | medium | high.
         "text_verbosity": "",
+        # Responses system prompt as first developer input item: "auto" (gpt-6.2+ Sol/Astra/Terra/Luna),
+        # a regex or list of regexes matched against the wire model, or [] / false to turn it off.
+        "developer_message_models": "auto",
         "daybreak": False,  # opt-in; only catalog-listed Codex models (agent/codex_service_tiers.py)
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name

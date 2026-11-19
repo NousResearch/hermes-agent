@@ -340,7 +340,7 @@ class GatewayTurnProgressMixin:
             cmd_short = cmd_short[:cap - 3] + "..."
         elif len(lines) > 1:
             cmd_short += " ..."
-        if self._ctx.source.platform == Platform.MATRIX:
+        if getattr(self._ctx.source, "platform", None) == Platform.MATRIX:
             # Every list item needs its own label; headerless fenced blocks are discarded.
             return f"{emoji} {tool_name}: {lines[0]}", f"{emoji} {tool_name}: {cmd_short}"
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"

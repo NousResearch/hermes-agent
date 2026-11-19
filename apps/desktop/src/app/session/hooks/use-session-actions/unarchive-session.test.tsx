@@ -9,7 +9,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type SessionInfo, setSessionArchived } from '@/hermes'
+import { getSession, type SessionInfo, setSessionArchived } from '@/hermes'
 import { $sessions, setSessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
@@ -157,6 +157,20 @@ describe('unarchiveSession', () => {
     expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('hit-1', false, 'sage')
     expect($sessions.get().map(session => session.id)).toEqual(['hit-1'])
     expect($sessions.get()[0]?.archived).toBe(false)
+  })
+
+  // Synthesized search rows carry no profile; the restored row must take the
+  // resolved owner, or a named-profile sidebar filters it out as `default`'s.
+  it('stamps the resolved owner on a restored search row that carried no profile', async () => {
+    vi.mocked(getSession).mockResolvedValue(archivedSession({ id: 'hit-2', profile: 'sage' } as Partial<SessionInfo>))
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.unarchiveSession('hit-2', archivedSession({ id: 'hit-2' })))
+
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('hit-2', false, 'sage')
+    expect($sessions.get()[0]?.profile).toBe('sage')
   })
 
   it('keeps the archived row when the restore RPC fails', async () => {

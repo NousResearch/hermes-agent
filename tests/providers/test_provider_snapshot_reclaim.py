@@ -47,19 +47,22 @@ def test_dead_owned_roots_are_reclaimed_and_everything_else_is_kept(loader):
     reload, _hooks = loader
     parent = _parent()
     owned = reload._OWNED_PREFIX
-    dead, never_locked, live = (parent / f"{owned}{n}" for n in ("dead", "never-locked", "live"))
+    dead, live = parent / f"{owned}dead", parent / f"{owned}live"
     # A root from a release without owner locks (its process may still be running), a root made without the setup
-    # lock, a killed sweeper's claim lookalike that is not one, and plain user data: never ours to delete.
-    kept = [parent / n for n in ("hermes-provider-plugins-older", f"{reload._UNSWEPT_PREFIX}x", ".reaping-mine", "notes")]
-    _seed(dead, never_locked, live, *kept)
-    (dead / reload._OWNER_LOCK).write_text("")
+    # lock, a killed sweeper's claim lookalike that is not one, user data, and an owned-looking directory with no
+    # owner.lock (not provably ours): never deleted.
+    kept = [parent / n for n in ("hermes-provider-plugins-older", f"{reload._UNSWEPT_PREFIX}x", ".reaping-mine", "notes",
+                                 f"{owned}important-user-data")]
+    _seed(dead, live, *kept)
+    for root in (dead, *kept[:-1]):  # a dead lock file is no licence outside owned-* roots
+        (root / reload._OWNER_LOCK).write_text("")
     holder = lock_path(live / reload._OWNER_LOCK, timeout=0)
     assert holder is not None
     try:
         mine = reload._new_root()
         assert mine.parent == parent and mine.name.startswith(owned)
         assert live.is_dir() and all(k.is_dir() for k in kept)
-        assert not dead.exists() and not never_locked.exists()
+        assert not dead.exists()
         assert not [e for e in parent.iterdir() if e.name.startswith(reload._REAPING_PREFIX)]
         # The next process to start leaves this one's root alone.
         reload._snapshot_root = None
@@ -87,6 +90,7 @@ def test_without_the_setup_lock_the_root_is_one_no_sweep_matches(loader, monkeyp
     real = pm.filesystem.lock_path
     stray = _parent() / f"{reload._OWNED_PREFIX}dead"
     _seed(stray)
+    (stray / reload._OWNER_LOCK).write_text("")
 
     def setup_unavailable(path, **kw):
         if path.name == reload._SETUP_LOCK:
@@ -177,3 +181,21 @@ def test_backups_and_profile_clones_leave_the_snapshots_out(tmp_path):
     assert not (clone / "runtime" / "provider-plugins").exists()
     assert (clone / "runtime" / "active_sessions.json").is_file()
     assert (clone / "skills" / "runtime" / "provider-plugins").is_dir()
+
+
+def test_a_data_only_uninstall_keeps_the_snapshots_live_processes_import(loader, tmp_path, monkeypatch):
+    from hermes_cli.data_cleanup import plan_data_removal, remove_data
+
+    reload, _hooks = loader
+    home = tmp_path / "home"
+    root = reload._new_root()
+    (home / "notes.md").write_text("user data", encoding="utf-8")
+    (root / "pkg").mkdir()
+    (root / "pkg" / "lazy.py").write_text("x = 1\n", encoding="utf-8")
+    project = tmp_path / "project"
+    (project / "hermes_cli").mkdir(parents=True)
+
+    _removed, failures = remove_data(plan_data_removal(home, project))
+
+    assert not failures and not (home / "notes.md").exists()
+    assert (root / "pkg" / "lazy.py").is_file()

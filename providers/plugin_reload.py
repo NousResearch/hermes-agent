@@ -11,11 +11,12 @@ in ``sys.modules`` with its ``__path__`` on its own copy, so anything built from
 imports even its not-yet-loaded files from that version: every object runs one version end to end, never a mix.
 
 The copies are read for the whole life of the process, so they live under ``<root>/runtime/provider-plugins`` (the
-Hermes root, which deleting a profile never removes) and not in a temp dir that is cleaned by age (#156493). Each
-process holds an OS lock on ``owner.lock`` in its own root while it runs, and the next process to create a root
-reclaims the roots whose lock nobody holds: their process is gone, killed or crashed included. Creating a root and
-that sweep run under one setup lock, so a sweep never sees a root its owner has made but not locked yet. A process
-that cannot take the setup lock still gets a root, under a name no sweep ever matches.
+Hermes root, which deleting a profile never removes) and not in a temp dir that is cleaned by age (#156493). A
+process that takes the setup lock makes an ``owned-`` root and holds an OS lock on its ``owner.lock`` until it exits;
+the next such process reclaims the owned roots whose lock file nobody holds: their process is gone, killed or
+crashed included. Creating a root and that sweep run under the setup lock, so a sweep never sees a root its owner has
+made but not locked yet. A process that cannot take the setup lock makes an ``unswept-`` root instead, which no sweep
+matches: removed on its normal exit, left behind by a crash.
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ logger = logging.getLogger(__name__)
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
 _SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
-# Roots made under the setup lock, with an owner lock: the only ones a sweep reclaims. Anything else in the
-# directory (another release's roots, a root made without the setup lock, files a user put there) is never touched.
+# Roots made under the setup lock, with an owner lock: the only ones a sweep reclaims, and only once their
+# owner.lock exists and nobody holds it. Anything else in the directory is never touched.
 _OWNED_PREFIX = "owned-"
 _UNSWEPT_PREFIX = "unswept-"
 _REAPING_PREFIX = f".reaping-{_OWNED_PREFIX}"
@@ -53,9 +54,9 @@ _snapshot_root: Path | None = None
 _snapshot_lock = threading.Lock()
 
 
-def _owner_alive(root: Path) -> bool:
-    """Whether a process holds *root*'s owner lock. Asked under the setup lock, so an owned root without a lock
-    file is never mid-setup: its owner died before taking it."""
+def _owner_gone(root: Path) -> bool:
+    """Whether *root* has an owner lock file that nobody holds. A root without one is not provably ours (a directory
+    someone made by hand, or an owner that died between creating its root and locking it) and is left alone."""
     from pm.filesystem import lock_fd, unlock_fd
 
     try:
@@ -65,16 +66,17 @@ def _owner_alive(root: Path) -> bool:
     try:
         if lock_fd(fd, wait=False):
             unlock_fd(fd)
-            return False
-        return True
+            return True
+        return False
     finally:
         os.close(fd)
 
 
 def _claim_dead_roots(parent: Path) -> list[Path]:
-    """Rename the owned roots whose owner is gone, and the claims a sweeper killed mid-delete left behind, to
-    names unique to this sweep. The caller deletes them after releasing the setup lock, so a large dead root never
-    holds up other processes starting, and two sweepers never delete the same claim."""
+    """Rename the owned roots whose owner is gone, and the claims a sweeper killed mid-delete left behind, to fresh
+    names; the caller deletes them after releasing the setup lock, so a large dead root never holds up other
+    processes starting. A claim another sweeper is still deleting can be taken again and deleted twice: both deletes
+    ignore errors, so the cost is the duplicated work."""
     claimed = []
     with contextlib.suppress(OSError):
         for entry in parent.iterdir():
@@ -82,7 +84,7 @@ def _claim_dead_roots(parent: Path) -> list[Path]:
                 continue
             with contextlib.suppress(OSError):  # unreadable, or another user's: not ours to judge
                 leftover = entry.name.startswith(_REAPING_PREFIX)
-                if leftover or (entry.name.startswith(_OWNED_PREFIX) and not _owner_alive(entry)):
+                if leftover or (entry.name.startswith(_OWNED_PREFIX) and _owner_gone(entry)):
                     claim = parent / f"{_REAPING_PREFIX}{uuid.uuid4().hex}"
                     os.rename(entry, claim)
                     claimed.append(claim)
@@ -101,7 +103,8 @@ def _release_root(root: Path, owner_fd: int | None, creator_pid: int) -> None:
 
 
 def _new_root() -> Path:
-    """This process's root, with its owner lock held until the process exits."""
+    """This process's root: ``owned-`` with its owner lock held until the process exits, or ``unswept-`` without one
+    when the setup lock is unavailable."""
     from pm.filesystem import lock_path
 
     parent = mkdir_under_hermes_home(get_default_hermes_root().joinpath(*PROVIDER_PLUGIN_SNAPSHOT_PARTS))

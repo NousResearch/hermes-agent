@@ -1,0 +1,32 @@
+# Hermes MCP catalog entry for a public-safe remote ProofRelay verifier.
+# No authentication, local install, secrets, or customer data are required.
+manifest_version: 1
+
+name: proofrelay
+description: Verify non-confidential MCP/tool evidence bundles from Hermes before users rely on agent outputs.
+source: https://github.com/GENESISRE/proofrelay
+
+transport:
+  type: http
+  url: https://mcp.genesisre.io/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - proofrelay.get_verifier_status
+    - proofrelay.recommend_checkpoint
+    - proofrelay.verify_bundle
+
+post_install: |
+  ProofRelay is a read-only remote MCP verifier for non-confidential evidence
+  bundles. Start with synthetic or public-safe hashes only; do not send secrets,
+  prompts, raw logs, customer files, wallet keys, payment credentials, or source
+  code.
+
+  The default tool selection is intentionally narrow. You can enable additional
+  ProofRelay tools after install with:
+    hermes mcp configure proofrelay
+
+  Public Hermes setup notes: https://genesisre.io/proofrelay/hermes

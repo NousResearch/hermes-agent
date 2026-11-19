@@ -54,18 +54,21 @@ class DurableWebhookCoalescer:
             return binding_from(self.adapter, authority, store_id, digest, destination)
 
     async def producer_seen(self, bound, route_name, profile, delivery_id, payload, prompt):
-        from gateway.platforms.webhook_delivery import producer_event
+        from gateway.platforms.webhook_delivery import delivery_info, producer_event, receipt_delivery
         from gateway.platforms.webhook_ingress import producer_scope, producer_receipt_seen
 
         event = producer_event(self.adapter, payload, prompt, delivery_id, time.time(),
-            route_config=self.adapter._routes[route_name], route_name=route_name, profile=profile)
+            route_config=self.adapter._routes[route_name], route_name=route_name, profile=profile, register=False)
         async with producer_scope(self.adapter, event) as authority:
             if authority is not bound.authority:
                 raise ValueError('Webhook authority changed')
             token = expected_binding.set(bound)
+            metadata = receipt_delivery.set((self.adapter, event.source.chat_id,
+                delivery_info(self.adapter, self.adapter._routes[route_name], profile, payload, route_name)))
             try:
                 return await producer_receipt_seen(authority, event)
             finally:
+                receipt_delivery.reset(metadata)
                 expected_binding.reset(token)
 
     async def start(self, *, recover=True):

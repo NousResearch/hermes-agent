@@ -26,6 +26,9 @@ async def dispatch_received(adapter, *, request, route_config, route_name, profi
         non_durable = bool(route_config.get('deliver_only') or route_config.get('cron_job'))
         key = (group_key(route_name, coalesce['key'], payload, event_type, adapter._render_prompt)
                if isinstance(coalesce, dict) else None)
+        if isinstance(coalesce, dict) and key is None and not non_durable:
+            logger.warning('[webhook] Coalesce key %r unresolved for route %r; choose a key resolvable for accepted events',
+                           coalesce['key'], route_name)
         seen_at = adapter._seen_deliveries.get(identity)
         if ((non_durable or key is not None) and seen_at is not None
                 and now - seen_at < adapter._idempotency_ttl):

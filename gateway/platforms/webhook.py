@@ -227,6 +227,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
         self._delivery_info: dict[str, dict] = {}
+        self._webhook_finalizers = {}
         self._delivery_info_created: dict[str, float] = {}
         self._delivery_info_order: deque[tuple[float, str]] = deque()
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
@@ -711,6 +712,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     getattr(runner_config, 'profile_routes', None),
                     getattr(runner_config, '_runtime_profile_homes', None)))):
             return _json_error("Route changed; retry this delivery", 503)
+        if not self._record_rate_limit_hit(route_name, time.time()):
+            return _json_error("Rate limit exceeded", 429)
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
@@ -723,10 +726,8 @@ class WebhookAdapter(BasePlatformAdapter):
             self.gateway_runner, profile, route_config,
             lambda: self._admission_source(route_name, profile, delivery_id))
         if error_response is not None:
+            self._rate_counts[route_name].pop()
             return error_response
-        # Rate limiting (after auth)
-        if not self._record_rate_limit_hit(route_name, time.time()):
-            return _json_error("Rate limit exceeded", 429)
         if not revision_current(self, route_name, profile, delivery_id, revision):
             return _json_error("Route changed; retry this delivery", 503)
         mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
@@ -827,26 +828,16 @@ class WebhookAdapter(BasePlatformAdapter):
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)
-        task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._own_webhook_finalizer(event, authority, receipt)
         return "accepted"
 
-    async def _finalize_delivery(self, event, authority, receipt):
-        from dataclasses import asdict
-        from gateway.platforms.api_server_store import authority_store
-        try:
-            admissions = authority_store(authority).admissions
-            row = admissions.get(admission_id=receipt.admission_id)
-            if row.status in {'queued', 'started'}:
-                waiter = authority.waiters.setdefault(receipt.admission_id,
-                    asyncio.get_running_loop().create_future())
-                await asyncio.shield(waiter)
-                row = admissions.get(admission_id=receipt.admission_id)
-            event._webhook_receipt = (authority, authority._receipt(asdict(row)))
-            await self._end_webhook_session(event, event.source.chat_id)
-        except Exception:
-            logger.exception("[webhook] Could not finalize admitted delivery %s", receipt.admission_id)
+    def _own_webhook_finalizer(self, event, authority, receipt, *, recovered=False):
+        from gateway.platforms.webhook_ingress import own_webhook_finalizer
+        own_webhook_finalizer(self, event, authority, receipt, recovered=recovered)
+
+    async def _finalize_delivery(self, event, authority, receipt, *, recovered=False):
+        from gateway.platforms.webhook_ingress import finalize_delivery
+        await finalize_delivery(self, event, authority, receipt, recovered=recovered)
 
     async def _end_webhook_session(self, event: MessageEvent, session_chat_id: str) -> None:
         from gateway.platforms.webhook_ingress import finalize_webhook

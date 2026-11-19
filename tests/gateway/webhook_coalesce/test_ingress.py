@@ -158,7 +158,7 @@ async def test_cancelled_http_retains_post_validation_admission(monkeypatch, mod
 
 
 @pytest.mark.asyncio
-async def test_unresolved_key_retry_reaches_ordinary_verifier(monkeypatch):
+async def test_unresolved_key_retry_reaches_ordinary_verifier(monkeypatch, caplog):
     adapter = _make_adapter(routes={'pr': _coalesce_route(key='missing')})
     prompts = []
 
@@ -173,8 +173,52 @@ async def test_unresolved_key_retry_reaches_ordinary_verifier(monkeypatch):
         assert first.status == 202 and retry.status == 503
         assert len(prompts) == 2 and prompts[0] != prompts[1]
         assert not adapter._coalescer.store.path.exists()
+        assert any(record.levelname == 'WARNING' and 'missing' in record.message
+                   and 'pr' in record.message and 'choose a key' in record.message for record in caplog.records)
+        assert all('opened' not in record.message and 'closed' not in record.message for record in caplog.records)
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [False, True])
+async def test_receipt_preparation_preserves_delivery_cache(monkeypatch, failure):
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.platforms import webhook_ingress
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+
+    adapter = _make_adapter(routes={'pr': _coalesce_route()})
+    app = web.Application()
+    mount_authority(app, adapter)
+    async with TestClient(TestServer(app)):
+        payload = {'pull_request': {'number': 7}, 'action': 'opened'}
+        outcome = await adapter._admit_agent_run(payload, 'prompt', 'receipt', 2.0,
+            route_config=adapter._routes['pr'], route_name='pr', profile=None, event_type='push')
+        assert outcome == 'accepted'
+        bound = await adapter._coalescer.binding('pr', None, 'receipt', payload)
+        adapter._delivery_info['unrelated'] = {'deliver': 'log'}
+        adapter._delivery_info_created['unrelated'] = 1.0
+        adapter._delivery_info_order.append((1.0, 'unrelated'))
+        before = (dict(adapter._delivery_info), dict(adapter._delivery_info_created), list(adapter._delivery_info_order))
+        prepared = webhook_ingress._prepared
+        snapshots = []
+
+        async def observe(authority, event):
+            result = await prepared(authority, event)
+            snapshots.append(result[0]['native_text_v1']['webhook_delivery'])
+            return result
+
+        monkeypatch.setattr(webhook_ingress, '_prepared', observe)
+        if failure:
+            def fail(*args):
+                raise RuntimeError('lookup failed')
+            monkeypatch.setattr(webhook_ingress, '_committed', fail)
+            with pytest.raises(RuntimeError, match='lookup failed'):
+                await adapter._coalescer.producer_seen(bound, 'pr', None, 'receipt', payload, 'prompt')
+        else:
+            assert await adapter._coalescer.producer_seen(bound, 'pr', None, 'receipt', payload, 'prompt')
+        assert snapshots == [bound.destination]
+        assert (dict(adapter._delivery_info), dict(adapter._delivery_info_created), list(adapter._delivery_info_order)) == before
 
 
 @pytest.mark.asyncio

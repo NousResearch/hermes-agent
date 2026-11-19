@@ -64,9 +64,8 @@ def parked_profile_refusal(runner, profile, route_config, admission_source):
     rejected target gets the answer the immediate route gives when admission refuses it.
     ``admission_source`` returns the ``SessionSource`` admission builds for this delivery
     (``WebhookAdapter._admission_source``), so ``profile_routes`` match here exactly as there. Answered
-    before the delivery id is recorded: coalesced, ``deliver_only`` and ``cron_job`` routes act before
-    (or without) an admission, so the in-memory id is their only replay guard, and a recorded id would
-    answer the provider's retry as a duplicate once the profile is served again."""
+    before recording a delivery id: coalesced routes use durable members and producer receipts, while
+    ``deliver_only`` and ``cron_job`` use in-memory ids. A refusal must not create a replay receipt."""
     from aiohttp import web
     if _prefix_not_served(runner, profile):
         error = f'Profile {profile} is not being served; retry this delivery'
@@ -310,29 +309,88 @@ def finalize_webhook(authority, receipt):
         generation=receipt.execution_generation, admission_epoch=receipt.authority_epoch, reason='webhook_complete')
 
 
-async def recover_webhook_finalizations(authority):
-    """Close settled original webhooks only after current route authorization succeeds."""
+async def authorize_recovered_webhook(authority, row):
     from gateway.session_envelope import check_native_route
     from gateway.session_contract import SessionRef
+    from gateway.session_authorities import authority_for_home
+
+    if authority.retiring or authority_for_home(authority.runner, authority_store(authority).scope.profile_dir) is not authority:
+        raise AuthorityRefusal('stale_epoch')
+    sid = row['target_session_id']
+    envelope = row['payload']['native_text_v1']
+    entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
+    if entry is None or authority.logical_owner(entry.session_id) != sid:
+        raise AuthorityRefusal('admission_conflict')
+    adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
+    target = authority.physical_target(SessionRef(authority.profile_id, sid))
+    await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
+    if authority.retiring or authority_for_home(authority.runner, authority_store(authority).scope.profile_dir) is not authority:
+        raise AuthorityRefusal('stale_epoch')
+    if adapter is None or entry.origin is None:
+        raise AuthorityRefusal('not_found')
+    return adapter, entry.origin
+
+
+def own_webhook_finalizer(adapter, event, authority, receipt, *, recovered=False):
+    key = (authority, receipt.admission_id)
+    if key in adapter._webhook_finalizers:
+        return
+    finalizer = (adapter._finalize_delivery(event, authority, receipt, recovered=True) if recovered
+                 else adapter._finalize_delivery(event, authority, receipt))
+    task = asyncio.create_task(finalizer)
+    adapter._webhook_finalizers[key] = task
+    adapter._background_tasks.add(task)
+    task.add_done_callback(adapter._background_tasks.discard)
+    task.add_done_callback(lambda done: adapter._webhook_finalizers.pop(key, None))
+
+
+async def finalize_delivery(adapter, event, authority, receipt, *, recovered=False):
+    import logging
+    try:
+        admissions = authority_store(authority).admissions
+        row = admissions.get(admission_id=receipt.admission_id)
+        if row.status in {'queued', 'started'}:
+            waiter = authority.waiters.setdefault(receipt.admission_id,
+                asyncio.get_running_loop().create_future())
+            row = admissions.get(admission_id=receipt.admission_id)
+            if row.status in {'queued', 'started'}:
+                await asyncio.shield(waiter)
+            row = admissions.get(admission_id=receipt.admission_id)
+        if recovered:
+            await authorize_recovered_webhook(authority, asdict(row))
+        event._webhook_receipt = (authority, authority._receipt(asdict(row)))
+        await adapter._end_webhook_session(event, event.source.chat_id)
+    except Exception:
+        logging.getLogger(__name__).exception('[webhook] Could not finalize admitted delivery %s', receipt.admission_id)
+
+
+async def recover_webhook_finalizations(authority):
+    """Own unsettled webhook receipts and close settled ones after route authorization."""
 
     admissions = authority_store(authority).admissions
     results = {}
-    for admission_id in admissions.unfinalized_webhook_admissions():
+    ids = set(admissions.unfinalized_webhook_admissions())
+    for sid in admissions.pending_targets(statuses=frozenset({'queued', 'started'})):
+        for record in admissions.list(session_id=sid):
+            envelope = record.payload.get('native_text_v1', {})
+            if (record.status in {'queued', 'started'} and envelope.get('source', {}).get('platform') == 'webhook'
+                    and 'automation' not in envelope):
+                ids.add(record.admission_id)
+    for admission_id in ids:
         record = admissions.get(admission_id=admission_id)
         if record is None:
             continue
         row = asdict(record)
         sid = row['target_session_id']
         try:
-            envelope = row['payload']['native_text_v1']
-            entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
-            if entry is None or authority.logical_owner(entry.session_id) != sid:
-                raise AuthorityRefusal('admission_conflict')
-            adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
-            target = authority.physical_target(SessionRef(authority.profile_id, sid))
-            await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
-            results[sid] = 'finalized' if finalize_webhook(
-                authority, authority._receipt(row)) else 'unchanged'
+            adapter, source = await authorize_recovered_webhook(authority, row)
+            receipt = authority._receipt(row)
+            if receipt.status in {'queued', 'started'}:
+                from gateway.platforms.event import MessageEvent
+                adapter._own_webhook_finalizer(MessageEvent(text='', source=source), authority, receipt, recovered=True)
+                results[sid] = 'pending'
+            else:
+                results[sid] = 'finalized' if finalize_webhook(authority, receipt) else 'unchanged'
         except (KeyError, AuthorityRefusal):
             results[sid] = 'unavailable'
     return results

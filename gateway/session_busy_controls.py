@@ -108,6 +108,27 @@ def show_reasoning_config(connection, ref, params, write):
     return {'key': 'show_reasoning', 'value': '1' if shown is True else '0', 'scope': 'session'}
 
 
+def _service_tier_applies(authority, ref, tier: str) -> bool:
+    from agent.fast_mode import STATIC_TIERS
+    if tier not in STATIC_TIERS:
+        return False
+    from gateway.session_local import effort_fields
+    from gateway.session_policy import policy_for_source
+    live = authority.sessions[ref.session_id]
+    has_agent_lookup = (getattr(authority.runner, '_resident_agent_for', None) is not None
+                        or getattr(authority.runner, '_cached_agent_for', None) is not None)
+    agent = authority.agent(ref) if has_agent_lookup else None
+    policy = policy_for_source(authority.runner, live.source)
+    config, model = policy.effective(authority, secrets=False) if policy is not None else ({}, None)
+    route = config.get('model') or {}
+    provider, base_url = route.get('provider'), route.get('base_url')
+    if not (policy is not None and policy.follows_profile):
+        model = getattr(agent, 'model', None) or model
+        provider = getattr(agent, 'provider', None) or provider
+        base_url = getattr(agent, 'base_url', None) or base_url
+    return bool(model) and effort_fields(None, tier, model, provider, base_url)['fast']
+
+
 def service_tier_config(connection, ref, params):
     """Session-scoped ``/fast`` (the classic CLI's tier pick, ``normal`` clears to normal): the
     session's service-tier override the next turn's agent reads (``current_service_tier``), never a
@@ -122,7 +143,11 @@ def service_tier_config(connection, ref, params):
     authorize(connection, ref, params, 'session:control')
     live = connection.authority.sessions[ref.session_id]
     connection.authority.runner._set_session_service_tier_override(live.route, tier or None)
-    live.event_stream.publish(ref.session_id, {'service_tier': tier or ''}, event_type='session.info')
+    live.event_stream.publish(
+        ref.session_id,
+        {'service_tier': tier or '', 'fast': _service_tier_applies(connection.authority, ref, tier or '')},
+        event_type='session.info',
+    )
     return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}
 
 

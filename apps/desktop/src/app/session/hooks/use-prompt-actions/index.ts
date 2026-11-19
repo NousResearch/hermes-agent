@@ -210,9 +210,10 @@ export async function uploadComposerAttachment(
     // A large paste is saved on disk as `pasted_content_<stamp>_<hex>.txt` but
     // its chip label is the localized display string ("Pasted content
     // (23.7 KB)"). The gateway stages the file under `file.attach`'s `name`,
-    // so staging under the label drops the `.txt` extension and the preview
-    // panel cannot resolve the file (#157667). Stage pasted content under
-    // its on-disk basename; the label stays the display string.
+    // so staging under the label drops the `.txt` extension; the reported
+    // symptom is that the preview panel cannot resolve the file ("Preview
+    // unavailable" / 404, #157667). Stage pasted content under its on-disk
+    // basename; the label stays the display string.
     const stagedName = isPastedContentPath(path) ? pathLabel(path) : label
 
     const result = await requestGateway<FileAttachResponse>('file.attach', {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import logging
 
@@ -11,20 +12,25 @@ import pytest
 from gateway import status as gateway_status
 from tests.gateway.status_report.support import (
     AFTER_INTERVAL_S,
+    FAULT_PATH,
     QUICK_RETRY_S,
     RESPONSES,
     Receiver,
     Reply,
+    Watcher,
     a_status_source,
     assert_matches_contract,
     make_reporter,
     settle,
     told,
 )
+from tests.waiting import async_wait_until
 
 pytestmark = pytest.mark.asyncio
 
 GOODBYE_QUIET_S = RESPONSES["goodbye_quiet_s"]
+# Past the longest interval a receiver can set, jitter included.
+AFTER_THE_LONGEST_INTERVAL_S = RESPONSES["interval_max_s"] * 1.1 + 1
 
 
 async def test_a_goodbye_is_one_bounded_report_with_no_retry(clock):
@@ -218,6 +224,67 @@ async def test_a_beat_still_being_prepared_when_the_goodbye_goes_out_is_not_sent
     assert receiver.kinds == ["beat", "goodbye", "beat"]
     goodbye_seq, wake_seq = (seen.body["seq"] for seen in receiver.requests[1:])
     assert wake_seq > goodbye_seq
+
+async def test_a_beat_whose_status_read_failed_after_the_goodbye_keeps_the_quiet_minute(clock):
+    """A beat can fail after a goodbye overtook it. The goodbye set the next beat for the end of
+    its quiet minute, and that failure must not push it back out to a told 600 s."""
+    receiver = Receiver()
+    receiver.reply_with(told(RESPONSES["interval_max_s"]))
+    loop = asyncio.get_running_loop()
+    reads, reporter = [], None
+
+    async def say_goodbye() -> None:
+        reporter.goodbye()
+
+    def source() -> dict:
+        reads.append("read")
+        if len(reads) == 2:  # the second beat's read: the goodbye goes out, then the read fails
+            asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
+            raise OSError(errno.EIO, "Input/output error", FAULT_PATH)
+        return a_status_source()
+
+    reporter = make_reporter(receiver, source=source)
+    async with Watcher(reporter) as watcher:
+        await async_wait_until(lambda: receiver.answered == 1, timeout=5, what="the first beat")
+        clock.advance(AFTER_THE_LONGEST_INTERVAL_S)
+        await async_wait_until(lambda: receiver.kinds == ["beat", "goodbye"], timeout=5, what="the goodbye")
+        await watcher.polls_on()
+
+        clock.advance(GOODBYE_QUIET_S + 1)
+
+        await async_wait_until(lambda: receiver.kinds == ["beat", "goodbye", "beat"], timeout=5,
+                               what="a beat once the quiet minute is over")
+
+
+async def test_a_beat_that_could_not_confirm_the_lock_after_the_goodbye_keeps_the_quiet_minute(clock, monkeypatch):
+    receiver = Receiver()
+    receiver.reply_with(told(RESPONSES["interval_max_s"]))
+    loop = asyncio.get_running_loop()
+    tries, reporter = [], None
+
+    async def say_goodbye() -> None:
+        reporter.goodbye()
+
+    def take_the_lock(scope, identity):
+        tries.append(scope)
+        if len(tries) == 2:  # the second beat's confirmation: the goodbye goes out, then it fails
+            asyncio.run_coroutine_threadsafe(say_goodbye(), loop).result(timeout=5)
+            return False, None
+        return gateway_status.acquire_scoped_lock(scope, identity)
+
+    monkeypatch.setattr("gateway.status_report.reporter.acquire_scoped_lock", take_the_lock)
+    reporter = make_reporter(receiver)
+    await reporter.poll()
+    clock.advance(AFTER_THE_LONGEST_INTERVAL_S)
+    await reporter.poll()
+    await settle()
+    assert receiver.kinds == ["beat", "goodbye"]
+
+    clock.advance(GOODBYE_QUIET_S + 1)
+    await reporter.poll()
+
+    assert receiver.kinds == ["beat", "goodbye", "beat"]
+
 
 async def test_a_wait_asked_for_by_a_beat_answered_after_the_goodbye_is_kept(clock):
     """The quiet minute only brings the next beat forward from the interval: a wait the receiver asks

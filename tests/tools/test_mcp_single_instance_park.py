@@ -103,23 +103,59 @@ def test_single_instance_conflict_parks_quietly_and_never_self_probes(monkeypatc
     asyncio.run(_scenario())
 
 
-def test_park_probe_backoff_doubles_and_caps(monkeypatch):
-    """The parked self-probe wait doubles per consecutive still-failed probe and caps, then
-    resets once a session proves healthy — so a non-single-instance server also stops hammering."""
+@pytest.mark.no_isolate
+def test_parked_initial_failure_spawns_once_per_wake_with_backoff(monkeypatch, tmp_path):
+    """A server that never connects runs the initial ladder ONCE; each later self-probe spawns a
+    single child and the wait between probes doubles up to the cap. Re-running the whole ladder
+    every wake respawned a doomed `npx` 4x per interval forever (hermes-official-plugins#401)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
     from tools import mcp_tool
+    from tools import mcp_tool_config as _config
 
-    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 300)
-    monkeypatch.setattr(mcp_tool, "_PARKED_PROBE_BACKOFF_MAX", 1000)
+    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.01)
+    monkeypatch.setattr(mcp_tool, "_PARKED_PROBE_BACKOFF_MAX", 0.04)
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"npx-srv": {"command": "npx"}})
+    _real_sleep = asyncio.sleep
 
-    srv = MCPServerTask("srv")
-    assert srv._next_park_probe_timeout() == 300  # first probe at base cadence
-    srv._parked_probe_failures = 1
-    assert srv._next_park_probe_timeout() == 600
-    srv._parked_probe_failures = 2
-    assert srv._next_park_probe_timeout() == 1000  # 1200 capped
-    srv._parked_probe_failures = 20
-    assert srv._next_park_probe_timeout() == 1000
+    async def _fast_sleep(_delay, *a, **kw):
+        await _real_sleep(0)
 
-    srv._mark_session_proven()
-    assert srv._parked_probe_failures == 0
-    assert srv._next_park_probe_timeout() == 300
+    monkeypatch.setattr(mcp_tool.asyncio, "sleep", _fast_sleep)
+
+    spawns_per_park, timeouts = [0], []
+    _real_wait = MCPServerTask._wait_for_reconnect_or_shutdown
+
+    async def _recording_wait(self, timeout=None):
+        if timeout is not None:
+            timeouts.append(timeout)
+            spawns_per_park.append(0)
+        return await _real_wait(self, timeout=timeout)
+
+    monkeypatch.setattr(MCPServerTask, "_wait_for_reconnect_or_shutdown", _recording_wait)
+
+    async def _scenario():
+        class _Task(MCPServerTask):
+            def _is_http(self):
+                return False
+
+            def _deregister_tools(self):
+                self._registered_tool_names = []
+
+            async def _run_stdio(self, config):
+                spawns_per_park[-1] += 1
+                raise RuntimeError("npm error code EALLOWREMOTE")
+
+        task = _Task("npx-srv")
+        run_task = asyncio.ensure_future(task.run({"command": "npx", "args": ["-y", "pkg@1.0.0"]}))
+        while len(timeouts) < 6:
+            await _real_sleep(0.005)
+        task._shutdown_event.set()
+        task._reconnect_event.set()
+        await asyncio.wait_for(run_task, timeout=15)
+
+    asyncio.run(_scenario())
+
+    assert spawns_per_park[0] == mcp_tool._MAX_INITIAL_CONNECT_RETRIES + 1
+    assert spawns_per_park[1:5] == [1, 1, 1, 1], spawns_per_park
+    assert timeouts[:5] == [0.01, 0.02, 0.04, 0.04, 0.04], timeouts

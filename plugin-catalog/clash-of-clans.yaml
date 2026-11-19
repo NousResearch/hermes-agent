@@ -1,6 +1,6 @@
 name: clash-of-clans
 repo: https://github.com/cruzlxyz/ClashOfClans
-sha: 2b12e7086f17cfc2c4ec106d36cae247416a1eb5
+sha: fc0c7c2e6135d314860bb5ba4b813e7a950b85f9
 description: 'Community plugin for Hermes Agent — Clash of Clans player, clan, war, league, ranking data and upgrade timers via the official Supercell API.'
 maintainer: cruzlxyz
 tier: community
@@ -8,7 +8,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/cruzlxyz/ClashOfClans
 version: "1.0.0"
-image: https://raw.githubusercontent.com/cruzlxyz/ClashOfClans/2b12e7086f17cfc2c4ec106d36cae247416a1eb5/assets/banner.jpg
+image: https://raw.githubusercontent.com/cruzlxyz/ClashOfClans/fc0c7c2e6135d314860bb5ba4b813e7a950b85f9/assets/banner.jpg
 readme: true
 platforms: []
 title: "Clash Of Clans"

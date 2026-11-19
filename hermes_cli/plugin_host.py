@@ -411,9 +411,13 @@ class PluginHost:
         if method == "session_event":
             return self._serve_session_event(params)
         if method == "dispose":
-            handle = self._handles.pop(int(params["handle"]), None)
+            handle_id = int(params['handle'])
+            handle = self._handles.get(handle_id)
             if handle is not None:
+                if handle.kind != 'skill_catalog':
+                    self._handles.pop(handle_id, None)
                 handle.dispose()
+                self._handles.pop(handle_id, None)
             return None
         raise ValueError(f"unknown plugin host request {method!r}")
 

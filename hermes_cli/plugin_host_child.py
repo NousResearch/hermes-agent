@@ -58,8 +58,10 @@ class RemoteRegistration:
     def dispose(self) -> None:
         if self._disposed:
             return
-        self._disposed = True
+        if self.kind != 'skill_catalog':
+            self._disposed = True
         self._runtime.channel.call("dispose", {"handle": self._id})
+        self._disposed = True
 
 
 class RemoteFacade:

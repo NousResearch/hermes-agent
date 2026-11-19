@@ -31,13 +31,29 @@ class Mutations:
         self._permit = None
         self._accepted = {}
         self._closed = False
+        # Capture this exact Popen, not host.alive (a broken channel is not death)
+        # or a host's replaceable current process. Never release an orphan writer.
+        from hermes_cli.plugin_host import is_hosted_object
+        provider = getattr(entry, 'provider', None)
+        slot = object.__getattribute__(provider, '__hermes_plugin_host_ref__') if is_hosted_object(provider) else None
+        self._writer_process = slot._host._proc if slot is not None else None
         self._thread = spawn_context_thread(self._run, name='skill-catalog-permits')
         self._thread.start()
 
     def _run(self):
         while True:
-            command = self._queue.get()
             try:
+                command = self._queue.get(timeout=0.1 if self._permit is not None else None)
+            except queue.Empty:
+                try:
+                    self._release_dead_writer()
+                except CatalogError:
+                    # Failed publication retains the durable bound reservation.
+                    # The worker must still accept close/retry commands.
+                    pass
+                continue
+            try:
+                self._release_dead_writer()
                 command.result = getattr(self, '_do_' + command.method)(command.payload)
             except Exception as exc:  # health: allow BLE001 -- relay the exact exception to the waiting caller, never kill the lock owner
                 command.error = exc
@@ -45,6 +61,13 @@ class Mutations:
                 command.done.set()
             if command.method == 'close' and command.error is None:
                 return
+
+    def _release_dead_writer(self):
+        process = self._writer_process
+        if process is not None and process.poll() is not None:
+            self.entry.stopped = True
+            if self._permit is not None:
+                self._do_release(dict(permit_id=self._permit['id']))
 
     def _send(self, method, payload):
         if self._closed and method != 'close':

@@ -77,7 +77,15 @@ def lookup(profile, *, deadline=None):
     # secret hydration belongs to the bounded worker, not the request or ASGI loop.
     home = get_hermes_home() if _is_current_profile(profile) else _resolve_profile_dir(profile.strip())
     service = Service(home)
-    if service.entries():
+    entries = service.entries()
+    # A local registry miss is not proof of no provider: another serving process
+    # may own the actual OS lease. Never send its identifiers to the stock hub.
+    from hermes_cli.skill_catalog.projection import Projection
+    from hermes_cli.skill_catalog.validation import CatalogError
+    registrations = Projection(home).read()['registrations']
+    if registrations.keys() - {entry.registration_id for entry in entries}:
+        raise CatalogError('provider_unavailable', 'Catalog provider is served by another process.')
+    if entries:
         return service
     key = hermes_home_key(home)
     with _lock:

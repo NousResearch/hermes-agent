@@ -120,6 +120,8 @@ def test_installed_row_reports_reconciling_local_commit(_isolate_hermes_home):
             commit.settle(dict(operation_id=op, identifier=record['identifier'], action='update',
                 state='pending', outcome=None, managed_state='installed', message='',
                 installation_revision='install-2'))
+        entry.provider.installed = lambda request: dict(ok=True, data=dict(
+            items=[record | {'installation_revision': 'install-2'}], next_cursor=None))
         rows = asyncio.run(get_skills())
         assert rows[0]['settlement'] == 'reconciling'
         assert rows[0]['provenance'] == 'provider'

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import Params, Result
+from .common import CanonicalClientIdentity
 from .registry import method
 
 
@@ -36,6 +37,11 @@ class ClientCapabilitiesParams(Params):
     #: private control socket; it is what makes the welcome trial and first-run onboarding available
     #: in a gateway that also serves the CLI, the TUI and bots.
     desktop_local: bool = False
+    #: Which client this connection is (``{name, version?, kind?}``), kept for the connection's life. A
+    #: self-declared label for attribution only: it grants nothing. Sent as its own call, so a backend
+    #: older than the field refuses only that call; a malformed one answers ``4001`` and keeps the
+    #: identity the connection already had.
+    client: CanonicalClientIdentity | None = None
 
 
 class ClientCapabilitiesResult(Result):

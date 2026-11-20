@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import RootModel
 
 from .base import JsonValue, Params, Result
-from .common import ProfileParams, TranscriptMessage
+from .common import CanonicalClientIdentity, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
 from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
@@ -17,17 +17,6 @@ from .registry import canonical_method
 
 class CanonicalSessionParams(ProfileParams):
     session_id: str
-
-
-class CanonicalClientIdentity(Params):
-    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
-    printable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and
-    ``mobile`` are known; another is kept off the label, not refused). Attribution only (owners
-    advertising ``session-client-v1``)."""
-
-    name: str
-    version: str | None = None
-    kind: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):

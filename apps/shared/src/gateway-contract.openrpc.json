@@ -8433,7 +8433,7 @@
       },
       "CanonicalClientIdentity": {
         "additionalProperties": false,
-        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and\n``mobile`` are known; another is kept off the label, not refused). Attribution only (owners\nadvertising ``session-client-v1``).",
+        "description": "A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64\nprintable ASCII without spaces, ``kind`` is 1-32 characters (``desktop``, ``webapp``, ``tui`` and\n``mobile`` are known; another is kept off the label, not refused). Attribution only: on\n``session.create`` (owners advertising ``session-client-v1``) and in the per-connection hello\n(``client.capabilities`` ``client``).",
         "properties": {
           "name": {
             "title": "Name",
@@ -12658,6 +12658,17 @@
             "default": false,
             "title": "Desktop Local",
             "type": "boolean"
+          },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "ClientCapabilitiesParams",

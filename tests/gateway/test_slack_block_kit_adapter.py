@@ -103,6 +103,24 @@ class TestSendMessageBlocks:
         assert feedback["elements"][0]["action_id"] == "hermes_feedback"
 
 
+    @pytest.mark.asyncio
+    async def test_msg_blocks_too_long_retries_send_without_blocks(self):
+        adapter, client = _make_adapter({"rich_blocks": True})
+        client.chat_postMessage = AsyncMock(
+            side_effect=[SlackRejectedBlocks("msg_blocks_too_long"), {"ts": "111.222"}]
+        )
+
+        result = await adapter.send("C1", RICH_TABLE_MD)
+
+        assert result.success is True
+        assert client.chat_postMessage.await_count == 2
+        first = client.chat_postMessage.await_args_list[0].kwargs
+        second = client.chat_postMessage.await_args_list[1].kwargs
+        assert "blocks" in first and first["blocks"]
+        assert "blocks" not in second  # send drops blocks entirely (edit retries with [])
+        assert second["text"]
+
+
 class TestEditMessageBlocks:
     @pytest.mark.asyncio
     async def test_intermediate_edit_no_blocks(self):

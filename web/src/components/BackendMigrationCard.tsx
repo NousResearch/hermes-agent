@@ -181,18 +181,22 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         onCancel={() => setConfirm(null)}
         onConfirm={() => void move(confirm?.force ?? false)}
         title="Move to a single Hermes?"
-        description={confirmText(p?.old_address, confirm?.force ?? false)}
+        description={confirmText(p?.old_address, confirm?.force ?? false, p?.running_turns === null)}
         confirmLabel="Move now"
       />
     </Card>
   );
 }
 
-function confirmText(oldAddress: string | null | undefined, force: boolean): string {
+function confirmText(oldAddress: string | null | undefined, force: boolean, turnsUnknown: boolean): string {
+  // Forced past unknown activity: the engine's own warning, never read as idle.
+  const forced = turnsUnknown
+    ? " The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted."
+    : " Replies being written right now are cut off.";
   return (
     `This page stops working while Hermes takes over ${oldAddress ?? "this address"}; ` +
     "afterwards you sign in again at this same address. If anything goes wrong, everything is put back." +
-    (force ? " Replies being written right now are cut off." : "")
+    (force ? forced : "")
   );
 }
 

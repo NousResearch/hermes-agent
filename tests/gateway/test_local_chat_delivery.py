@@ -30,7 +30,6 @@ async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
 
 
 async def _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch, *extra_events):
-    """(task id, the notification an idle classic CLI queues for each message.start)."""
     import queue
     from types import SimpleNamespace
     from hermes_cli import kanban_db as kb

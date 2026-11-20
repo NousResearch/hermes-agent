@@ -142,3 +142,25 @@ test('wait times out when no callback arrives', async () => {
   assert.equal(result.code, null)
   assert.match(String(result.error), /timeout/)
 })
+
+test('a response_mode=form_post callback delivers the posted code and state', async () => {
+  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+
+  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+    code: null | string
+    iss: null | string
+    state: null | string
+  }>
+
+  const res = await fetch(redirectUri, {
+    body: 'code=posted&state=st-2&iss=https%3A%2F%2Fas.example',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    method: 'POST'
+  })
+
+  assert.equal(res.status, 200)
+
+  const result = await waitPromise
+
+  assert.deepEqual([result.code, result.state, result.iss], ['posted', 'st-2', 'https://as.example'])
+})

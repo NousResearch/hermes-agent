@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -18,21 +19,54 @@ from typing import Optional
 logger = logging.getLogger("cron.scheduler")
 
 
-def _parse_wake_gate(script_output: str) -> bool:
-    """Wake gate: False only if the last non-empty stdout line is JSON ``{"wakeAgent": false}``
-    (agent skipped entirely — no LLM run, no delivery); anything else wakes normally.
+@dataclass(frozen=True)
+class WakeGate:
+    """A script's parsed last-line gate. ``wake``: run the agent. ``context``: the gate's compact
+    payload for the agent (objects JSON-dumped), None when absent. ``data``: what the agent sees
+    as the script's output: ``context`` when present, else stdout minus a pure gate line."""
+    wake: bool
+    context: Optional[str]
+    data: str
 
-    Any other output (non-JSON, missing flag, gate absent, or ``wakeAgent: true``) means wake the agent
-    normally. See #1232.
-    """
-    stripped_lines = [line for line in (script_output or "").splitlines() if line.strip()]
-    if not stripped_lines:
-        return True
+
+# A last line holding only these keys is control, not data, and is never echoed to the agent.
+_GATE_KEYS = frozenset({"wakeAgent", "context"})
+
+
+def _render_gate_context(value) -> Optional[str]:
+    if value is None:
+        return None
+    return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def parse_wake_gate(script_output: Optional[str]) -> WakeGate:
+    """Parse the last non-empty stdout line as JSON ``{"wakeAgent": bool, "context": ...}``. Only
+    ``wakeAgent: false`` skips the agent (no LLM run, no delivery); non-JSON, a missing flag or no
+    gate wakes it normally (#1232). A gate line carrying other keys stays visible as data."""
+    output = script_output or ""
+    lines = output.splitlines()
+    last = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    if last is None:
+        return WakeGate(True, None, output)
     try:
-        gate = json.loads(stripped_lines[-1].strip())
+        gate = json.loads(lines[last].strip())
     except (json.JSONDecodeError, ValueError):
-        return True
-    return not isinstance(gate, dict) or gate.get("wakeAgent", True) is not False
+        return WakeGate(True, None, output)
+    if not isinstance(gate, dict):
+        return WakeGate(True, None, output)
+    context = _render_gate_context(gate.get("context"))
+    if context is not None:
+        data = context
+    elif "wakeAgent" in gate and set(gate) <= _GATE_KEYS:
+        data = "\n".join(lines[:last]).strip()
+    else:
+        data = output
+    return WakeGate(gate.get("wakeAgent", True) is not False, context, data)
+
+
+def _parse_wake_gate(script_output: Optional[str]) -> bool:
+    """False only when the script's gate line says ``{"wakeAgent": false}``."""
+    return parse_wake_gate(script_output).wake
 
 
 def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> str:
@@ -87,6 +121,16 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
         f"**Run Time:** {now_iso}\n"
         f"**Mode:** {mode}\n"
     )
+
+
+def _script_failure_result(
+    job_id: str, job_name: str, error: str, mode: str) -> tuple[bool, str, str, Optional[str]]:
+    """Failed run for a script that exited non-zero or timed out (no_agent job or an agent job's
+    gate): no model runs, and the failure lane delivers one throttled alert per incident."""
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    doc = f"{_job_doc_header(job_name, job_id, now_iso, mode)}**Status:** script failed\n\n{error}\n"
+    alert = f"⚠ Cron watchdog '{job_name}' script failed\n\n{error}\n\nTime: {now_iso}"
+    return False, doc, alert, error
 
 
 def _archive_answer(archive: str) -> str | None:
@@ -347,8 +391,12 @@ def _build_job_prompt(
             if success
             else ("Script Error", "The data-collection script failed. Report this to the user.")
         )
-        prompt = _prepend_context_block(prompt, heading, intro, script_output)
-        has_injected_data = True
+        # A woken gate shows the agent its context (or the data above the gate line), never
+        # the gate line; a bare {"wakeAgent": true} wakes the agent with no data block.
+        data = parse_wake_gate(script_output).data if success else script_output
+        if data:
+            prompt = _prepend_context_block(prompt, heading, intro, data)
+            has_injected_data = True
 
     prompt, _ctx_injected = _inject_context_from(job, prompt)
     has_injected_data = has_injected_data or _ctx_injected

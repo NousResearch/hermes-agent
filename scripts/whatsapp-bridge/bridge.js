@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, generateMessageIDV2, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -34,7 +34,10 @@ import { createInterface } from 'node:readline/promises';
 import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
-import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import {
+  classifyFromMeGroupGate,
+  classifyOwnerMessageGate,
+} from './owner_message_gate.js';
 import { bridgeAuthProof, createBridgeAuthMiddleware } from './bridge_auth.js';
 import {
   addMentions,
@@ -81,7 +84,7 @@ const WHATSAPP_DEBUG =
 // TTL flows. Default OFF: existing deployments see no behavior change.
 //
 // Heuristic limitation: we distinguish bot-API-sent from owner-typed by
-// looking up `key.id` in `recentlySentIds` (populated when /send returns).
+// looking up `key.id` in `recentlySentIds` (registered before transmission).
 // On bridge restart that set is empty, so a few in-flight bot replies may
 // briefly look like owner-typed until they age out. Acceptable; we don't
 // persist the set.
@@ -96,6 +99,12 @@ const SEND_READ_RECEIPTS =
   process.env &&
   typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
+
+// Internal bridge flag populated from whatsapp.process_from_me_groups in
+// config.yaml. Same-account group messages remain disabled by default.
+const PROCESS_FROM_ME_GROUPS = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WHATSAPP_PROCESS_FROM_ME_GROUPS || '').trim().toLowerCase(),
+);
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -189,10 +198,14 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
+  return enqueueSend(() => {
+    // A timeout does not cancel Baileys: reserve the ID before it can emit an
+    // echo, and retain it even if the HTTP request fails before the send settles.
+    const messageId = options.messageId || generateMessageIDV2(sock.user?.id);
+    rememberSentId(messageId);
+    return Promise.race([sock.sendMessage(chatId, payload, { ...options, messageId }), timeoutPromise])
+      .finally(() => clearTimeout(timer));
+  });
 }
 
 function formatOutgoingMessage(message) {
@@ -631,16 +644,34 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        if (chatId.includes('status')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: 'from_me_status',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
         }
 
-        if (WHATSAPP_MODE === 'bot') {
+        if (isGroup) {
+          const decision = classifyFromMeGroupGate({
+            mode: WHATSAPP_MODE,
+            enabled: PROCESS_FROM_ME_GROUPS,
+            recentlySent: recentlySentIds,
+            messageId: msg.key.id,
+          });
+          if (decision.action !== 'forward_group') {
+            emitDebugEvent({
+              stage: 'ignored',
+              reason: decision.action === 'drop_echo' ? 'agent_echo' : 'from_me_group',
+              chatId: redactWhatsAppId(chatId),
+              messageId: msg.key.id,
+            });
+            continue;
+          }
+          // The Python adapter remains authoritative for group_policy,
+          // group_allow_from, and mention requirements.
+        } else if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate bot number. fromMe inbound is either
           //   (a) an echo of our own /send (recentlySentIds will catch it), or
           //   (b) a message the owner typed from their own phone using the

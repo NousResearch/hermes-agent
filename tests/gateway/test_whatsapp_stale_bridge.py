@@ -482,6 +482,23 @@ class TestConfigFingerprintAdoption:
         assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("previous,current", [(False, True), (True, False), (True, True)])
+    async def test_same_account_group_config_controls_bridge_adoption(self, tmp_path, monkeypatch, previous, current):
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        monkeypatch.delenv("WHATSAPP_PROCESS_FROM_ME_GROUPS", raising=False)
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        adapter.config.extra = {"process_from_me_groups": previous}
+        self._record_fingerprint(adapter, adapter._bridge_env())
+        adapter.config.extra["process_from_me_groups"] = current
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is (previous == current)
+
+    @pytest.mark.asyncio
     async def test_restarts_bridge_when_package_json_changed(self, tmp_path, capsys):
         """_ensure_bridge_deps() reinstalls node_modules on package.json drift; the running bridge
         still holds the old modules, so it must not be adopted either."""
@@ -595,7 +612,7 @@ class TestConfigFingerprintAdoption:
     @pytest.mark.parametrize("key", [
         "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOWED_USERS",
         "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_SEND_READ_RECEIPTS", "WHATSAPP_DEBUG",
-        "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH", "WHATSAPP_CHUNK_DELAY_MS",
+        "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_PROCESS_FROM_ME_GROUPS", "WHATSAPP_MAX_MESSAGE_LENGTH", "WHATSAPP_CHUNK_DELAY_MS",
         "WHATSAPP_SEND_TIMEOUT_MS", "HERMES_IMAGE_CACHE_DIR", "HERMES_AUDIO_CACHE_DIR", "HERMES_DOCUMENT_CACHE_DIR",
     ])
     def test_every_key_bridge_js_reads_at_startup_is_fingerprinted(self, key):

@@ -661,10 +661,9 @@ jobs:
         if: >-
           ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
           && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
-          # the action's default buildx (v0.23.0) fails to push manifest lists to Docker Hub
-          buildx-version: 0dbe87f36ed472fe36b6796c3f70b4210a731fc5 # v0.38.1
+          driver: docker  # no builder: imagetools then reads no registry config
       - name: Log in to Docker Hub for the canary aliases
         if: >-
           ${{ !cancelled() && needs.admit.outputs.policy == 'canary'

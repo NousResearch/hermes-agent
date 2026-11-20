@@ -288,8 +288,8 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
 
     # no_agent jobs never reach a model, so provider errors are structurally impossible for them:
     # gate on job MODE before classifying, or a script's own wording ("429", "timed out") would
-    # blame the wrong subsystem.
-    if not job.get("no_agent"):
+    # blame the wrong subsystem. A failed gate script ("Script exited ...") never reached one either.
+    if not job.get("no_agent") and not lower.startswith("script "):
         notice = provider_failure_notice(
             job_name, job_id, classify_cron_failure_reason(text),
             backup_provider_phrase=_fallback_chain_phrase(job), provider=job.get("provider"))
@@ -1465,8 +1465,8 @@ def _run_no_agent_job(
     job: dict, job_id: str, job_name: str, cancel_event,
 ) -> tuple[bool, str, str, Optional[str]]:
     """no_agent short-circuit — the script IS the job (no AIAgent, no tokens). stdout → delivered
-    verbatim; empty stdout or wakeAgent=false → silent success; non-zero exit/timeout → error alert.
-    """
+    verbatim (a gate line's ``context`` instead, when it has one); empty stdout or wakeAgent=false →
+    silent success; non-zero exit/timeout → error alert."""
     # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
     # reload never runs for no_agent jobs. Does not override existing values.
     try:
@@ -1492,22 +1492,16 @@ def _run_no_agent_job(
         logger.exception("Job '%s': script execution raised unexpectedly", job_id)
         ok, output = False, f"Script execution failed: {exc}"
 
-    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
-    header = _job_doc_header(job_name, job_id, now_iso, "no_agent (script)")
+    if not ok:  # deliver the error: a silently broken watchdog is the worst-case outcome
+        return _script_failure_result(job_id, job_name, output, "no_agent (script)")
+    header = _job_doc_header(
+        job_name, job_id, _hermes_now().strftime("%Y-%m-%d %H:%M:%S"), "no_agent (script)")
 
-    if not ok:
-        # Deliver the error: a silently broken watchdog is the worst-case outcome.
-        alert = (
-            f"⚠ Cron watchdog '{job_name}' script failed\n\n"
-            f"{output}\n\n"
-            f"Time: {now_iso}"
-        )
-        return False, f"{header}**Status:** script failed\n\n{output}\n", alert, output
-
-    # wakeAgent=false is a silent signal, same as empty stdout.
-    if not _parse_wake_gate(output):
+    gate = parse_wake_gate(output)  # wakeAgent=false is a silent signal, same as empty stdout
+    if not gate.wake:
         logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
         return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
+    output = output if gate.context is None else gate.context
 
     if not output.strip():
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -2239,7 +2233,9 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
+        if not _ran_ok:  # a broken gate alerts like a no_agent watchdog; the paid agent never wakes
+            return _script_failure_result(job_id, job_name, _script_output, "script gate"), None
+        if not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)
             silent_doc = (
@@ -4344,7 +4340,7 @@ from cron.scheduler_script import (
 from cron.scheduler_prompt import (
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,
     _RESPONSE_TERMINATOR, _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil,
-    _job_doc_header, _parse_wake_gate,
+    _job_doc_header, _parse_wake_gate, _script_failure_result, parse_wake_gate,
 )
 from cron.scheduler_preflight import (
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

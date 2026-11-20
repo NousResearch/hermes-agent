@@ -17,7 +17,7 @@ Anticipate needs: trip moments, owed replies, watched pages.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/proactive-watchers` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
+| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Proactive`, `Cron`, `Reminders`, `Travel`, `Inbox`, `Watchers` |

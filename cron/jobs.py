@@ -1802,6 +1802,7 @@ def create_job(
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
     wrap_response: Optional[bool] = None,
+    first_run_at: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1814,7 +1815,8 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it."""
+    (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it.
+    first_run_at: the first run a user already approved (still in the future); else computed now."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1857,8 +1859,8 @@ def create_job(
     name = name or label_source[:50].strip()
     if pinned and not f["model"]:
         f["provider"], f["model"] = _main_model_pin()
-    next_run_at = _next_run_or_reject_past_oneshot(
-        parsed_schedule, name, schedule, "", f["timezone"])
+    next_run_at = first_run_at if first_run_at and _parse_aware(first_run_at) > _hermes_now() else (
+        _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "", f["timezone"]))
 
     job = {
         "id": job_id,

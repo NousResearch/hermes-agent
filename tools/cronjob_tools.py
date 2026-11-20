@@ -710,9 +710,14 @@ def _action_create(a: dict[str, Any]) -> str:
     context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
-    # A model-initiated create asks the user only once the job would actually save.
-    if a["approve"] is not None and (refusal := a["approve"](a)) is not None:
-        return refusal
+    # A model-initiated create asks the user only once the job would actually save, and saves the
+    # first run the card showed: a relative one-shot ("in 2h") is pinned before asking, so the wait
+    # for an answer does not move it.
+    if a["approve"] is not None:
+        a["schedule"] = _pinned_one_shot(a["schedule"])
+        a["first_run_at"] = _first_run_at(a["schedule"], a["timezone"])
+        if (refusal := a["approve"](a)) is not None:
+            return refusal
 
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
@@ -737,6 +742,7 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
+            first_run_at=a.get("first_run_at"),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -1306,7 +1312,25 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response", "script_content")
 
 
-def _approval_when(parsed: dict[str, Any], timezone: Any) -> str:
+def _pinned_one_shot(schedule: str) -> str:
+    """A one-shot schedule as its absolute instant; recurring (or unparseable, reported by create)
+    schedules unchanged."""
+    try:
+        parsed = parse_schedule(str(schedule))
+    except ValueError:
+        return schedule
+    return parsed["run_at"] if parsed.get("kind") == "once" and parsed.get("run_at") else schedule
+
+
+def _first_run_at(schedule: str, timezone: Any) -> Optional[str]:
+    """The first run as of now: the instant the card shows and, once approved, the job keeps."""
+    try:
+        return compute_next_run(parse_schedule(str(schedule)), timezone=timezone)
+    except ValueError:
+        return None  # create reports the bad schedule or zone itself
+
+
+def _approval_when(parsed: dict[str, Any], timezone: Any, first: Optional[str]) -> str:
     """The schedule as the user will experience it: its own wording plus the first run in the
     profile's clock with the zone named, so an offset timestamp or a pinned zone is never read as
     local time."""
@@ -1314,7 +1338,6 @@ def _approval_when(parsed: dict[str, Any], timezone: Any) -> str:
     when = parsed.get("display", "")
     if isinstance(timezone, str) and timezone.strip():
         when += f" {timezone.strip()}"
-    first = compute_next_run(parsed, timezone=timezone)
     if first:
         local = datetime.fromisoformat(first).astimezone(hermes_now().tzinfo)
         when += f", first run {local.strftime('%a %b %d %H:%M %Z')}"
@@ -1331,8 +1354,7 @@ def _approval_task(args: dict[str, Any]) -> str:
     if args.get("no_agent"):
         return f"runs script {script}{shown}"
     skills = ", ".join(_canonical_skills(args.get("skill"), args.get("skills")))
-    task = " ".join(str(args.get("prompt") or "").split())
-    task = task if len(task) <= 300 else task[:299] + "…"
+    task = str(args.get("prompt") or "").strip()  # whole: it is what the user consents to; surfaces page it
     task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
     return (f"{task} (after running script {script})" if script else task) + shown
 
@@ -1354,7 +1376,8 @@ def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
     try:
         parsed = parse_schedule(str(args.get("schedule") or ""))
         validate_schedule_knobs(parsed, args.get("timezone"), args.get("grace_minutes"))
-        when, repeat = _approval_when(parsed, args.get("timezone")), normalize_repeat_value(args.get("repeat"))
+        when = _approval_when(parsed, args.get("timezone"), args.get("first_run_at"))
+        repeat = normalize_repeat_value(args.get("repeat"))
     except ValueError:
         return None  # create reports the bad schedule itself; nothing is saved
     runs = f", {repeat} runs" if repeat and repeat > 1 else ""

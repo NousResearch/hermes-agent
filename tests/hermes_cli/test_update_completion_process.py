@@ -86,6 +86,7 @@ def transition(tmp_path):
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
         "collect_superseded_generations = lambda root: event('collect')\n"
+        "record_failed_sync = lambda root: event('sync_failed')\n"
         "refuse_foreign_owned_venv = lambda root: None\n"
         "from pathlib import Path\n"
         "import os\n"

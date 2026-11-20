@@ -63,7 +63,8 @@ def _server_identity(cfg: object) -> tuple:
     widening the package server's trust; anything else is the user's own, different server. Both
     sides compare after the connect-time ``${VAR}`` expansion (``load_config`` already expanded the
     native entry; the package's declaration keeps its placeholders until connect)."""
-    cfg = _tools_mod("tools.mcp_tool_config")._interpolate_env_vars(cfg if isinstance(cfg, dict) else {})
+    cfg = _tools_mod("tools.mcp_tool_config")._interpolate_mcp_server_config(
+        cfg if isinstance(cfg, dict) else {})
     args = cfg.get("args") or ()
     return (str(cfg.get("command") or ""), tuple(str(a) for a in (args if isinstance(args, list) else [args])),
             str(cfg.get("url") or ""))

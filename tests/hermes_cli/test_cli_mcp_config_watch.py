@@ -191,6 +191,40 @@ class TestMCPConfigWatch:
         obj._reload_mcp.assert_not_called()
         assert "MCP server config changed" not in capsys.readouterr().out
 
+    def test_escaped_stdio_arg_does_not_false_positive_on_unrelated_save(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Watcher expansion must match the initial full-config snapshot."""
+        import hermes_yaml as yaml
+        from hermes_cli.config import _expand_env_vars
+
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        escaped_ref = "$" + "${AUTH_HEADER}"
+        raw_servers = {
+            "todoist": {
+                "command": "npx",
+                "args": ["--header", "Authorization:" + escaped_ref],
+                "env": {"AUTH_HEADER": "${AUTH_HEADER}"},
+            }
+        }
+        initial = _expand_env_vars({"mcp_servers": raw_servers})["mcp_servers"]
+        assert initial["todoist"]["args"][1] == "Authorization:" + escaped_ref
+
+        obj, cfg_file = _make_cli(tmp_path, mcp_servers=initial)
+        cfg_file.write_text(yaml.safe_dump({
+            "agent": {"reasoning_effort": "high"},
+            "mcp_servers": raw_servers,
+        }))
+        obj._config_mtime = 0.0
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            obj._check_config_mcp_changes()
+
+        obj._reload_mcp.assert_not_called()
+        assert obj._config_mcp_servers == initial
+        assert "MCP server config changed" not in capsys.readouterr().out
+
+
 
 def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
     """REPL init must seed _config_sig from on-disk config.yaml.

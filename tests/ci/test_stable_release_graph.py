@@ -460,7 +460,7 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     stable = workflow("stable-release.yml")
     publication = workflow("stable-release-publication.yml")
 
-    assert publication["concurrency"] == {"group": "stable-release", "cancel-in-progress": "false"}
+    assert publication["concurrency"]["cancel-in-progress"] == "false"
     # A stable run shares the reconciler's lock; a canary run of the same workflow never does.
     group = stable["concurrency"]["group"]
     assert stable["concurrency"]["cancel-in-progress"] == "false"
@@ -478,7 +478,24 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     def run_of(**overrides):
         workflow_run = {"conclusion": "failure", "event": "workflow_dispatch",
                         "head_repository": {"full_name": "o/r"}, **overrides}
-        return {"event_name": "workflow_run", "repository": "o/r", "event": {"workflow_run": workflow_run}}
+        return {"event_name": "workflow_run", "repository": "o/r", "run_id": "424242",
+                "event": {"workflow_run": workflow_run}}
+
+    from tests.ci import _gha_expr as gha
+
+    pub_group = publication["concurrency"]["group"]
+    assert gha.render(pub_group, {"github": {"event_name": "workflow_dispatch", "run_id": "1"}}) == "stable-release"
+    assert gha.render(pub_group, {"github": run_of(display_title="Stable release rc.1-v1.2.3")}) == "stable-release"
+    # Canary completions (green or red) and skipped workflow_runs must never enter the
+    # shared stable-release group where they could cancel a pending stable run or rerun.
+    for skipped in (
+        {"display_title": "Canary release canary.20261021T064100Z-v1.2.3", "conclusion": "success"},
+        {"display_title": "Canary release canary.20261021T064100Z-v1.2.3", "conclusion": "failure"},
+        {"display_title": "Stable release rc.1-v1.2.3", "conclusion": "success"},
+        {"display_title": "Stable release rc.1-v1.2.3", "event": "push"},
+        {"display_title": "Stable release rc.1-v1.2.3", "head_repository": {"full_name": "fork/r"}},
+    ):
+        assert gha.render(pub_group, {"github": run_of(**skipped)}) == "424242", skipped
 
     assert gate(reconcile["if"], {}, {}, github=run_of())
     assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})

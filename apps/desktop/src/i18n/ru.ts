@@ -158,6 +158,8 @@ export const ruOverrides = {
       microphoneNeedsHttps:
         'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
+      liveCaptureUnavailable: 'Расшифровка этого звонка не будет сохранена в чате.',
+      liveCaptureIncomplete: 'Расшифровка этого звонка может быть неполной.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
       noMicrophone: 'Микрофон не найден.',

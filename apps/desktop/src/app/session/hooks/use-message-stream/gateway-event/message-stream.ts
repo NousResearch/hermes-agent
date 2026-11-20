@@ -214,6 +214,8 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
       sawAssistantPayload: false,
       interrupted: false,
       interimBoundaryPending: false,
+      // A started admission can no longer be refused; a later turn keeps Retry.
+      voiceClaimSubmissionId: null,
       // Backend accepted the turn — the no-payload settle gate below may
       // now treat a running=false heartbeat as a real turn end.
       turnLive: true,

@@ -586,6 +586,8 @@ class GatewayTurnPersistenceMixin:
         # serves direct callers — reading it here let a mid-turn recovery mask a no-handle turn whose
         # agent flush silently no-ops, dropping the turn from state.db entirely (#140823).
         agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
+        from gateway.session_stored_input import stored_input
+        user_already_stored = stored_input(getattr(event, "message_id", None)) is not None
         _user_row = self._hmwa_user_transcript_entry(event, prepared, ts)
 
         if is_context_overflow_failure:
@@ -625,7 +627,7 @@ class GatewayTurnPersistenceMixin:
                         event.message_id, sid,
                     )
                 else:
-                    await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                    await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted or user_already_stored)
                 # Close the failed turn: a user-only tail lets alternation repair merge this request
                 # into an unrelated future message and replay stale side effects (#107070).
                 await self._hmwa_close_failed_turn(sid, self._hmwa_failed_turn_notice(agent_result))
@@ -636,7 +638,7 @@ class GatewayTurnPersistenceMixin:
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
                 if not new_messages:
                     # Edge case: fall back to simple user/assistant rows.
-                    await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
+                    await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted or user_already_stored)
                     if response:
                         await store.append_to_transcript(
                             sid, {"role": "assistant", "content": response, "timestamp": ts},
@@ -658,7 +660,9 @@ class GatewayTurnPersistenceMixin:
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        await store.append_to_transcript(sid, entry, skip_db=agent_persisted)
+                        await store.append_to_transcript(sid, entry, skip_db=agent_persisted or (
+                            user_already_stored and msg.get("role") == "user" and msg.get("_db_persisted") is True
+                        ))
 
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.
         await store.update_session(

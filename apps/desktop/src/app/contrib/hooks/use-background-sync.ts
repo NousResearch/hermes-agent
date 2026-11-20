@@ -448,15 +448,19 @@ export async function reconcileTileTranscripts({
   }
 }
 
-/** Best-effort post-turn fallback when the live stream did not carry an answer. */
+/** Best-effort durable history refresh that yields to a live turn. */
 export async function hydrateStoredSessionTranscript({
   attempts,
+  isCurrent,
+  passive,
   storedSessionId,
   runtimeSessionId,
   storedProfile,
   updateSessionState
 }: {
   attempts: number
+  isCurrent?: () => boolean
+  passive?: boolean
   storedSessionId: string
   runtimeSessionId: string
   storedProfile: ProfileScope
@@ -471,6 +475,7 @@ export async function hydrateStoredSessionTranscript({
   const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   const superseded = () =>
+    isCurrent?.() === false ||
     tileRuntimeOwnsLiveState(runtimeSessionId) ||
     transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
 
@@ -484,7 +489,10 @@ export async function hydrateStoredSessionTranscript({
     }
 
     try {
-      const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+      const latest = passive
+        ? await getLatestSessionMessages(storedSessionId, storedProfile, { passive: true })
+        : await getLatestSessionMessages(storedSessionId, storedProfile)
+
       const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
       if (replayAtReturn && !(await replayAtReturn)) {

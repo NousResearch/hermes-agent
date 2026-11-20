@@ -159,15 +159,26 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     return config
 
 
-def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dict[str, Any]:
+def voice_offer_answer(response: Any) -> dict[str, Any]:
+    """Only the provider call ID and WebRTC answer belong on the client wire."""
+    session = response.get('session') if isinstance(response, dict) else None
+    transport = response.get('transport') if isinstance(response, dict) else None
+    call_id = session.get('id') if isinstance(session, dict) else None
+    sdp = transport.get('sdp') if isinstance(transport, dict) else None
+    if not isinstance(call_id, str) or not call_id or not isinstance(sdp, str) or not sdp.strip():
+        raise RuntimeError('GPT-Live returned an invalid WebRTC answer')
+    return {'session': {'id': call_id}, 'transport': {'type': 'webrtc', 'sdp': sdp}}
+
+
+def create_webrtc_session(sdp_offer: str, history: Optional[list] = None, *,
+                          credentials: tuple[str, str] | None = None) -> dict[str, Any]:
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
     "sdp": ...}}``. Raises ``ValueError`` for a missing key and ``RuntimeError`` (with the vendor
     status/detail) for a rejected request.
     """
-    live = _live_section()
-    api_key, base_url = _resolve_credentials(live)
+    api_key, base_url = _resolve_credentials(_live_section()) if credentials is None else credentials
     if not api_key:
         raise ValueError("GPT-Live needs an OpenAI API key (OPENAI_API_KEY or voice.gpt_live.api_key)")
     body = json.dumps({
@@ -179,8 +190,13 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            try:
+                return voice_offer_answer(json.load(resp))
+            except ValueError:
+                raise RuntimeError('GPT-Live returned an invalid WebRTC answer') from None
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:600]
-        logger.warning("GPT-Live session creation failed: %s %s", exc.code, detail)
-        raise RuntimeError(f"GPT-Live session creation failed ({exc.code}): {detail}") from exc
+        # Provider bodies can contain submitted history or sensitive header values.
+        status = exc.code
+        exc.close()
+        logger.warning('GPT-Live session creation failed (HTTP %s)', status)
+        raise RuntimeError(f'GPT-Live session creation failed (HTTP {status})') from None

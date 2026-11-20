@@ -15,6 +15,8 @@ closed, so a drifted emitter fails the suite (``registry.check_payload`` raises 
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
@@ -808,6 +810,12 @@ class WakeDetectedPayload(Payload):
     start_new_session: bool
 
 
+class VoiceLiveCapturePayload(Payload):
+    call_id: str
+    state: Literal['recording', 'updated', 'saved', 'pending', 'incomplete']
+
+
+event('voice.live.capture', VoiceLiveCapturePayload, doc='GPT-Live recording status or a committed transcript update.')
 event("voice.status", VoiceStatusPayload, doc="Voice recorder state changed.")
 event("voice.partial", VoicePartialPayload, doc="Live STT text so far while the user is still speaking.")
 event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced text (or a stop phrase / silence limit).")

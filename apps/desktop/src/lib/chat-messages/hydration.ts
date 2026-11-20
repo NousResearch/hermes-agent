@@ -266,6 +266,38 @@ function contentRefusedField(
   return { contentRefused: notice ? { notice } : {} }
 }
 
+function voiceLiveField(message: SessionMessage): Pick<ChatMessage, 'voiceLive'> {
+  const voice = parseDisplayMetadata(message.display_metadata)?.voice_live
+
+  if (!voice || typeof voice !== 'object') {
+    return {}
+  }
+
+  const ms = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+
+  const { call_key: call, end_ms: end, first_event_id: first, start_ms: start } = voice as {
+    call_key?: unknown
+    end_ms?: unknown
+    first_event_id?: unknown
+    start_ms?: unknown
+  }
+
+  return {
+    voiceLive: {
+      ...(typeof call === 'string' && call ? { callKey: call } : {}),
+      endMs: ms(end),
+      ...(typeof first === 'string' && first ? { firstEventId: first } : {}),
+      startMs: ms(start)
+    }
+  }
+}
+
+/** An assistant row Hermes wrote. A saved GPT-Live row is the voice model speaking: it keeps
+ *  its own row (id, rowId, call timing) and never joins a Hermes tool turn, in either order. */
+function isHermesAssistant(role: string, message: SessionMessage): boolean {
+  return role === 'assistant' && !voiceLiveField(message).voiceLive
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -640,7 +672,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     // A machine notice stored as an assistant row (the failed-turn boundary) is
     // Hermes speaking: it must not join the tool-call reply it follows.
-    if (displayRole === 'assistant') {
+    if (isHermesAssistant(displayRole, message)) {
       if (pendingToolParts.length) {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)
@@ -710,10 +742,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {}),
-      ...contentRefused
+      ...contentRefused,
+      ...voiceLiveField(message)
     })
 
-    activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
+    activeAssistantIndex = isHermesAssistant(message.role, message) ? result.length - 1 : null
   })
   flushPendingTools(messages.length)
 

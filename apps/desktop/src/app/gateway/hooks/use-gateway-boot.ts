@@ -1092,7 +1092,11 @@ export function useGatewayBoot({
         return
       }
 
-      recordSessionEventScope(event)
+      // Capture frames announce storage updates; they do not establish the runtime's owner.
+      if (event.type !== 'voice.live.capture') {
+        recordSessionEventScope(event)
+      }
+
       callbacksRef.current.handleGatewayEvent(event)
     }
 

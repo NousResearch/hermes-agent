@@ -4858,6 +4858,16 @@ export interface SessionMutateResult {
   revision?: number | null
   [key: string]: unknown
 }
+export interface VoiceLiveStartParams {
+  session_id: string
+  sdp: string
+  history?: Record<string, unknown>[] | null
+}
+export interface VoiceLiveStartResult {
+  session: Record<string, unknown>
+  transport: Record<string, unknown>
+  capture_status: 'recording' | 'unavailable'
+}
 /** Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``). */
 export interface SessionPruneParams {
   filters?: Record<string, unknown> | null
@@ -5445,6 +5455,7 @@ export interface CanonicalSubmitParams {
   unattended?: boolean
   surface?: string | null
   voice_context?: string | null
+  voice_claim?: CanonicalVoiceClaim | null
   interrupted?: boolean
   voice_turn?: boolean
   display_kind?: 'hidden' | null
@@ -5457,6 +5468,12 @@ export interface CanonicalSubmitParams {
 export interface CanonicalAttachment {
   path: string
   mime: string
+}
+/** Provider evidence for a delegated utterance; the owner must independently verify it. */
+export interface CanonicalVoiceClaim {
+  call_id: string
+  delegation_id: string
+  event_ids: string[]
 }
 export interface CanonicalTurnAuthor {
   id?: string | null
@@ -6313,6 +6330,10 @@ export interface TerminalClosePayload {
 export interface BrowserProgressPayload {
   message: string
   level: string
+}
+export interface VoiceLiveCapturePayload {
+  call_id: string
+  state: 'recording' | 'updated' | 'saved' | 'pending' | 'incomplete'
 }
 /** ``methods_voice._vr_on_status``; states come from the recorder (idle / listening / transcribing …). */
 export interface VoiceStatusPayload {
@@ -7252,6 +7273,8 @@ export interface CanonicalRpcMethods {
   'session.transcript': { params: StoredTranscriptParams; result: StoredTranscriptResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
+  /** Negotiate GPT-Live for an authorized chat and attach its owner-side transcript capture. */
+  'voice.live.start': { params: VoiceLiveStartParams; result: VoiceLiveStartResult }
   /** Adopt a registered execution after verifying the live producer claim. */
   'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
   /** Sequence-fenced typed persistence write from an adopted worker. */
@@ -7312,6 +7335,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.steer',
   'session.transcript',
   'shell.exec',
+  'voice.live.start',
   'worker.adopt',
   'worker.persist',
   'worker.register'
@@ -7531,6 +7555,8 @@ export interface BackendGatewayEventMap {
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
+  /** GPT-Live recording status or a committed transcript update. */
+  'voice.live.capture': VoiceLiveCapturePayload
   /** Live STT text so far while the user is still speaking. */
   'voice.partial': VoicePartialPayload
   /** Voice recorder state changed. */
@@ -7617,6 +7643,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.progress',
   'tool.start',
   'voice.interrupted',
+  'voice.live.capture',
   'voice.partial',
   'voice.status',
   'voice.transcript',

@@ -10,9 +10,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, StrEnum
-from typing import TYPE_CHECKING, Any, Literal, NewType, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, NewType, Protocol, TypedDict, runtime_checkable
 
 from ..core.errors import AuthorityRefusal, Conflict
+from ..core.identity import MessageId, SessionId
 from .vocabulary import STEERING
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ANY_HEAD",
+    "VOICE_CLAIM_V1",
     "ActiveReplace",
     "AdmissionGate",
     "AdmissionId",
@@ -34,6 +36,7 @@ __all__ = [
     "CapturedResult",
     "CarrierRewind",
     "ClaimedAdmission",
+    "ClaimedVoiceInput",
     "GateRefusal",
     "QueuedFold",
     "QueuedReplacement",
@@ -41,6 +44,7 @@ __all__ = [
     "TranscriptRewrite",
     "TurnBoundary",
     "UnheldMedia",
+    "VoiceClaimV1",
     "raise_gate",
     "steer_replayed",
 ]
@@ -111,12 +115,34 @@ class AdmissionRecord:
         object.__setattr__(self, "status", AdmissionStatus(self.status))
 
 
+VOICE_CLAIM_V1 = "voice_claim_v1"
+
+
+class VoiceClaimV1(TypedDict):
+    """Owner-only admission payload member; never accepted directly from public submit parameters."""
+
+    call_id: str
+    delegation_id: str
+    event_ids: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedVoiceInput:
+    """The exact physical user row reserved by the SQLite claim, not client data."""
+
+    session_id: SessionId
+    row_id: MessageId
+    message_uid: str
+    text: str
+
+
 @dataclass(frozen=True, slots=True)
 class ClaimedAdmission(AdmissionRecord):
     """The row ``claim`` started: ``transcript_mark`` is the highest ``messages.id`` at the claim, ``queued_owner_epoch`` the ``owner_epoch`` the row held while queued, which ``return_claim`` restores."""
 
     transcript_mark: int
     queued_owner_epoch: int | None
+    voice_input: ClaimedVoiceInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +285,9 @@ class AdmissionRepository(Protocol):
         """Start the FIFO head under the next execution generation.
 
         Order: epoch, ``gate`` (its refusal is raised when given; a callable is answered here, on every attempt), session (``not_found``); an ``unknown`` admission or worker on the session is ``unknown_execution``; a started admission or a live worker is ``None``; ``head`` other than :data:`ANY_HEAD` must name the current head (``None``: none queued) else ``False``; an empty queue is ``None``. The claim bumps ``runtime_generation`` and starts the row under ``epoch``.
+
+        For an owner-only voice proof SQLite also reserves its exact active user row. Invalid coverage
+        terminally rejects that head with an ``admission_conflict`` result and returns ``False`` to rescan.
         """
         ...
 
@@ -266,6 +295,9 @@ class AdmissionRepository(Protocol):
         """Undo a claim whose turn never started (the claim's two updates reversed).
 
         Order: epoch (``stale_epoch``); the row (``not_found``); a row already ``queued`` with no generation is returned unchanged; otherwise the row must be ``started`` with ``owner_epoch == epoch`` and this ``generation``, the session's ``runtime_generation`` must equal ``generation``, and no worker execution and no steering transfer may be bound to ``(epoch, generation)``, else ``stale_generation``. The row goes back to ``queued`` with ``owner_epoch = queued_owner_epoch`` and no generation (its ``seq`` unchanged) and ``runtime_generation`` back to ``generation - 1``; no revision bump.
+
+        Speech is already part of the transcript: returning its claim preserves the row and its
+        admission reservation, so a re-claim can use the same row if it is still the live tail.
         """
         ...
 

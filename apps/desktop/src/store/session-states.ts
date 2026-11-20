@@ -495,7 +495,7 @@ function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
     state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
+      : { ...state, messages: withNoReplyNotice(state.messages, !state.voiceClaimSubmissionId) }
   )
 }
 

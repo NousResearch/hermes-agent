@@ -39,6 +39,8 @@ from agent.model_metadata import (
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
+from persistence.conversation.messages import ConversationMessage, ConversationRequest, TranscriptRead
+from persistence.core.identity import MessageId, SessionId
 
 logger = logging.getLogger(__name__)
 
@@ -543,6 +545,15 @@ def _should_idle_compact(
     return tokens > effective_floor
 
 
+@dataclass(frozen=True, slots=True)
+class DurableUserInput:
+    """Trusted, request-scoped row identity from the owner, not a wire input or admission claim."""
+
+    session_id: SessionId
+    row_id: MessageId
+    message_uid: str
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -724,6 +735,64 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         scrubber = getattr(agent, name, None)
         if scrubber is not None:
             scrubber.reset()
+
+
+def read_durable_user_input_history(store, session_id, identity: DurableUserInput):
+    if session_id != identity.session_id:
+        raise ValueError("durable user input belongs to a different session")
+    request = ConversationRequest(repair_alternation=True, exclude_row=(identity.row_id, identity.message_uid))
+    return [m.as_openai_message() for m in store.messages.read_conversation(session_id, request)]
+
+
+def _worker_durable_input_history(agent, identity: DurableUserInput):
+    return agent._session_db.get_messages_as_conversation(identity.session_id, include_row_ids=True)
+
+
+def _load_durable_user_input(
+    agent: Any, identity: DurableUserInput, *, expected_content: Any,
+) -> dict[str, Any]:
+    """Resolve the exact active row through the agent's own store; never fall back to an insert."""
+    from agent.agent_init_session import agent_interface
+
+    store = agent_interface(agent)
+    if identity.session_id != agent.session_id:
+        raise ValueError("durable user input belongs to a different session")
+    if type(identity.row_id) is not int or identity.row_id <= 0 or not identity.message_uid:
+        raise ValueError("durable user input requires a row id and message UID")
+    if getattr(agent, "_persist_disabled", False):
+        raise ValueError("durable user input requires the agent's writable store")
+    if store is None:
+        from agent.runtime_session_store import RuntimeSessionStore
+        if not isinstance(agent._session_db, RuntimeSessionStore):
+            raise ValueError("durable user input requires the agent's writable store")
+        # Worker reads go through the owner-fenced store, never an independent SQLite handle.
+        rows = _worker_durable_input_history(agent, identity)
+        row = next((m for m in rows if m.get("_row_id") == identity.row_id), None)
+        if (row is None or row.get("role") != "user" or row.get("message_uid") != identity.message_uid
+                or row.get("_compressed_summary")):
+            raise ValueError("durable user input does not identify an active user row")
+        if row["content"] != expected_content:
+            raise ValueError("durable user input content does not match the stored row")
+        row.pop("api_content", None)  # the new attempt's sidecar is stamped from its own request
+        return row
+    rows = store.messages.read_transcript(
+        identity.session_id, TranscriptRead(after_id=MessageId(identity.row_id - 1), limit=1),
+    )
+    row = rows[0] if rows else None
+    if (row is None or row.id != identity.row_id or row.session_id != identity.session_id
+            or row.role != "user" or row.compressed_summary or row.message_uid != identity.message_uid):
+        raise ValueError("durable user input does not identify an active user row")
+    if row.content != expected_content:
+        raise ValueError("durable user input content does not match the stored row")
+
+    message = ConversationMessage(
+        role=row.role, content=row.content, row_id=row.id, message_uid=row.message_uid,
+        timestamp=row.timestamp, display_kind=row.display_kind, display_metadata=row.display_metadata,
+        message_id=row.platform_message_id, observed=row.observed, db_persisted=True,
+    ).as_openai_message()
+    # Keep even an epoch-zero timestamp (replay projection drops falsy fields).
+    message["timestamp"] = row.timestamp
+    return message
 
 
 def _stage_turn_user_message(
@@ -1212,13 +1281,19 @@ def build_turn_context(
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
     title_user_message: Optional[str]=None,
+    durable_user_input: Optional[DurableUserInput]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
     Helpers are passed in to avoid an import cycle with ``agent.conversation_loop``.
     Order matters: the DB session row is created only AFTER the system prompt is built
     (else it persists system_prompt=NULL and costs a cache miss) and BEFORE preflight
-    compression."""
+    compression.
+
+    An owner passing ``durable_user_input`` must already own the turn and supply the
+    history prefix without that row, before alternation repair. This is not admission.
+    The identity is used only for this call; mismatches fail rather than append a row.
+    """
     from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
@@ -1233,6 +1308,30 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+
+    durable_message = None
+    if durable_user_input is not None:
+        durable_message = _load_durable_user_input(
+            agent, durable_user_input,
+            expected_content=persist_user_message if persist_user_message is not None else user_message,
+        )
+        if conversation_history is None:
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(agent)
+            if store is not None:
+                conversation_history = read_durable_user_input_history(store, agent.session_id, durable_user_input)
+            else:
+                conversation_history = [m for m in _worker_durable_input_history(agent, durable_user_input)
+                                        if m.get("_row_id") != durable_user_input.row_id
+                                        or m.get("message_uid") != durable_user_input.message_uid]
+        elif any(m.get("message_uid") == durable_user_input.message_uid
+                 or durable_user_input.message_uid in (m.get("_absorbed_message_uids") or ())
+                 for m in conversation_history):
+            raise ValueError("durable user input already appears in replay history")
+        # The stored row owns its transcript metadata. A model-only content override
+        # still uses the normal persist override/sidecar path below.
+        persist_user_display_kind = durable_message.get("display_kind")
+        persist_user_timestamp = persist_user_platform_id = None
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
     from agent.bot_chain import on_turn_start as _bot_chain_turn_start
     _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
@@ -1294,10 +1393,14 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
-    user_msg, pending_cli_message = _stage_turn_user_message(
-        agent, user_message, persist_user_message, persist_user_timestamp,
-        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
-    )
+    if durable_message is not None:
+        durable_message["content"] = user_message
+        user_msg, pending_cli_message = durable_message, None
+    else:
+        user_msg, pending_cli_message = _stage_turn_user_message(
+            agent, user_message, persist_user_message, persist_user_timestamp,
+            persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
+        )
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)

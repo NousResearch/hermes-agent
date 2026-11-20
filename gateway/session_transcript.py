@@ -634,11 +634,13 @@ class SessionTranscriptMixin:
         except Exception as e:
             raise TranscriptReadError(session_id) from e
 
-    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
+    def load_transcript(self, session_id: str, *, durable_user_input=None) -> list[dict[str, Any]]:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
         otherwise the transcript "vanishes" while every message sits under the child."""
         if not self._persistence_for_session_id(session_id):
+            if durable_user_input is not None:
+                raise TranscriptReadError(session_id)
             return []
         session_id = self._follow_reroutes(session_id)
         with contextlib.suppress(Exception):
@@ -649,6 +651,9 @@ class SessionTranscriptMixin:
             from persistence.conversation.messages import ConversationRequest
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
             store = self._persistence_for_session_id(session_id)
+            if durable_user_input is not None:
+                from agent.turn_context import read_durable_user_input_history
+                return read_durable_user_input_history(store, session_id, durable_user_input)
             return [m.as_openai_message() for m in store.messages.read_conversation(
                 session_id, ConversationRequest(repair_alternation=True))]
         except Exception as e:

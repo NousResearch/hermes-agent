@@ -333,6 +333,10 @@ async def execute_admission(authority, ref, row):
     # Only an adapter task awaiting a native waiter drains the adapter's pending slot after this turn;
     # a relay or restart-recovered row has none, so nothing may be parked there for it (#137565).
     event._adapter_drains_after = native
+    if row.get('voice_input') is not None:
+        # The proof is on the owner's claim, not the client-controlled payload or metadata.
+        event.text = row['voice_input']['text']
+        event.allow_gateway_control = False
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
@@ -440,8 +444,11 @@ async def _admission_scope(authority, ref, home, row, event, captured):
     """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
     from agent.runtime_scope import bind_turn, claim_fence
+    from gateway.session_stored_input import stored_input_scope
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)), \
+                stored_input_scope(row['admission_id'], authority.physical_target(ref) if row.get('voice_input') else None,
+                                   row.get('voice_input')):
             yield
 
 

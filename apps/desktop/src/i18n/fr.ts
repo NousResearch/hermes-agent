@@ -487,6 +487,8 @@ export const frOverrides = {
       tryRecordingAgain: 'Essayez de réenregistrer.',
       unavailable: 'Voix indisponible',
       liveEnded: 'Session vocale en direct terminée',
+      liveCaptureUnavailable: 'La transcription de cet appel en direct ne sera pas enregistrée dans le chat.',
+      liveCaptureIncomplete: 'La transcription de cet appel en direct peut être incomplète.',
       liveEndedConnectionLost: 'La session vocale en direct a perdu sa connexion.',
       liveEndedClosed: 'La session vocale en direct a été fermée par le service.',
       liveError: 'Voix en direct',

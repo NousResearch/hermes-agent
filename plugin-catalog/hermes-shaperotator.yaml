@@ -1,6 +1,6 @@
 name: hermes-shaperotator
 repo: https://github.com/RobertBarnettProjects/hermes-shaperotator
-sha: '8b210adbb579eeeabf5703de47c6a79d2fe86da1'
+sha: 'f539a07961a3703fdc827e312be05c409f862bad'
 version: "0.2.0"
 title: ShapeRotator — part and assembly design in real CAD
 description: >-
@@ -37,11 +37,11 @@ requires_hermes: ">=0.22.7"
 docs_url: https://github.com/RobertBarnettProjects/hermes-shaperotator#readme
 platforms: [windows, linux, macos]
 screenshots:
-  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/8b210adbb579eeeabf5703de47c6a79d2fe86da1/docs/kart-ga-drawing.jpg
-  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/8b210adbb579eeeabf5703de47c6a79d2fe86da1/docs/bracket-detail-drawing.jpg
-  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/8b210adbb579eeeabf5703de47c6a79d2fe86da1/docs/click-a-face.gif
-  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/8b210adbb579eeeabf5703de47c6a79d2fe86da1/docs/numbers-check.png
-  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/8b210adbb579eeeabf5703de47c6a79d2fe86da1/docs/freecad-drawing-sample.png
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/f539a07961a3703fdc827e312be05c409f862bad/docs/kart-ga-drawing.jpg
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/f539a07961a3703fdc827e312be05c409f862bad/docs/bracket-detail-drawing.jpg
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/f539a07961a3703fdc827e312be05c409f862bad/docs/click-a-face.gif
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/f539a07961a3703fdc827e312be05c409f862bad/docs/numbers-check.png
+  - https://raw.githubusercontent.com/RobertBarnettProjects/hermes-shaperotator/f539a07961a3703fdc827e312be05c409f862bad/docs/freecad-drawing-sample.png
 capabilities:
   provides_tools:
     - cad_standard

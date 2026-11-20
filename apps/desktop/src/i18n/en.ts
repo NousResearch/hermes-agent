@@ -4498,6 +4498,7 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      responseContinuing: 'Continuing…',
       responseStopped: 'Response stopped',
       contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,

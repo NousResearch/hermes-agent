@@ -360,6 +360,7 @@
     "assistant.thread.readAloudFailed",
     "assistant.thread.readAloudFullResponseHint",
     "assistant.thread.refresh",
+    "assistant.thread.responseContinuing",
     "assistant.thread.responseStopped",
     "assistant.thread.restoreBody",
     "assistant.thread.restoreCheckpoint",

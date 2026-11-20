@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import get_disabled_skill_names
+from agent.skill_utils import get_disabled_skill_names, get_skill_desc_limit
 from tools import skill_usage
 from utils import atomic_json_write
 
@@ -287,8 +287,8 @@ CURATOR_REVIEW_PROMPT = (
     "narrow skills where each one captures one session's specific bug is "
     "a FAILURE of the library — not a feature. An agent searching skills "
     "matches on descriptions, not on exact names (note: the system prompt "
-    "skill index shows 60 chars of a description — keep the trigger class "
-    "in that window). One broad umbrella "
+    "skill index shows {desc_limit} chars of a description — keep the trigger "
+    "class in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"
     "The right target shape is CLASS-LEVEL skills whose SKILL.md carries the "
@@ -896,7 +896,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             # prune_builtins: archival is the deterministic pass's job, and
             # the bundled policy is archive-only. Hard rule #1 therefore
             # stands unqualified.
-            prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+            prompt = f"{CURATOR_REVIEW_PROMPT.replace('{desc_limit}', str(get_skill_desc_limit()))}\n\n{candidate_list}"
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)

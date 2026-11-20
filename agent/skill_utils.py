@@ -840,28 +840,25 @@ def resolve_skill_config_values(config_vars: list[dict[str, Any]]) -> dict[str, 
     return resolved
 
 
-# Default max description chars shown per row of the system-prompt skill index.
-# Configurable via skills.index_desc_limit in config.yaml.
+# Default max description chars shown per row of the system-prompt skill index, and the authoring
+# standard bundled skills are held to (tests/skills/test_authoring_standards.py). A profile can raise
+# its own index width with skills.index_desc_limit; skill_manage then accepts descriptions up to it.
 SKILL_PROMPT_DESC_LIMIT = 60
+# Frontmatter descriptions are capped at 1024 (tools/skill_manager_tool.py::MAX_DESCRIPTION_LENGTH).
+_SKILL_PROMPT_DESC_LIMIT_MAX = 1024
 _LAST_WHITESPACE_RE = re.compile(r"\s\S*$")
 _CLIP_TRAIL_RE = re.compile(r"[\s.,;:\-\u2013\u2014(/]+$")
 
 
 def get_skill_desc_limit() -> int:
-    """Effective description char limit: skills.index_desc_limit from config, or SKILL_PROMPT_DESC_LIMIT (60)."""
-    env_val = os.getenv("HERMES_SKILLS_INDEX_DESC_LIMIT")
-    if env_val and env_val.strip().isdigit():
-        parsed = int(env_val.strip())
-        if parsed > 0:
-            return parsed
+    """skills.index_desc_limit from the active profile's config.yaml, clamped to 60..1024; 60 when unset
+    or not an integer. Read per call so each served profile gets its own width."""
     val = _skills_cfg_get("index_desc_limit")
-    if isinstance(val, int) and val > 0:
-        return val
     if isinstance(val, str) and val.strip().isdigit():
-        parsed = int(val.strip())
-        if parsed > 0:
-            return parsed
-    return SKILL_PROMPT_DESC_LIMIT
+        val = int(val.strip())
+    if not isinstance(val, int) or isinstance(val, bool):
+        return SKILL_PROMPT_DESC_LIMIT
+    return max(SKILL_PROMPT_DESC_LIMIT, min(val, _SKILL_PROMPT_DESC_LIMIT_MAX))
 
 
 def _normalize_skill_description(frontmatter: dict[str, Any]) -> str:

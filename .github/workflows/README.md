@@ -101,10 +101,11 @@ The pattern repeats across files:
   `docs-search-monitor`, `install-e2e-red-tracker`. All of them queue
   (`cancel-in-progress: false`).
   GitHub keeps only one *pending* run per group, so a newer queued run
-  replaces an older queued one. `install-e2e-red-tracker` queues only live
-  manual replays (`dry-run=false`, group suffix `-auto`); a dry-run preview
-  gets a group of its own. Automatic canary tracking runs inside
-  `stable-release.yml` (`track-canary-red`), serialized by `canary-release-pipeline`.
+  replaces an older queued one. `install-e2e-red-tracker-auto` serializes
+  automatic canary tracking (`stable-release.yml`'s `track-canary-red` job)
+  together with live manual replays (`install-e2e-red.yml`, `dry-run=false`)
+  so both cannot open a duplicate issue; dry-run previews get a group of
+  their own.
 
 ### "Skipped" is not "failed"
 

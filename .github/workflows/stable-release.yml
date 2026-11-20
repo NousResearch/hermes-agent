@@ -812,6 +812,12 @@ jobs:
     needs: [admit, complete]
     if: always() && !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.policy == 'canary'
     continue-on-error: true
+    # Share the lock group with install-e2e-red.yml live replays so neither can race
+    # on an empty issue list and open a duplicate tracker.
+    concurrency:
+      group: >-
+        install-e2e-red-tracker-${{ needs.admit.outputs.policy == 'canary' && 'auto' || github.run_id }}
+      cancel-in-progress: false
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:

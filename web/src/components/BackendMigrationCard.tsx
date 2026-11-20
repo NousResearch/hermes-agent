@@ -345,7 +345,9 @@ function Progress({ view, profile, commands, onCheckAgain }: {
     case "manual":
       return (
         <div className="flex flex-col gap-1 text-destructive" data-slot="backend-migration-manual">
-          <span>The move failed and could not be fully undone ({view.reason}). On this computer, run:</span>
+          <span>The move failed and could not be fully undone ({view.reason}).</span>
+          {view.detail && <span>{qualifyCommands(view.detail, profile)}</span>}
+          <span>On this computer, run:</span>
           <ol className="list-decimal pl-6">
             {view.steps.map((s) => (
               <li key={s}>

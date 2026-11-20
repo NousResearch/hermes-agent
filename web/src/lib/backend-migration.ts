@@ -212,6 +212,11 @@ export function reasonOf(status: BackendMigrationStatus): string {
   return (status.message.split("; rolled back")[0] ?? status.message).split("; rollback incomplete")[0].trim();
 }
 
+/** The engine's account of an incomplete rollback (`<reason>; rollback incomplete: <detail>`), or "". */
+export function incompleteDetail(status: BackendMigrationStatus): string {
+  return (status.message.split("; rollback incomplete: ")[1] ?? "").trim();
+}
+
 /** A `running` record whose process is gone: `alive: false`, or, from a server without `alive`, the
  *  engine's own "interrupted" note on the message. */
 export function runDied(status: BackendMigrationStatus): boolean {
@@ -230,7 +235,7 @@ export type PollView =
   | { kind: "signInAgain" }
   | { kind: "done"; address: string }
   | { kind: "rolledBack"; reason: string }
-  | { kind: "manual"; reason: string; steps: string[] }
+  | { kind: "manual"; reason: string; detail: string; steps: string[] }
   | { kind: "restored" }
   | { kind: "notStarted"; lines: string[] }
   | { kind: "stalled"; step: string }
@@ -256,7 +261,8 @@ export function viewOf(st: BackendMigrationStatus): PollView {
           : [];
         return { kind: "notStarted", lines: [st.message, ...warning, ...steps] };
       }
-      return { kind: "manual", reason: reasonOf(st), steps: st.manual_steps ?? [] };
+      // What the rollback could not do (a file kept for its edits, an old backend left down), as the engine says it.
+      return { kind: "manual", reason: reasonOf(st), detail: incompleteDetail(st), steps: st.manual_steps ?? [] };
     case "restored":
       return { kind: "restored" };
     case "running":

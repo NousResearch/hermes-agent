@@ -2049,7 +2049,16 @@ export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
   canonical_clarify_batch?: boolean
+  client_activity?: boolean
 }
+export interface ClientActivityParams {
+  sessions: string[]
+  idle_seconds: number
+  basis: 'system' | 'page'
+  can_alert?: boolean
+  away?: boolean
+}
+export type EmptyResult = Record<string, never>
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
 /** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``locale`` is the OS account's first UI language, null when the OS has none. */
@@ -6426,6 +6435,8 @@ export interface RpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
+  /** Whether the user is at this client, sent only when ``client.capabilities`` answered ``client_activity: true``; each report replaces the connection's last one, is kept in memory per connection and session, and grants nothing. */
+  'client.activity': { params: ClientActivityParams; result: EmptyResult }
   /** What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send. */
   'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Save the host clipboard image into the session and queue it for the next turn. */
@@ -6939,6 +6950,7 @@ export const RPC_METHODS = [
   'browser.manage',
   'clarify.lock',
   'cli.exec',
+  'client.activity',
   'client.capabilities',
   'clipboard.paste',
   'command.dispatch',

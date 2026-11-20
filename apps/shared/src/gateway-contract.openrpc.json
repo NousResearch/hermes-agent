@@ -331,6 +331,24 @@
       }
     },
     {
+      "name": "client.activity",
+      "summary": "Whether the user is at this client, sent only when ``client.capabilities`` answered ``client_activity: true``; each report replaces the connection's last one, is kept in memory per connection and session, and grants nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientActivityParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EmptyResult"
+        }
+      }
+    },
+    {
       "name": "client.capabilities",
       "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
       "params": [
@@ -12534,6 +12552,49 @@
         "title": "CliExecResult",
         "type": "object"
       },
+      "ClientActivityParams": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Sessions",
+            "type": "array"
+          },
+          "idle_seconds": {
+            "minimum": 0,
+            "title": "Idle Seconds",
+            "type": "number"
+          },
+          "basis": {
+            "enum": [
+              "system",
+              "page"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "can_alert": {
+            "default": true,
+            "title": "Can Alert",
+            "type": "boolean"
+          },
+          "away": {
+            "default": false,
+            "title": "Away",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessions",
+          "idle_seconds",
+          "basis"
+        ],
+        "title": "ClientActivityParams",
+        "type": "object"
+      },
       "ClientCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -12580,6 +12641,11 @@
           "canonical_clarify_batch": {
             "default": false,
             "title": "Canonical Clarify Batch",
+            "type": "boolean"
+          },
+          "client_activity": {
+            "default": false,
+            "title": "Client Activity",
             "type": "boolean"
           }
         },
@@ -18747,6 +18813,12 @@
           "session_id"
         ],
         "title": "EmptyRequestParams",
+        "type": "object"
+      },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyResult",
         "type": "object"
       },
       "ErrorPayload": {

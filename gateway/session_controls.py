@@ -347,6 +347,8 @@ class AuthorityConnection:
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
+        from gateway.session_presence import touch
+        touch(self, method, params)  # the user's own input, even when the request is then refused
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
@@ -977,17 +979,21 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
+        from gateway.session_presence import seen
         from gateway.session_server_requests import may_settle, resolve
-        asked = []
+        asked, settler = [], []
 
         def entitled(session_id, events):
             asked.append(session_id)
             # The same rule ``clarify.lock`` applies to the same request id (attached + respond). A
             # response frame names no profile: a host-scoped socket answers a sibling's request as the
             # sibling connection that attached it.
-            return any(may_settle(connection.authority, connection.actor, session_id, events)
-                       for connection in (self, *self._siblings.values()))
-        if not resolve(frame, session_ok=entitled):
+            connection = next((connection for connection in (self, *self._siblings.values())
+                               if may_settle(connection.authority, connection.actor, session_id, events)), None)
+            settler.append(connection)
+            return connection is not None
+        # A person's answer is their input on this connection, for the profile that asked.
+        if not resolve(frame, session_ok=entitled, answered=lambda session_id: seen(settler[-1], session_id)):
             import logging
             what = 'a server request this connection may not settle' if asked else 'unknown server request'
             logging.getLogger(__name__).debug('dropping response for %s id=%r', what, frame.get('id'))

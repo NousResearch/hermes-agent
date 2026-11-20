@@ -218,7 +218,7 @@ import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
-import { extractDeepLink, isLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -17171,9 +17171,15 @@ let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
 let _pendingOpenUpdates = false
 
+const launchTarget = () => ({ ready: _rendererReadyForDeepLink && !!mainWindow && !mainWindow.isDestroyed(), activate: () => activateWindow(mainWindow) })
+
 function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {
     return
+  }
+
+  if (handleLaunchDeepLink(url, DEEPLINK_SCHEMES, launchTarget())) {
+    return rememberLog('[deeplink] launch: app brought forward')
   }
 
   let parsed
@@ -17240,14 +17246,6 @@ function handleDeepLink(url) {
 
       sendClosePreviewRequested()
     }
-
-    return
-  }
-
-  // hermes://launch: focus only, never queued or sent to the renderer.
-  if (isLaunchDeepLink(parsed)) {
-    activateWindow(mainWindow)
-    rememberLog('[deeplink] launch: app brought forward')
 
     return
   }

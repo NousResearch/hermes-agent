@@ -12,7 +12,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from typing import Awaitable, Callable, ClassVar, Collection, Dict, Optional, Any, Tuple, List
 
 aiohttp: Any = None
 try:
@@ -66,13 +66,21 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
+    from .adapter_vault_code import SlackVaultCodeMixin
     from .adapter_image_batch import collect_image_uploads
+    from .adapter_forwarded import (
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
+        slack_file_marker as _slack_file_marker)
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_forwarded import (  # type: ignore
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
+        slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
+    from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
@@ -161,18 +169,6 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(r"<!(?:everyone|channel|here)(?:\|[^>\n]*
 # Thread-root images delivered on a mid-thread cold start; other messages' files
 # are text markers only (the root is usually the artifact the mention is about).
 _THREAD_ROOT_IMAGE_MAX = 4
-
-
-def _slack_file_marker(file_obj: dict[str, Any]) -> str:
-    """Render a compact text marker for a Slack file so text-only context shows attachments. Name is
-    sanitized (newlines/brackets stripped) so a hostile filename can't fake context structure."""
-    name = str(file_obj.get("name") or file_obj.get("title") or file_obj.get("id") or "file")
-    name = re.sub(r"[\r\n\[\]]+", " ", name).strip() or "file"
-    mimetype = str(file_obj.get("mimetype") or "")
-    for kind in ("image", "video", "audio"):
-        if mimetype.startswith(kind + "/"):
-            return f"[{kind}: {name}]"
-    return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
 
 
 # GFM tables: Slack mrkdwn shows pipe tables as literal pipes, so they are wrapped in ```
@@ -628,17 +624,17 @@ def _render_slack_table_block(
     return text
 
 
-def _extract_text_from_slack_attachments(attachments: list) -> str:
+def _extract_text_from_slack_attachments(attachments: list, own_ids: Collection[str] = (),
+                                         seen_text: str = "") -> str:
     """Extract readable text from legacy ``attachments`` (alert/CI bots post empty ``text``).
-    Prefers structured fields; uses ``fallback`` only when nothing else exists."""
+    Prefers structured fields; uses ``fallback`` only when nothing else exists. Forwards and
+    linked messages render first, under the same budget and dedupe as the live inbound path."""
     if not attachments:
         return ""
-    lines: list[str] = []
+    lines = shared_message_sections(attachments, _extract_text_from_slack_blocks, own_ids, seen_text)
     for att in attachments:
-        if not isinstance(att, dict):
-            continue
-        # Permalink unfurls repeat a message the agent already reads (inbound path skips them too).
-        if att.get("is_msg_unfurl"):
+        # Other permalink unfurls echo our own message (inbound path skips them too).
+        if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
         got: list[str] = [str(att[key]) for key in ("pretext", "title", "text") if att.get(key)]
         for field in att.get("fields", []) or []:
@@ -995,7 +991,7 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
-class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
+class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1669,6 +1665,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
             self._app.action(_action_id)(self._handle_model_picker_action)
+        self._register_vault_code_handlers(self._app)
         self._register_plugin_action_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.
@@ -3759,10 +3756,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._evict_oldest_by_ts(
             self._titled_assistant_threads, self._TITLED_ASSISTANT_THREADS_MAX, lambda e: e[2])
 
-    def _seed_dm_session(
+    async def _seed_dm_session(
         self, metadata: dict[str, str], *, thread_ts: Optional[str], fail_log: tuple[Any, ...]
     ) -> None:
-        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop."""
+        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop.
+        A new route writes the routing index (state.db + sessions.json): in a worker, off the loop."""
         session_store = getattr(self, "_session_store", None)
         channel_id, user_id = metadata.get("channel_id", ""), metadata.get("user_id", "")
         if not session_store or not channel_id or not user_id:
@@ -3777,7 +3775,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             chat_topic=metadata.get("context_channel_id") or None,
             scope_id=metadata.get("team_id") or None)
         try:
-            session_store.get_or_create_session(source)
+            await asyncio.to_thread(session_store.get_or_create_session, source)
         except Exception:
             logger.debug(*fail_log, exc_info=True)
 
@@ -3788,7 +3786,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         thread_ts = metadata.get("thread_ts", "")
         if thread_ts:  # seed so assistant threads get stable user scoping
-            self._seed_dm_session(
+            await self._seed_dm_session(
                 metadata,
                 thread_ts=thread_ts,
                 fail_log=(
@@ -3828,7 +3826,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._cache_agent_view_context(metadata)
         # ``app_home_opened`` (tab == "messages") replaces ``assistant_thread_started`` in
         # Slack's Agent experience; lifecycle only (no welcome message, no agent loop).
-        self._seed_dm_session(
+        await self._seed_dm_session(
             metadata,
             thread_ts=None,
             fail_log=(
@@ -4321,7 +4319,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             att_text = att.get("text", "")
             att_footer = att.get("footer", "")
             att_fallback = att.get("fallback", "")
-            if att.get("is_msg_unfurl"):
+            if att.get("is_msg_unfurl") or is_forward(att):  # forwards: append_forwards
                 continue
             if att_title and att_url:
                 header = f"📎 [{att_title}]({att_url})"
@@ -4436,7 +4434,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         elif is_mentioned:
-            await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
+            await _fetch(after_ts=await self._get_thread_watermark(**watermark_args), force_refresh=True)
         else:
             # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
             # restarts, but thread replies posted while the gateway was down never reached the session. On
@@ -4447,12 +4445,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             rehydration_key = self._thread_rehydration_key(
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
-                self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+                await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
                 return channel_context, thread_root_media_urls, thread_root_media_types
-            watermark_ts = self._get_thread_watermark(**watermark_args)
+            watermark_ts = await self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
-        self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
@@ -4679,6 +4677,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if blocks and not is_command_text:
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
+        # Forwards (``is_share``) carry the content the user is pointing at; unfurls are previews.
+        text = append_forwards(text, event.get("attachments"), _extract_text_from_slack_blocks,
+                               own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
         text = self._append_link_unfurls(text, event.get("attachments") or [])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
@@ -4962,7 +4963,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         media_types = list(thread_root_media_types)
         media_text_inlined: list[bool] = [False] * len(media_urls)
         notices: list[str] = []
-        for f in event.get("files", []):
+        for f in files_with_forwarded(event.get("files"), event.get("attachments")):
             if f.get("file_access") == "check_file_info":
                 f = await self._resolve_file_stub(f, channel_id, team_id, notices)
                 if f is None:
@@ -5852,7 +5853,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     # ----- Thread context fetching -----
 
     @staticmethod
-    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+    def _render_message_text(msg: dict, bot_uid: str = "", own_ids: Collection[str] = ()) -> str:
         """Display text for a message: ``text`` minus bot mentions plus readable block/attachment
         text, URLs and file markers (no JSON dump, unlike ``_serialize_slack_blocks_for_agent``)."""
         msg_text = (msg.get("text") or "").strip()
@@ -5881,7 +5882,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Legacy ``attachments``: alerting/CI bots often post empty ``text`` with
         # the real content in attachment fields or nested blocks.
         attachments = msg.get("attachments") or []
-        attachments_text = _extract_text_from_slack_attachments(attachments).strip()
+        attachments_text = _extract_text_from_slack_attachments(
+            attachments, own_ids or ({bot_uid} - {""}), msg_text).strip()
         if attachments_text and _unseen(attachments_text, msg_text):
             extras.append(attachments_text)
         if blocks:
@@ -6015,7 +6017,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
-            msg_text = self._render_message_text(msg, bot_uid=bot_uid)
+            msg_text = self._render_message_text(
+                msg, bot_uid=bot_uid, own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if not msg_text:
                 continue
             if bot_uid:
@@ -6115,7 +6118,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = self._render_message_text(parent, bot_uid=bot_uid or "")
+            text = self._render_message_text(
+                parent, bot_uid=bot_uid or "", own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if strip_bot_mention and bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
@@ -6134,8 +6138,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             cached = self._thread_context_cache.get(
                 self._thread_cache_key(channel_id, thread_ts, team_id))
             root = self._thread_root_message(cached.messages, thread_ts) if cached else None
-            files = root.get("files") if root else None
-            if not isinstance(files, list):
+            files = files_with_forwarded(root.get("files"), root.get("attachments")) if root else []
+            if not files:
                 return media_urls, media_types
             for f in files:
                 if len(media_urls) >= _THREAD_ROOT_IMAGE_MAX:
@@ -6327,23 +6331,28 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         meta_key = f"slack_thread_watermark:{channel_id}:{thread_ts}"
         return getattr(session_store, method)(session_key, meta_key, *args)
 
-    def _get_thread_watermark(
+    async def _get_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
-        """Return the last Slack thread ts this session consumed (persisted)."""
+        """Return the last Slack thread ts this session consumed (persisted). Read in a worker: the
+        store's lock is held across its state.db writes, which must not stall the event loop."""
         try:
-            return str(self._thread_watermark_io(
-                "get_session_metadata", channel_id, thread_ts, user_id, team_id, "") or "")
+            return str(await asyncio.to_thread(
+                self._thread_watermark_io, "get_session_metadata", channel_id, thread_ts, user_id,
+                team_id, "") or "")
         except Exception:
             return ""
 
-    def _set_thread_watermark(
+    async def _set_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = ""
     ) -> None:
-        """Persist the latest thread ts seen (session metadata, survives restarts)."""
+        """Persist the latest thread ts seen (session metadata, survives restarts). A full
+        routing-index save (state.db + the fsynced sessions.json mirror): in a worker, never on
+        the event loop."""
         if not watermark_ts:
             return
         try:
-            self._thread_watermark_io(
+            await asyncio.to_thread(
+                self._thread_watermark_io,
                 "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts)
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
@@ -6623,7 +6632,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 # ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
-# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
+# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``gateway/outbound/send.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: dict[str, str] = {}
 _SLACK_DM_CACHE_MAX = 5000

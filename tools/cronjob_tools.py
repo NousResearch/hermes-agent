@@ -42,8 +42,8 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
-from tools.cronjob_prompt_scan import _scan_cron_prompt
-from tools.cronjob_job_args import (
+from cron.prompt_scan import _scan_cron_prompt
+from cron.job_args import (
     _apply_continuity,
     _canonical_skills,
     _clean_str_list,
@@ -61,6 +61,7 @@ from tools.cronjob_job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
+from tools.delegate_tool_config import _get_max_async_children
 from tools.registry import registry, tool_error
 
 
@@ -504,28 +505,24 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
     compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
     if not execution_id:
         return {}
-    import sqlite3
-
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import SessionWindow
+    from persistence.core.errors import PersistenceError
+    from persistence_assembly import open_persistence_reader
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-    except (sqlite3.Error, OSError):
-        return {}
-    try:
-        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
-                    if r.get("cron_execution_id") == execution_id), None)
-        if run is None:
-            return {}
-        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
-    except sqlite3.Error as exc:
+        with open_persistence_reader(get_hermes_home()) as reader:
+            run = next((r for r in reader.sessions.list_cron_job_runs(job_id, SessionWindow(limit=50))
+                        if r.cron_execution_id == execution_id), None)
+            if run is None:
+                return {}
+            rows = [row for sid in reader.lineage.chain(run.entry.session.session_id)
+                    if (row := reader.sessions.get(sid)) is not None]
+    except (PersistenceError, OSError) as exc:
         logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
         return {}
-    finally:
-        db.close()
-    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
-    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+    model = next((r.model for r in reversed(rows) if r.model), None)
+    return {"api_calls": sum(int(r.api_call_count or 0) for r in rows), **({"model": model} if model else {})}
 
 
 def _manual_run_completion(
@@ -624,7 +621,6 @@ def _try_dispatch_background_run(
         return result
 
     try:
-        from tools.delegate_tool import _get_max_async_children
         max_async = _get_max_async_children()
     except Exception:
         max_async = 3
@@ -735,7 +731,7 @@ def _action_create(a: dict[str, Any]) -> str:
             grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
-            catch_up=a["catch_up"],
+            catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -850,6 +846,18 @@ def _pick(updates: dict[str, Any], job: dict[str, Any], key: str) -> Any:
     return updates[key] if key in updates else job.get(key)
 
 
+# Model-facing tri-state for ``wrap_response``: the tool cannot tell an omitted argument from an
+# explicit null, so "inherit" is the spelled-out reset. Real booleans and None (programmatic
+# callers, the CLI and dashboard lanes) pass through for update_job's strict normaliser to check.
+_WRAP_RESPONSE_MODES = {"on": True, "off": False, "inherit": None}
+
+
+def _wrap_response_override(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().lower() in _WRAP_RESPONSE_MODES:
+        return _WRAP_RESPONSE_MODES[value.strip().lower()]
+    return value
+
+
 def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
     """prompt / name / deliver / skills / model pins; returns an error string or None."""
     prompt, deliver, skill, skills = a["prompt"], a["deliver"], a["skill"], a["skills"]
@@ -880,6 +888,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
         updates["failure_deliver"] = _norm_fd
     if a["catch_up"] is not None:
         updates["catch_up"] = a["catch_up"]
+    if a["wrap_response"] is not None:
+        updates["wrap_response"] = _wrap_response_override(a["wrap_response"])
     if skills is not None or skill is not None:
         canonical_skills = _canonical_skills(skill, skills)
         updates["skills"] = canonical_skills
@@ -1073,7 +1083,7 @@ def cronjob(
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
     catch_up: Optional[bool] = None,
-    task_id: str | None = None,
+    wrap_response: Optional[bool | str] = None,  # bool, or the tool's on / off / inherit
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1083,7 +1093,6 @@ def cronjob(
     grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
-    del a["task_id"]  # unused but kept for handler signature compatibility
     try:
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
@@ -1175,6 +1184,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
             },
+            "wrap_response": {
+                "type": "string",
+                "enum": ["on", "off", "inherit"],
+                "description": "Per-job override for the 'Cronjob Response: <name>' header and 'To stop or manage this job...' footer around delivered output. 'on' wraps; 'off' delivers the raw output verbatim (useful for briefings meant to read clean); 'inherit' removes an override so the job follows the global cron.wrap_response again. Omit to leave it unchanged (a new job inherits)."
+            },
             "script": {
                 "type": "string",
                 "description": _script_description("the profile HERMES_HOME")
@@ -1242,7 +1256,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up", "wrap_response")
 
 
 def _cronjob_handler(args, **kw):
@@ -1254,7 +1268,6 @@ def _cronjob_handler(args, **kw):
         include_disabled=args.get("include_disabled", True),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
-        task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},

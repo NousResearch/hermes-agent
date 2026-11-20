@@ -110,6 +110,25 @@ def test_web_access_keeps_its_url_in_the_webapp_block_and_leaves_the_dashboard_a
     assert restarts == ["turning on Web Access", "turning off Web Access", "turning on Web Access"]
 
 
+@pytest.mark.parametrize(("host", "shown"), [("192.168.7.9", "192.168.7.9"),
+                                             ("fd7a:115c:a1e0::5", "[fd7a:115c:a1e0::5]")])
+def test_lan_start_after_stop_keeps_a_specific_address_and_shows_it(client, restarts, nous, host, shown):
+    """A Webapp bound to one address of this machine never widens to every interface through the
+    pane: Stop then LAN Start keeps that host and registers its callback, and the pane shows that
+    address, not the machine's primary LAN address (192.168.1.50 here)."""
+    from hermes_cli.config import save_config
+
+    save_config({**_config(), "webapp": {"enabled": True, "host": host}})
+    assert client.post("/api/webapp-access/stop").status_code == 200
+    stopped = client.get("/api/webapp-access/status").json()["lan_address"]
+
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+    assert response.status_code == 200, response.text
+    assert _config()["webapp"]["host"] == host
+    assert nous == [f"http://{shown}:9120/auth/callback"]
+    assert stopped == client.get("/api/webapp-access/status").json()["lan_address"] == shown
+
+
 def test_start_without_a_nous_account_writes_and_restarts_nothing(client, restarts, nous, monkeypatch):
     from hermes_cli import webapp_access
 

@@ -5,7 +5,7 @@ import logging
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import is_local_server
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     cfg_get,
@@ -14,6 +14,7 @@ from hermes_cli.config import (
     read_raw_config,
 )
 from hermes_cli.config_backend import refusing_locked_omissions
+from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
@@ -624,7 +625,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
         if slot_provider and slot_provider.lower() not in {"auto", "", "main"} and slot_provider.lower() != new_provider:
             # A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box) never bills
             # a provider, so a main switch does not orphan it.
-            if is_local_endpoint(str(slot_cfg.get("base_url", "") or "")):
+            if is_local_server(slot_cfg.get("base_url"), slot_provider):
                 continue
             stale_aux.append({
                 "task": slot, "provider": slot_provider, "model": str(slot_cfg.get("model", "") or ""),
@@ -807,6 +808,9 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
         slot_cfg = _slot(slot)
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
+        keeps_old_url = not base_url and (new_provider == prev_provider or new_provider == "custom")
+        clear_aux_credentials_on_route_change(
+            slot_cfg, provider, base_url or (slot_cfg.get("base_url") if keeps_old_url else ""))
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model
         if base_url:
@@ -827,9 +831,8 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
                     slot_cfg["api_key"] = secret_ref_for(aux_api_key_env(slot), api_key)
                 except ValueError as exc:  # .env write lock: the refusal names the variable, never the key
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
-        elif new_provider != prev_provider and new_provider != "custom":
+        elif not keeps_old_url:
             slot_cfg.pop("base_url", None)
-            clear_model_endpoint_credentials(slot_cfg)
         if effort is None:
             # "Inherit" is an explicit "" where the slot ships a default (voice_chat: none); popping
             # the key would bring that default straight back.

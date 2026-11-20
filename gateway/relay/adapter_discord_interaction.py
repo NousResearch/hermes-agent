@@ -110,6 +110,10 @@ class RelayDiscordInteractionMixin:
                     if not self._interaction_admitted(event):
                         logger.info("relay: Discord interaction from a sender not admitted here dropped")
                         return
+                    from datetime import UTC, datetime
+                    # Retries carry one provider identity and fingerprint, just like relayed text.
+                    event.message_id = event.source.message_id
+                    event.timestamp = datetime.fromtimestamp(0, UTC)
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)

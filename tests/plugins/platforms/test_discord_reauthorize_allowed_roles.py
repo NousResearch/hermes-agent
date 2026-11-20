@@ -121,5 +121,7 @@ def test_role_removed_from_yaml_after_the_first_reauthorization(_home, multiplex
 
 def test_scoped_env_allowlist_wins_over_config(_home, monkeypatch):
     _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["2"]}}})
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"DISCORD_ALLOWED_ROLES"})  # set in .env
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "9")
     assert _reauthorize(_adapter(2)) is False

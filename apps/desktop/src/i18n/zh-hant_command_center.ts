@@ -139,7 +139,7 @@ export const zhHantCommandCenter = {
     maintenance: {
       debugShareConfirm: '要將偵錯報告上傳到公開貼上服務嗎？',
       debugShareConfirmDesc:
-        '將系統資訊與完整日誌上傳到公開貼上服務。密鑰會被遮蔽，但你最近的訊息、工具輸出、檔案路徑與名稱仍保留在日誌中，任何持有連結的人都能讀取。貼上內容會在 6 小時後自動刪除；若 paste.rs 無法連線，備援的 dpaste.com 會將其公開保留 1 天，且無法提前刪除。'
+        '將摘要上傳到公開貼上服務：Hermes、Python 與作業系統版本，已連線平台與工具集名稱，設定鍵名（不含值），以及警告/錯誤計數。不包含任何日誌行或訊息文字。貼上內容會在 6 小時後自動刪除；若 paste.rs 無法連線，備援的 dpaste.com 會將其公開保留 1 天，且無法提前刪除。'
     }
   },
 

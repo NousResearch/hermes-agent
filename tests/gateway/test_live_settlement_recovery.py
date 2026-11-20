@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 
 
@@ -45,26 +45,27 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
                    for receipt in (head, follower)]
         await asyncio.wait_for(authority._drain(REF), 5)
         monkeypatch.setattr(session_results, 'finish_result', original)
-        row = get_session_admission(db, admission_id=head.admission_id)
-        assert row['status'] == 'unknown' and row['owner_epoch'] == authority.epoch
+        row = authority.persistence.admissions.get(admission_id=head.admission_id)
+        assert row.status == 'unknown' and row.owner_epoch == authority.epoch
         assert authority.pending_results[head.admission_id]['result']['final_response'] == 'head done'
         for waiter in waiting:
-            with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+            with pytest.raises(AuthorityRefusal, match='unknown_execution'):
                 await waiter
         assert not any(frame['params']['type'] == 'message.complete' for frame in frames)
-        await authority.resolve_unknown(ACTOR, REF, head.admission_id, row['generation'])
+        await authority.resolve_unknown(ACTOR, REF, head.admission_id, row.generation)
         assert head.admission_id not in authority.pending_results
         # The answer was produced in this owner; only its receipt write failed. Resolution
         # commits that exact result instead of discarding it, and viewers get its completion.
+        from gateway.session_persistence import authority_persistence
         from gateway.session_results import admission_result
-        resolved = get_session_admission(db, admission_id=head.admission_id)
-        assert (resolved['status'], resolved['outcome']) == ('terminal', 'completed')
-        assert admission_result(db, head.admission_id)['result']['final_response'] == 'head done'
+        resolved = authority.persistence.admissions.get(admission_id=head.admission_id)
+        assert (resolved.status, resolved.outcome) == ('terminal', 'completed')
+        assert admission_result(authority_persistence(authority), head.admission_id)['result']['final_response'] == 'head done'
         complete, = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
         assert (complete['admission_id'], complete['text']) == (head.admission_id, 'head done')
         await asyncio.wait_for(authority._drain(REF), 5)
         assert calls == ['head', 'follower']
-        assert get_session_admission(db, admission_id=follower.admission_id)['status'] == 'terminal'
+        assert authority.persistence.admissions.get(admission_id=follower.admission_id).status == 'terminal'
 
 
 @pytest.mark.asyncio
@@ -87,8 +88,8 @@ async def test_commit_then_error_publishes_the_exact_committed_result(tmp_path, 
     with db:
         receipt = await authority.submit(ACTOR, Submission('committed', REF, {'text': 'work'}, 'queue'))
         await asyncio.wait_for(authority.sessions['s'].task, 5)
-        row = get_session_admission(db, admission_id=receipt.admission_id)
-        assert row['status'] == 'terminal' and row['outcome'] == 'completed'
+        row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+        assert row.status == 'terminal' and row.outcome == 'completed'
         complete, = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
         assert complete['text'] == 'done' and complete['response_reused'] is True
         assert receipt.admission_id not in authority.pending_results
@@ -122,10 +123,10 @@ async def test_transient_settlement_failure_commits_the_completed_result(tmp_pat
         waiter = authority.waiters.setdefault(head.admission_id, asyncio.get_running_loop().create_future())
         await asyncio.wait_for(authority._drain(REF), 5)
         assert await waiter == 'head done'
-        row = get_session_admission(db, admission_id=head.admission_id)
-        assert (row['status'], row['outcome']) == ('terminal', 'completed')
+        row = authority.persistence.admissions.get(admission_id=head.admission_id)
+        assert (row.status, row.outcome) == ('terminal', 'completed')
         assert head.admission_id not in authority.pending_results
-        assert get_session_admission(db, admission_id=follower.admission_id)['status'] == 'terminal'
+        assert authority.persistence.admissions.get(admission_id=follower.admission_id).status == 'terminal'
     assert calls == ['head', 'follower'], 'a settlement retry must never re-run inference'
     completions = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
     assert [c['text'] for c in completions] == ['head done', 'follower done']
@@ -153,7 +154,7 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c'), 's')
     authority.runner._adapter_for_source = lambda source: object()
     async def deliver(adapter, event, session_key, response):
-        sent.append((response, get_session_admission(authority.db, admission_id=event.message_id)['status']))
+        sent.append((response, authority.persistence.admissions.get(admission_id=event.message_id).status))
     monkeypatch.setattr(session_ingress, 'deliver_response', deliver)
     if storage_down:
         monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', (0.01,), raising=False)
@@ -163,7 +164,7 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
     actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     receipt = await authority.submit(actor, Submission('recovered', SessionRef('p', 's'), {'text': 'hi'}, 'queue'))
     await asyncio.wait_for(authority.sessions['s'].task, 10)
-    status = get_session_admission(authority.db, admission_id=receipt.admission_id)['status']
+    status = authority.persistence.admissions.get(admission_id=receipt.admission_id).status
     assert calls == ['hi']
     if storage_down:
         assert status == 'unknown' and sent == [], 'an unsettled admission was answered externally'

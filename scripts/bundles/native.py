@@ -37,6 +37,21 @@ def _bundle_package_names(target: str | None = None) -> list[str]:
     return names
 
 
+def _tools_for_builder(names: list[str], store: Path, target: str) -> list[str]:
+    """Admit entries whose glibc floor exceeds this builder after proving they came from the compatible userland."""
+    from pm.build_operations import verified_tools
+
+    staged = [name for name in names
+              if get_package(name).minimum_glibc.get(target) is not None
+              and get_package(name).native_abi_reason(target)]
+    if staged:
+        # The compatible PM installed and probed these exact entries in this job's
+        # payload store. Recheck lock, target, tree digests and links without executing
+        # them on the old libc. Never substitute a missing entry or mint its facts.
+        verified_tools(staged, source_store=store, target=target)
+    return [name for name in names if name not in staged]
+
+
 def _arch_guard(store_dir: Path) -> list[str]:
     """Every staged binary must be built for this machine's target — a
     payload staged with a mismatched interpreter or PATH tool ships an
@@ -186,6 +201,8 @@ def prune_staged_store(store_dir: Path, names: list[str]) -> None:
     """Prune this build's store, never the ambient user's tool store."""
     facts = Facts(store_dir / "facts.json", strict=True)
     facts.retain({package.name for package in walk(names)})
+    # No other checkout shares a build's store: only the selected pins are live here.
+    facts.drop_dead_pins(lambda name, row: row["entry"] == facts.get(name)["entry"])
     keep = facts.entries_in_use()
     for entry in store_dir.iterdir():
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
@@ -238,12 +255,13 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     ]
     from pm import prepare_tools, stage_tools
 
-    with _phase(f"preparing {len(names)} pinned tools"):
-        prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
+    local = _tools_for_builder(names, store_dir, current_target())
+    with _phase(f"preparing {len(local)} pinned tools"):
+        prepare_tools(local, out=Path(tools) if tools is not None else store_dir,
                       target=current_target(), cache=cache)
     if tools is not None:
         with _phase("copying verified tools into the payload store"):
-            stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
+            stage_tools(local, source_store=Path(tools), out=store_dir, target=current_target())
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead

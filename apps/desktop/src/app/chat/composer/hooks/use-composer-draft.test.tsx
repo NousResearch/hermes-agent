@@ -6,6 +6,7 @@ import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import {
   $freshDraftKey,
   $restoredDraftNotice,
+  adoptNewSessionDraft,
   announceGoneSessionDraft,
   announceNewSessionDraftKey,
   clearSessionDraft,
@@ -206,6 +207,46 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     })
     expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
     clearSessionDraft('session-created')
+  })
+
+  it('carries a pre-session draft onto the restored session when the composer remounts across the cold-start resume', () => {
+    // Typed on the fresh chat while the backend was still coming up.
+    const fresh = render(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
+
+    stashSessionDraft(null, 'typed while booting', [])
+
+    // Cold-start resume-last-session announces the restored id and navigates;
+    // the routed session's loading view mounts no composer, so the fresh chat's
+    // composer unmounts and a NEW one mounts already scoped to the restored id.
+    announceNewSessionDraftKey('session-created')
+    fresh.unmount()
+    mockComposerApi.setText.mockClear()
+
+    render(
+      <ProbeHarness
+        activeQueueSessionKey="session-created"
+        onLayoutSnapshot={() => undefined}
+        sessionId="session-created"
+      />
+    )
+
+    expect(takeSessionDraft('session-created').text).toBe('typed while booting')
+    expect(takeSessionDraft(null).text).toBe('')
+    expect(mockComposerApi.setText).toHaveBeenCalledWith('typed while booting')
+  })
+
+  it('leaves the pre-session draft alone when a composer mounts on a session nobody announced', () => {
+    stashSessionDraft(null, 'still composing a new chat', [])
+
+    // Another chat's restore is pending; a composer mounting elsewhere must not eat it.
+    announceNewSessionDraftKey('session-created')
+    render(<ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />)
+
+    expect(takeSessionDraft('session-A').text).toBe('')
+    expect(takeSessionDraft(null).text).toBe('still composing a new chat')
+    expect(adoptNewSessionDraft('session-created')).toBe(true)
+    clearSessionDraft('session-created')
+    clearSessionDraft(null)
   })
 
   it('carries the unsent draft of a GONE session into the fresh chat once, with an undoable notice (#111868)', () => {
@@ -685,7 +726,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
 
       return (
         <>
-          <div ref={element => element?.focus()} role="tab" tabIndex={0}>Session tab</div>
+          <div ref={element => element?.focus()} role="tab" tabIndex={0}>
+            Session tab
+          </div>
           <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} role="textbox" tabIndex={0} />
         </>
       )

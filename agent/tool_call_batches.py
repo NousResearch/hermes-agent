@@ -3,7 +3,8 @@
 from copy import deepcopy
 import json
 
-from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
+from agent.message_sanitization import deterministic_call_id, uniquify_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
 from agent.transports.types import ToolCall
 from tools.connectors import is_connector_name
 from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
@@ -35,6 +36,7 @@ def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = 
             expanded.append(call)
             continue
         parent_id = coalesce_tool_call_id(call)
+        output_index = getattr(call, "_codex_output_index", None)
         children = []
         for index, entry in enumerate(entries):
             arguments = json.dumps({"calls": [entry]}, ensure_ascii=False)
@@ -43,10 +45,12 @@ def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = 
                 child.function.arguments = arguments
             else:
                 # A new entry must not inherit the parent's Responses item id or
-                # provider signature. IDs are deterministic for stable replay.
+                # provider signature, only its response-local output position.
+                # IDs are deterministic for stable replay.
                 child = ToolCall(
                     id=deterministic_call_id(TOOL_CALL_NAME, parent_id + arguments, index),
                     name=TOOL_CALL_NAME, arguments=arguments,
+                    provider_data={"_codex_output_index": output_index} if type(output_index) is int else None,
                 )
             expanded.append(child)
             children.append(child)

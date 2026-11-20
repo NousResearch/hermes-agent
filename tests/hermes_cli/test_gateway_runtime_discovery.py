@@ -306,6 +306,33 @@ def test_setgid_group_read_mode_2750_is_accepted_for_shared_groups(tmp_path, mon
 
 
 @pytest.mark.platforms("linux", "macos")
+def test_control_dir_check_is_independent_of_the_state_dir_mode(tmp_path, monkeypatch):
+    """The module ships the stateDir (the service account home) at 2750 too —
+    sshd StrictModes requires a non-group-writable home for ssh access — and
+    discovery reads only the control dir, so the verdict must not change with
+    the parent's mode."""
+    import grp
+    import os
+    import pwd
+    from hermes_cli.gateway_runtime_discovery import _private_node
+
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o2750)
+    home = state / '.hermes'
+    home.mkdir(mode=0o2750)
+    user = pwd.getpwuid(os.getuid())
+    shared = grp.struct_group(('hermes', 'x', user.pw_gid, [user.pw_name, 'someone-else']))
+    monkeypatch.setattr(pwd, 'getpwall', lambda: [user])
+    monkeypatch.setattr(grp, 'getgrgid', lambda _gid: shared)
+    _private_node(home, kind='directory', home=True)
+    state.chmod(0o2770)
+    _private_node(home, kind='directory', home=True)
+    home.chmod(0o2770)
+    with pytest.raises(DiscoveryError, match='unsafe_control_permissions'):
+        _private_node(home, kind='directory', home=True)
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_group_write_is_private_only_when_no_other_account_has_that_primary_group(tmp_path, monkeypatch):
     import grp
     import os

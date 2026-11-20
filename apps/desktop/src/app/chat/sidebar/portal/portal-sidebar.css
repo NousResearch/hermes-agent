@@ -539,6 +539,12 @@ button.portal-section-title:hover {
   gap: var(--portal-sidebar-row-gap);
 }
 
+/* The list scrolls past its cap; a row never gives up height to fit it (a gateway room's row clips
+   its own overflow, so it would be the one squeezed). */
+.portal-sidebar [data-slot='group-chats-section'] .portal-section-scroll > * {
+  flex: none;
+}
+
 /* Chat row states (Web Application Redesign 1252:38769): the open chat takes a quiet fill; a row
    under the pointer or keyboard focus, or with its menu open, takes a rule and no fill. Both, and a
    chat with unread news, read in full ink. */

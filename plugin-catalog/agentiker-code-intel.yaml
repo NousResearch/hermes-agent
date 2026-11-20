@@ -1,6 +1,6 @@
 name: agentiker-code-intel
 repo: https://github.com/IVRZ-da/agentiker-code-intel
-sha: a5076f1a2f3c11c3bc08c0ce8beb7ecaf1ba3d15
+sha: 44adf76c1e4b9649333f24011f3972e8a1999405
 description: >-
   AST-aware code intelligence for the local repository: symbol outlines and
   structural search (tree-sitter), ast-grep pattern queries, LSP

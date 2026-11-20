@@ -355,6 +355,24 @@ def test_query_string_credentials_and_inline_c_source_are_redacted_in_json_and_t
     assert any("https://hook.example/x?api_key=" in tok and "mode=1" in tok for tok in argv)
 
 
+@pytest.mark.parametrize("joined", [True, False])
+def test_flag_url_query_credential_is_redacted_without_clobbering_next_flag(home, joined):
+    from hermes_cli.gateway_migrate_backends_plan import build_plan, format_plan
+    host = FakeHost(home)
+    url = "https://example.invalid/x?api_key=sample44"
+    webhook = [f"--webhook={url}"] if joined else ["--webhook", url]
+    host.argv = ["/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--no-open", *webhook, "--port", "9119"]
+
+    plan = build_plan(host)
+    data = plan.to_dict()
+    text = "\n".join(format_plan(plan, dry_run=True))
+
+    assert "sample44" not in json.dumps(data) and "sample44" not in text
+    argv = data["old_backend"]["argv"]
+    port_idx = argv.index("--port")
+    assert argv[port_idx + 1] == "9119"
+
+
 def test_without_a_service_manager_the_steps_run_the_gateway_under_the_operators_supervisor(home, capsys,
                                                                                            monkeypatch):
     host = FakeHost(home, host="127.0.0.1")

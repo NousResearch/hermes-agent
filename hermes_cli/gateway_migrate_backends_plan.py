@@ -293,7 +293,8 @@ def redacted_argv(argv: list[str]) -> list[str]:
         elif _ENV_ASSIGNMENT.match(token) or (token.startswith("-") and _SECRET_NAME.search(token.split("=", 1)[0])
                                               and "=" in token):
             out.append(token.split("=", 1)[0] + "=<redacted>")
-        elif token.startswith("-") and _SECRET_NAME.search(token) and not token.endswith(("-stdin", "-file")):
+        elif (token.startswith("-") and "=" not in token and _SECRET_NAME.search(token)
+              and not token.endswith(("-stdin", "-file"))):
             out.append(token)
             next_placeholder = "<redacted>"
         else:

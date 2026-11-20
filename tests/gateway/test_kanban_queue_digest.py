@@ -119,6 +119,35 @@ async def test_concurrent_notices_fold_once_without_losing_identities(tmp_path, 
         authority.runner.session_store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_first', [True, False], ids=['legacy-then-structured', 'structured-then-legacy'])
+async def test_mixed_wake_formats_keep_legacy_text_and_refresh_structured_card(tmp_path, monkeypatch, legacy_first):
+    import sqlite3
+    from gateway.session_kanban_digest import descriptor, refresh_text
+
+    runner, authority, _actor, ref, live, adapter = await owner(tmp_path, monkeypatch)
+    board = tmp_path / 'mixed.db'
+    with sqlite3.connect(board) as conn:
+        conn.executescript('''
+            CREATE TABLE tasks(id TEXT,status TEXT,title TEXT,assignee TEXT);
+            CREATE TABLE kanban_notify_subs(task_id TEXT,platform TEXT,chat_id TEXT,thread_id TEXT);
+            INSERT INTO tasks VALUES('t_mixed','done','Current card','worker');
+            INSERT INTO kanban_notify_subs VALUES('t_mixed','tui','session','');
+        ''')
+    notice = dict(db=str(board), board='test', task_id='t_mixed', platform='tui', chat_id='session', thread_id='')
+    wakes = [('Pre-upgrade message', {}), ('Obsolete card text', {'kanban_notices': [notice]})]
+    try:
+        for text, metadata in wakes if legacy_first else reversed(wakes):
+            await admit_route_wake(runner, adapter, live.source, text, 'kanban-wake', metadata)
+        rendered = '\n'.join(refresh_text(descriptor(row['payload']), row['payload']['text'])
+                             for row in queued(authority, ref))
+        assert 'Current card' in rendered
+        assert 'Obsolete card text' not in rendered
+        assert rendered.count('Pre-upgrade message') == 1
+    finally:
+        authority.runner.session_store.close_all_db_handles()
+
+
 def test_only_kanban_yields_to_human_and_preflight_head_matches_runtime():
     from persistence.authority.admission_order import preferred_session_input
     def row(seq, principal, payload, producer=None):

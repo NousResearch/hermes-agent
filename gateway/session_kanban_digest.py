@@ -31,11 +31,15 @@ def notice_metadata(metadata):
 def fold_event(authority, sid, event, identity):
     from gateway.session_authority import admission_row
     category = event.metadata.get('notification_category', 'result')
+    # A live-state refresh replaces the digest text. Never fold a notice that
+    # has no card reference (and therefore cannot be rendered by that refresh).
+    structured = bool(event.metadata.get('kanban_notices'))
     rows = authority_persistence(authority).admissions.list(session_id=sid)
     waiting = [r for r in map(admission_row, rows)
                if r['status'] == 'queued' and is_kanban(r)
                and r['principal_id'] == 'automation:' + event.metadata['gateway_session_key']
-               and descriptor(r['payload']).get('notification_category', 'result') == category]
+               and descriptor(r['payload']).get('notification_category', 'result') == category
+               and bool(descriptor(r['payload']).get('kanban_notices')) == structured]
     if not waiting:
         return []
     identities = {identity}

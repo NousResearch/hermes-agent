@@ -930,6 +930,49 @@ def stale_feed_bundle_keys(
 # prune-canaries
 # ---------------------------------------------------------------------------
 
+# Live Termux APT references: a desktop-only canary can advance the canary pointer without
+# replacing the live APT index, so the pool the index names stays independent of that head.
+TERMUX_CANARY_ROOT = "releases/termux/canary/"
+_TERMUX_CANARY_INDEX = re.compile(r"releases/termux/canary/dists/[^/]+/[^/]+/binary-[^/]+/Packages(?:\.gz)?")
+
+
+def package_filename(stanza: str) -> str:
+    """Require an unambiguous deb822 record before trusting its pool reference."""
+    fields: dict[str, str] = {}
+    previous = ""
+    for line in stanza.splitlines():
+        if line.startswith((" ", "\t")) and previous not in ("", "package", "filename"):
+            continue  # Description and other multiline fields do not identify the artifact.
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)", line)
+        if match is None or match[1].lower() in fields:
+            raise ValueError("Malformed or duplicate APT field")
+        previous = match[1].lower()
+        fields[previous] = match[2]
+    filename = relative_artifact_path(fields.get("filename", ""))
+    if not fields.get("package") or not filename.startswith("pool/") or not filename.endswith(".deb"):
+        raise ValueError("APT record must name a package and a pool .deb")
+    return filename
+
+
+def live_pool_keys(keys: list[str], read: Callable[[str], str | None]) -> set[str]:
+    """Read the uncompressed index the APT publisher emits beside Packages.gz."""
+    indices = {key.removesuffix(".gz") for key in keys if _TERMUX_CANARY_INDEX.fullmatch(key)}
+    if not indices:
+        # A staged pool with no readable repository is not evidence that its packages are dead.
+        return {key for key in keys if key.startswith(TERMUX_CANARY_ROOT + "pool/")}
+    protected = set()
+    for key in sorted(indices):
+        text = read(key)
+        try:
+            if text is None or not text.strip():
+                raise ValueError("Missing APT index")
+            stanzas = re.split(r"\n[ \t]*\n", text.replace("\r\n", "\n").strip())
+            protected.update(TERMUX_CANARY_ROOT + package_filename(stanza) for stanza in stanzas)
+        except ValueError as exc:
+            raise RuntimeError(f"Cannot establish APT references from {key}; refusing to prune") from exc
+    return protected
+
+
 def _canary_head_tag(read: Callable[[str], str | None]) -> str | None:
     """The release tag the protected canary head serves.
 
@@ -1016,8 +1059,6 @@ def prune(
         protected.update(key for key in keys if live in key)
 
     # A desktop-only canary can advance that pointer without replacing the live APT index.
-    from .r2_apt import live_pool_keys
-
     protected.update(live_pool_keys(
         keys, lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher)))
 

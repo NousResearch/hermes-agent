@@ -2227,23 +2227,18 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
-    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
-    # the next login or container boot. Then stop the gateway and the screen whose launcher
-    # holds paths under the old name.
+    # 1. Remove the old name's service even when its gateway is stopped (the unit runs ``--profile <old>``
+    # and would crash-loop on the next login or boot), then stop the gateway and the screen holding old paths.
+    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as delete_profile):
+    # it serves a multiplexed secondary that has no gateway.pid; a writer outside ``mkdir_under_hermes_home``
+    # can re-create the moved-away home, which the reconcile could re-adopt as a ghost (#109267). 1c. Release
+    # this process's MCP stderr handle into the old home: Windows refuses to rename a dir holding an open file.
+    # 2. Everything before the move is undone on any exit (Ctrl-C in the service stop or owner wait, EXDEV, a
+    # racing writer); after it, the old name is never re-served.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     gw_running = _check_gateway_running(old_dir)
-    service_removed = False
-
-    # 1b. Unroute the old name from a live multiplexer BEFORE the move (same protocol as
-    # delete_profile): it serves a multiplexed secondary that has no gateway.pid; a writer outside
-    # ``mkdir_under_hermes_home`` can re-create the moved-away home, which the reconcile could re-adopt
-    # as a ghost served profile (#109267). 1c. Release this process's MCP stderr handle into the old
-    # home: Windows refuses to rename a directory holding an open file.
-    # 2. The move is the commit point, read from the filesystem (an interrupt can land just after
-    # it). Before it, undo the unroute so the profile never stays tombstoned-but-present (Ctrl-C in
-    # the owner wait, EXDEV, a racing writer); after it, never re-serve the old name.
-    # Backend/service shutdown is also pre-commit: recover on Ctrl-C before any unroute.
-    live_mux = False
+    service_removed = live_mux = renamed = False
     old_identity = None
     try:
         service_removed = _cleanup_gateway_service(old_canon, old_dir)
@@ -2251,8 +2246,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if gw_running:
             _stop_gateway_process(old_dir)
         _stop_bot_desktop(old_dir)
-        from hermes_constants import hermes_home_key
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
         live_mux = _live_default_multiplexer()
         old_identity = old_dir.lstat()
         if live_mux:
@@ -2262,9 +2255,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
         old_dir.rename(new_dir)
+        renamed = True
     finally:
-        moved = False
-        if old_identity is not None:
+        moved = renamed  # identity only for an interrupt after the move: FAT/CIFS may change the dir ID
+        if not moved and old_identity is not None:
             with contextlib.suppress(OSError):  # no new_dir: the move never landed
                 moved = os.path.samestat(new_dir.lstat(), old_identity)
         if moved:

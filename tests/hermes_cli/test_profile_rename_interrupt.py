@@ -93,6 +93,17 @@ def test_interrupt_after_the_move_never_revives_the_old_name(mux, monkeypatch):
     assert not named_profile_is_deleted(old_dir) and not named_profile_is_deleted(new_dir)
     assert calls == [("notify", "before")]  # the unroute only: no re-serve or re-register of "before"
 
+
+def test_rename_that_changes_the_directory_id_still_commits(mux, monkeypatch):
+    """FAT/exFAT and CIFS ``noserverino`` give the moved directory a new ID; a normal return still commits."""
+    old_dir, calls = mux
+    monkeypatch.setattr(profiles.os.path, "samestat", lambda *_a: False)
+    profiles.rename_profile("before", "after")
+    assert not old_dir.exists() and _listed() == {"after"}
+    assert ("notify", "before") in calls and ("register", "before") not in calls
+    assert calls.count(("notify", "before")) == 1  # the unroute only: no re-serve of "before"
+
+
 def test_interrupt_during_desktop_stop_recovers_unmoved_profile_service(mux, monkeypatch):
     old_dir, calls = mux
     monkeypatch.setattr(profiles, "_stop_bot_desktop", _interrupt)

@@ -1302,12 +1302,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             # already live or queued for reconnect are built — never a second poller on the same bot.
             # Nor held ones (tearing down after a fatal error, or awaiting the boot handoff): their own reconnect
             # rebuilds them, or none does because the error was not retryable. A teardown that outlived its
-            # profile's unserve reconnects nothing: a re-serve rebuilds past its hold (and the hold spares it).
-            hold = (getattr(self, "_secondary_held_claims", None) or {}).get((profile_name, platform))
-            unserved_hold = hold is not None and getattr(hold[0], "_hermes_unserved_teardown", False) is True
+            # profile's unserve reconnects nothing: a re-serve rebuilds past its hold (which blocks only others).
             if platform in profile_map or platform in (
                     (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}) or (
-                    hold is not None and not unserved_hold):
+                    (profile_name, platform) in (getattr(self, "_secondary_held_claims", None) or {})):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
             with _profile_runtime_scope(profile_home, hydrate_secrets=False):
@@ -1348,7 +1346,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
             # Held claims too (a profile earlier in the sweep whose connect failed, or one healing, still owns
             # its bot), and once live, owners as of now: a runtime caller's snapshot predates these awaits.
-            mine = (profile_name, platform) if unserved_hold else None
+            mine = (profile_name, platform) if any(key == (profile_name, platform) for _owner, key, _claims in (
+                getattr(self, "_teardown_held_claims", None) or {}).values()) else None
             owners = self._current_claim_owners(mine) if getattr(self, "_running", False) else self._held_claim_owners(mine)
             claims = self._claim_secondary_platform(
                 profile_name, profile_home, platform, adapter, {**claimed, **owners})

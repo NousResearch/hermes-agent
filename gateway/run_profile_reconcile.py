@@ -515,14 +515,16 @@ class GatewayProfileReconcileMixin:
                     self._release_secondary_claims(name, platform, adapter)  # its bot is free once it is down
             finally:
                 # The profile's holds go, but an adapter still tearing down elsewhere (a fatal teardown) keeps its
-                # own while its bot is up: marked, it blocks only OTHER profiles, a re-serve of this one rebuilds
-                # past it, and that teardown's own finally releases it however it ends.
+                # own while its bot is up, moved out of the (profile, platform) slot a re-serve takes: it blocks
+                # only OTHER profiles, and that teardown's own finally releases it however it ends.
                 held = getattr(self, "_secondary_held_claims", None) or {}
-                for key, (owner, _claims) in [(key, entry) for key, entry in held.items() if key[0] == name]:
-                    if isinstance(owner, asyncio.Future) or any(owner is popped for popped in adapters.values()):
-                        del held[key]
-                    else:
-                        owner._hermes_unserved_teardown = True
+                for key in [key for key in held if key[0] == name]:
+                    owner, claims = held.pop(key)
+                    if not isinstance(owner, asyncio.Future) and not any(owner is popped for popped in adapters.values()):
+                        teardown = getattr(self, "_teardown_held_claims", None)
+                        if teardown is None:
+                            teardown = self._teardown_held_claims = {}
+                        teardown[id(owner)] = (owner, key, claims)
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",

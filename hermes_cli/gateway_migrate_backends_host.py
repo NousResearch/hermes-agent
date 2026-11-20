@@ -213,9 +213,10 @@ class FileChangedSinceBackup(RuntimeError):
 
 
 @contextlib.contextmanager
-def _staged_copy(path: Path, expect: Optional[str]):
+def _staged_copy(path: Path, expect: Optional[str], *, private: bool = False):
     """A private (0600) copy of *path* beside it, yielded only when its bytes hash to *expect* (None: the
-    file must not exist). Removed again unless :func:`_publish` renamed it over *path*."""
+    file must not exist), then given *path*'s own mode unless *private* (a copy that receives secrets stays
+    0600 until it is renamed). Removed again unless :func:`_publish` renamed it over *path*."""
     from hermes_cli.gateway_migrate_backends_apply import write_private_file
     staged = path.with_name(f".{path.name}.{os.getpid()}.migrate")
     try:
@@ -228,6 +229,7 @@ def _staged_copy(path: Path, expect: Optional[str]):
     staged.unlink(missing_ok=True)
     if data is not None:
         write_private_file(staged, data)
+    if data is not None and not private:
         with contextlib.suppress(OSError):
             os.chmod(staged, stat.S_IMODE(os.stat(path).st_mode))
     try:
@@ -534,10 +536,10 @@ class SystemHost:
                 save_env_value(key, value)
             os.chmod(env, 0o600)
             return None
-        with _env_write_lock(env), _staged_copy(env, expect) as staged:  # Hermes' own .env writers wait
+        with _env_write_lock(env), _staged_copy(env, expect, private=True) as staged:  # Hermes' .env writers wait
             for key, value in values.items():
-                save_env_value(key, value, env_path=staged)
-            os.chmod(staged, 0o600)
+                save_env_value(key, value, env_path=staged)  # it keeps the copy's 0600
+            os.chmod(staged, 0o600)  # a .env that did not exist: the writer's new file
             return _publish(staged, env)
 
     def webapp_settings(self):

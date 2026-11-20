@@ -240,6 +240,7 @@ def test_a_stopped_unit_a_migration_retired_is_not_named_but_a_running_backend_a
     """The manifest is the one the migration writes: while it says the old backend stays down (or cannot be
     read), a stopped unit it left `static` is not a leftover; a running backend is named in every state."""
     import hermes_cli.gateway_migrate_backends as backends
+    import hermes_cli.gateway_migrate_backends_host as backends_host
     from hermes_cli.gateway_migrate_backends import BackendItem
     from hermes_cli.gateway_migrate_backends_apply import MANIFEST_NAME, write_manifest
     from hermes_cli.update_backend_notice import old_backend_notice
@@ -248,8 +249,10 @@ def test_a_stopped_unit_a_migration_retired_is_not_named_but_a_running_backend_a
     elif state is not None:
         write_manifest(tmp_path, {"state": state})
     stopped = BackendItem("systemd", False, unit="hermes-dashboard.service", scope="user", state="static",
-                          this_home=True)
+                          argv=["hermes", "dashboard"], this_home=True)
     running = BackendItem("manual", True, pid=7, argv=["hermes", "serve", "--port", "9119"], this_home=True)
+    monkeypatch.setattr(backends_host.SystemHost, "unit_environment",
+                        lambda self, unit, scope: ({"HERMES_HOME": str(tmp_path)}, None))
     monkeypatch.setattr(backends, "collect_backends", lambda: [stopped])
     assert (old_backend_notice(tmp_path) is not None) is stopped_unit_named
     monkeypatch.setattr(backends, "collect_backends", lambda: [stopped, running])
@@ -310,3 +313,64 @@ def test_a_notice_that_raises_never_fails_the_update(broken, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "default (pid 1234)" in out and "old Hermes backend" not in out
     assert cleared == [True]
+
+
+def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_path, monkeypatch):
+    """Stopped user units use the planner's ownership check: `-p/--profile` in ExecStart and a later
+    `EnvironmentFile=` overriding `HERMES_HOME` exclude sibling units just as the dry run does."""
+    import hermes_cli.gateway_migrate_backends as backends
+    import hermes_cli.gateway_migrate_backends_host as backends_host
+    from hermes_cli.gateway_migrate_backends import BackendItem
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    root = _standard_root(tmp_path, monkeypatch)
+    work_home = root / "profiles" / "work"
+    sibling_env = tmp_path / "work.env"
+    sibling_env.write_text(f"HERMES_HOME={work_home}\n", encoding="utf-8")
+
+    units = {
+        "hermes-dashboard-work.service": (
+            "Environment=\n"
+            "EnvironmentFiles=\n"
+            "ExecStart={ path=/usr/bin/hermes ; argv[]=hermes -p work dashboard --port 9119 ; }\n"
+        ),
+        "hermes-dashboard-envfile.service": (
+            f"Environment=HERMES_HOME={root}\n"
+            f"EnvironmentFiles={sibling_env} (ignore_errors=no)\n"
+            "ExecStart={ path=/usr/bin/hermes ; argv[]=hermes dashboard --port 9120 ; }\n"
+        ),
+        "hermes-dashboard.service": (
+            f"Environment=HERMES_HOME={root}\n"
+            "EnvironmentFiles=\n"
+            "ExecStart={ path=/usr/bin/hermes ; argv[]=hermes dashboard --port 9119 ; }\n"
+        ),
+    }
+
+    def fake_systemctl(scope, args, **kwargs):
+        if args[:1] == ["show-environment"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:1] == ["show"] and len(args) >= 2 and args[1] in units:
+            return subprocess.CompletedProcess(args, 0, stdout=units[args[1]], stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="not found")
+
+    monkeypatch.setattr(backends_host, "_systemctl", fake_systemctl)
+
+    sibling_profile = BackendItem("systemd", False, unit="hermes-dashboard-work.service", scope="user",
+                                  state="enabled", hermes_home=None, this_home=None)
+    sibling_envfile = BackendItem("systemd", False, unit="hermes-dashboard-envfile.service", scope="user",
+                                  state="enabled", hermes_home=str(root), this_home=True)
+    own_unit = BackendItem("systemd", False, unit="hermes-dashboard.service", scope="user",
+                           state="enabled", hermes_home=str(root), this_home=True)
+
+    monkeypatch.setattr(backends, "collect_backends", lambda: [sibling_profile])
+    assert old_backend_notice(root) is None
+
+    monkeypatch.setattr(backends, "collect_backends", lambda: [sibling_envfile])
+    assert old_backend_notice(root) is None
+
+    monkeypatch.setattr(backends, "collect_backends", lambda: [sibling_profile, sibling_envfile, own_unit])
+    notice = old_backend_notice(root)
+    assert notice is not None
+    assert "hermes-dashboard.service" in notice
+    assert "hermes-dashboard-work.service" not in notice
+    assert "hermes-dashboard-envfile.service" not in notice

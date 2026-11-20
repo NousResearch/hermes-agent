@@ -95,7 +95,6 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 GEMINI4_THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 #: Gemini 4 models with a fourth ``xhigh`` level (Argon and Carbon answer 400 to it), on AI Studio and Vertex.
 GEMINI4_XHIGH_MODELS: tuple[str, ...] = ("gemini-4-hydrogen", "gemini-4-neon")
-_GEMINI4_XHIGH_EFFORTS = frozenset({"xhigh", "max", "ultra"})
 
 
 def gemini_top_thinking_level(model: Optional[str], reasoning_config: object, thinking_config: dict) -> dict:
@@ -103,7 +102,8 @@ def gemini_top_thinking_level(model: Optional[str], reasoning_config: object, th
     Gemini 4 mapping stops at ``high``). The gemini and vertex profiles both apply it before shaping the wire."""
     name = (model or "").strip().lower().removeprefix("google/")
     effort = str(reasoning_config.get("effort") or "").strip().lower() if isinstance(reasoning_config, dict) else ""
-    if name.startswith(GEMINI4_XHIGH_MODELS) and effort in _GEMINI4_XHIGH_EFFORTS and thinking_config.get("thinkingLevel") == "high":
+    above_high = effort in EFFORT_LADDER and EFFORT_LADDER.index(effort) >= EFFORT_LADDER.index("xhigh")
+    if name.startswith(GEMINI4_XHIGH_MODELS) and above_high and thinking_config.get("thinkingLevel") == "high":
         return {**thinking_config, "thinkingLevel": "xhigh"}
     return thinking_config
 

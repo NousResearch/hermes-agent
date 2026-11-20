@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 PLAN_ARGS = "gateway migrate --backends --apply --dry-run"
 #: Backends Hermes Desktop owns are its own business, never offered for migration.
 _DESKTOP_OWNED = frozenset({"desktop-ssh", "desktop-local"})
+#: Overall wall-clock budget for the post-update old-backend scan; on timeout the notice is skipped.
+_SCAN_TIMEOUT_SECONDS = 5.0
 
 
 def _describe(item) -> str:
@@ -101,11 +103,32 @@ def update_saw_old_backend(plan, restart) -> bool:
             or any(not any(_serve_unit_matches_profile(name, unit) for name in siblings) for unit in units))
 
 
-def print_old_backend_notice(plan, restart) -> None:
+def _run_with_deadline(fn, timeout: float):
+    """Run *fn* on a daemon thread and return its result, or None on timeout or error."""
+    from agent.memory_provider import spawn_context_thread
+    from hermes_cli.update_cmd_common import _best_effort
+    box: list = []
+
+    def _target() -> None:
+        with _best_effort("Old backend notice after update failed: %s"):
+            box.append(fn())
+
+    worker = spawn_context_thread(_target, name="update-old-backend-notice", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        logger.debug("Old backend notice after update timed out after %.1fs", timeout)
+        return None
+    return box[0] if box else None
+
+
+def print_old_backend_notice(plan, restart, *, timeout: float = _SCAN_TIMEOUT_SECONDS) -> None:
     """Print :func:`old_backend_notice` after an update that saw an old backend (``plan`` is the update's
-    pre-update inventory, ``restart`` its restart outcome). Never raises, prints nothing on failure."""
+    pre-update inventory, ``restart`` its restart outcome). Never raises, prints nothing on timeout or failure."""
     from hermes_cli.update_cmd_common import _best_effort
     with _best_effort("Old backend notice after update failed: %s"):  # never fails a committed update
-        notice = old_backend_notice() if update_saw_old_backend(plan, restart) else None
+        if not update_saw_old_backend(plan, restart):
+            return
+        notice = _run_with_deadline(old_backend_notice, timeout)
         if notice:
             print(f"\n{notice}")

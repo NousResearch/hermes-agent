@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -374,3 +375,84 @@ def test_stopped_sibling_user_unit_is_not_named_while_this_homes_unit_is(tmp_pat
     assert "hermes-dashboard.service" in notice
     assert "hermes-dashboard-work.service" not in notice
     assert "hermes-dashboard-envfile.service" not in notice
+
+
+def test_notice_runs_after_clearing_restart_marker_and_still_prints_when_restart_incomplete(monkeypatch, capsys):
+    """On a complete restart the notice runs only after `_clear_fleet_restart_pending_marker()`; on an
+    incomplete restart the marker stays armed and the notice still prints before returning."""
+    from hermes_cli import (
+        update_backend_notice,
+        update_cmd,
+        update_cmd_fleet,
+        update_cmd_fleet_verify as fleet_verify,
+        update_cmd_maint,
+        update_receipt,
+    )
+    from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
+
+    order: list[str] = []
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(update_cmd_maint, "_refresh_dashboard_after_update", lambda **kwargs: set())
+    monkeypatch.setattr(update_receipt, "_code_identity", lambda **kwargs: {})
+    monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda outcome, rows_expected: [
+        {"profile": "default", "pid": 1234, "state": "current"}])
+    monkeypatch.setattr(update_cmd_fleet, "_clear_fleet_restart_pending_marker", lambda: order.append("clear"))
+
+    def fake_notice():
+        order.append("notice")
+        return "Found an old Hermes backend for this profile: stub."
+
+    monkeypatch.setattr(update_backend_notice, "old_backend_notice", fake_notice)
+    plan = UpdatePlan(profiles=["default"], runtimes=[RuntimeRecord("gateway", "default", 1234, "systemd"),
+                                                      RuntimeRecord("serve", "default", 4321, "manual-serve")])
+
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        fleet_verify._verify_fleet_after_update(
+            _restart(["hermes-gateway"]), _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    out = capsys.readouterr().out
+    assert order == ["clear", "notice"]
+    assert "Found an old Hermes backend for this profile: stub." in out
+
+    order.clear()
+    incomplete = _GatewayRestartOutcome(
+        incomplete=True, phase_errors=[], pre_restart_gateway_pids=[1234], restarted_services=["hermes-gateway"],
+        failed_or_stale_units=["hermes-dashboard"], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set())
+    monkeypatch.setattr(fleet_verify, "_record_owed_gateway_inventory", lambda *args, **kwargs: None)
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        fleet_verify._verify_fleet_after_update(
+            incomplete, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    out = capsys.readouterr().out
+    assert order == ["notice"]
+    assert "Found an old Hermes backend for this profile: stub." in out
+
+
+def test_a_hanging_scan_times_out_at_the_deadline_and_prints_nothing(monkeypatch, capsys):
+    """A hanging backend scan cannot delay the update past the notice's overall deadline."""
+    import hermes_cli.gateway_migrate_backends as backends
+    from hermes_cli.update_backend_notice import print_old_backend_notice
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def hanging_scan():
+        started.set()
+        release.wait(30)
+        return []
+
+    monkeypatch.setattr(backends, "collect_backends", hanging_scan)
+    plan = UpdatePlan(runtimes=[RuntimeRecord("serve", "default", 7, "manual-serve")])
+    t0 = time.monotonic()
+    try:
+        print_old_backend_notice(plan, None, timeout=0.1)
+        elapsed = time.monotonic() - t0
+        assert started.is_set()
+        assert not release.is_set()
+        assert elapsed < 2.0
+        assert capsys.readouterr().out == ""
+    finally:
+        release.set()

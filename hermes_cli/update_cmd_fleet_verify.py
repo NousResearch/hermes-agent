@@ -488,11 +488,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             logger.info("Update receipt written: %s", _receipt_path)
 
     # Read-only, and only when this update saw a serve/dashboard backend: names it and the plan command.
+    # Runs after clearing the fleet-restart marker (or right before returning on an incomplete restart)
+    # so a slow or interrupted notice never delays or skips marker cleanup.
     from hermes_cli.update_backend_notice import print_old_backend_notice
-    print_old_backend_notice(_pre_update_plan, restart)
     if restart.incomplete:
+        print_old_backend_notice(_pre_update_plan, restart)
         return
     fleet._clear_fleet_restart_pending_marker()
+    print_old_backend_notice(_pre_update_plan, restart)
     if not update_complete:
         # Fleet caught up, but the selected runtime's SQLite is unsafe or the tail is still owed
         # (both reported by the completion): leave the topology alone until they are repaired.

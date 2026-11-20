@@ -388,7 +388,7 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> dict[str, str]:
+def load_env_file(env_path: Path, *, for_overwrite_check: bool = False) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -399,6 +399,8 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     A file in the home of a profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``) also
     reads as ``{}`` and is not opened: that backend writes the file, so no reader on this host takes a
     value from it. Hermes's own ``.env`` writers do not read through here and still write it.
+    *for_overwrite_check* is for a writer that asks what a file holds before it replaces the file: it
+    reads a marked home's file too, because "not read here" must not pass for "holds nothing".
 
     Memoised per path on the file's exact bytes (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
@@ -406,7 +408,7 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     """
     key = str(env_path)
     from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
-    if home_runs_elsewhere(Path(env_path).parent):
+    if not for_overwrite_check and home_runs_elsewhere(Path(env_path).parent):
         return {}
     try:
         with open(env_path, "rb") as handle:

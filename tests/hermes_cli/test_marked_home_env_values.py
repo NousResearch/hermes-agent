@@ -370,6 +370,45 @@ def test_a_key_saved_for_a_marked_home_still_lands_in_its_env_file(root):
     assert "MH2_SAVED" not in os.environ
 
 
+# -- a new profile under a name that is already marked ---------------------------------------------
+
+def _marked_new_profile(root: Path, env_text: str) -> Path:
+    """``profiles/fresh``, just created with *env_text* as its ``.env``, under a name whose marker is
+    already there (its predecessor was deleted and the marker stayed)."""
+    _mark(root, "fresh")
+    fresh = root / "profiles" / "fresh"
+    fresh.mkdir()
+    (fresh / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (fresh / ".env").write_text(env_text, encoding="utf-8")
+    assert secret_scope.load_env_file(fresh / ".env") == {}  # marked from its first moment: not read here
+    return fresh
+
+
+def test_the_launch_keys_are_not_copied_over_the_keys_of_a_clone_made_under_a_marked_name(root):
+    """Creating a profile mirrors the launch profile's ``.env`` into it, but only over the seeded stub,
+    never over the keys a clone brought. That check reads the new file itself: for a marked home the
+    tokenizer answers with nothing, which is not the same as a file that holds nothing."""
+    from hermes_cli import profile_provision
+
+    fresh = _marked_new_profile(root, "MH2_KEY=the-clones-own-key\n")
+    mirrored: dict = {}
+    profile_provision.mirror_launch_credentials(fresh, mirrored)
+    assert mirrored["env"] is False
+    assert (fresh / ".env").read_text(encoding="utf-8") == "MH2_KEY=the-clones-own-key\n"
+
+
+def test_the_launch_keys_are_still_copied_over_the_stub_of_a_new_profile_under_a_marked_name(root):
+    """The stub is what every new profile starts with; a marker on the name changes nothing about it."""
+    from hermes_cli import profile_provision
+    from hermes_cli.profiles import _PLACEHOLDER_ENV
+
+    fresh = _marked_new_profile(root, _PLACEHOLDER_ENV)
+    mirrored: dict = {}
+    profile_provision.mirror_launch_credentials(fresh, mirrored)
+    assert mirrored["env"] is True
+    assert "MH2_KEY=from-the-ops-home" in (fresh / ".env").read_text(encoding="utf-8")
+
+
 # -- what the user is told -------------------------------------------------------------------------
 
 def _status(capsys, **flags) -> str:

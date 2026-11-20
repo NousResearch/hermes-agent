@@ -8,10 +8,11 @@ Defaults are the Desktop bot page's "Share keys & accounts with the main profile
 launch profile's provider/tool keys (bot tokens and allowlists stripped) and its model unless one is
 picked, so a profile made on any surface answers its first chat. Logins are shared by NOT copying
 ``auth.json``: a profile without one reads the default root's (``hermes_cli.auth`` fallback). That only
-shares the launch profile's logins when the launch profile IS the root, so a named launch profile's
-``auth.json`` is copied instead. Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth
-grants dropped) and ``mirror_credentials=False`` (no keys, logins or model copied; the root's logins
-stay readable through the same fallback). Clones keep their own ``.env``.
+shares the source's logins (a clone's, else the launch profile's) when the source reads the root's
+too (it is the root or has no ``auth.json``), so a named source's own ``auth.json`` is copied instead.
+Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth grants dropped) and
+``mirror_credentials=False`` (no keys, logins or model copied; the root's logins stay readable through
+the same fallback). Clones keep their own ``.env`` (a comment-only one takes the launch profile's keys).
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ class ProfileCreateRequest:
     quiet: bool = True                 # bundled-skill seeding prints its own failures when False
     # Bot-page defaults (see module docstring); every surface exposes both opt-outs.
     mirror_credentials: bool = True    # launch .env keys / voice / model (and auth.json unless shared)
-    share_auth: bool = True            # read the root's auth.json instead of copying one (root launch only)
+    share_auth: bool = True            # read the root's auth.json instead of copying one (root source only)
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
@@ -256,14 +257,14 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
-        # A clone's logins come from its source, like its keys; a fresh profile's from the launch profile.
-        auth_home = None if request.fresh else step(
-            "clone source", lambda: profiles._resolve_clone_source(request.clone_from))
+        # A clone's logins come from its source; a fresh profile's from the launch profile.
+        auth_home = step("logins source", lambda: _logins_home(
+            None if request.fresh else profiles._resolve_clone_source(request.clone_from)))
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
             path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels,
             auth_home=auth_home), default=())
         if kept_root and not _is_root(auth_home):
-            # A named launch profile's own subscription logins can't be copied (single-use refresh
+            # A named source's own subscription logins can't be copied (single-use refresh
             # tokens); the copy reads the default profile's for those providers instead.
             result.warnings.append(
                 f"subscription logins not carried over ({', '.join(kept_root)}): the profile uses the default "
@@ -486,6 +487,14 @@ def _is_root(home: Optional[Path]) -> bool:
     from hermes_cli.auth import _same_path
     from hermes_constants import get_default_hermes_root, get_hermes_home
     return _same_path(home or get_hermes_home(), get_default_hermes_root())
+
+
+def _logins_home(home: Optional[Path]) -> Path:
+    """The home whose auth.json *home* (default: the launch profile) signs in with: its own, else the
+    root's through the auth fallback, so ``--isolated-auth`` copies the logins the source actually uses."""
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+    home = home or get_hermes_home()
+    return home if (home / "auth.json").exists() else get_default_hermes_root()
 
 
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,

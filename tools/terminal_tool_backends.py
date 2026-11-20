@@ -9,6 +9,7 @@ import logging
 import subprocess
 from typing import Any, Dict, Optional
 
+from agent.secret_scope import serves_routed_profile
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -117,9 +118,13 @@ def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
                 f"Modal backend is configured for managed mode, but {tail}")
     managed = managed_nous_tools_enabled()
     if modal_state["mode"] == "direct":
-        return ("Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct Modal credentials/config "
-                f"were found. Configure Modal or choose TERMINAL_MODAL_MODE={'managed/auto' if managed else 'auto'}.",
-                "Modal backend is configured for direct mode, but no direct Modal credentials/config were found.")
+        missing = "no direct Modal credentials/config were found"
+        if serves_routed_profile():
+            missing = ("this profile does not set both MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (the ~/.modal.toml "
+                       "login serves only a single-profile Hermes)")
+        return (f"Modal backend selected with TERMINAL_MODAL_MODE=direct, but {missing}. "
+                f"Configure Modal or choose TERMINAL_MODAL_MODE={'managed/auto' if managed else 'auto'}.",
+                f"Modal backend is configured for direct mode, but {missing}.")
     found = "or managed tool gateway was found" if managed else "was found"
     fix = ", set up the managed gateway, or" if managed else " or"
     return (f"Modal backend selected but no direct Modal credentials/config {found}. "

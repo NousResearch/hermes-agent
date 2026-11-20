@@ -167,7 +167,8 @@ jobs:
       # Hermes imports (refreshed by catalog-core-imports.yml); this resolves them against the base
       # and the merge commit from git objects alone (no network, no plugin code, a few seconds) and
       # fails naming the plugin, file:line and the import, with the fixes: an official seam PR, a
-      # compat move, or the breaks-catalog-plugin label. Local: `python3 scripts/ci/catalog_core_imports.py check --base origin/main`.
+      # compat move, or the breaks-catalog-plugin label. Local:
+      # `python3 scripts/ci/catalog_core_imports.py check --base "$(git merge-base origin/main HEAD)"`.
       - name: Name the pinned catalog plugins this change breaks
         if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.python }}
         env:

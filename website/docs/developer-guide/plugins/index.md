@@ -404,7 +404,7 @@ An import inside a `try` whose fallback still resolves is not a break. Pick one 
 2. **Keep the old name importable**: a moved module gets a key in `hermes_agent/compat/moves.py`, and a moved name stays where it was.
 3. **If breaking it is intended**, add the `breaks-catalog-plugin` label, say why in the PR body, and re-run the check.
 
-Run it locally with `python3 scripts/ci/catalog_core_imports.py check --base origin/main`, and re-index one entry with `python3 scripts/ci/catalog_core_imports.py build <name>`. The check only asks whether a name still exists. A name that stays but changes behaviour or signature passes.
+Run it locally with `python3 scripts/ci/catalog_core_imports.py check --base "$(git merge-base origin/main HEAD)"` (the merge base, so a branch is not blamed for what `main` added since it was cut), and re-index one entry with `python3 scripts/ci/catalog_core_imports.py build <name>`. The check only asks whether an imported name still exists. A name that stays but changes behaviour or signature passes, and so does a name read as an attribute after `import module` (`hermes_constants.get_hermes_home()`), where only the module is imported.
 
 ## What you're building
 

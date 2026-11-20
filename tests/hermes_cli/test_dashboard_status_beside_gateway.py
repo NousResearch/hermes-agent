@@ -240,17 +240,56 @@ def test_a_backend_listening_on_another_address_of_the_same_port_does_not_hide_t
     assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out
 
 
-def test_status_through_an_exec_launcher_names_the_gateway(tmp_path):
-    """The installed POSIX launcher (``mint_launcher``: ``#!/bin/sh`` + ``exec``) leaves no process
-    carrying ``--status``: the address it names is probed directly, and the gateway holding it is named."""
+def _exec_status(tmp_path, env: dict, *argv: str) -> tuple[int, int, str]:
+    """``hermes dashboard --status`` through the launcher ``mint_launcher`` writes (``#!/bin/sh`` + ``exec``):
+    (CLI pid, exit code, output)."""
     from hermes_cli._launchers import mint_launcher
-    (tmp_path / "bin").mkdir()
-    launcher = mint_launcher("hermes", REPO_ROOT, tmp_path / "bin", Path(sys.executable), None)
+    out_dir = tmp_path / "bin"
+    out_dir.mkdir(exist_ok=True)
+    launcher = mint_launcher("hermes", REPO_ROOT, out_dir, Path(sys.executable), None)
     assert launcher is not None and launcher.read_text(encoding="utf-8").startswith("#!/bin/sh\nexec ")
+    proc = subprocess.Popen([str(launcher), "dashboard", "--status", *argv], cwd=REPO_ROOT, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out, _ = proc.communicate(timeout=120)
+    return proc.pid, proc.returncode, out
+
+
+def _names_gateway(out: str, port: int) -> bool:
+    return any(line.startswith("The Hermes gateway") and f":{port}" in line for line in out.splitlines())
+
+
+def test_status_through_an_exec_launcher_names_the_gateway(tmp_path):
+    """The installed POSIX launcher leaves no process carrying ``--status``: the address it names is probed
+    directly when this machine can listen there (loopback, wildcard, ``localhost``), and the gateway
+    holding it is named."""
     with live_gateway(tmp_path) as gateway:
-        proc = subprocess.Popen([str(launcher), "dashboard", "--status", "--port", str(gateway.port)], cwd=REPO_ROOT,
-                                env=gateway.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        out, _ = proc.communicate(timeout=120)
-    assert proc.returncode == 0, out
-    assert f"PID {proc.pid} " not in out, out
-    assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out
+        runs = {host: _exec_status(tmp_path, gateway.env, "--host", host, "--port", str(gateway.port))
+                for host in ("127.0.0.1", "0.0.0.0", "::", "localhost")}
+        pid, code, out = _exec_status(tmp_path, gateway.env, "--port", str(gateway.port))
+    assert code == 0 and f"PID {pid} " not in out and _names_gateway(out, gateway.port), out
+    for host, (pid, code, out) in runs.items():
+        assert code == 0, (host, out)
+        assert f"PID {pid} " not in out, (host, out)
+        assert _names_gateway(out, gateway.port), (host, out)
+
+
+def test_status_through_an_exec_launcher_names_a_gateway_on_this_machines_lan_address(tmp_path):
+    from hermes_cli.webapp_access import lan_address
+    lan = lan_address()
+    if lan is None:
+        pytest.skip("no LAN IPv4 address")
+    # A specific address needs sign-in; a throwaway password is configured so the listener comes up.
+    from plugins.dashboard_auth.basic import hash_password
+    auth = {"dashboard": {"basic_auth": {"username": "status-test",
+                                          "password_hash": hash_password(secrets.token_urlsafe(16))}}}
+    with live_gateway(tmp_path, webapp_host=lan, config=auth) as gateway:
+        pid, code, out = _exec_status(tmp_path, gateway.env, "--host", lan, "--port", str(gateway.port))
+    assert code == 0 and f"PID {pid} " not in out, out
+    assert _names_gateway(out, gateway.port), out
+
+
+def test_status_with_a_host_that_cannot_be_idna_encoded_exits_0_without_a_traceback(tmp_path):
+    env = home_env(tmp_path / "state", tmp_path / "user")
+    _, code, out = _exec_status(tmp_path, env, "--host", "a" * 64 + ".invalid", "--port", str(free_port()))
+    assert code == 0, out
+    assert "Traceback" not in out and "UnicodeError" not in out, out

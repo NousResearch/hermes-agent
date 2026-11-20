@@ -135,6 +135,24 @@ def test_a_clone_of_the_root_still_shares_its_logins(launch, monkeypatch):
     assert result.warnings == []
 
 
+@pytest.mark.parametrize("launch_from_source", [False, True], ids=["clone-from", "p-src-fresh"])
+def test_isolated_auth_from_a_profile_without_its_own_logins_copies_the_roots_it_reads(
+        launch, monkeypatch, launch_from_source):
+    """A profile with no auth.json signs in with the root's (the auth fallback): sharing keeps reading it,
+    ``--isolated-auth`` copies it."""
+    (launch / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {"openrouter": '
+                                      '[{"id": "root-key", "auth_type": "api_key", "access_token": "sk-or-x"}]}}')
+    (_named_source(launch) / "auth.json").unlink()
+    if launch_from_source:
+        monkeypatch.setenv("HERMES_HOME", str(launch / "profiles" / "src"))
+    source = {} if launch_from_source else {"clone_from": "src", "clone_config": True}
+    assert provision_profile(ProfileCreateRequest(name="shared", **source)).mirrored["auth"] == "shared"
+    isolated = provision_profile(ProfileCreateRequest(name="isolated", share_auth=False, **source))
+    assert isolated.mirrored["auth"] is True
+    assert "root-key" in (isolated.path / "auth.json").read_text()
+    assert isolated.warnings == []
+
+
 def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     (launch / "auth.json").unlink(missing_ok=True)
     result = provision_profile(ProfileCreateRequest(name="work", share_auth=False))

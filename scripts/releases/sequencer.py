@@ -36,8 +36,9 @@ def plan(claims: list[dict], *, head: str | None,
          requested_version: str | None = None, unfinished: str | None = None) -> list[dict]:
     """Return each eligible draft flip immediately followed by its head advance.
 
-    ``unfinished`` names the release at the head whose advance stopped after the head moved
-    (_unfinished_desktop_head): it advances again, before anything newer.
+    ``unfinished`` names the desktop head whose advance stopped after the head moved
+    (_unfinished_desktop_head). At the head it advances again, before anything newer; under a
+    newer head only its desktop advance repeats (``finish``), since that release owns the aliases.
     """
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
@@ -51,12 +52,9 @@ def plan(claims: list[dict], *, head: str | None,
 
         if head_key is not None and version_key <= head_key:
             if state == "published" and version == unfinished:
-                if version_key != head_key:
-                    # A newer release already moved the aliases; repeating this one would roll them back.
-                    raise ValueError(f"refusing to finish {version} under the newer head {head}: "
-                                     f"its candidate pointer names another release")
-                log(f"  plan {version}: at the head, but its candidate pointer names another release — advance again")
-                steps.append({"advance": version})
+                kind = "advance" if version_key == head_key else "finish"
+                log(f"  plan {version}: its advance did not finish after the head moved — {kind} again")
+                steps.append({kind: version})
                 continue
             if state in {"published", "burned"}:
                 log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
@@ -386,19 +384,21 @@ def channel_head(desktop_head: str | None, records: list[dict],
 STABLE_POINTER = "releases/stable/release-candidates.json"
 
 
-def _unfinished_desktop_head(env: dict, records: list[dict], read_archive) -> str | None:
-    """The protected desktop head's version when its candidate pointer does not name it.
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None,
+                             read_alias_digest) -> str | None:
+    """The protected desktop head's version when its advance did not finish.
 
-    publish_release writes the pointer last, after the head moves, and the Docker aliases move
-    after that. A failed pointer write therefore leaves the head on a release whose advance did
-    not finish, which plan() would otherwise count as done. The pointer is the source channel's
-    update target and the next release's upgrade baseline.
+    publish_release writes the candidate pointer last, after the head moves, and the Docker
+    aliases move after that, so a failure there leaves the head on a release that plan() would
+    otherwise count as done. The pointer is the source channel's update target and the next
+    release's upgrade baseline. The Docker aliases count only while this release is the head:
+    a newer release owns them otherwise.
     """
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
 
-    head = channel_releases.stable_head_version(env)
-    record = next((row for row in records if row["version"] == head and row["state"] == "published"
+    desktop = channel_releases.stable_head_version(env)
+    record = next((row for row in records if row["version"] == desktop and row["state"] == "published"
                    and lane_set.advances_desktop(row["lanes"])), None)
     if record is None:
         return None
@@ -407,7 +407,9 @@ def _unfinished_desktop_head(env: dict, records: list[dict], read_archive) -> st
         pointer = json.loads(read_archive(STABLE_POINTER))
     except ChannelError:
         pointer = None  # the head's own pointer write never landed
-    return None if pointer == candidate else head
+    aliases_behind = (desktop == head and "docker" in record["lanes"]
+                      and read_alias_digest() != record["docker_manifest_digest"])
+    return desktop if pointer != candidate or aliases_behind else None
 
 
 def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
@@ -492,7 +494,8 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     with group("Read the stable channel head"):
         head = read_head()
         log(f"Channel head: {head or '(none)'}")
-        unfinished = _unfinished_desktop_head(env, records, read_archive) if advance_head is None else None
+        unfinished = (_unfinished_desktop_head(env, records, read_archive, head, docker.stable_alias_digest)
+                      if advance_head is None else None)
     with group("Plan"):
         steps = plan(records, head=head, requested_version=requested, unfinished=unfinished)
         log("Steps: " + (", ".join(f"{kind} {version}" for step in steps
@@ -534,6 +537,11 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 log(f"Receipt {record['tag']}: manifest {record['candidate_manifest_sha256']}, "
                     f"docker {record['docker_manifest_digest']}")
             notice(f"{record['tag']} is public", title="Stable sequencer")
+        elif "finish" in step:
+            record = by_version[step["finish"]]
+            with group(f"[{number}/{len(steps)}] Finish {record['version']}'s desktop advance (a newer "
+                       "release owns the Docker aliases)"), tempfile.TemporaryDirectory() as directory:
+                channel_releases.advance_stable(env, record, Path(directory))
         else:
             record = by_version[step["advance"]]
             with group(f"[{number}/{len(steps)}] Advance channels to {record['version']}"):

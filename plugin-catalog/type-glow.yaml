@@ -1,0 +1,23 @@
+name: type-glow
+repo: https://github.com/Icarus-B4/hermes-official-plugins
+sha: d98f184d0f5ee45ba4127ca3b251645d4f547846
+subdir: type-glow
+title: Type Glow
+description: 'Desktop plugin: rename the empty-chat headline, a GlowFX that follows the accent colour, and a
+  typewriter effect; a + icon before the tagline opens the settings dialog. Desktop-only (desktop/plugin.js
+  inside the plugin SDK surface); no agent tools, hooks, middleware or env vars.'
+maintainer: Icarus-B4
+tier: community
+category: desktop
+requires_hermes: ">=0.23.3"
+version: "1.0.0"
+docs_url: https://github.com/Icarus-B4/hermes-official-plugins/tree/main/type-glow
+image: https://raw.githubusercontent.com/Icarus-B4/hermes-official-plugins/d98f184d0f5ee45ba4127ca3b251645d4f547846/assets/type-glow.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Icarus-B4/hermes-official-plugins/d98f184d0f5ee45ba4127ca3b251645d4f547846/assets/type-glow.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

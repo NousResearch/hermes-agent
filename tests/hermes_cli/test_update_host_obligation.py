@@ -235,7 +235,9 @@ def test_one_installs_completed_restart_never_erases_another_installs_debt(tmp_p
 
     source = Path(__file__).resolve().parents[2]
     files = ("hermes_constants.py", "hermes_dir_acl.py", "hermes_cli/__init__.py", "hermes_cli/update_host_obligation.py",
-             "hermes_cli/update_restart_recovery.py", "hermes_cli/update_lock.py")
+             "hermes_cli/update_restart_recovery.py", "hermes_cli/update_lock.py",
+             "hermes_platform/__init__.py", "hermes_platform/resolver/__init__.py",
+             "hermes_platform/resolver/base.py", "hermes_platform/resolver/core.py")
     roots = {}
     for name in ("install-a", "install-b"):
         roots[name] = tmp_path / name

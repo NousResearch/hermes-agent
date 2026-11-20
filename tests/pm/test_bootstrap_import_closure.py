@@ -46,6 +46,12 @@ def _constants_stage(tmp_path, *, with_acl: bool) -> Path:
     names = ["hermes_constants.py", "hermes_dir_acl.py"] if with_acl else ["hermes_constants.py"]
     for name in names:
         shutil.copy2(repo / name, stage / name)
+    if with_acl:
+        # hermes_dir_acl resolves Windows system executables through hermes_platform.
+        for rel in ("__init__.py", "resolver/__init__.py", "resolver/base.py", "resolver/core.py"):
+            target = stage / "hermes_platform" / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / "hermes_platform" / rel, target)
     return stage
 
 
@@ -57,8 +63,8 @@ def _mkdir_in_stage(stage: Path, home: Path) -> subprocess.CompletedProcess:
 
 
 def test_home_mkdir_carries_the_acl_module_in_the_closure(tmp_path):
-    """hermes_dir_acl is stdlib-only and ships beside hermes_constants: the two together create a
-    home dir, and hermes_constants still imports alone (the import is lazy)."""
+    """hermes_dir_acl ships beside hermes_constants and the stdlib-only hermes_platform resolver:
+    together they create a home dir, and hermes_constants still imports alone (the import is lazy)."""
     home = tmp_path / "home"
     home.mkdir()
     result = _mkdir_in_stage(_constants_stage(tmp_path, with_acl=True), home)

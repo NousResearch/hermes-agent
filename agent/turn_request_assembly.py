@@ -381,16 +381,21 @@ def assemble_api_request(
     )
 
 
-def assemble_or_finish(agent: Any, state: Any) -> bool:
-    """Assemble this iteration's request; False ends the turn via finalization.
+def prepare_next_request(agent: Any, state: Any) -> bool:
+    """Run the loop's request phases in official order; False ends the turn via finalization.
 
     Keep preparation failures and requested cancellation out of provider dispatch without
     changing ordinary plugin-error fallback or swallowing an unrequested KeyboardInterrupt.
+    The phases are resolved through the loop module, so callers that wrap one of its seams
+    (for example ``assemble_api_request``) still apply.
     """
     from agent import conversation_loop as loop
 
+    if loop._run_phase(loop.begin_iteration, agent, state).action == "break":
+        return False
+    loop._run_phase(loop.prepare_iteration, agent, state)
+    loop._run_phase(loop.route_change_offload, agent, state)
     try:
-        # Resolved through the loop module so callers that wrap its assembly seam still apply.
         loop._run_phase(loop.assemble_api_request, agent, state)
     except KeyboardInterrupt:
         if not getattr(agent, "_interrupt_requested", False):

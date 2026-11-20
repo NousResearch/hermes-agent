@@ -74,11 +74,7 @@ def run_tool_round(
     if not agent.quiet_mode:
         agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
 
-    if agent.verbose_logging:
-        for tc in assistant_message.tool_calls:
-            raw_args = tc.function.arguments
-            args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
-            logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
+    _log_tool_calls(agent, assistant_message)
 
     _tvv = validate_tool_calls(
         agent, assistant_message, finish_reason, messages=messages,
@@ -244,6 +240,15 @@ def run_tool_round(
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")
+
+
+def _log_tool_calls(agent: Any, assistant_message: Any) -> None:
+    """Verbose-mode debug preview of each requested call's name and leading arguments."""
+    if agent.verbose_logging:
+        for tc in assistant_message.tool_calls:
+            raw_args = tc.function.arguments
+            args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
+            logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
 
 
 def _execute_tools(agent, assistant_message, messages, effective_task_id, api_call_count) -> bool:

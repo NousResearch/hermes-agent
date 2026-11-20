@@ -170,7 +170,7 @@ def test_plugin_pin_removal_uses_v12_provider_window_from_live_config(monkeypatc
 
     # Exercise the real provider-entry resolver while avoiding external metadata probes.
     # A global config read must not silently replace the live config being applied.
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
 
     def resolve_window(model, *, base_url="", custom_providers=None, **kwargs):
         return get_custom_provider_context_length(

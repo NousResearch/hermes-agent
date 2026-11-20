@@ -710,6 +710,9 @@ def _action_create(a: dict[str, Any]) -> str:
     context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
+    # A model-initiated create asks the user only once the job would actually save.
+    if a["approve"] is not None and (refusal := a["approve"](a)) is not None:
+        return refusal
 
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
@@ -1093,8 +1096,10 @@ def cronjob(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int | str] = None,
-    script_content: Optional[str] = None) -> str:
-    """Unified cron job management tool."""
+    script_content: Optional[str] = None,
+    approve: Optional[Any] = None) -> str:
+    """Unified cron job management tool. ``approve(args)`` (model-tool dispatch only) runs after a create's
+    validation and returns a refusal JSON to stop it; CLI, dashboard and Desktop callers never pass it."""
     a = dict(locals())
     try:
         normalized = (action or "").strip().lower()
@@ -1161,7 +1166,7 @@ CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Proactively schedule reminders and checks: once, a few times, or recurring.
 
-Be proactive: when the conversation mentions something time-bound — an appointment, a trip, a deadline, a habit, something to re-check later (a flaky site, a deploy, a price) — create a job that would help without waiting to be asked, then tell the user what you scheduled. Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs (`repeat`) over an open-ended schedule. The user approves every new job before it is saved, so a declined job is a normal answer: never retry it.
+Be proactive: when the conversation mentions something time-bound — an appointment, a trip, a deadline, a habit, something to re-check later (a flaky site, a deploy, a price) — create a job that would help without waiting to be asked, then tell the user what you scheduled. Most help is not forever-recurring: prefer a one-shot ('in 2h', an ISO time) or a few runs (`repeat`) over an open-ended schedule. Pick waking-hours times and the least frequent cadence that helps unless the user gave one. Where someone can answer, the user approves each new job before it is saved, so a declined job is a normal answer: never retry it.
 
 Cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
@@ -1320,31 +1325,37 @@ def _approval_task(args: dict[str, Any]) -> str:
     shown = f"\n--- script {script} ---\n{body}" if isinstance(body, str) and body.strip() else ""
     if args.get("no_agent"):
         return f"runs script {script}{shown}"
-    task = " ".join(str(args.get("prompt") or ", ".join(_clean_str_list(args.get("skills")) or [])).split())
+    skills = ", ".join(_canonical_skills(args.get("skill"), args.get("skills")))
+    task = " ".join(str(args.get("prompt") or "").split())
     task = task if len(task) <= 300 else task[:299] + "…"
+    task = f"{task} (skills: {skills})" if task and skills else task or f"skills: {skills}"
     return (f"{task} (after running script {script})" if script else task) + shown
 
 
 def _creation_approval_error(args: dict[str, Any]) -> Optional[str]:
-    """None when the model may create this job, else the JSON refusal. Asks the user through the shared
-    approval gate (CLI panel, TUI prompt, Desktop card, messaging /approve) only when someone is there to
-    answer: cron runs (``cron.allow_agent_scheduling``), ``-q`` and unattended platforms keep creating
-    jobs as before rather than turning a consent card nobody can see into a silent deny."""
+    """None when the model may create this (already validated) job, else the JSON refusal. Asks the user
+    through the shared approval gate (CLI panel, TUI prompt, Desktop card, messaging /approve) only when
+    someone is there to answer: cron runs (``cron.allow_agent_scheduling``), ``-q`` and unattended platforms
+    keep creating jobs as before rather than turning a consent card nobody can see into a silent deny."""
+    from cron.jobs import normalize_repeat_value
+    from cron.jobs_invariants import validate_schedule_knobs
     from tools.approval import _presence, _run_approval_gate
 
     _cb, is_cli, is_gateway, is_ask = _presence()
+    name = args.get("name") or "new job"
     if not (is_cli or is_gateway or is_ask):
+        logger.info("cronjob create %r saved without a card: nobody can answer an approval here", name)
         return None
     try:
-        when = _approval_when(parse_schedule(str(args.get("schedule") or "")), args.get("timezone"))
+        parsed = parse_schedule(str(args.get("schedule") or ""))
+        validate_schedule_knobs(parsed, args.get("timezone"), args.get("grace_minutes"))
+        when, repeat = _approval_when(parsed, args.get("timezone")), normalize_repeat_value(args.get("repeat"))
     except ValueError:
         return None  # create reports the bad schedule itself; nothing is saved
-    repeat = args.get("repeat")
-    runs = f", {repeat} runs" if isinstance(repeat, int) and repeat > 1 else ""
-    name = args.get("name") or "new job"
+    runs = f", {repeat} runs" if repeat and repeat > 1 else ""
     result = _run_approval_gate(
         pattern_key="cron_create", description=f"Schedule \"{name}\" ({when}{runs}): {_approval_task(args)}",
-        display_target="<cronjob_manage> (schedule a new job)",
+        display_target=f"<cronjob_manage> (schedule \"{name}\")",
         subject="Creating a scheduled job requires the user's approval", noun="scheduled jobs",
         advice="Tell the user what you wanted to schedule; do not retry.",
         autoapprove_log_prefix="cronjob create", kind="schedule")
@@ -1358,13 +1369,6 @@ def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
     ``monitor_script``/``monitor_url`` pair (legacy field names still accepted). A model-initiated
     create waits for the user's approval first."""
-    if str(args.get("action") or "").strip().lower() == "create":
-        if args.get("script_content") is not None and not args.get("script"):
-            # Name the script now so the approval card shows the file the job will run.
-            from cron.script_content import derived_script_name
-            args = {**args, "script": derived_script_name(args.get("name"))}
-        if (refusal := _creation_approval_error(args)) is not None:
-            return refusal
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
     return cronjob(
         action=args.get("action", ""),
@@ -1373,6 +1377,7 @@ def _cronjob_handler(args, **kw):
         monitor_url=_mon_url,
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
+        approve=_creation_approval_error,
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},
     )
 

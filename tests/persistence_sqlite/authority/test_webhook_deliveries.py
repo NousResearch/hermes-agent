@@ -74,7 +74,10 @@ def test_closed_writer_never_initializes_a_recreated_recipient(store):
     store.sessions.create(NewSession(session_id='recipient-chat', source='cli'))
     epoch = store.runtime.begin_epoch(instance_id='recipient-owner')
     pin = store.webhook_deliveries.capture_incarnation()
-    home = store.scope.profile_dir
+    # The fixture scope is a logical contract identity; the pin names the
+    # actual private profile directory whose writer must not be reacquired.
+    from pathlib import Path
+    home = Path(pin.home)
     _registry.close_all_under(home)
     moved = home.with_name(home.name + '-retired')
     home.rename(moved)
@@ -89,3 +92,25 @@ def test_closed_writer_never_initializes_a_recreated_recipient(store):
     finally:
         home.rename(home.with_name(home.name + '-refused'))
         moved.rename(home)
+
+
+@pytest.mark.platforms('posix')
+def test_open_writer_refuses_a_replaced_database_file(store):
+    from pathlib import Path
+    store.sessions.create(NewSession(session_id='recipient-chat', source='cli'))
+    pin = store.webhook_deliveries.capture_incarnation()
+    home = Path(pin.home)
+    path = home / 'state.db'
+    previous = home / 'retained-state.db'
+    path.rename(previous)
+    path.write_bytes(previous.read_bytes())
+    try:
+        # Same profile directory and same bytes/instance are not the same writer.
+        assert (path.stat().st_dev, path.stat().st_ino) != pin.file
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
+            store.webhook_deliveries.require_incarnation(pin)
+    finally:
+        path.unlink()
+        previous.rename(path)
+    store.webhook_deliveries.require_incarnation(pin)
+    assert store.admissions.list(session_id='recipient-chat', pending_only=False) == []

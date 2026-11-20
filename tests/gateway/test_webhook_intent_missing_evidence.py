@@ -22,7 +22,7 @@ async def test_missing_committed_result_is_ambiguous_not_suppressed_success(monk
 
 @pytest.mark.asyncio
 async def test_bounded_pass_rotates_past_offline_origin(monkeypatch):
-    from gateway import webhook_reconcile
+    from gateway.webhooks import reconcile as webhook_reconcile
     from gateway.platforms.webhook_ingress import recover_bot_chat_finals
     from tools import bot_live_delivery
     async with settled_before_finalizer(deliver='bot-chat') as (client, body, headers, _, authority, first):

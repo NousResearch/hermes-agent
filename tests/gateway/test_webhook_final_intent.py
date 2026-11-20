@@ -77,13 +77,19 @@ async def test_native_state_and_missing_admitted_evidence_are_not_fresh_send(mon
 
 
 @pytest.mark.asyncio
-async def test_mismatched_receipt_refuses_without_disclosing_or_replaying(monkeypatch):
+@pytest.mark.parametrize('changed', [
+    {'message': 'FOREIGN SECRET'}, {'delivery_id': 'FOREIGN SECRET'},
+    {'profile_home': '/FOREIGN SECRET'}, {'author': {'name': 'FOREIGN SECRET'}},
+    {'notification_category': 'diagnostic'}, {'session_id': 'FOREIGN SECRET'},
+    {'admission_id': 'FOREIGN SECRET'}, {'admission_id': None}, {'status': 'unknown'},
+])
+async def test_mismatched_receipt_refuses_without_disclosing_or_replaying(monkeypatch, changed):
     from gateway.platforms.webhook_ingress import recover_bot_chat_finals
     async with settled_before_finalizer(deliver='bot-chat') as (_, _, _, _, authority, row):
         receipts, calls = transport(monkeypatch)
         await recover_bot_chat_finals(authority)
         key = calls[0][1]
-        receipts[key]['message'] = 'FOREIGN SECRET'
+        receipts[key].update(changed)
         await recover_bot_chat_finals(authority)
         saved = intent(authority, row['admission_id'])
         assert saved and saved['state'] == 'refused'

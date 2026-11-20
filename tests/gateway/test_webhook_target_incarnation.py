@@ -61,7 +61,8 @@ async def test_native_door_accepts_exact_incarnation_then_refuses_directory_repl
 @pytest.mark.asyncio
 async def test_native_refuses_replacement_after_first_check_before_chat_creation(bot, monkeypatch):
     from gateway.session_bot import deliver
-    from gateway.webhooks import target as webhook_target, run
+    from gateway.webhooks import target as webhook_target
+    from gateway import run
     monkeypatch.setattr(run, '_load_gateway_config', lambda *args: {})
     from tests.gateway.test_bot_receipt_refusal import _rpc_connection
     home = bot.home.resolve()

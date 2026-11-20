@@ -126,3 +126,15 @@ async def test_cron_trigger_uses_job_delivery_not_webhook_destination(monkeypatc
             await asyncio.gather(*tasks)
     assert calls and calls[0][0] == "existing-job"
     assert "Event 7" in calls[0][1]
+
+
+@pytest.mark.require_symlinks
+def test_explicit_target_symlink_is_not_a_local_profile_alias(adapter):
+    from gateway.webhooks.target import target_home
+    from hermes_cli.profiles import get_profile_dir
+    recipient = get_profile_dir('receiver')
+    alias = get_profile_dir('alias')
+    alias.symlink_to(recipient, target_is_directory=True)
+    with pytest.raises(ValueError, match='target profile unavailable'):
+        target_home('bot-chat:alias', recipient.parent.parent)
+    assert not (recipient / 'state.db').exists()

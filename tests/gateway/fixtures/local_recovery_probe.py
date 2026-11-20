@@ -55,7 +55,14 @@ def child_env():
     env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
     # Child daemons are outside pytest's network fence; fail remote HTTP locally.
     env.update(HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
-               NO_PROXY='127.0.0.1,localhost')
+               NO_PROXY='127.0.0.1,localhost', HERMES_DISABLE_LAZY_INSTALLS='1',
+               UV_OFFLINE='1', PYTHONDONTWRITEBYTECODE='1')
+    # Keep scratch/cache in the test runner's private roots.
+    # HOME and HERMES_HOME are supplied by each daemon's concrete owner below.
+    for key in ('TMPDIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+                'XDG_STATE_HOME'):
+        if key in os.environ:
+            env[key] = os.environ[key]
     return env
 
 

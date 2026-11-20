@@ -687,6 +687,7 @@
 
 /* "Email link expired? / Request a new one.": Nous/Metadata, the second line underlined. */
 :root[data-shell='portal'] .discovery-status-expired {
+  display: block;
   margin: 0;
   color: var(--portal-text-tertiary);
   font-family: var(--portal-font-mono);

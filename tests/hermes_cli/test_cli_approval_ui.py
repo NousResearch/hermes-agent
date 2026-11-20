@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import cli as cli_module
 from agent.i18n import t
 from cli import HermesCLI
+from tests.waiting import wait_until
 
 
 class _FakeBuffer:
@@ -106,10 +107,7 @@ class TestCliApprovalUi:
             thread = threading.Thread(
                 target=cli._approval_callback, args=(synthetic + " " * 80, description), kwargs=kw, daemon=True)
             thread.start()
-            deadline = time.time() + 2
-            while cli._approval_state is None and time.time() < deadline:
-                time.sleep(0.01)
-            assert cli._approval_state is not None
+            wait_until(lambda: cli._approval_state is not None, what="the approval panel")
             with patch("cli.shutil.get_terminal_size", return_value=_shutil.os.terminal_size((100, 40))):
                 rendered = "".join(text for _style, text in cli._get_approval_display_fragments())
             cli._approval_state["response_queue"].put("deny")

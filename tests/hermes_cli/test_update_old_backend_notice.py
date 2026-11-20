@@ -437,6 +437,18 @@ def test_a_stopped_unit_the_migration_retired_is_not_probed_and_a_running_backen
     assert probes == []
 
 
+def test_a_unit_whose_ownership_probe_fails_does_not_hide_a_running_backend(tmp_path, monkeypatch):
+    """Each backend's ownership is read on its own: a stopped unit whose probe raises is left out (the dry
+    run reports it), and the running backend is still named."""
+    from hermes_cli.update_backend_notice import old_backend_notice
+
+    probes: list[str] = []
+    root = _stopped_unit_and_running_backend(tmp_path, monkeypatch, probes)
+    notice = old_backend_notice(root)
+    assert probes == ["hermes-dashboard.service"]
+    assert notice is not None and "PID 434" in notice and "hermes-dashboard.service" not in notice
+
+
 def test_stopped_system_launchd_daemon_without_hermes_home_is_not_named(tmp_path, monkeypatch):
     """Only stopped systemd units use the planner's `_for_this_home`; a stopped system-scope
     launchd daemon with no HERMES_HOME must not be attributed to this user's default home."""

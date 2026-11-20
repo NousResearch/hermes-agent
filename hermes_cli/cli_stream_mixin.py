@@ -458,16 +458,22 @@ class CLIStreamMixin:
         for ln in block.split("\n"):
             self._emit_stream_line(ln)
 
-    def _strip_stream_line(self, line: str) -> str | None:
-        """Strip markdown from one streamed line, None for a fence line (dropped, as in a whole
-        message). Lines inside a fenced code block are emitted as they are."""
-        from cli import _strip_markdown_syntax
+    def _advance_stream_fence(self, line: str) -> tuple[bool, bool]:
+        """Move the fenced-code state past one streamed line.
+
+        Returns whether the line is a fence delimiter and whether it sits inside a block."""
         from hermes_cli.cli_render import markdown_fence_step
         fence = getattr(self, "_stream_fence", None)
         is_delimiter, self._stream_fence = markdown_fence_step(line, fence)
+        return is_delimiter, fence is not None and not is_delimiter
+
+    def _strip_stream_line(self, line: str, is_delimiter: bool, in_fence: bool) -> str | None:
+        """Strip markdown from one streamed line, None for a fence line (dropped, as in a whole
+        message). Lines inside a fenced code block are emitted as they are."""
+        from cli import _strip_markdown_syntax
         if is_delimiter:
             return None
-        return line if fence is not None else _strip_markdown_syntax(line)
+        return line if in_fence else _strip_markdown_syntax(line)
 
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
@@ -517,9 +523,13 @@ class CLIStreamMixin:
         self._stream_buf += text
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
+            is_delimiter, in_fence = self._advance_stream_fence(line)
             # Table rows are held and re-padded as a block once it ends (already-printed rows
             # can't be re-aligned), so a table appears in one batch when the block closes.
-            if self._in_stream_table:
+            # Inside a fenced code block nothing is held: table-shaped code stays byte-exact.
+            if in_fence:
+                pass
+            elif self._in_stream_table:
                 if looks_like_table_row(line) or is_table_divider(line):
                     self._stream_table_buf.append(line)
                     continue
@@ -529,7 +539,7 @@ class CLIStreamMixin:
                 self._in_stream_table = True
                 continue
             if self.final_response_markdown == "strip":
-                line = self._strip_stream_line(line)
+                line = self._strip_stream_line(line, is_delimiter, in_fence)
                 if line is None:
                     continue
             self._emit_stream_line(line)
@@ -574,7 +584,9 @@ class CLIStreamMixin:
         if getattr(self, "_stream_table_buf", None):
             self._flush_stream_table_buf()
         if self._stream_buf:
-            line = self._strip_stream_line(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            is_delimiter, in_fence = self._advance_stream_fence(self._stream_buf)
+            line = (self._strip_stream_line(self._stream_buf, is_delimiter, in_fence)
+                    if self.final_response_markdown == "strip" else self._stream_buf)
             if line is not None:
                 self._emit_stream_line(line)
             self._stream_buf = ""

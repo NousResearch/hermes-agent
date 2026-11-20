@@ -17,7 +17,27 @@ from typing import List
 
 from wcwidth import wcswidth
 
-__all__ = ["is_table_divider", "looks_like_table_row", "realign_markdown_tables", "split_table_row"]
+__all__ = [
+    "is_table_divider", "looks_like_table_row", "markdown_fence_step", "realign_markdown_tables",
+    "split_table_row"]
+
+
+_FENCE_LINE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+
+
+def markdown_fence_step(line: str, fence: str | None) -> tuple[bool, str | None]:
+    """Track fenced code blocks one line at a time.
+
+    Returns whether ``line`` is a fence delimiter and the fence open after it (None outside a
+    block). A block closes on a line holding only the same marker character, at least as long.
+    """
+    match = _FENCE_LINE_RE.match(line)
+    if fence is None:
+        return (True, match.group(1)) if match else (False, None)
+    marker = match.group(1) if match else ""
+    if marker[:1] == fence[0] and len(marker) >= len(fence) and line.strip() == marker:
+        return True, None
+    return False, fence
 
 
 _DIVIDER_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
@@ -265,6 +285,7 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
     """Rewrite every ``| ... |`` + divider block with wcwidth-aware padding.
 
     Non-table lines are returned verbatim, so this is safe on arbitrary prose.
+    Fenced code blocks are left byte-exact, pipe rows included: table-shaped code is code.
     With ``available_width`` (terminal cells), tables wider than that render as
     vertical key-value pairs instead of soft-wrapping mid-cell.
     """
@@ -273,14 +294,21 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
     lines = text.split("\n")
     out: list[str] = []
     i, n = 0, len(lines)
+    fence: str | None = None
     while i < n:
         line = lines[i]
+        is_delimiter, next_fence = markdown_fence_step(line, fence)
+        if is_delimiter or fence is not None:
+            fence = next_fence
+            out.append(line)
+            i += 1
+            continue
         # A table starts with a header row whose next line is a divider.
         if "|" in line and i + 1 < n and is_table_divider(lines[i + 1]):
             header = split_table_row(line)
             body: list[list[str]] = []
             j = i + 2
-            while j < n and "|" in lines[j] and lines[j].strip():
+            while j < n and "|" in lines[j] and lines[j].strip() and not markdown_fence_step(lines[j], None)[0]:
                 if not is_table_divider(lines[j]):
                     body.append(split_table_row(lines[j]))
                 j += 1

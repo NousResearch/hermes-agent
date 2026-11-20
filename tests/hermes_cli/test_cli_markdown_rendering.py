@@ -139,3 +139,24 @@ def test_strip_mode_fence_closes_only_on_its_own_marker():
     text = "````md\n```\n# not a heading\n```\n````\n# heading"
     assert _strip_markdown_syntax(text) == "```\n# not a heading\n```\nheading"
     assert _strip_markdown_syntax("~~~\n__init__\n~~~") == "__init__"
+
+
+FENCED_TABLE = "~~~text\n| key | __init__ |\n|---|---|\n| a | b |\n~~~"
+
+
+def test_strip_mode_keeps_a_fenced_table_byte_exact_and_aligns_a_prose_table():
+    text = FENCED_TABLE + "\n\n| **k** | v |\n|---|---|\n| long cell | x |"
+
+    rendered = _render_final_assistant_content(text, "strip").plain
+
+    assert rendered.split("\n")[:3] == ["| key | __init__ |", "|---|---|", "| a | b |"]
+    # The prose table is still stripped first and then re-padded.
+    assert "| k         | v   |" in rendered
+    assert "| long cell | x   |" in rendered
+
+
+def test_render_mode_keeps_a_fenced_table_byte_exact():
+    output = _render_to_text(_render_final_assistant_content(FENCED_TABLE))
+
+    assert "| key | __init__ |" in output
+    assert "|---|---|" in output

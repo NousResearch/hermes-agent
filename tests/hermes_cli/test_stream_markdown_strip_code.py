@@ -59,3 +59,17 @@ def test_fence_state_resets_between_turns(cli_stub):
     cli._flush_stream()
 
     assert "bold text" in "\n".join(_lines(emitted))
+
+
+@pytest.mark.parametrize("mode", ["strip", "render"])
+def test_streamed_table_shaped_code_is_byte_exact(cli_stub, mode):
+    cli, emitted = cli_stub
+    cli.final_response_markdown = mode
+    for chunk in ["~~~text\n| key | __init__ |\n", "|---|---|\n| a | b |\n~~~\n", "done\n"]:
+        cli._emit_stream_text(chunk)
+    cli._flush_stream()
+
+    lines = [ln.strip() for ln in _lines(emitted)]
+    assert "| key | __init__ |" in lines
+    assert "|---|---|" in lines
+    assert "| a | b |" in lines

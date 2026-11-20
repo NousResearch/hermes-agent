@@ -378,22 +378,10 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
-_FENCE_LINE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
-
-
 def markdown_fence_step(line: str, fence: str | None) -> tuple[bool, str | None]:
-    """Track fenced code blocks one line at a time.
-
-    Returns whether ``line`` is a fence delimiter and the fence open after it (None outside a
-    block). A block closes on a line holding only the same marker character, at least as long.
-    """
-    match = _FENCE_LINE_RE.match(line)
-    if fence is None:
-        return (True, match.group(1)) if match else (False, None)
-    marker = match.group(1) if match else ""
-    if marker[:1] == fence[0] and len(marker) >= len(fence) and line.strip() == marker:
-        return True, None
-    return False, fence
+    """``agent.markdown_tables.markdown_fence_step``, imported on first call to keep it off startup."""
+    from agent.markdown_tables import markdown_fence_step as step
+    return step(line, fence)
 
 
 def _strip_prose_markdown(plain: str) -> str:
@@ -416,17 +404,28 @@ def _strip_prose_markdown(plain: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", plain)
 
 
-def _strip_markdown_syntax(text: str) -> str:
+def _strip_markdown_syntax(text: str, realign_width: int | None = None) -> str:
     """Best-effort markdown marker removal for plain-text display.
 
     Fenced code blocks lose only their fence lines: their contents stay byte-exact, since a
     ``#`` comment or ``__init__`` in code is not markup and is what the user copies.
+    With ``realign_width``, tables in the prose are re-padded after their cells are stripped;
+    this has to happen here, because once the fence lines are gone a table-shaped code block
+    looks like a table.
     """
-    from cli import _rich_text_from_ansi
+    from cli import _rich_text_from_ansi, realign_markdown_tables
     plain = _rich_text_from_ansi(text or "").plain
     out: list[str] = []
     prose: list[str] = []
     fence: str | None = None
+
+    def flush_prose() -> None:
+        stripped = _strip_prose_markdown("\n".join(prose))
+        if realign_width is not None:
+            stripped = realign_markdown_tables(stripped, realign_width)
+        out.extend(stripped.split("\n"))
+        prose.clear()
+
     for line in plain.split("\n"):
         is_delimiter, next_fence = markdown_fence_step(line, fence)
         if not is_delimiter and fence is None:
@@ -434,11 +433,10 @@ def _strip_markdown_syntax(text: str) -> str:
         elif not is_delimiter:
             out.append(line)
         elif prose:
-            out.extend(_strip_prose_markdown("\n".join(prose)).split("\n"))
-            prose = []
+            flush_prose()
         fence = next_fence
     if prose:
-        out.extend(_strip_prose_markdown("\n".join(prose)).split("\n"))
+        flush_prose()
     return "\n".join(out).strip("\n")
 
 
@@ -481,7 +479,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text), panel_width))
+        return _RichText(_strip_markdown_syntax(text, realign_width=panel_width))
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 

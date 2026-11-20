@@ -12,7 +12,8 @@ standard input for scripts and UIs, never from argv, and never prints or logs it
 
 ``HERMES_DASHBOARD_BASIC_AUTH_{USERNAME,PASSWORD,PASSWORD_HASH}`` win over ``config.yaml`` when set, so
 the ones in this home's ``.env`` are removed (named, never shown) and ones set by the environment the
-command runs in are named as still overriding.
+command runs in are named as still overriding. On Windows, where environment names ignore case, a ``.env``
+line with one of those names in another case refuses the change until it is deleted or renamed.
 """
 
 from __future__ import annotations
@@ -162,6 +163,36 @@ def _checkout_refusal(project_env: Path, home: Optional[Path] = None) -> Optiona
             "after the home's) and overrides config.yaml: remove it there, then run this again")
 
 
+def _case_variant_refusal(env_files, *, is_windows: Optional[bool] = None) -> Optional[str]:
+    """On Windows, why a line in one of *env_files* would still override the new sign-in, or None: its key
+    is a :data:`SHADOWING_ENV` name in another case (``hermes_dashboard_basic_auth_password``), which Windows
+    reads as that name, and which the rest of this command (exact names) neither removes nor judges. Names
+    the file, line and key as spelled, never the value. Lines are read one at a time with the ``.env``
+    tokenizer ``load_env`` uses, so a look-alike line inside a quoted multi-line value counts too: the
+    refusal is safe. Off Windows (*is_windows* defaults to this host) such a key is another variable."""
+    from agent.secret_scope import _decode_env_bytes, _parse_env_text
+    from hermes_cli.config import _IS_WINDOWS
+    if not (_IS_WINDOWS if is_windows is None else is_windows):
+        return None
+    found, read_as = [], []
+    for path in env_files:
+        try:
+            lines = _decode_env_bytes(Path(path).read_bytes()).splitlines()
+        except OSError:
+            continue
+        hits = [(number, key) for number, line in enumerate(lines, 1) for key in _parse_env_text(line)
+                if key.upper() in SHADOWING_ENV and key not in SHADOWING_ENV]
+        if hits:
+            found.append(f"{path} " + ", ".join(f"line {number} ({key})" for number, key in hits))
+            read_as += [key.upper() for _, key in hits]
+    if not found:
+        return None
+    which = "that line" if len(read_as) == 1 else "those lines"
+    return (f"{'; '.join(found)}: Windows reads environment names in any case, so this overrides config.yaml "
+            f"as {', '.join(name for name in SHADOWING_ENV if name in read_as)}, and this command handles only "
+            f"the upper-case spelling: delete or rename {which}, then run this command again")
+
+
 def _managed_config_refusal(username: str) -> Optional[str]:
     """Why the administrator's managed config.yaml keeps the new sign-in from taking effect, or None:
     a pinned ``password_hash``, or a pinned ``username`` other than *username*. ``save_config`` drops
@@ -280,8 +311,10 @@ def cmd_dashboard_password(args) -> int:
         print("✗ Empty password; nothing was changed.", file=sys.stderr)
         return EXIT_INVALID
     from hermes_cli._startup_fast import project_root_str
-    refusal = (_shadow_refusal() or _managed_config_refusal(username)
-               or _checkout_refusal(Path(project_root_str()) / ".env"))
+    from hermes_cli.config import get_env_path
+    project_env = Path(project_root_str()) / ".env"
+    refusal = (_case_variant_refusal([get_env_path(), project_env]) or _shadow_refusal()
+               or _managed_config_refusal(username) or _checkout_refusal(project_env))
     if refusal:
         print(f"✗ {refusal}; nothing was changed.", file=sys.stderr)
         return 1

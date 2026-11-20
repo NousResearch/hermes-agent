@@ -253,6 +253,14 @@ _CLAUDE_CODE_REGISTRY_PKG = "@anthropic-ai/claude-code"
 # keeping the cold-start fetch rare.
 _CLAUDE_CODE_REGISTRY_TTL_SECONDS = 24 * 60 * 60
 
+_CLAUDE_CODE_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.]+)?")
+
+
+def _valid_claude_code_version(value: object) -> bool:
+    """Only ASCII version tokens may enter the OAuth User-Agent header."""
+    return isinstance(value, str) and _CLAUDE_CODE_VERSION_RE.fullmatch(value) is not None
+
+
 # Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
 # LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
 # so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
@@ -318,7 +326,7 @@ def _detect_claude_code_version() -> str:
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
-                if version and version[0].isdigit():
+                if _valid_claude_code_version(version):
                     return version
     return _registry_claude_code_version() or _CLAUDE_CODE_VERSION_FALLBACK
 
@@ -346,8 +354,9 @@ def _registry_claude_code_version() -> str:
     try:
         cached = json.loads(path.read_text(encoding="utf-8-sig"))
         age = datetime.now(UTC).timestamp() - float(cached.get("ts", 0))
-        if 0 <= age < _CLAUDE_CODE_REGISTRY_TTL_SECONDS:
-            return str(cached.get("version") or "")
+        version = cached.get("version")
+        if 0 <= age < _CLAUDE_CODE_REGISTRY_TTL_SECONDS and _valid_claude_code_version(version):
+            return version
     except (OSError, ValueError, TypeError, AttributeError):
         pass  # missing, unreadable or corrupt cache: fall through to a live probe
 
@@ -360,10 +369,10 @@ def _registry_claude_code_version() -> str:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             tags = json.load(resp)
-        version = str(tags.get("latest") or "").strip()
-        if not version or not version[0].isdigit():
+        version = tags.get("latest")
+        if not _valid_claude_code_version(version):
             return ""
-    except (OSError, urllib.error.URLError, ValueError) as exc:
+    except (OSError, urllib.error.URLError, ValueError, TypeError, AttributeError) as exc:
         logger.debug("Claude Code version registry probe failed: %s", exc)
         return ""
 

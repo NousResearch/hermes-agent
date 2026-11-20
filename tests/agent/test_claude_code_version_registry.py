@@ -178,3 +178,22 @@ def test_successful_probe_is_cached_to_disk(no_cli, monkeypatch, tmp_path):
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     adapter._claude_code_version_cache = None
     assert _detect_claude_code_version() == "2.1.299"
+
+
+def test_invalid_cached_version_does_not_poison_oauth_user_agent(no_cli, monkeypatch, tmp_path):
+    """A fresh, parseable cache entry with a newline must never reach an HTTP header."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(adapter, "_claude_code_version_cache", None)
+    cache = tmp_path / "cache" / "claude_code_registry_version.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"version": "2.1.400\n", "ts": time.time()}))
+    _registry(monkeypatch, "2.1.299")
+
+    sdk = MagicMock()
+    with patch("agent.anthropic_adapter._get_anthropic_sdk", return_value=sdk):
+        adapter.build_anthropic_client("sk-ant-oat01-dummy", "https://api.anthropic.com")
+    headers = sdk.Anthropic.call_args.kwargs["default_headers"]
+    assert headers["user-agent"].startswith("claude-code/2.1.299 ")
+    assert "\n" not in headers["user-agent"]

@@ -322,3 +322,68 @@ describe('useComposerTrigger — chip survival (the plaintext-demotion bug class
     expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
   })
 })
+
+describe('useComposerTrigger — a refreshed list keeps the row the user picked', () => {
+  it('follows an arrowed pick to its new row when more commands finish loading', () => {
+    const editor = mountEditor('/c')
+    let items = [item('/clean'), item('/compress', 'Commands')]
+
+    const adapter: Unstable_TriggerAdapter = { categories: () => [], categoryItems: () => [], search: () => items }
+    const editorRef = { current: editor }
+    const draftRef = { current: composerPlainText(editor) }
+
+    const hook = renderHook(
+      ({ slash }) =>
+        useComposerTrigger({
+          at: { adapter: null, loading: false },
+          draftRef,
+          editorRef,
+          requestMainFocus: vi.fn(),
+          setComposerText: vi.fn(),
+          slash
+        }),
+      { initialProps: { slash: { adapter, loading: true } } }
+    )
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.moveTriggerActive(1))
+    expect(hook.result.current.triggerItems[hook.result.current.triggerActive]?.label).toBe('compress')
+
+    // The live adapter lands a fuller answer: two rows now sort above the pick.
+    items = [item('/clear', 'Commands'), item('/config', 'Commands'), item('/clean'), item('/compress', 'Commands')]
+    hook.rerender({ slash: { adapter: { ...adapter, search: () => items }, loading: false } })
+
+    expect(hook.result.current.triggerItems).toHaveLength(4)
+    expect(hook.result.current.triggerItems[hook.result.current.triggerActive]?.label).toBe('compress')
+    expect(hook.result.current.triggerActiveExplicit).toBe(true)
+  })
+
+  it('drops a pick that the refreshed list no longer offers instead of landing on a neighbour', () => {
+    const editor = mountEditor('/c')
+    let items = [item('/clean'), item('/compress', 'Commands')]
+    const adapter: Unstable_TriggerAdapter = { categories: () => [], categoryItems: () => [], search: () => items }
+    const editorRef = { current: editor }
+
+    const hook = renderHook(
+      ({ slash }) =>
+        useComposerTrigger({
+          at: { adapter: null, loading: false },
+          draftRef: { current: composerPlainText(editor) },
+          editorRef,
+          requestMainFocus: vi.fn(),
+          setComposerText: vi.fn(),
+          slash
+        }),
+      { initialProps: { slash: { adapter, loading: true } } }
+    )
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.moveTriggerActive(1))
+
+    items = [item('/clean'), item('/config', 'Commands'), item('/copy', 'Commands')]
+    hook.rerender({ slash: { adapter: { ...adapter, search: () => items }, loading: false } })
+
+    expect(hook.result.current.triggerActive).toBe(0)
+    expect(hook.result.current.triggerActiveExplicit).toBe(false)
+  })
+})

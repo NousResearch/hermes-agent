@@ -164,6 +164,45 @@ export function implicitSlashAcceptIndex(
   return prefixHits.length === 1 ? prefixHits[0] : null
 }
 
+/** What a completion row IS, independent of where it sits: the adapter ids
+ *  carry a `|index` suffix, so they change whenever the list re-sorts. */
+function triggerItemIdentity(item: Unstable_TriggerItem | undefined): null | string {
+  if (!item) {
+    return null
+  }
+
+  const meta = item.metadata as { command?: string; rawText?: string } | undefined
+
+  return `${item.type}:${meta?.rawText || meta?.command || item.label}`
+}
+
+/**
+ * Where the highlight goes when the completion list is replaced under it (a
+ * slower source finishing, a background refresh). Inspired by Claude Cowork's
+ * desktop changelog (v4.23118.0): Enter or Tab in the "/" menu ran a command
+ * the user had not chosen once more commands finished loading.
+ *
+ * A row the user arrowed to is followed to its new position by identity; if
+ * the new list no longer offers it, the pick is dropped back to a suggestion
+ * on row 0, never silently moved to whatever neighbour now holds its index.
+ * The default highlight is only a suggestion, so it just stays in range.
+ */
+export function followTriggerPick(
+  previous: readonly Unstable_TriggerItem[],
+  next: readonly Unstable_TriggerItem[],
+  activeIndex: number,
+  activeExplicit: boolean
+): { activeExplicit: boolean; activeIndex: number } {
+  if (!activeExplicit) {
+    return { activeExplicit, activeIndex: Math.min(activeIndex, Math.max(0, next.length - 1)) }
+  }
+
+  const picked = triggerItemIdentity(previous[activeIndex])
+  const index = picked === null ? -1 : next.findIndex(item => triggerItemIdentity(item) === picked)
+
+  return index >= 0 ? { activeExplicit: true, activeIndex: index } : { activeExplicit: false, activeIndex: 0 }
+}
+
 export interface TriggerAcceptInput {
   /** The user moved the highlight themselves (arrow keys) rather than
    *  inheriting the list's default first row. */

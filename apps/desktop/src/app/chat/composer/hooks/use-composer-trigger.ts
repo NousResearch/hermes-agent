@@ -6,6 +6,7 @@ import { desktopSlashCommandArgumentMode } from '@/lib/desktop-slash-commands'
 
 import {
   COMPLETION_ACTIONS,
+  followTriggerPick,
   isSkillItem,
   slashArgStage,
   slashChipKindForItem,
@@ -256,9 +257,17 @@ export function useComposerTrigger({
     setTriggerActive(idx => (idx + delta + triggerItems.length) % triggerItems.length)
   }
 
-  useEffect(() => {
-    setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
-  }, [triggerItems.length])
+  // A replaced list (more commands finished loading) must not move Enter/Tab
+  // onto a row the user never chose: see followTriggerPick.
+  const [seenItems, setSeenItems] = useState(triggerItems)
+
+  if (seenItems !== triggerItems) {
+    const next = followTriggerPick(seenItems, triggerItems, triggerActive, triggerActiveExplicit)
+
+    setSeenItems(triggerItems)
+    setTriggerActive(next.activeIndex)
+    setTriggerActiveExplicit(next.activeExplicit)
+  }
 
   // Commit the literally-typed `/command arg` as a directive chip — used when
   // the completion list is empty because the arg is already fully typed (the

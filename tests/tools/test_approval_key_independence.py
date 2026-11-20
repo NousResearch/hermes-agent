@@ -170,6 +170,19 @@ class TestApprovalKeyIndependence:
             finally:
                 reset_hermes_home_override(token)
 
+    def test_relocated_startup_path_keeps_ssh_config_classification(self, tmp_path, monkeypatch):
+        from agent.file_safety import write_approval_key
+        from tools.approval_shell_rc import _rewrite_resolved_shell_rc_paths
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path))
+        ssh_config = (tmp_path / ".ssh" / "config").resolve()
+        monkeypatch.setenv("BASH_ENV", str(ssh_config))
+
+        assert write_approval_key(str(ssh_config)) == "ssh_config_write"
+        assert write_approval_key(str(tmp_path / ".bashrc")) == "shell_rc_write"
+        assert _rewrite_resolved_shell_rc_paths(f"touch '{ssh_config}'") == "touch '~/.ssh/config'"
+
     def test_custom_rc_does_not_reopen_hard_denied_credentials(self, tmp_path, monkeypatch):
         from agent.file_safety import is_write_denied
 

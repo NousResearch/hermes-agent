@@ -340,7 +340,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
     # it is routine. It can carry ProxyCommand / Match exec, so it goes through the
-    # approval gate instead (_approval_paths_by_key).
+    # approval gate instead (write_approval_key).
     home_files = (
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         *((name,) for name in HOME_CREDENTIAL_FILES),
@@ -413,16 +413,9 @@ def get_safe_write_roots() -> set[str]:
 SHELL_RC_FILES = SHELL_RC_RELATIVE_PATHS
 
 
-def _approval_paths_by_key(home: str) -> dict[str, str]:
-    """Paths that need human APPROVAL to write but are not hard-denied credentials -> the approval key.
-
-    ``~/.ssh/config`` holds no key bytes but can carry ``ProxyCommand`` / ``Match exec``; shell rc
-    files run at login. Interactive file tools prompt; callers without a human channel fail closed.
-    Each class has its own key so an approve-always answer for ``~/.ssh/config`` never authorizes
-    ``~/.bashrc`` (or vice versa)."""
-    paths = {os.path.realpath(os.path.join(home, ".ssh", "config")): "ssh_config_write"}
-    paths.update({path: "shell_rc_write" for path in build_shell_rc_approval_paths(home)})
-    return paths
+def _ssh_config_keys(homes: set[str]) -> set[str]:
+    """Resolved SSH client configs across the guarded homes."""
+    return {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -463,8 +456,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     # ``~/.bashrc`` -> ``~/.ssh/authorized_keys`` turn the credential deny into a shell_rc_write
     # prompt. The protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
     key = deny_key(resolved)
-    ssh_configs = {deny_key(os.path.realpath(os.path.join(home, ".ssh", "config"))) for home in homes}
-    if key not in ssh_configs and any(
+    if key not in _ssh_config_keys(homes) and any(
         key in map(deny_key, build_write_denied_paths(home))
         or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes
@@ -521,22 +513,17 @@ def write_approval_key(path: str) -> Optional[str]:
     """Approval key gating a write to ``path`` (``ssh_config_write`` / ``shell_rc_write``), or None."""
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
     key = deny_key(resolved)
-    return next((k for home in homes for p, k in _approval_paths_by_key(home).items() if deny_key(p) == key), None)
+    # A relocated startup path can coincide with another guard home's SSH config.
+    if key in _ssh_config_keys(homes):
+        return "ssh_config_write"
+    if any(deny_key(candidate) == key for home in homes for candidate in build_shell_rc_approval_paths(home)):
+        return "shell_rc_write"
+    return None
 
 
 def is_shell_rc_path(path: str) -> bool:
-    """Return True if ``path`` is a login shell startup file.
-
-    The approval-gated set is the union of ``~/.ssh/config`` and the shell
-    startup inventory from ``build_shell_rc_approval_paths``. The two
-    classes carry different execution risks (SSH ``ProxyCommand`` /
-    ``Match exec`` versus login-time sourcing) and callers gate them with
-    independent approval keys so a session approval given for one class
-    cannot silently authorize the other. This predicate lets the caller
-    select the right key across the same guarded homes as the write predicate.
-    """
-    homes, resolved = _homes_and_resolved(local_drive_spelling(path))
-    return any(resolved in build_shell_rc_approval_paths(home) for home in homes)
+    """Return True when the write gate classifies ``path`` as a shell startup file."""
+    return write_approval_key(path) == "shell_rc_write"
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

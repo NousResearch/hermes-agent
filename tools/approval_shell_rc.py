@@ -8,7 +8,9 @@ from agent.file_safety import (
     SHELL_RC_RELATIVE_PATHS,
     SHELL_RC_ZSH_FILENAMES,
     _guard_homes,
+    _ssh_config_keys,
     build_shell_rc_approval_paths,
+    deny_key,
 )
 
 logger = logging.getLogger("tools.approval")
@@ -60,8 +62,13 @@ def _rewrite_resolved_shell_rc_paths(command: str) -> str:
     """Fold relocated shell startup paths into the shared canonical forms."""
     try:
         paths: dict[str, str] = {}
-        for home in _guard_homes():
+        homes = _guard_homes()
+        ssh_configs = _ssh_config_keys(homes)
+        for home in homes:
             for path in build_shell_rc_approval_paths(home):
+                if deny_key(path) in ssh_configs:
+                    paths[path] = "~/.ssh/config"
+                    continue
                 relative = os.path.relpath(path, home)
                 path_name = os.path.basename(path)
                 if relative in SHELL_RC_RELATIVE_PATHS:

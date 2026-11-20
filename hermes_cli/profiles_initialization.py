@@ -29,7 +29,7 @@ def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[],
     except OSError as exc:
         from hermes_platform.host.facts import os_family
         lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (
-            isinstance(exc, PermissionError) and os_family() == "win32" and profile_dir.exists())
+            isinstance(exc, PermissionError) and os_family() == "win32" and os.path.exists(profile_dir))
         if not lost:
             raise
         raise exists_error() from exc

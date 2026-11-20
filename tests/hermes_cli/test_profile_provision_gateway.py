@@ -215,24 +215,39 @@ def test_a_create_another_process_published_first_gets_already_exists(root, monk
     assert type(other.value) is FileNotFoundError and "already exists" not in str(other.value)
 
 
-@pytest.mark.parametrize(("family", "lost"), [("win32", True), ("linux", False)])
-def test_a_publish_permission_error_onto_an_existing_profile_is_already_exists_only_on_windows(
-        root, monkeypatch, family, lost):
-    """Windows refuses a rename onto an existing directory with PermissionError: there the loser gets
-    "already exists"; elsewhere a PermissionError is a real failure and stays raw."""
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("held_open", [False, True], ids=["occupied", "file_held_in_staging"])
+def test_a_windows_publish_onto_an_existing_profile_is_already_exists(root, held_open):
+    """Native Windows refuses a rename onto an existing directory with WinError 183 (FileExistsError), or
+    with WinError 5 (PermissionError) while a file in the staging tree is held open: both mean another
+    create published first, so the loser gets "already exists"."""
     from hermes_cli.profiles_initialization import publish_staging
-    from hermes_platform.host import facts
-    monkeypatch.setattr(facts, "os_family", lambda: family)
+    dest = root / "profiles" / "racer"
+    (dest).mkdir(parents=True)
+    (dest / "config.yaml").write_text("model: {}\n")
+    staging = root / "profiles" / ".racer.staging-1"
+    staging.mkdir()
+    with open(staging / "held.txt", "w") if held_open else contextlib.nullcontext():
+        with pytest.raises(FileExistsError, match="A profile named 'racer' already exists"):
+            publish_staging(staging, dest, lambda: profiles._profile_exists_error("racer"))
+    assert (dest / "config.yaml").read_text() == "model: {}\n"
+
+
+@pytest.mark.platforms("posix")
+def test_a_posix_publish_permission_error_stays_raw(root, monkeypatch):
+    """Off Windows a PermissionError from the publish rename is a real failure, even with the destination
+    present: it stays raw instead of reading as a profile somebody else published."""
+    from hermes_cli.profiles_initialization import publish_staging
     dest = root / "profiles" / "racer"
     dest.mkdir(parents=True)
 
     def refuse(src, dst, *a, **k):
-        raise PermissionError(13, "Access is denied", str(dst))
+        raise PermissionError(1, "Operation not permitted", str(dst))
     monkeypatch.setattr(profiles.os, "rename", refuse)
-    with pytest.raises(OSError) as caught:
+    with pytest.raises(PermissionError) as caught:
         publish_staging(root / "staging", dest, lambda: profiles._profile_exists_error("racer"))
-    assert ("already exists" in str(caught.value)) is lost
-    assert (type(caught.value) is PermissionError) is not lost
+    assert "already exists" not in str(caught.value)
+
 
 def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError

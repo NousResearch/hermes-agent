@@ -674,6 +674,60 @@ def test_running_turns_count_markers_the_backend_wrote_in_any_profile(tmp_path, 
         assert SystemHost(home).running_turns(os.getpid(), None) == 1
 
 
+@pytest.mark.parametrize("case", ["unreadable", "corrupt_json", "non_dict", "unknown_writer"])
+def test_running_turns_returns_none_when_marker_activity_is_unknown(tmp_path, monkeypatch, case):
+    """An unreadable or invalid marker file, or a writer whose liveness is unknown, is unknown (None), not 0."""
+    from tui_gateway import turn_marker
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    path = turn_marker._marker_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+
+    if case == "unreadable":
+        path.write_text("{}", encoding="utf-8")
+        path.chmod(0o000)
+    elif case == "corrupt_json":
+        path.write_text("{not-json", encoding="utf-8")
+    elif case == "non_dict":
+        path.write_text("[]", encoding="utf-8")
+    else:
+        turn_marker.record_turn_start(home, "session-1", "hello")
+        monkeypatch.setattr("hermes_cli.active_sessions._pid_liveness", lambda p, s: None)
+
+    try:
+        assert SystemHost(home).running_turns(pid, None) is None
+    finally:
+        if case == "unreadable":
+            path.chmod(0o600)
+
+
+def test_unknown_turn_activity_blocks_and_reports_unknown_in_text_and_null_in_json(home, capsys, monkeypatch):
+    """A real unreadable marker file keeps running_turns unknown (text 'unknown', JSON null) and blocks unless --force-interrupt."""
+    from tui_gateway import turn_marker
+    path = turn_marker._marker_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o000)
+
+    host = FakeHost(home)
+    monkeypatch.setattr(host, "running_turns", SystemHost.running_turns.__get__(host, SystemHost))
+    try:
+        assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_BLOCKED
+        text = capsys.readouterr().out
+        assert "running turns: unknown" in text and "--force-interrupt" in text
+
+        code, out = _plan(host, capsys)
+        assert code == engine.EXIT_BLOCKED and out["plan"]["running_turns"] is None
+        assert any("--force-interrupt" in b for b in out["plan"]["blockers"])
+
+        code, out = _plan(host, capsys, force_interrupt=True)
+        assert code == engine.EXIT_OK and out["plan"]["running_turns"] is None
+    finally:
+        path.chmod(0o600)
+
+
 # --- review round 1: a by-hand move passes the same target checks as an automatic one
 
 

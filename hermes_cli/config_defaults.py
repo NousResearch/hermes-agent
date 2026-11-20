@@ -485,7 +485,7 @@ DEFAULT_CONFIG = {
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.
     "checkpoints": {
         "enabled": False,
-        # Max checkpoints per working directory; enforced by ref rewrite + GC of older commits.
+        # Max checkpoints per working directory; enforced by ref rewrite + GC of older commits. 0 = keep all.
         "max_snapshots": 20,
         # Hard ceiling on total ~/.hermes/checkpoints/ size (MB); the oldest checkpoint per project
         # is dropped round-robin until under the cap. 0 disables.

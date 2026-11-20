@@ -3257,7 +3257,7 @@ Automatic filesystem snapshots before destructive file operations. See the [Chec
 ```yaml
 checkpoints:
   enabled: false                 # Enable automatic checkpoints (also: hermes chat --checkpoints). Default: false (opt-in).
-  max_snapshots: 20              # Max checkpoints to keep per directory (default: 20)
+  max_snapshots: 20              # Max checkpoints to keep per directory (default: 20; 0 = keep all)
 ```
 
 

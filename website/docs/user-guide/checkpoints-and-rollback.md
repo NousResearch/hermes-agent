@@ -90,7 +90,7 @@ Configure in `~/.hermes/config.yaml`:
 ```yaml
 checkpoints:
   enabled: false              # master switch (default: false — opt-in)
-  max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc)
+  max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc); 0 keeps all
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
 

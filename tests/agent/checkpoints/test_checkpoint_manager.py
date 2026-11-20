@@ -234,6 +234,19 @@ class TestRealPruning:
         assert reasons[0] == "step-5"
         assert reasons[-1] == "step-3"
 
+    def test_max_snapshots_zero_keeps_every_snapshot(self, work_dir, checkpoint_base):
+        """``max_snapshots: 0`` is an unlimited budget: nothing is trimmed and every snapshot lists."""
+        m = CheckpointManager(enabled=True, max_snapshots=0, max_total_size_mb=0)
+        for i in range(25):
+            (work_dir / "main.py").write_text(f"v{i}\n")
+            m.new_turn()
+            assert m.ensure_checkpoint(str(work_dir), f"step-{i}")
+
+        cps = m.list_checkpoints(str(work_dir))
+        assert len(cps) == 25
+        assert cps[0]["reason"] == "step-24"
+        assert cps[-1]["reason"] == "step-0"
+
     def test_max_file_size_mb_skips_large_files(
         self, tmp_path, checkpoint_base, monkeypatch,
     ):

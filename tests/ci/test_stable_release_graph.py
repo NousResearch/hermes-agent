@@ -315,7 +315,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == admitted["lanes"]
     assert json.loads(emitted["jobs"]) == lane_set.jobs_to_run(admitted["lanes"])
-    assert emitted["policy"] == "stable" and emitted["docker-tag"] == "rc.1-v1.2.3"
+    assert emitted["policy"] == "stable" and emitted["claim-tag"] == "rc.1-v1.2.3"
     assert "on: docker, windows" in summary.read_text(encoding="utf-8")
 
 
@@ -451,9 +451,8 @@ def test_versioned_docker_images_belong_to_one_attempt():
     # The final vX.Y.Z does not exist until publish; a second attempt pushing
     # under it collides with the first attempt's immutable manifest list.
     jobs = workflow("stable-release.yml")["jobs"]
-    # docker-tag is the claim tag for stable (stable.docker_tag); a canary's `+` becomes `-`.
     for name in ("docker", "publish-docker"):
-        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.docker-tag }}"
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():

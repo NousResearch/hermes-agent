@@ -63,8 +63,6 @@ jobs:
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
       # stable | canary: selects the publication jobs (lanes.POLICY_JOBS), never a build or test job.
       policy: ${{ steps.admit.outputs.policy }}
-      # The versioned image tag: the claim tag, or a canary tag with its `+` as `-`.
-      docker-tag: ${{ steps.admit.outputs.docker-tag }}
       # The claim's lanes (scripts/releases/lanes.py): `lanes` is one flag per lane and `jobs`
       # one run flag per lane-controlled job. Every job's `if` reads its own `jobs` entry, so the
       # lane table alone decides what runs and what the gates expect to have skipped.
@@ -116,7 +114,7 @@ jobs:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: test
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}
-      tag: ${{ needs.admit.outputs.docker-tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -549,7 +547,7 @@ jobs:
     with:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: publish
-      tag: ${{ needs.admit.outputs.docker-tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:
@@ -726,7 +724,7 @@ jobs:
           python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
           --repository "$GITHUB_REPOSITORY" --public-base "$CLOUDFLARE_R2_PUBLIC_URL"
         env:
-          DOCKER_TAG: ${{ needs.admit.outputs.docker-tag }}
+          DOCKER_TAG: ${{ needs.admit.outputs.claim-tag }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:

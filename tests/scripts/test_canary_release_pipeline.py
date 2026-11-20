@@ -144,7 +144,7 @@ def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_p
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert emitted["policy"] == "canary"
     assert emitted["require-green"] == ("true" if require_green else "false")
-    assert emitted["docker-tag"] == CANARY
+    assert emitted["claim-tag"] == CANARY
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == lane_set.CANARY
     jobs = json.loads(emitted["jobs"])
     assert jobs == lane_set.jobs_to_run(lane_set.CANARY, "canary")
@@ -241,9 +241,8 @@ def test_the_canary_gate_expects_its_own_publication_job():
 def test_canary_images_get_their_own_tag_and_aliases_and_never_stable_ones():
     from scripts.releases import docker
 
-    tag = stable.docker_tag(CANARY)
     # The canary tag is already a valid Docker tag, so it names its image unchanged.
-    assert tag == CANARY and stable.docker_tag("rc.2-v1.2.3") == "rc.2-v1.2.3"
+    tag = CANARY
     assert docker.is_canary_image_tag(tag) and not docker.is_canary_image_tag("v1.2.3-canary.20261021T064100Z")
     assert docker.require_release_image_tag(tag) == tag
     assert docker.build_manifest(tag, COMMIT, {"amd64": "1" * 64, "arm64": "2" * 64})["tag"] == tag

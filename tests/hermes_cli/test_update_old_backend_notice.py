@@ -41,7 +41,7 @@ print_old_backend_notice(UpdatePlan(runtimes=[RuntimeRecord("serve", "default", 
                                                              "manual-serve")]), None)
 """
 # The only systemctl verbs the report may use: it asks systemd, never tells it anything.
-_SYSTEMCTL_READS = {"show", "list-unit-files"}
+_SYSTEMCTL_READS = {"show", "show-environment", "list-unit-files"}
 
 
 def _free_port() -> int:

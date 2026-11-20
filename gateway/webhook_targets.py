@@ -22,4 +22,13 @@ def is_known_platform(name: str) -> bool:
 
 def is_dispatchable_target(target: object) -> bool:
     """A saved route's ``deliver`` value the gateway can send to (a hand-edited non-string is not)."""
-    return isinstance(target, str) and (target in _NON_PLATFORM_TARGETS or is_known_platform(target))
+    if not isinstance(target, str):
+        return False
+    from gateway.webhooks.target import is_bot_chat, target_profile
+    if is_bot_chat(target):
+        try:
+            target_profile(target)
+        except ValueError:
+            return False
+        return True
+    return target in _NON_PLATFORM_TARGETS or is_known_platform(target)

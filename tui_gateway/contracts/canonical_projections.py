@@ -66,6 +66,17 @@ class CanonicalRoomApproveParams(CanonicalRoomAttemptParams):
     request_id: str
 
 
+class BotStoreIncarnation(Params):
+    file: list[int]
+    instance: str | None = None
+
+
+class BotTargetIncarnation(Params):
+    home: str
+    directory: list[int]
+    store: BotStoreIncarnation | None = None
+
+
 class CanonicalBotDeliverParams(Params):
     profile: str | None = None
     message: str
@@ -73,6 +84,7 @@ class CanonicalBotDeliverParams(Params):
     session_id: str | None = None
     author: dict[str, JsonValue] | None = None
     notification_category: str | None = None
+    expected_incarnation: BotTargetIncarnation | None = None
 
 
 class CanonicalBotDeliverResult(Result):

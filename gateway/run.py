@@ -4392,6 +4392,7 @@ def _start_gateway_housekeeping(
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
     from hermes_cli.plugins_idle_tasks import IdleTaskFence
+    from gateway.webhooks.reconcile import schedule_reconciliation
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4429,6 +4430,7 @@ def _start_gateway_housekeeping(
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+        (1, "Webhook Bot Chat receipts", lambda: schedule_reconciliation(runner, loop)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 

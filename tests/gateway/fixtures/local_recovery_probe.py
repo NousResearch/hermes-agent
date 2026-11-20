@@ -52,7 +52,11 @@ CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', '
 
 
 def child_env():
-    return {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+    env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+    # Child daemons are outside pytest's network fence; fail remote HTTP locally.
+    env.update(HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
+               NO_PROXY='127.0.0.1,localhost')
+    return env
 
 
 async def rpc(ws, method, **params):
@@ -64,8 +68,8 @@ async def rpc(ws, method, **params):
                 return reply
 
 
-def websocket(home, desc, **kw):
-    grant = control(home, 'session-ticket', {'profile_id': str(home), 'instance_id': desc['instance_id'], 'purpose': 'interactive'})
+def websocket(home, desc, *, control_home=None, **kw):
+    grant = control(control_home or home, 'session-ticket', {'profile_id': str(home), 'instance_id': desc['instance_id'], 'purpose': 'interactive'})
     return connect(desc['api_origin'].replace('http:', 'ws:') + '/api/ws',
                    subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']], **kw)
 

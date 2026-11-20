@@ -1598,3 +1598,39 @@ def test_a_background_restore_of_a_hand_started_backend_changes_nothing(home, ca
     out = capsys.readouterr().out
     assert host.calls == [] and host.gw["active"] is True and engine.read_manifest(home)["state"] == "done"
     assert "Nothing changed" in out and _DETACHED_UNIT in out and "without --detach" in out
+
+
+# --------------------------------------------------------------------------- unreadable turn markers, real apply path
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("force", [False, True])
+def test_an_unreadable_turn_marker_blocks_the_real_apply_unless_forced(home, capsys, monkeypatch, force):
+    """The real marker reader on a marker file that cannot be read: activity unknown, never idle. Without
+    --force-interrupt the apply changes nothing and the old backend keeps running; with it the move goes
+    ahead and says the activity could not be read."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    from tui_gateway import turn_marker
+    marker = turn_marker._marker_path(home)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("{}", encoding="utf-8")
+    marker.chmod(0o000)
+    host = FakeHost(home)
+    monkeypatch.setattr(host, "running_turns", SystemHost.running_turns.__get__(host, SystemHost))
+    before = _config_files(home)
+    try:
+        code = engine.cmd_apply(host, _args(force_interrupt=force))
+    finally:
+        marker.chmod(0o600)
+
+    out = capsys.readouterr().out
+    assert "None" not in out
+    if force:
+        assert code == engine.EXIT_OK and host.old["active"] is False
+        assert "turn activity could not be read" in out and "interrupted" in out
+    else:
+        assert code == engine.EXIT_BLOCKED and host.old["active"] is True
+        _nothing_applied(host, home, before)
+        assert "--force-interrupt" in out
+

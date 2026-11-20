@@ -74,7 +74,7 @@ def kanban_launch_policy(task, cwd, config, private=None):
             params[name] = value
     policy = build_policy(params, config, private_secrets={} if private is None else private)
     if policy.model is None:
-        model, unresolved = task_model(task, config, discover=True)
+        model, unresolved = task_model(task, config)
         if unresolved:
             from hermes_constants import get_hermes_home
             raise AuthorityRefusal('invalid_params', field='model', detail=missing_model_detail(task.assignee, get_hermes_home()))

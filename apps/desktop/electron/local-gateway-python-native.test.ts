@@ -7,6 +7,7 @@ import path from 'node:path'
 
 import { expect, test, vi } from 'vitest'
 
+import { redialLocalGateway } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 
 const observed = vi.hoisted(() => ({ helpers: 0 }))
@@ -27,15 +28,19 @@ test.skipIf(process.platform !== 'win32')('native pipe tickets reuse one helper 
   const env = { ...process.env, PYTHONPATH: root, HERMES_HOME: home, PYTHONUTF8: '1' }
 
   const code = `
-import json, sys
+import json, sys, time
 from pathlib import Path
 from gateway.runtime_bootstrap_windows import NativeControlServer
 counter = 0
+delayed = False
 def handle(raw, subject):
-    global counter
+    global counter, delayed
     request = json.loads(raw)
     if request['params']['instance_id'] == 'refused':
         return json.dumps({'protocol':1, 'id':1, 'ok':False}).encode() + b'\\n'
+    if request['params']['purpose'] == 'native-profile-create' and not delayed:
+        delayed = True
+        time.sleep(5.3)
     counter += 1
     return json.dumps({'protocol':1, 'id':1, 'ok':True, 'result':{
         'profile_id':str(Path(sys.argv[1]).resolve()), 'instance_id':'owner',
@@ -67,6 +72,17 @@ finally:
     expect(first).not.toBe(second)
     expect(observed.helpers - before).toBe(1)
     expect(resolveBackend).toHaveBeenCalledOnce()
+    const forget = vi.fn()
+
+    const dial = () => redialLocalGateway({
+      ensure: async () => endpoint,
+      forget,
+      use: owner => mint(owner, 'native-profile-create')
+    })
+
+    await expect(dial()).rejects.toThrow('Gateway ticket request timed out')
+    expect(forget).not.toHaveBeenCalled()
+    await expect(dial()).resolves.toMatch(/^grant-/)
     await expect(mint({ ...endpoint, instance_id: 'stale' }, 'interactive')).rejects.toThrow('Gateway ticket')
     await expect(mint({ ...endpoint, instance_id: 'refused' }, 'interactive')).rejects.toMatchObject({ reason: 'invalid_control_response' })
     await expect(mint(endpoint, 'interactive')).resolves.toMatch(/^grant-/)

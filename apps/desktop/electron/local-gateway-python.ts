@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
-import type { GatewayTicketPurpose } from './local-gateway'
+import { type GatewayTicketPurpose, GatewayTicketTimeoutError } from './local-gateway'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 interface TicketEndpoint {
@@ -41,6 +41,8 @@ while True:
             ticket = _session_ticket(home, endpoint, purpose=request['purpose'],
                                      scope='host' if request['purpose'] == 'interactive' else None)
         reply = {'id': request['id'], 'ticket': ticket}
+    except TimeoutError:
+        reply = {'id': request['id'], 'error': 'ticket_timeout'}
     except DiscoveryError as exc:
         reply = {'id': request['id'], 'error': exc.reason}
     except Exception:
@@ -93,7 +95,7 @@ class TicketBridge {
 
  return }
 
-      const timer = setTimeout(() => this.dispose(), 10_000)
+      const timer = setTimeout(() => this.dispose(new GatewayTicketTimeoutError()), 10_000)
       this.pending.set(id, { resolve, reject, timer })
       // Private stdin carries identity as data. EOF also retires the helper if Desktop exits.
       this.child.stdin.write(request)
@@ -125,6 +127,7 @@ class TicketBridge {
         clearTimeout(waiter.timer)
 
         if (typeof reply.ticket === 'string' && reply.ticket) { waiter.resolve(reply.ticket) }
+        else if (reply.error === 'ticket_timeout') { waiter.reject(new GatewayTicketTimeoutError()) }
         else { waiter.reject(Object.assign(new Error('Gateway ticket bootstrap failed'),
           typeof reply.error === 'string' ? { reason: reply.error } : {})) }
       } catch { this.dispose();
@@ -135,7 +138,7 @@ class TicketBridge {
     if (!this.pending.size) { this.idleTimer = setTimeout(() => this.dispose(), 30_000) }
   }
 
-  dispose(): void {
+  dispose(cause = new Error('Gateway ticket bootstrap failed')): void {
     if (this.closed) { return }
     this.closed = true
     clearTimeout(this.idleTimer)
@@ -144,7 +147,7 @@ class TicketBridge {
 
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer)
-      waiter.reject(new Error('Gateway ticket bootstrap failed'))
+      waiter.reject(cause)
     }
 
     this.pending.clear()

@@ -49,10 +49,13 @@ def _interactive(authority, session_id):
     sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
         if found is None:
             return False
-        sources[session_id] = found[0]
+        # A local session stores its family in ``source`` (``local``) and the creating surface in
+        # ``created_source`` (session_policy.created_surface); a legacy row keeps the surface as
+        # ``source`` itself. Resolve the frozen launch surface either way.
+        sources[session_id] = found[0] if found[0] in _INTERACTIVE_SOURCES else found[1]
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 

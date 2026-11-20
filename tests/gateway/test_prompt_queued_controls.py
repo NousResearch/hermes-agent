@@ -271,3 +271,19 @@ async def test_a_viewer_flag_cli_turn_keeps_the_queued_row_steerable(tmp_path, m
         'text': 'hello', 'cli_turn_v1': {'clarify_batch': True, 'api_text': 'x'}}})
     assert not queued_controls(authority, {**queued, 'payload': {
         'text': 'hello', 'cli_turn_v1': 'not-a-mapping'}})
+
+
+def test_a_local_family_session_keeps_its_controls_though_its_source_is_local(tmp_path, monkeypatch):
+    """New local sessions store the family in ``source`` (``local``) and the creating surface in
+    ``created_source``; resolving only ``source`` would serve no verbs for every such session, so a
+    Desktop row queued during compaction lost its Steer and Edit."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    db._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET source=?, created_source=? WHERE id=?', ('local', 'desktop', 's')))
+    queued = {'status': 'queued', 'target_session_id': 's'}
+    assert queued_controls(authority, {**queued, 'payload': {'text': 'hello'}}) == ['steer', 'replace']
+    # A local session with no recorded surface is not an interactive launch: never offered.
+    db._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET source=?, created_source=? WHERE id=?', ('local', None, 's')))
+    authority.launch_sources.pop('s', None)
+    assert not queued_controls(authority, {**queued, 'payload': {'text': 'hello'}})

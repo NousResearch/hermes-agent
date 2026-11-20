@@ -241,15 +241,16 @@ def test_a_backend_listening_on_another_address_of_the_same_port_does_not_hide_t
 
 
 def test_status_through_an_exec_launcher_names_the_gateway(tmp_path):
-    """The installed POSIX launcher ``exec``s the CLI, so no launcher process carries ``--status``: the
-    address it names is probed directly, and the gateway holding it is named."""
-    launcher = tmp_path / "exec-hermes"
-    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m hermes_cli.main "$@"\n', encoding="utf-8")
-    launcher.chmod(0o755)
+    """The installed POSIX launcher (``mint_launcher``: ``#!/bin/sh`` + ``exec``) leaves no process
+    carrying ``--status``: the address it names is probed directly, and the gateway holding it is named."""
+    from hermes_cli._launchers import mint_launcher
+    (tmp_path / "bin").mkdir()
+    launcher = mint_launcher("hermes", REPO_ROOT, tmp_path / "bin", Path(sys.executable), None)
+    assert launcher is not None and launcher.read_text(encoding="utf-8").startswith("#!/bin/sh\nexec ")
     with live_gateway(tmp_path) as gateway:
-        proc = subprocess.run([str(launcher), "dashboard", "--status", "--port", str(gateway.port)], cwd=REPO_ROOT,
-                              env=gateway.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                              timeout=120, check=False)
-    out = proc.stdout
+        proc = subprocess.Popen([str(launcher), "dashboard", "--status", "--port", str(gateway.port)], cwd=REPO_ROOT,
+                                env=gateway.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        out, _ = proc.communicate(timeout=120)
     assert proc.returncode == 0, out
+    assert f"PID {proc.pid} " not in out, out
     assert any(line.startswith("The Hermes gateway") and f":{gateway.port}" in line for line in out.splitlines()), out

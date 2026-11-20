@@ -163,18 +163,14 @@ def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):
 
 
 def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
-    """An authoritative empty native row is valid only inside the TTL.
+    """An empty native row is never a warm answer: the next open asks again, even inside the TTL.
 
-    Beyond it the probe must run again, or an Ollama that was model-less at first open keeps
-    an empty picker row for the whole 7-day stale window after models are pulled.
+    Otherwise an Ollama that was model-less at first open keeps an empty picker row after models
+    are pulled (for the TTL, or the whole 7-day stale window).
     """
-    from hermes_cli.models import _PROVIDER_MODELS_CACHE_TTL
-
     _native_picker_probe(monkeypatch, [[], ["back:latest"]])
     url = "http://127.0.0.1:11434/v1"
     assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == []
-
-    _age_cached_rows(_PROVIDER_MODELS_CACHE_TTL + 100)
     assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["back:latest"]
 
 
@@ -2439,3 +2435,4 @@ def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(mon
     assert result.success
     assert result.base_url == "http://10.0.0.5:8000/v1"
     assert result.api_key == "session-secret"
+

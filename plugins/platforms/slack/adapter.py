@@ -39,6 +39,7 @@ if str(_checkout_root) not in sys.path:
 
 from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
 from agent.i18n import t
+from gateway.platforms.base_exec_approval import ea_t
 from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
@@ -5047,13 +5048,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    # The fence uses the base's own-line opener/closer: a fence touching the command's own backticks
-    # would merge into one longer run.
-    # Resolved per call (not at class-body time) so the active language applies; the budget
+    # The fence uses the base's own-line opener/closer: a fence touching the command's own backticks would merge into
+    # one longer run. Resolved per call (not at class-body time) so the active language applies; the budget
     # below measures ``len()`` of these resolved strings against the 3000-char section cap.
     @property
     def _EA_HEADER(self) -> str:
-        return f":warning: *{t('gateway.exec_approval.header')}*\n"
+        return f":warning: *{ea_t('gateway.exec_approval.header')}*\n"
 
     @property
     def _EA_SMART_DENY_LINE(self) -> str:
@@ -5077,7 +5077,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
                 {"type": "actions", "elements": actions}]
-            return t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
+            return ea_t("platform.slack.approval.fallback_text", command=prompt.command[:100]), blocks
 
         result = await self._send_interactive_prompt(
             prompt.chat_id, prompt.metadata, _build, "send_exec_approval",

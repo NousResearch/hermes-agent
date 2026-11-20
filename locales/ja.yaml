@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "プレビューは省略されています: 完全なコマンド({total} 文字)は上のメッセージにあります。"
     truncated_deny_only: "プレビューは省略されています({total} 文字)。完全なコマンドをここに表示できなかったため、拒否のみ選択できます。CLI またはデスクトップアプリで確認してください。"
     text_prompt_deny_only: "完全な承認プロンプトはこのプラットフォームには長すぎるため、拒否のみ選択できます。CLI またはデスクトップアプリで確認してください。"
+    schedule_header: "Hermes がジョブをスケジュールしようとしています"
+    schedule_action_once: "許可"
+    schedule_action_session: "このチャットで許可"
+    schedule_action_always: "新しいジョブを常に許可"
+    schedule_deadline: "{window} 以内に応答がない場合、ジョブは作成されません。"
+    schedule_timed_out_notice: "⌛ 承認が {window} でタイムアウトしました — ジョブは作成されませんでした。まだ必要ならもう一度依頼するか、config.yaml の approvals.timeout を増やしてください。"
+    schedule_text_choice_once: "`{prefix}approve` と返信すると作成します"
+    schedule_text_choice_session: "`{prefix}approve session` でこのチャットの残りの間は新しいジョブを許可"
+    schedule_text_choice_always: "`{prefix}approve always` で新しいジョブを常に許可"
+    schedule_truncated_full_above: "プレビューを短縮しました：ジョブ全体（{total} 文字）は上のメッセージにあります。"
+    schedule_truncated_deny_only: "プレビューを短縮しました（{total} 文字）。ジョブ全体をここに表示できなかったため、拒否のみ選択できます。CLI またはデスクトップアプリで確認してください。"
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "音声"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "セッション中は承認"
       resolved_always: "永続的に承認"
       resolved_deny: "拒否"
+      schedule_question: "Hermes にこのスケジュール済みジョブを作成させますか？"
+      schedule_requested_command_label: "ジョブ:"
     slash_confirm:
       already_resolved: "このプロンプトはすでに処理済みです~"
       approve_once: "一度だけ承認"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{user} が{label}"
       expired: "⌛ 承認の有効期限切れ"
       expired_detail: "{label} — 待機中のコマンドはありませんでした。すでにタイムアウト（拒否扱い）したか、別の場所で処理済みです。"
+      schedule_action_once: "✅ 許可"
+      schedule_action_session: "✅ このチャットで許可"
+      schedule_action_always: "✅ 新しいジョブを常に許可"
     slash_confirm:
       approve_once: "✅ 一度だけ承認"
       always_approve: "🔒 常に承認"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ {user} がセッション中は承認"
       resolved_always: "✅ {user} が永続的に承認"
       resolved_deny: "❌ {user} が拒否"
+      schedule_fallback_text: "⚠️ Hermes がジョブをスケジュールしようとしています: {command}"
     confirm:
       default_title: "確認"
       approve_once: "一度だけ承認"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = 拒否"
       invalid_reaction: "そのリアクションはこの承認プロンプトでは無効です。"
       expired: "この承認プロンプトの有効期限が切れました。承認する場合は、コマンドをもう一度実行してください。"
+      schedule_typed_hint_once: "`!approve` で作成、`!deny` でキャンセルします。"
+      schedule_typed_hint_session: "`!approve session` でこのチャットの残りの間は新しいジョブを許可、`!approve` で作成、`!deny` でキャンセルします。"
+      schedule_typed_hint_always: "`!approve session` でこのチャットの残りの間は新しいジョブを許可、`!approve always` で新しいジョブを常に許可、`!approve` で作成、`!deny` でキャンセルします。"
     picker:
       no_models: "このセッションで利用できる認証済みモデルはありません。"
       title: "⚙ **モデル設定**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "拒否"
       resolved_fallback: "処理済み"
       resolved_by_user: "{icon} {user} が **{label}**"
+      schedule_action_session: "このチャットで許可"
+      schedule_action_always: "新しいジョブを常に許可"
     update_prompt:
       title: "☤ アップデートに入力が必要です"
       default_hint: "\n\nデフォルト: `{default}`"

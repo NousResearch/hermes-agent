@@ -18,7 +18,8 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 from gateway.platforms.base import fit_prefix
 from gateway.platforms.base_exec_approval import (
-    approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, format_approval_timed_out_notice)
+    approval_kind_of, approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, ea_t,
+    format_approval_timed_out_notice, with_approval_kind)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ def register_timeout_notice(
     timeout_s = approval_data.get("timeout_s")
     if timeout_s is None:
         timeout_s = approval_timeout_seconds()
-    flagged = approval_data.get("description") or ea_default_reason_text()
+    kind = approval_kind_of(approval_data)
+    # A schedule card's body already is the description: repeating it as "why it was flagged" says nothing.
+    flagged = "" if kind == "schedule" else approval_data.get("description") or ea_default_reason_text()
 
     def settle(reason: str) -> None:
         if reason != "timeout":
@@ -54,7 +57,7 @@ def register_timeout_notice(
         if callable(still_current) and not still_current():
             return
         runner._schedule(
-            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s, flagged),
+            with_approval_kind(kind, _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s, flagged)),
             "Approval timeout notice scheduling error")
 
     register_gateway_settle(session_key, request_id, settle)
@@ -90,9 +93,9 @@ def _timed_out_card_body(adapter, chat_id: str, notice: str, command: str, reaso
     measure, suffix = adapter.message_len_fn_for_chat(chat_id), "..."
     if reason:  # capped like the card's own reason, so the command keeps most of the budget
         notice = f"{notice}\n{ea_reason_label_text()}: {fit_prefix(reason, 500, measure, suffix)}"
-    frame = measure(t("gateway.exec_approval.timed_out_card_body", notice=notice, command=""))
+    frame = measure(ea_t("gateway.exec_approval.timed_out_card_body", notice=notice, command=""))
     budget = adapter.max_message_length_for_chat(chat_id) - frame - measure(suffix)
-    return t("gateway.exec_approval.timed_out_card_body", notice=notice,
+    return ea_t("gateway.exec_approval.timed_out_card_body", notice=notice,
              command=fit_prefix(command, max(0, budget), measure, suffix))
 
 

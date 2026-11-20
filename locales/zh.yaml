@@ -656,6 +656,19 @@ gateway:
     truncated_full_above: "预览已截断：完整命令（{total} 个字符）在上面的消息中。"
     truncated_deny_only: "预览已截断（{total} 个字符），且无法在此显示完整命令，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
     text_prompt_deny_only: "完整的批准提示对此平台而言过长，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
+    schedule_header: "Hermes 想要安排一个任务"
+    schedule_action_once: "允许"
+    schedule_action_session: "在此聊天中允许"
+    schedule_action_always: "始终允许新任务"
+    schedule_deadline: "如果你在 {window} 内没有回复，任务将不会被创建。"
+    schedule_timed_out_notice: "⌛ 审批在 {window} 后超时——任务未创建。如果仍需要，请让我重试，或在 config.yaml 中调高 approvals.timeout。"
+    schedule_text_choice_once: "回复 `{prefix}approve` 以创建"
+    schedule_text_choice_session: "`{prefix}approve session` 在此聊天剩余时间内允许新任务"
+    schedule_text_choice_always: "`{prefix}approve always` 始终允许新任务"
+    schedule_truncated_full_above: "预览已缩短：完整任务（{total} 个字符）在上面的消息中。"
+    schedule_truncated_deny_only: "预览已缩短（{total} 个字符），且此处无法显示完整任务，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
+    schedule_timed_out_card_body: "{notice}\n\n{command}"
+    schedule_text_body: "{heading}\n\n{command}\n\n"
   notify:
     media_kind:
       audio: "音频"
@@ -1048,6 +1061,8 @@ platform:
       resolved_session: "已批准（本会话）"
       resolved_always: "已永久批准"
       resolved_deny: "已拒绝"
+      schedule_question: "要让 Hermes 创建这个定时任务吗？"
+      schedule_requested_command_label: "任务："
     slash_confirm:
       already_resolved: "这个提示已经处理过了~"
       approve_once: "批准一次"
@@ -1240,6 +1255,9 @@ platform:
       resolved_by_user: "{user} {label}"
       expired: "⌛ 审批已过期"
       expired_detail: "{label} — 没有等待中的命令。它已超时（并被拒绝）或已在别处处理。"
+      schedule_action_once: "✅ 允许"
+      schedule_action_session: "✅ 在此聊天中允许"
+      schedule_action_always: "✅ 始终允许新任务"
     slash_confirm:
       approve_once: "✅ 批准一次"
       always_approve: "🔒 始终批准"
@@ -1332,6 +1350,7 @@ platform:
       resolved_session: "✅ {user} 已批准本会话"
       resolved_always: "✅ {user} 已永久批准"
       resolved_deny: "❌ {user} 已拒绝"
+      schedule_fallback_text: "⚠️ Hermes 想要安排一个任务：{command}"
     confirm:
       default_title: "确认"
       approve_once: "批准一次"
@@ -1393,6 +1412,9 @@ platform:
       legend_deny: "❎ = 拒绝"
       invalid_reaction: "该表情回应对此审批提示无效。"
       expired: "此审批提示已过期。如仍需批准，请重新运行该命令。"
+      schedule_typed_hint_once: "回复 `!approve` 以创建，或回复 `!deny` 取消。"
+      schedule_typed_hint_session: "回复 `!approve session` 在此聊天剩余时间内允许新任务，`!approve` 以创建，或 `!deny` 取消。"
+      schedule_typed_hint_always: "回复 `!approve session` 在此聊天剩余时间内允许新任务，`!approve always` 始终允许新任务，`!approve` 以创建，或 `!deny` 取消。"
     picker:
       no_models: "此会话没有已认证的可用模型。"
       title: "⚙ **模型配置**"
@@ -1425,6 +1447,8 @@ platform:
       resolved_deny: "已拒绝"
       resolved_fallback: "已处理"
       resolved_by_user: "{icon} **{label}**（由 {user}）"
+      schedule_action_session: "在此聊天中允许"
+      schedule_action_always: "始终允许新任务"
     update_prompt:
       title: "☤ 更新需要你的输入"
       default_hint: "\n\n默认值：`{default}`"

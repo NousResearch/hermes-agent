@@ -89,3 +89,64 @@ def test_runner_only_offers_buttons_to_adapters_that_render_them():
 
     assert _renders_exec_approval_buttons(_DuckTyped) is True
     assert _renders_exec_approval_buttons(object) is False
+
+
+_SCHEDULE = {"kind": "schedule", "command": "<cronjob_manage> (schedule a new job)",
+             "description": 'Schedule "check-in" (every day at 09:00): remind me to check in', "request_id": "r1"}
+
+
+def _notify(approval: dict, adapter) -> None:
+    """Drive the real TurnRunner approval notify (card path, then text fallback) with ``adapter``."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway.run_turn_runner import TurnRunner
+
+    async def run():
+        ctx = SimpleNamespace(_status_adapter=adapter, _status_chat_id="chat", _status_thread_metadata=None,
+                              session_key="sess", _loop_for_step=asyncio.get_running_loop(),
+                              stream_consumer_holder=[None])
+        await asyncio.to_thread(TurnRunner(SimpleNamespace(), ctx)._approval_notify_sync, approval)
+    asyncio.run(run())
+
+
+def test_a_schedule_approval_shows_the_job_not_a_command(monkeypatch):
+    """kind=schedule: the card and the /approve text ask about the job, with the job description as the
+    body; the synthetic ``<cronjob_manage>`` label is never shown and nothing is "flagged"."""
+    monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+    card = _Buttons()
+    _notify(dict(_SCHEDULE), card)
+    (prompt,) = card.prompts
+    sent = []
+
+    class _Failing(_Buttons):  # the card send fails, so the runner sends the text prompt instead
+        async def _send_exec_approval_prompt(self, prompt):
+            return SendResult(success=False, error="down")
+
+        async def send(self, chat_id, content, **k):
+            sent.append(content)
+            return SendResult(success=True)
+    _notify(dict(_SCHEDULE), _Failing())
+    for text in (prompt.text, sent[0]):
+        assert "Hermes wants to schedule a job" in text and _SCHEDULE["description"] in text
+        assert "<cronjob_manage>" not in text and "```" not in text and "Why it was flagged" not in text
+        assert "the job will NOT be created" in text
+    assert [(label, choice) for label, choice, _ in prompt.actions] == [
+        ("Allow", "once"), ("Allow for this chat", "session"), ("Always allow new jobs", "always"), ("Deny", "deny")]
+    assert "Reply `/approve` to create it" in sent[0]
+
+
+def test_a_command_approval_renders_the_same_with_an_unknown_kind():
+    """An approval without ``kind`` (every command) or with a kind this build does not know renders the
+    command card; the schedule wording never leaks into it."""
+    cards = []
+    for kind in (None, "telepathy"):
+        adapter = _Buttons()
+        approval = {"command": "rm -rf /tmp/x", "description": "recursive delete", "request_id": "r1"}
+        if kind:
+            approval["kind"] = kind
+        _notify(approval, adapter)
+        (prompt,) = adapter.prompts
+        cards.append((prompt.text, prompt.actions))
+    assert cards[0] == cards[1]
+    assert "```\nrm -rf /tmp/x\n```" in cards[0][0] and "schedule" not in cards[0][0]
+    assert [label for label, _, _ in cards[0][1]] == ["Allow Once", "Allow Session", "Always Allow", "Deny"]

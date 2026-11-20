@@ -69,6 +69,15 @@ describe('OSC 7501 program status', () => {
     })
   })
 
+  it('a confirm dialog such as the billing wall blocks with its title', () => {
+    patchOverlayState({ confirm: { onConfirm: () => {}, title: 'Out of credits' } })
+    expect(deriveProgramStatus(false, getOverlayState(), 'error')).toEqual({
+      kind: 'question',
+      msg: 'Out of credits',
+      state: 'blocked'
+    })
+  })
+
   it('quit clears the record only after one was written, and only once', () => {
     const out: string[] = []
     const write = (seq: string) => void out.push(seq)

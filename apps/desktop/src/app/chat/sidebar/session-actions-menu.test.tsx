@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { treeTabCloseTargets } from '@/components/pane-shell/tree/store'
 import { refreshProjectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -16,6 +17,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
   closeOtherTreeTabs: vi.fn(),
   closeTreeTabsToRight: vi.fn(),
+  reloadTreePane: vi.fn(),
   treeTabCloseTargets: vi.fn(() => null)
 }))
 vi.mock('@/hermes', () => ({
@@ -69,7 +71,12 @@ vi.mock('@/i18n', () => ({
           untitledPlaceholder: 'Untitled'
         }
       },
-      zones: { closeAll: 'Close all', closeOthers: 'Close others', closeToRight: 'Close to the right' }
+      zones: {
+        closeAll: 'Close all',
+        closeOthers: 'Close others',
+        closeToRight: 'Close to the right',
+        reload: 'Reload'
+      }
     }
   })
 }))
@@ -395,5 +402,47 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  // Every open tab mounts this menu and re-renders on each session switch, and
+  // the close counts scan the tab's whole group. Resolving them in the render
+  // body made a switch cost grow with the square of the open tabs (#157767), so
+  // they are read only when a tab's menu opens.
+  it('resolves the tab close counts when the menu opens, not while tabs render', async () => {
+    const closeTargets = vi.mocked(treeTabCloseTargets)
+    closeTargets.mockClear()
+
+    render(
+      <>
+        {['a', 'b', 'c'].map(id => (
+          <SessionContextMenu
+            key={id}
+            sessionId={id}
+            surface="tab"
+            tabPaneId={`session-tile:${id}`}
+            title={`Session ${id}`}
+          >
+            <button aria-label={`Tab ${id}`} type="button">
+              {id}
+            </button>
+          </SessionContextMenu>
+        ))}
+      </>
+    )
+
+    expect(closeTargets).not.toHaveBeenCalled()
+
+    closeTargets.mockReturnValue({ all: 3, others: 2, right: 0 })
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Tab b' }))
+
+    const closeOthers = await screen.findByRole('menuitem', { name: 'Close others' })
+
+    expect(closeTargets).toHaveBeenCalledWith('session-tile:b')
+    expect(closeTargets).not.toHaveBeenCalledWith('session-tile:a')
+    expect(closeTargets).not.toHaveBeenCalledWith('session-tile:c')
+    expect(closeOthers.hasAttribute('data-disabled')).toBe(false)
+    expect(screen.getByRole('menuitem', { name: 'Close to the right' }).hasAttribute('data-disabled')).toBe(true)
+
+    closeTargets.mockReset()
   })
 })

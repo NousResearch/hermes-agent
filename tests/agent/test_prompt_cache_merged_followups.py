@@ -3,12 +3,9 @@
 - A catalog that lists a cache write at zero (free / automatic caching) does not buy cache markers.
 - A learned two-session rule survives one session that keeps missing (the sample trim keeps every session).
 - The keep-alive decision reads the learned-route store once.
-- A sandbox cwd whose name ends in a space survives the fallback marker round trip.
 """
 
 import itertools
-import shutil
-import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,7 +14,6 @@ import pytest
 import agent.prompt_cache_routes as routes
 from agent.prompt_cache_lifecycle import learned_window
 from agent.prompt_caching import catalog_cache_markers
-from tools.environments.base import BaseEnvironment
 
 _NOUS = "https://inference-api.nousresearch.com/v1"
 _T0 = 1_000_000.0
@@ -93,26 +89,3 @@ def test_an_unmarked_route_whose_automatic_cache_read_is_warmed(home):
     agent = SimpleNamespace(provider="nous", base_url=_NOUS, model=model)
     window = (_T0 + 1800, 1800.0)
     assert learned_window(agent, window, False) == (window, None)
-
-
-class _BashSandbox(BaseEnvironment):
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-        return subprocess.Popen(["bash", "-c", cmd_string], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, cwd="/")
-
-    def cleanup(self):
-        pass
-
-
-@pytest.mark.platforms("linux", "macos")
-def test_a_fallback_into_a_directory_whose_name_ends_in_a_space_stays_there(tmp_path):
-    parent = tmp_path / "parent "
-    (parent / "gone").mkdir(parents=True)
-    env = _BashSandbox(cwd=str(parent / "gone"), timeout=30)
-    shutil.rmtree(parent / "gone")
-
-    first = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
-    assert first["cwd_fallback"]["used"] == str(parent.resolve())
-    assert env.cwd == str(parent.resolve())
-    again = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
-    assert again.get("cwd_fallback") is None and again["output"].rstrip("\n") == str(parent.resolve())

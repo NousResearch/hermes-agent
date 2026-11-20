@@ -72,6 +72,25 @@ def test_image_26_sends_only_keys_its_schema_declares(image_tool, monkeypatch, v
     assert payload["quality"] == "medium" and payload["image_size"] == "portrait_4_3"
 
 
+@pytest.mark.parametrize("path", ["", "/flash"])
+def test_mai_image_27_routes_edits_and_sends_only_schema_keys(image_tool, monkeypatch, path):
+    """MAI Image 2.7 edits cap at 5 references and drop image_size so the output follows the source."""
+    model = f"microsoft/mai-image-2.7{path}/text-to-image"
+    monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    selected, meta = image_tool._resolve_fal_model()
+    assert selected == model
+    refs = [f"https://example.com/{i}.png" for i in range(7)]
+    t2i_keys = {"prompt", "image_size", "resolution", "output_format", "background", "sync_mode"}
+    for sources, endpoint in (([], model), (refs, f"microsoft/mai-image-2.7{path}/edit")):
+        actual, payload = image_tool._prepare_fal_request(selected, meta, "a cup", "landscape", 42, {}, sources)
+        assert actual == endpoint
+        assert set(payload) <= t2i_keys | {"image_urls"} and "seed" not in payload
+        assert payload["resolution"] == "1K"
+        assert payload.get("image_urls", []) == sources[:5]
+        assert ("image_size" in payload) == (not sources)
+
+
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 

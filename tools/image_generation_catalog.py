@@ -206,6 +206,23 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
             ("sunburst", "Slower", "Latest OpenAI image model, precision editing and consistency"),
         )
     },
+    # MAI Image 2.7 (Microsoft AI, Nov 14): token-billed (precision $34 / Flash $10 per 1M output
+    # image tokens, ~1,024 tokens per 1K image). 1K is the vendor default and cheapest tier. Edits
+    # take up to 5 references and omit image_size so the output follows the source.
+    **{
+        f"microsoft/mai-image-2.7{path}/text-to-image": _model(
+            f"MAI Image 2.7{label}", speed, strengths, price,
+            defaults={"resolution": "1K", "output_format": "png"},
+            supports={"prompt", "image_size", "resolution", "output_format", "background", "sync_mode"},
+            edit_endpoint=f"microsoft/mai-image-2.7{path}/edit",
+            edit_supports={"prompt", "image_urls", "resolution", "output_format", "background", "sync_mode"},
+            max_reference_images=5,
+        )
+        for path, label, speed, strengths, price in (
+            ("", "", "~20s", "Microsoft AI. Photoreal, precise instruction edits, transparent PNG", "~$0.035/image (1K)"),
+            ("/flash", " Flash", "~15s", "Microsoft AI. Cheaper, faster MAI tier, transparent PNG", "~$0.01/image (1K)"),
+        )
+    },
     "fal-ai/ideogram/v3": _model(
         "Ideogram V3", "~5s", "Best typography", "$0.03-0.09/image",
         defaults={"rendering_speed": "BALANCED", "expand_prompt": True, "style": "AUTO"},

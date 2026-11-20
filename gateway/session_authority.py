@@ -748,7 +748,8 @@ class SessionAuthority:
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
-                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch',
+                'client'}
                 or not isinstance(request.payload['text'], str)):
             raise AuthorityRefusal('invalid_params')
         from gateway.session_ingress_media import admit_attachments

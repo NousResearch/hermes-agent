@@ -194,6 +194,14 @@ class AuthorityConnection:
         every profile this process serves; any other grant is bound to its own profile."""
         return self._identity.get('profile_scope') == 'host'
 
+    @property
+    def client(self):
+        """The label this connection announced (``client.capabilities``), or ``None``. A sibling
+        profile's connection shares the transport, so it carries the same label."""
+        from gateway.session_client import client_problem
+        value = getattr(self.transport, 'client_identity', None)
+        return value if value is not None and client_problem(value) is None else None
+
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
         home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
@@ -903,6 +911,9 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
+        if self.client is not None:
+            # The owner stamps the turn with the connection's announced label; the wire cannot.
+            payload['client'] = self.client
         return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):

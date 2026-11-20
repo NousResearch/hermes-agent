@@ -566,9 +566,11 @@ exists but cannot be read (move it aside after checking the home by hand; the ba
 `backend_migration/`). While a migration is `done`, `--apply` reports nothing to migrate and never
 replaces its backups; `--restore` undoes it. `--restore` refuses (exit 3, the gateway keeps serving) when
 `config.yaml` or `.env` changed after the migration wrote it or a backup cannot be read, since putting the backups
-back would lose those edits; it checks again after you confirm, and prints the steps to restore by hand. A rollback,
-`--restore` or the rollback of an interrupted run writes a file back only while it is exactly as the migration wrote
-it: one edited since (or whose backup is gone) is left as it is with your edits, the old backend stays down and the
+back would lose those edits; it checks again after you confirm, and prints the steps to restore by hand. The apply writes
+`config.yaml` and `.env` only over the exact bytes it backed up: a file edited in between (the Webapp build can run
+then) stops the move with the edit kept (exit 3 when nothing was written yet, otherwise the `.env` it wrote is put
+back, exit 4). A rollback, `--restore` or the rollback of an interrupted run writes a file back only if it still
+holds the exact bytes the migration wrote, checked right before the write: one edited since (or whose backup is gone) is left as it is with your edits, the old backend stays down and the
 run ends with manual steps (exit 5). When the rollback cannot prove the gateway is off the old
 address, the old backend stays down and the run ends with manual steps (exit 5). A `--detach` run never
 starts a backend you started by hand again (its transient unit would stop it when the run ends): `--restore

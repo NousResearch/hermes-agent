@@ -69,13 +69,13 @@ class FakeHost(SystemHost):
         if name in self.fail_at:
             raise self.fail_at[name]
 
-    def set_config(self, values):
+    def set_config(self, values, **kw):
         self._change("set_config")
-        super().set_config(values)
+        return super().set_config(values, **kw)
 
-    def set_env(self, values):
+    def set_env(self, values, **kw):
         self._change("set_env")
-        super().set_env(values)
+        return super().set_env(values, **kw)
 
     # --- discovery
     def backends(self):

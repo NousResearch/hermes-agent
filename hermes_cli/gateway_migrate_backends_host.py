@@ -14,11 +14,13 @@ Process identity comes from Hermes' own detection (``gateway_migrate_backends.co
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
 import shlex
+import stat
 import subprocess
 import time
 import urllib.error
@@ -204,6 +206,43 @@ def _with_profile(argv: list[str], home: Path) -> list[str]:
         if i and word in ("dashboard", "serve"):
             return [*argv[:i], *extra, *argv[i:]]
     return argv
+
+
+class FileChangedSinceBackup(RuntimeError):
+    """``config.yaml`` / ``.env`` no longer holds the bytes the migration backed up."""
+
+
+@contextlib.contextmanager
+def _staged_copy(path: Path, expect: Optional[str]):
+    """A private (0600) copy of *path* beside it, yielded only when its bytes hash to *expect* (None: the
+    file must not exist). Removed again unless :func:`_publish` renamed it over *path*."""
+    from hermes_cli.gateway_migrate_backends_apply import write_private_file
+    staged = path.with_name(f".{path.name}.{os.getpid()}.migrate")
+    try:
+        data: Optional[bytes] = path.read_bytes()
+    except FileNotFoundError:
+        data = None
+    if (hashlib.sha256(data).hexdigest() if data is not None else None) != expect:
+        raise FileChangedSinceBackup(f"{path} changed while the migration was running (after its backup was "
+                                     f"taken), so the migration did not write it and your edit was kept")
+    staged.unlink(missing_ok=True)
+    if data is not None:
+        write_private_file(staged, data)
+        with contextlib.suppress(OSError):
+            os.chmod(staged, stat.S_IMODE(os.stat(path).st_mode))
+    try:
+        yield staged
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _publish(staged: Path, path: Path) -> bytes:
+    """Rename *staged* over *path*; returns the bytes published (read from the private copy before)."""
+    from utils.files import fsync_directory
+    data = staged.read_bytes()
+    os.replace(staged, path)
+    fsync_directory(path.parent)
+    return data
 
 
 class SystemHost:
@@ -457,27 +496,49 @@ class SystemHost:
         )
         merged = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), self.read_config())
         return _merge_managed_overlay(_expand_env_vars(_canonicalize_config(merged)))[0]
-    def set_config(self, values: dict) -> None:
+    def set_config(self, values: dict, *, expect: object = False) -> Optional[bytes]:
+        """Set *values* in ``config.yaml``; returns the exact bytes published (None on a non-file config
+        backend, which keeps its own write path). With *expect* (the sha256 of the backup the migration took,
+        None: there was no file) the file is copied to a private file beside it and compared with it first,
+        the change is made on that copy, and the copy is renamed over ``config.yaml``: an edit made since
+        the backup is never folded in (``FileChangedSinceBackup``)."""
         from hermes_cli.config import _set_nested, _write_user_config, require_readable_config_before_write
+        from hermes_cli.config_backend import _FILE_BACKEND, drop_other_access, get_config_backend
         path = self.home / "config.yaml"
-        cfg = require_readable_config_before_write(path)
-        for key, value in values.items():
-            _set_nested(cfg, key, value)
-        _write_user_config(path, cfg)
+        if expect is False or get_config_backend() is not _FILE_BACKEND:
+            cfg = require_readable_config_before_write(path)
+            for key, value in values.items():
+                _set_nested(cfg, key, value)
+            _write_user_config(path, cfg)
+            return None
+        with _staged_copy(path, expect) as staged:
+            cfg = require_readable_config_before_write(staged)
+            for key, value in values.items():
+                _set_nested(cfg, key, value)
+            _write_user_config(staged, cfg)  # the writer keeps the copy's mode: the file's own (below)
+            drop_other_access(staged)
+            return _publish(staged, path)
 
-    def set_env(self, values: dict[str, str]) -> None:
-        """Write sign-in keys into ``.env``, which is private (0600) before the first secret byte lands:
-        an existing file keeps its mode across ``save_env_value``, so it is tightened first, and a new
-        one is created 0600 by it."""
-        from hermes_cli.config import require_env_writable, save_env_value
+    def set_env(self, values: dict[str, str], *, expect: object = False) -> Optional[bytes]:
+        """Write sign-in keys into ``.env``, which is private (0600) before the first secret byte lands;
+        returns the exact bytes published. With *expect* it works on a private copy checked against the
+        backup first, as :meth:`set_config` does."""
+        from hermes_cli.config import _env_write_lock, require_env_writable, save_env_value
         for key in values:
             require_env_writable(key, "set")
         env = self.home / ".env"
-        if env.exists():
+        if expect is False:
+            if env.exists():
+                os.chmod(env, 0o600)
+            for key, value in values.items():
+                save_env_value(key, value)
             os.chmod(env, 0o600)
-        for key, value in values.items():
-            save_env_value(key, value)
-        os.chmod(env, 0o600)
+            return None
+        with _env_write_lock(env), _staged_copy(env, expect) as staged:  # Hermes' own .env writers wait
+            for key, value in values.items():
+                save_env_value(key, value, env_path=staged)
+            os.chmod(staged, 0o600)
+            return _publish(staged, env)
 
     def webapp_settings(self):
         """The gateway's own ``webapp_settings`` judged on :meth:`effective_config`."""

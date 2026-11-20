@@ -1296,3 +1296,75 @@
 :root[data-shell='portal'] .discovery-tray-card-clear {
   flex: none;
 }
+
+/* ── Desktop update, in the redesign (E2 18677:29477, E3 18677:29591) ─────────────────────────── */
+
+/* The updates dialog takes the conversation column while it pitches or installs an update. */
+:root[data-shell='portal'] [data-slot='dialog-content'].updates-portal-dialog {
+  inline-size: min(var(--portal-column-conversation), 100vw - 2rem);
+  max-inline-size: none;
+}
+
+/* The welcome's column inside the dialog: no stage offset; the card sits 16 in from the dialog's
+   edge so its corners show, the text 16 further. */
+:root[data-shell='portal'] .discovery-welcome.updates-portal {
+  --discovery-welcome-inset: 1rem;
+  inline-size: 100%;
+  padding: 2rem 1rem;
+}
+
+:root[data-shell='portal']
+  .updates-portal
+  > :is(.discovery-welcome-heading, .updates-portal-link, .updates-portal-progress) {
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+:root[data-shell='portal'] .updates-portal-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-block-size: 4rem;
+  padding-block: 0.75rem;
+}
+
+:root[data-shell='portal'] .updates-portal-row-text {
+  display: -webkit-box;
+  flex: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+:root[data-shell='portal'] .updates-portal-row .discovery-welcome-place-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Done: the green check; under way: the accent's turning loader (E3). */
+:root[data-shell='portal'] .updates-portal-state {
+  flex: none;
+  color: var(--portal-status-online);
+  font-size: var(--portal-welcome-glyph);
+}
+
+:root[data-shell='portal'] .updates-portal-row[data-current] .updates-portal-state {
+  color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .updates-portal-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  text-decoration: none;
+}
+
+:root[data-shell='portal'] .updates-portal-link:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .updates-portal-link:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}

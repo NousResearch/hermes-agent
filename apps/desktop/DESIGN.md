@@ -1270,6 +1270,13 @@ the next new chat while nothing is running, on the next visit, or from "Refresh 
 (`store/new-version.ts`, `lib/deployed-build.ts`). Later puts the chat's notice away for the page;
 the tray keeps it.
 
+The desktop updater's dialog (`updates-overlay.tsx`, shared with classic) takes the welcome's
+language in the redesign only while it pitches or installs an update (E2 18677:29477, E3
+18677:29591, `updates-portal-views.tsx`): the column's width, the title and line, the update's real
+notes (or changelog) as numbered rows, Update now and Maybe later, the release notes link; while
+installing, each updater stage reached as a row, done or under way, over the real progress. Every
+other view of the dialog is classic's.
+
 The **first-time splash** ("Welcome to Hermes", Figma "Prod - Desktop" › Onboarding 18695:17147) is
 the second splash, for a new install (the verdict the rename splash records as `not_applicable`). It
 is not a card on the stage but the stage itself (its veil over the art, edge to edge), and while it is

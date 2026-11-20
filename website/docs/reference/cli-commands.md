@@ -1731,6 +1731,7 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
+| `config <name>` (aliases: `configure`, `settings`) | Interactive editor for the settings a plugin declares: every `config_schema` key (saved to `plugins.entries.<id>.settings`, checked against the schema) and every `requires_env` variable (saved to the profile's `.env`). Secret values are typed masked and never displayed or written to `config.yaml`. Without a terminal it prints each setting, its current value and where it is stored. `install` run from a terminal ends by listing the new plugin's settings and asking `Edit these now?` (default No; default Yes, with the missing ones named, when a `required` setting is still empty); scripts and `HERMES_NONINTERACTIVE` get a one-line pointer instead. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
 | `idle-tasks [name] [--pause TASK \| --resume TASK]` | List the idle tasks plugins registered with `ctx.register_idle_task` in this profile (status, run count, last and next run, last summary or error), or pause/resume one task of the named plugin. |
 | `doctor [path-or-id] [--ci]` | Validate a native plugin through the real manifest parser, loader, and registration path. `--ci` exits 1 on errors. |

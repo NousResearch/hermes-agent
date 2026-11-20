@@ -1,4 +1,5 @@
-"""Plugin-declared settings fields for the Desktop/TUI Plugins hub (#46600, #87934).
+"""Plugin-declared settings fields for the Desktop/TUI Plugins hub and ``hermes plugins config``
+(#46600, #87934).
 
 A ``plugin.yaml`` ``config_schema`` describes the keys under ``plugins.entries.<id>.settings``.
 This module turns that schema into renderable form fields (type, current value, choices) and
@@ -113,7 +114,7 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
         }
         if kind == "secret":
             env = secret_env_name(plugin_id, key, spec)
-            field.update({"env": env, "has_value": get_env_value(env) is not None})
+            field.update({"env": env, "has_value": bool(get_env_value(env))})
         else:
             choices = spec.get("choices", spec.get("enum"))
             if kind == "enum":

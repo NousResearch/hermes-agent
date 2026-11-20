@@ -11,7 +11,7 @@
     "sha": "2c07ad28539231defd46bad8d2e6b868a5f909d3",
     "path": "kit/kit.ts",
     "sha256": "f9f2a6623802f7ae6665a86ef87601fd87dcf93a885b8809b339946a27b96c08",
-    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: same fixed poryscript 3.6.1 download and sha256 check, the delta only adds new subcommands and help text)"
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798; 0.3.0 re-pin, PR #157487: the poryscript URL, sha256 check and kit/.cache destination are unchanged; the kit.ts delta adds the pixel, codes and plugin subcommands with their help text, a codes-table header written into the game folder by kit build and a kit note input check; the help and kit status text for the in-game agent link now say 0.3.0 took it out of the player, and kit status prints that only when the built game has the mailbox and no longer reads the hermes_* settings)"
   },
   {
     "repo": "https://github.com/Pukujan/swarm-studio",

@@ -1974,6 +1974,9 @@ export {
 /** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
  *  an unparseable colour, never a fake 0). */
 export { contrastRatio } from '@hermes/shared/color'
+/** THE profile-id grammar (`^[a-z0-9][a-z0-9_-]{0,63}$`, Python's PROFILE_ID_RE), so a plugin
+ *  that names a profile validates it exactly as the backend will. */
+export { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

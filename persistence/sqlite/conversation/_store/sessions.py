@@ -327,13 +327,13 @@ def _own_profile_name(holder: StoreHolder) -> Optional[str]:
     ``<root>/profiles/<name>/state.db`` → name): a gateway serving a NON-launch profile opens that
     profile's store. None outside the profile tree — NULL beats a fabricated owner."""
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import PROFILE_ID_RE, get_default_hermes_root
         root = get_default_hermes_root().resolve()
         parent = Path(holder.db_path).resolve().parent
         if parent == root:
             return "default"
         is_profile_dir = parent.parent == root / "profiles"
-        if is_profile_dir and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parent.name):
+        if is_profile_dir and PROFILE_ID_RE.fullmatch(parent.name):
             return parent.name
     except Exception:  # health: allow BLE001 -- an underivable profile is None
         logger.debug("own-profile derivation failed", exc_info=True)

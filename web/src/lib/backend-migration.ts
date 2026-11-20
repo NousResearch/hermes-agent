@@ -195,12 +195,16 @@ export function impactLines(plan: BackendMigrationPlan): string[] {
 
 /** Blocker text from the engine, with what to do. The engine's sentences already end in the remedy
  *  (`Wait…`, `Re-run with…`); flags are translated into what this card offers. */
-export function blockerAdvice(blocker: string): { text: string; canForce: boolean } {
+export function blockerAdvice(blocker: string, byHand = false): { text: string; canForce: boolean } {
   const canForce = blocker.includes("--force-interrupt");
+  // A by-hand plan cannot be moved from the card: forcing it only shows its steps.
+  const running = byHand ? ". Or show the steps anyway (following them cuts those replies off)."
+    : ". Or move anyway (those replies are cut off).";
+  const unknown = byHand ? ". Or show the steps anyway (following them cuts off any reply being written)."
+    : ". Or move anyway (any reply being written is cut off).";
   const text = blocker
-    .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\.?/, ". Or move anyway (those replies are cut off).")
-    .replace(/,? ?or re-run with --force-interrupt \(any running turn is interrupted\)\.?/,
-      ". Or move anyway (any reply being written is cut off).")
+    .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\.?/, running)
+    .replace(/,? ?or re-run with --force-interrupt \(any running turn is interrupted\)\.?/, unknown)
     .replace(/Re-run with --detach\.?/, "");
   return { text: text.trim(), canForce };
 }
@@ -399,7 +403,9 @@ async function readStatus(): Promise<StatusRead> {
 }
 
 export const backendMigrationApi = {
-  plan: () => call<BackendMigrationPlanResponse>("GET", "/plan"),
+  /** `force_interrupt`: the read-only plan past a turn-activity blocker (a by-hand plan then lists its steps). */
+  plan: (flags?: { force_interrupt?: boolean }) =>
+    call<BackendMigrationPlanResponse>("GET", flags?.force_interrupt ? "/plan?force_interrupt=true" : "/plan"),
   apply: (flags: ApplyFlags) => call<Started | Refusal>("POST", "/apply", flags),
   status: readStatus,
 };

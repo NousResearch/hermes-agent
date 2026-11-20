@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ComposerStatusStack } from '@/app/chat/composer/status-stack'
+import { CreateAccountCard } from '@/app/chat/sidebar/portal/create-account-card'
 import { UsageStatsCard } from '@/app/chat/sidebar/portal/usage-stats-card'
 import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { en } from '@/i18n/en'
@@ -14,8 +15,10 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $sharedMetricsConsent, $sharedMetricsDetailsOpen, type SharedMetricsConsent } from '@/store/shared-metrics'
 import { $shellChoice } from '@/store/shell-variant'
 import { $usageStatsOfferPlace } from '@/store/usage-stats-offer'
+import { $visitorAccess } from '@/store/visitor-access'
 
 import { discoveryCopy } from './discovery-copy'
+import { firstTimeCopy } from './first-time-copy'
 import { NotificationBell } from './notification-tray'
 import { usageStatsCopy } from './usage-stats-copy'
 
@@ -62,6 +65,7 @@ function renderApp() {
         <div data-slot="new-session-split">
           <button type="button">New chat</button>
         </div>
+        <CreateAccountCard />
         <UsageStatsCard />
       </div>
       <ComposerStatusStack queue={null} sessionId="chat" />
@@ -98,6 +102,8 @@ afterEach(() => {
   $desktopOnboarding.set(initialOnboarding)
   $sharedMetricsConsent.set(null)
   $sharedMetricsDetailsOpen.set(false)
+  $visitorAccess.set({ kind: 'open' })
+  vi.unstubAllGlobals()
 })
 
 describe('usage-stats offer placement', () => {
@@ -126,6 +132,29 @@ describe('usage-stats offer placement', () => {
   })
 })
 
+describe('the sidebar’s foot while sign up is required', () => {
+  const account = firstTimeCopy('en').account
+
+  it('offers Create an Account first, and the usage-stats question only once sign up is behind them', async () => {
+    $visitorAccess.set({ kind: 'sign_up_required', signUpUrl: 'https://portal.example/sign-up' })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
+    const first = renderApp()
+
+    const offer = await screen.findByRole('button', { name: name => name.startsWith(account.title) })
+    await waitFor(() => expect($sharedMetricsConsent.get()?.decided).toBe(false))
+    expect(card()).toBeNull()
+    fireEvent.click(offer)
+    expect(assign).toHaveBeenCalledTimes(1)
+    first.unmount()
+
+    $visitorAccess.set({ kind: 'open' })
+    renderApp()
+    await waitFor(() => expect(card()).not.toBeNull())
+    expect(screen.queryByRole('button', { name: name => name.startsWith(account.title) })).toBeNull()
+  })
+})
+
 describe('the card’s ×', () => {
   it('moves the question to the tray unanswered, and that survives a reload', async () => {
     const first = renderApp()
@@ -135,7 +164,9 @@ describe('the card’s ×', () => {
 
     expect(card()).toBeNull()
     expect(writes()).toEqual([])
-    expect(JSON.parse(window.localStorage.getItem(GUIDANCE_LEDGER_KEY) ?? '{}')).toEqual({ usageStatsOffer: 'deferred' })
+    expect(JSON.parse(window.localStorage.getItem(GUIDANCE_LEDGER_KEY) ?? '{}')).toEqual({
+      usageStatsOffer: 'deferred'
+    })
 
     // A reload: the same stored ledger, a fresh read of the still-open question.
     first.unmount()

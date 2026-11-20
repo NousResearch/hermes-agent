@@ -11,6 +11,7 @@ import { X } from '@/lib/icons'
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import type { SharedMetricsChoice } from '@/store/shared-metrics'
 import { $usageStatsOfferPlace, deferUsageStatsOffer, openUsageStatsDetails } from '@/store/usage-stats-offer'
+import { $signUpRequired } from '@/store/visitor-access'
 
 /** Where focus goes when the card leaves from under it: the sidebar's New chat, the panel's first
  *  control. Read before the card goes; null when focus was elsewhere (nothing to move). */
@@ -30,17 +31,19 @@ function landingAfter(card: HTMLElement | null): HTMLElement | null {
  * The usage-stats offer at the foot of the chat sidebar (Figma 1335:32952, 1370:34567): the redesign's
  * place for classic's composer strip, so it shows wherever the sidebar does and nowhere else. Two
  * answers, neither focused; Details opens the short explainer; × puts it in the notifications tray
- * unanswered. One offer at a time: it waits while the free-tier notice is up, as the strip does.
+ * unanswered. One offer at a time: it waits while the free-tier notice is up, as the strip does, and
+ * while the sidebar's foot asks the visitor to sign up (create-account-card.tsx).
  */
 export function UsageStatsCard() {
   const copy = useUsageStatsCopy().card
   const place = useStore($usageStatsOfferPlace)
   const freeTierNotice = freeTierStripPending(useStore($freeTierStatus), useStore($freeTierRoute))
+  const signUpRequired = useStore($signUpRequired)
   const { answer, saving } = useUsageStatsAnswer()
   const titleId = useId()
   const card = useRef<HTMLElement>(null)
 
-  if (place !== 'card' || freeTierNotice) {
+  if (place !== 'card' || freeTierNotice || signUpRequired) {
     return null
   }
 
@@ -79,12 +82,23 @@ export function UsageStatsCard() {
         >
           {copy.share}
         </button>
-        <button className="portal-usage-offer-action" disabled={saving} onClick={() => void choose('off')} type="button">
+        <button
+          className="portal-usage-offer-action"
+          disabled={saving}
+          onClick={() => void choose('off')}
+          type="button"
+        >
           {copy.decline}
         </button>
       </div>
       <Tip label={copy.later}>
-        <Button aria-label={copy.later} className="portal-usage-offer-close" onClick={putAway} size="icon-xs" variant="ghost">
+        <Button
+          aria-label={copy.later}
+          className="portal-usage-offer-close"
+          onClick={putAway}
+          size="icon-xs"
+          variant="ghost"
+        >
           <X />
         </Button>
       </Tip>

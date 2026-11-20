@@ -10,7 +10,10 @@ import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
+import { $signUpRequired } from '@/store/visitor-access'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
+
+import { ComposerSignUpLink } from '../../discovery/sign-up-link'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
@@ -252,8 +255,11 @@ interface ComposerModelRowProps {
   redesigned: boolean
 }
 
-/** The redesigned composer puts model selection above the editor, not in its footer. */
+/** The redesigned composer puts model selection above the editor, not in its footer. A visitor who
+ *  must sign up has no model to pick yet: the row offers sign up instead. */
 export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelRowProps) {
+  const signUpRequired = useStore($signUpRequired)
+
   if (!redesigned) {
     return null
   }
@@ -262,9 +268,15 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
     <div className="flex min-w-0 flex-wrap items-center gap-1" data-slot="composer-model-row">
       <Codicon aria-hidden className="shrink-0 text-(--ui-text-tertiary)" name="comment" size="1.125rem" />
       <span className="min-w-0 flex-1" />
-      <ModelPill disabled={disabled} model={model} />
-      <ReasoningPill disabled={disabled} model={model} />
-      <Codicon aria-hidden className="shrink-0 text-(--ui-text-secondary)" name="zap" size="0.875rem" />
+      {signUpRequired ? (
+        <ComposerSignUpLink />
+      ) : (
+        <>
+          <ModelPill disabled={disabled} model={model} />
+          <ReasoningPill disabled={disabled} model={model} />
+          <Codicon aria-hidden className="shrink-0 text-(--ui-text-secondary)" name="zap" size="0.875rem" />
+        </>
+      )}
     </div>
   )
 }

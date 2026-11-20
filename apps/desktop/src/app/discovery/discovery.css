@@ -53,15 +53,6 @@
   --discovery-detail-indent: calc(0.875rem + var(--discovery-classic-column) + 0.875rem + 1.5rem);
 }
 
-/* The ×, in the corner inside the brackets. */
-:root[data-shell='portal'] .discovery-splash-close {
-  position: absolute;
-  z-index: 1;
-  inset-block-start: 1.75rem;
-  inset-inline-end: 1.75rem;
-  color: var(--portal-text-secondary);
-}
-
 /* Programmatic focus lands on the surface so Tab starts inside it; it is not a control, so it draws no
    ring (Chromium counts a focus moved on load as keyboard focus and would ring the whole stage). */
 :root[data-shell='portal'] .discovery-splash:focus {
@@ -228,22 +219,11 @@
   margin-block-start: 1.5rem;
 }
 
-:root[data-shell='portal'] .discovery-splash-ready {
-  margin: 0;
-  font-size: var(--portal-type-section-size);
-  font-weight: 600;
-}
-
 /* The splash's way in is the one brand gesture on it (the app's primary actions, as in pages and
    dialogs), so it wears the accent. */
 :root[data-shell='portal'] :is(.discovery-splash-footer, .discovery-held-reply) [data-variant='default'] {
   background-color: var(--portal-surface-brand);
   color: var(--portal-text-on-brand);
-}
-
-/* With the ready line above it, the footnote sits close under that line. */
-:root[data-shell='portal'] .discovery-splash-ready + .discovery-splash-footnote {
-  margin-block-start: -0.75rem;
 }
 
 :root[data-shell='portal'] .discovery-splash-footnote {
@@ -279,94 +259,364 @@
   }
 }
 
-/* ── First-time splash (1A 477:4004) ─────────────────────────────────────────────────────────── */
+/* ── First-time splash (Onboarding 18695:17147, 18695:18059) ───────────────────────────────── */
 
-/* A place's name, then its one line beside it; the line gives way first on a narrow stage. */
-:root[data-shell='portal'] .discovery-first-name {
+/* It is the stage itself, not a card on it: the stage's own veil over the art, edge to edge, so the
+   chat sidebar can come back beside it (18695:17294) with nothing moving but the stage's width. */
+:root[data-shell='portal'] .discovery-splash-layer:has(> [data-splash='first-time']) {
+  padding: 0;
+}
+
+:root[data-shell='portal'] .discovery-splash[data-splash='first-time'] {
+  /* The text's inset in the 640 column (Figma's content inset, 32). */
+  --discovery-welcome-inset: 2rem;
+  border: 0;
+  border-radius: 0;
+  background: var(--artwork-stage-noise), linear-gradient(var(--portal-surface-stage-veil)), var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: normal, normal, var(--artwork-blend);
+}
+
+/* The 640 conversation column, 85px under the stage's top (State content 18695:17157), 24 between
+   its groups. */
+:root[data-shell='portal'] .discovery-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  /* How far the stage reaches past the column on each side: the artwork row runs into it. */
+  --discovery-bleed: calc((100cqi - min(var(--portal-column-conversation), 100cqi)) / 2);
+  inline-size: min(var(--portal-column-conversation), 100%);
+  margin-inline: auto;
+  /* token-exempt: Figma's 85px from the stage's top */
+  padding-block: 5.3125rem 2.5rem;
+}
+
+/* The column is as tall as its content and scrolls with the splash; nothing squeezes to fit. */
+:root[data-shell='portal'] .discovery-welcome {
+  align-self: flex-start;
+}
+
+:root[data-shell='portal'] .discovery-welcome > * {
+  flex-shrink: 0;
+}
+
+:root[data-shell='portal']
+  .discovery-welcome
+  > :is(
+    .discovery-welcome-eyebrow,
+    .discovery-welcome-eyebrow-row,
+    .discovery-welcome-heading,
+    .discovery-welcome-lead,
+    .discovery-welcome-actions
+  ) {
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+/* While a row speaks, everything else steps back (18695:17294): the heading, the other rows, the
+   way on. Hover paints at once (DESIGN.md, quiet motion). */
+:root[data-shell='portal']
+  .discovery-welcome:has(.discovery-welcome-places:is(:hover, :focus-within))
+  > :not(.discovery-welcome-places),
+:root[data-shell='portal'] .discovery-welcome-places:is(:hover, :focus-within) > li:not([data-active]) {
+  opacity: var(--portal-backdrop-opacity);
+}
+
+:root[data-shell='portal'] .discovery-welcome-eyebrow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* "HERMES AGENT": Nous/Uppercase, 10/16 mono at the ladder's floor (Figma's .4 fails AA). */
+:root[data-shell='portal'] .discovery-welcome-eyebrow {
+  margin: 0;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .discovery-welcome-eyebrow-row > .discovery-welcome-eyebrow {
+  padding: 0;
+}
+
+/* Back, at the eyebrow's line so the step keeps Figma's rhythm: quiet text with its arrow. */
+:root[data-shell='portal'] .discovery-welcome-back {
+  gap: 0.25rem;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] .discovery-welcome-back:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .discovery-welcome-back-glyph:dir(rtl) {
+  transform: scaleX(-1);
+}
+
+:root[data-shell='portal'] .discovery-welcome-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* "Welcome to Hermes": Nous / Display, 40/48 Light. */
+:root[data-shell='portal'] .discovery-welcome-title {
+  margin: 0;
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-xl-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.2;
+}
+
+:root[data-shell='portal'] .discovery-welcome-title:focus {
+  outline: none;
+}
+
+/* Figma's Nous/Body (16 Medium, .8) on step 1 and Nous/Compact (13 SemiBold, .8) on step 2, both at
+   the redesign's 14px body. */
+:root[data-shell='portal'] .discovery-welcome-subtitle {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-welcome-subtitle[data-tone='compact'] {
+  font-weight: 600;
+  line-height: 1.43;
+}
+
+/* "Information" (18695:17163): one card, 15 radius, 16 / 32 padding. */
+:root[data-shell='portal'] .discovery-welcome-card {
+  margin: 0;
+  padding: 1rem var(--discovery-welcome-inset);
+  border: 0;
+  border-radius: var(--portal-radius-frame);
+  background-color: var(--portal-welcome-card);
+  list-style: none;
+}
+
+/* The rows reach 17px past the text on each side, so the speaking row's fill (610 × 65, 18695:17349)
+   frames it; the dividers keep to the text's width. */
+:root[data-shell='portal'] .discovery-welcome-places {
+  /* token-exempt: Figma's 15px between the card's edge and a row's fill */
+  padding-inline: 0.9375rem;
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li {
+  position: relative;
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li + li::before {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: calc(var(--discovery-welcome-inset) - 0.9375rem);
+  block-size: 1px;
+  background-color: var(--portal-stroke-divider);
+  content: '';
+}
+
+:root[data-shell='portal'] .discovery-welcome-place {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  inline-size: 100%;
+  min-block-size: 4rem;
+  padding-block: 0.75rem;
+  padding-inline: calc(var(--discovery-welcome-inset) - 0.9375rem);
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: none;
+  color: var(--portal-text-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
+  background-color: var(--portal-surface-selected);
+}
+
+/* The speaking row's fill covers the divider above it, as Figma's 65px fill does. */
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active]::before,
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] + li::before {
+  visibility: hidden;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+/* The glyph sits on the name's line, not the row's middle (18695:17165). */
+:root[data-shell='portal'] .discovery-welcome-glyph {
   flex: none;
+  align-self: flex-start;
+  inline-size: var(--portal-welcome-glyph);
+  block-size: var(--portal-welcome-glyph);
+  /* token-exempt: centres the 16px glyph on the name's 21px line */
+  margin-block-start: 0.15625rem;
+  font-size: var(--portal-welcome-glyph);
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-inline-size: 0;
+}
+
+/* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */
+:root[data-shell='portal'] .discovery-welcome-place-name {
+  font-size: var(--portal-type-body-size);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-welcome-place-line {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+}
+
+/* Seen (18695:17833): the band's 30px chrome tile with a checked box at the chrome ink. */
+:root[data-shell='portal'] .discovery-welcome-seen {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--portal-row-chrome);
+  block-size: var(--portal-row-chrome);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-chrome);
+  color: var(--portal-text-chrome);
+}
+
+:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-seen {
+  visibility: hidden;
+}
+
+:root[data-shell='portal'] .discovery-welcome-seen .codicon {
+  font-size: var(--portal-welcome-glyph);
+}
+
+/* "Select your style" / "Ready to get started?": Nous/Body Medium .8, then Nous/Metadata. */
+:root[data-shell='portal'] .discovery-welcome-lead {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+:root[data-shell='portal'] .discovery-welcome-lead[data-gap='loose'] {
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .discovery-welcome-lead-title {
+  margin: 0;
+  padding: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .discovery-welcome-lead-line {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+}
+
+:root[data-shell='portal'] .discovery-welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* Figma's actions: 44px, 16px across, 6px corners, Nous/Compact SemiBold at the 14px body. The
+   primary is the brand fill in the accent; the secondary the control fill with no rim (18695:18130). */
+:root[data-shell='portal'] .discovery-welcome-action[data-size] {
+  min-block-size: var(--portal-dialog-action-height);
+  padding-block: 0;
+  padding-inline: 1rem;
+  border-radius: var(--portal-radius-surface);
   font-size: var(--portal-type-body-size);
   font-weight: 600;
 }
 
-:root[data-shell='portal'] .discovery-first-line {
-  min-inline-size: 0;
-  color: var(--portal-text-secondary);
-  font-size: var(--portal-type-body-size);
+:root[data-shell='portal'] .discovery-welcome-action[data-variant='default'] {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
 }
 
-/* "Make it yours": its name, then light / dark and the colours, on the row's line; they wrap under
-   the name when the stage is narrow. */
-:root[data-shell='portal'] .discovery-splash-row-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem 1.25rem;
-  min-block-size: 2.875rem;
-  padding-block: 0.5rem;
-  padding-inline: 0.875rem 0.75rem;
+:root[data-shell='portal'] .discovery-welcome-actions .discovery-welcome-action[data-size][data-variant='secondary'] {
+  box-shadow: none;
 }
 
-:root[data-shell='portal'] .discovery-splash-row-group > .discovery-splash-row-label {
-  flex: none;
+/* While the splash is up the rail lights only the place a row points at (18695:17294, 18695:17488):
+   the open destination's selection stands down until then. */
+:root[data-shell='portal']:has(.discovery-splash[data-splash='first-time'])
+  [data-slot='global-nav']
+  .portal-chrome-button[aria-current='page'] {
+  background-color: var(--portal-rail-fill);
+  color: var(--portal-rail-ink);
 }
+
+:root[data-shell='portal']:has(.discovery-splash[data-place='chats'])
+  [data-slot='global-nav']
+  .portal-chrome-button[data-nav-spot='chat'],
+:root[data-shell='portal']:has(.discovery-splash[data-place='agents'])
+  [data-slot='global-nav']
+  .portal-chrome-button[data-nav-spot='profiles'],
+:root[data-shell='portal']:has(.discovery-splash[data-place='routines'])
+  [data-slot='global-nav']
+  .portal-chrome-button[data-nav-spot='cron'],
+:root[data-shell='portal']:has(.discovery-splash[data-place='library'])
+  [data-slot='global-nav']
+  .portal-chrome-button[data-nav-spot='artifacts'] {
+  background-color: var(--portal-rail-fill-selected);
+  color: var(--portal-rail-ink-selected);
+}
+
+/* ── Make it yours: colours and light / dark in one row (18695:18076) ── */
 
 :root[data-shell='portal'] .discovery-theme-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem 1.25rem;
+  justify-content: space-between;
+  gap: 1rem;
+  min-block-size: 4rem;
 }
 
-:root[data-shell='portal'] :is(.discovery-theme-modes, .discovery-theme-colors) {
-  display: flex;
-  align-items: center;
+:root[data-shell='portal'] :is(.discovery-theme-modes, .discovery-theme-colors, .discovery-artworks) {
+  min-inline-size: 0;
   margin: 0;
   padding: 0;
   border: 0;
-  min-inline-size: 0;
 }
 
-/* Light / dark: the redesign's segmented track (895:9670), its pick on the brand selection. */
-:root[data-shell='portal'] .discovery-theme-modes {
-  gap: 0.125rem;
-  padding: 0.125rem;
-  border-radius: var(--portal-radius-control);
-  background-color: var(--portal-surface-field);
-  box-shadow: inset 0 0 0 1px var(--portal-stroke-field);
-}
-
-:root[data-shell='portal'] .discovery-theme-mode {
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--portal-radius-chip);
-  color: var(--portal-text-secondary);
-  cursor: pointer;
-  font-size: var(--portal-type-meta-size);
-  font-weight: 500;
-}
-
-:root[data-shell='portal'] .discovery-theme-mode:hover {
-  color: var(--portal-text-primary);
-}
-
-:root[data-shell='portal'] .discovery-theme-mode:has(:checked) {
-  background-color: var(--portal-surface-brand-selected);
-  color: var(--portal-text-primary);
-}
-
-:root[data-shell='portal'] :is(.discovery-theme-mode, .discovery-theme-color):has(:focus-visible) {
-  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
-  outline-offset: var(--portal-focus-ring-offset);
-}
-
-/* The eight colours: each its own fill under a hairline, the picked one ringed in full ink. */
 :root[data-shell='portal'] .discovery-theme-colors {
-  gap: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
 }
 
+/* A 32px swatch of the accent's own fill, a black .8 rim inside it; the picked one wears a 2px ring
+   at the ladder's .6 around it (18695:18079). */
 :root[data-shell='portal'] .discovery-theme-color {
   --discovery-swatch: var(--portal-raw-blue);
   display: inline-flex;
-  padding: 0.1875rem;
   border-radius: var(--portal-radius-round);
   cursor: pointer;
 }
@@ -400,57 +650,199 @@
 }
 
 :root[data-shell='portal'] .discovery-theme-swatch {
-  inline-size: 1.125rem;
-  block-size: 1.125rem;
+  inline-size: 2rem;
+  block-size: 2rem;
   border-radius: var(--portal-radius-round);
   background-color: var(--discovery-swatch);
-  box-shadow: inset 0 0 0 1px var(--portal-stroke-strong);
+  box-shadow: inset 0 0 0 4px var(--portal-choice-rim);
 }
 
-:root[data-shell='portal'] .discovery-theme-color:has(:checked) {
-  box-shadow: 0 0 0 1.5px var(--portal-text-primary);
+:root[data-shell='portal'] .discovery-theme-color:has(:checked) .discovery-theme-swatch {
+  box-shadow:
+    inset 0 0 0 4px var(--portal-choice-rim),
+    0 0 0 2px var(--portal-text-tertiary);
 }
 
-/* Touch: light / dark take the touch target's height; each colour keeps its visual and reaches a 44px
-   target past it, the swatches spaced so the reaches never overlap. */
+:root[data-shell='portal'] :is(.discovery-theme-mode, .discovery-theme-color, .discovery-artwork):has(:focus-visible) {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+:root[data-shell='portal'] .discovery-theme-color:has(:checked:focus-visible) {
+  outline-offset: 4px;
+}
+
+/* Light / Dark: Figma's segmented (18695:18088), a 36px track of ink 5 with 3px padding, its pick on
+   the brand fill. */
+:root[data-shell='portal'] .discovery-theme-modes {
+  display: flex;
+  gap: 0.125rem;
+  block-size: 2.25rem;
+  padding: 0.1875rem;
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-control);
+}
+
+:root[data-shell='portal'] .discovery-theme-mode {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--portal-text-tertiary);
+  cursor: pointer;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-theme-mode:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .discovery-theme-mode:has(:checked) {
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* ── Make it beautiful: the artworks (18695:18095) ── */
+
+:root[data-shell='portal'] .discovery-artworks {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+:root[data-shell='portal'] .discovery-artworks > legend {
+  /* A legend lays out outside the fieldset's flow; floated, it is the first item like a heading. */
+  float: inline-start;
+  inline-size: 100%;
+  padding-inline: var(--discovery-welcome-inset);
+}
+
+/* The cards run the stage's whole width, the first 20px into the column, and fade off both of the
+   stage's sides (18695:18059, 18695:18219); the row scrolls sideways. */
+:root[data-shell='portal'] .discovery-artworks-track {
+  display: flex;
+  gap: 1.25rem;
+  margin-inline: calc(-1 * var(--discovery-bleed));
+  padding-inline: calc(var(--discovery-bleed) + 1.25rem);
+  overflow-x: auto;
+  scroll-padding-inline: calc(var(--discovery-bleed) + 1.25rem);
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--portal-raw-black) var(--discovery-bleed),
+    var(--portal-raw-black) calc(100% - var(--discovery-bleed)),
+    transparent
+  );
+}
+
+/* A 135 × 200 card, 12 radius, the art covering it on the card's fill. */
+:root[data-shell='portal'] .discovery-artwork {
+  position: relative;
+  flex: none;
+  inline-size: 8.4375rem;
+  block-size: 12.5rem;
+  border-radius: var(--portal-radius-tile);
+  background:
+    var(--discovery-artwork-image) center / cover no-repeat,
+    var(--portal-welcome-card);
+  background-blend-mode: var(--discovery-artwork-blend, normal);
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+/* The chosen card: a 2px brand ring around the rim and the SELECTED tag (18695:18096). */
+:root[data-shell='portal'] .discovery-artwork:has(:checked) {
+  box-shadow:
+    inset 0 0 0 2px var(--portal-surface-brand),
+    inset 0 0 0 4px var(--portal-choice-rim);
+}
+
+:root[data-shell='portal'] .discovery-artwork-tag {
+  position: absolute;
+  inset-block-start: 1rem;
+  inset-inline-start: 1rem;
+  padding: 0.25rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-caption-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+/* Touch: each swatch keeps its visual and reaches a 44px target past it; Light / Dark take the
+   touch target's height. */
 @media (hover: none), (pointer: coarse) {
-  :root[data-shell='portal'] .discovery-theme-mode {
-    display: inline-flex;
-    align-items: center;
-    min-block-size: calc(var(--portal-touch-target) - 0.25rem);
-  }
-
-  :root[data-shell='portal'] .discovery-theme-colors {
-    gap: calc(var(--portal-touch-target) - 1.5rem);
-  }
-
   :root[data-shell='portal'] .discovery-theme-color {
     position: relative;
   }
 
   :root[data-shell='portal'] .discovery-theme-color::after {
     position: absolute;
-    inset: calc((1.5rem - var(--portal-touch-target)) / 2);
+    inset: calc((2rem - var(--portal-touch-target)) / 2);
     content: '';
+  }
+
+  :root[data-shell='portal'] .discovery-theme-modes {
+    block-size: var(--portal-touch-target);
   }
 }
 
-/* ── The empty chat: greeting and starter ideas (479:4114, 486:4227, 486:5035) ───────────────── */
+/* A narrow stage (a phone, < 640 in breakpoints.ts, or a squeezed one): the column takes the stage
+   less a 16px gutter, the text and cards inset 16. */
+@container discovery-splash (max-width: 39.98rem) {
+  :root[data-shell='portal'] .discovery-splash[data-splash='first-time'] {
+    --discovery-welcome-inset: 1rem;
+  }
 
-:root[data-shell='portal'] .discovery-landing-greeting {
-  margin: 0 0 1rem;
-  color: var(--portal-text-primary);
-  font-size: var(--portal-type-display-lg-size);
-  font-weight: 600;
-  letter-spacing: var(--portal-tracking-ui);
-  line-height: 1.2;
-  text-align: center;
+  :root[data-shell='portal'] .discovery-welcome {
+    padding: 2.5rem 1rem 1.5rem;
+  }
+
+  :root[data-shell='portal'] .discovery-welcome {
+    --discovery-bleed: 1rem;
+  }
 }
 
+/* ── The empty chat: heading and starter ideas (18695:18388) ──────────────────────────────── */
+
+/* Over the composer, at its leading edge: the eyebrow, then "Welcome to Hermes" and its line, 12
+   apart, with Figma's 24 + 60 + 24 before the composer. */
+:root[data-shell='portal'] .discovery-landing-greeting {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  /* token-exempt: Figma's gap, spacer and gap (24 + 60 + 24) above the composer */
+  margin-block-end: 6.75rem;
+  padding-inline: 5px;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .discovery-landing-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Nous/Compact (13 SemiBold, .8) at the 14px body. */
+:root[data-shell='portal'] .discovery-landing-subtitle {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  line-height: 1.43;
+}
+
+/* Four chips in two rows under the composer, 16 apart (18695:18475). */
 :root[data-shell='portal'] .discovery-ideas {
   display: flex;
-  justify-content: center;
-  padding-block-start: 1rem;
+  padding-block-start: 1.5rem;
   padding-inline: 5px;
 }
 
@@ -458,16 +850,48 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
+  gap: 1rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-:root[data-shell='portal'] .discovery-idea {
+/* A chip: ink 5, no rim, 9 radius, 12 / 16 padding, a 20px glyph 12 before Nous/Compact SemiBold
+   (at the 14px body). */
+:root[data-shell='portal'] .discovery-ideas-list .discovery-idea[data-size][data-variant] {
+  gap: 0.75rem;
+  min-block-size: 2.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--portal-radius-panel);
+  box-shadow: none;
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .discovery-idea-glyph {
+  flex: none;
+  inline-size: var(--portal-idea-glyph);
+  block-size: var(--portal-idea-glyph);
+  font-size: var(--portal-idea-glyph);
+}
+
+/* "Sign up to start" at the composer's top end (18695:18460): Nous/Metadata underlined, in full ink. */
+:root[data-shell='portal'] .discovery-composer-sign-up {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  cursor: pointer;
+  font-family: var(--portal-font-mono);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  line-height: 1.2;
+  text-decoration: underline;
+  text-underline-position: from-font;
+}
+
+:root[data-shell='portal'] .discovery-composer-sign-up:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
 }
 
 /* Hide and Show ideas: small quiet text actions. */
@@ -500,49 +924,85 @@
 :root[data-shell='portal'] .discovery-held-column {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.5rem;
   inline-size: min(var(--portal-column-conversation), 100% - 2rem);
   margin-inline: auto;
 }
 
+/* Your message (18695:18637): "Just now" over it, then the ink 5 bubble, 24 in from the column's end. */
 :root[data-shell='portal'] .discovery-held-you {
-  align-self: flex-end;
-  max-inline-size: 80%;
-  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding-inline: 13.75rem 1.5rem;
+}
+
+:root[data-shell='portal'] .discovery-held-when {
+  margin: 0;
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] .discovery-held-text {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
   border-radius: var(--portal-radius-surface);
   background-color: var(--portal-surface-control);
   font-size: var(--portal-type-body-size);
-  line-height: 1.5;
+  font-weight: 600;
+  line-height: 1.43;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
+/* Hermes' answer (18695:18641): the accent at 10%, 24 padding, 15 corners; the words, then the way
+   to sign up at the end of the row. */
 :root[data-shell='portal'] .discovery-held-reply {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 0.5rem;
-  padding: 1rem;
-  border: 1px solid var(--portal-surface-brand);
-  border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-surface-brand-selected);
+  gap: 1rem;
+  padding: 1.5rem;
+  border-radius: var(--portal-radius-frame);
+  background-color: var(--portal-surface-brand-card);
+}
+
+:root[data-shell='portal'] .discovery-held-words {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-inline-size: 0;
 }
 
 :root[data-shell='portal'] .discovery-held-title {
   margin: 0;
   font-size: var(--portal-type-body-size);
-  font-weight: 600;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
 :root[data-shell='portal'] .discovery-held-body {
   margin: 0;
-  color: var(--portal-text-secondary);
-  font-size: var(--portal-type-body-size);
-  line-height: 1.5;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.36;
 }
 
 :root[data-shell='portal'] .discovery-held-action {
-  margin-block-start: 0.25rem;
+  flex: none;
+}
+
+/* Compact (< 640, breakpoints.ts): the bubble may take most of the column, the column its gutter. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] .discovery-held-you {
+    padding-inline: 3rem 0;
+  }
 }
 
 /* ── Nav spotlight ───────────────────────────────────────────────────────────────────────────── */

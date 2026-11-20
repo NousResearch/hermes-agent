@@ -9,6 +9,8 @@
      for contrast. */
   --portal-surface-brand: var(--portal-raw-accent);
   --portal-text-on-brand: var(--portal-raw-accent-on);
+  /* A brand-filled card under the pointer (the sidebar's Create an Account): a step toward the ink. */
+  --portal-surface-brand-hover: color-mix(in srgb, var(--portal-surface-brand) 86%, var(--ui-base));
   --portal-text-brand: var(--portal-raw-accent-ink-dark);
   /* The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the
      stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts
@@ -42,6 +44,9 @@
   /* The floor as a layer opacity, for a live line that dims as a whole: full-ink regular text quieted
      by opacity, not a pale ink stacked under a fade (the working row, design review 2026-11-17). */
   --portal-text-quiet-opacity: 0.5;
+  /* What the rest of the first-time splash fades to while one of its rows speaks (Onboarding
+     18695:17294): a backdrop, not text to read, so it may go under the floor. */
+  --portal-backdrop-opacity: 0.2;
 
   /* Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's
      artwork (portal-artwork.css) it is that artwork's ground instead. */
@@ -142,6 +147,17 @@
     color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10))
   );
   --portal-settings-divider: var(--portal-raw-ink-5);
+  /* The first-time splash's cards (Onboarding 18695:17163 "Information", the artwork cards): white .02
+     / black .60 / blue .20 over the stage. */
+  --portal-welcome-card: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 2%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent))
+  );
+  /* Hermes' answer to a message held until sign up (18695:18641): the accent at 10%. */
+  --portal-surface-brand-card: var(--portal-raw-brand-10);
+  /* The dark rim inside a colour swatch and a chosen artwork card (18695:18079): black .80. */
+  --portal-choice-rim: color-mix(in srgb, var(--portal-raw-black) 80%, transparent);
   --portal-settings-section-ink: color-mix(in srgb, var(--ui-base) 80%, transparent);
   /* The column's Agent settings card (16292:16428): light/5. */
   --portal-settings-link: var(--portal-raw-ink-5);
@@ -317,6 +333,9 @@
   --portal-status-chip-fill: color-mix(in srgb, var(--portal-raw-pure-white) 60%, transparent);
   /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
   --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  /* Figma draws the onboarding in dark only: light takes its settings cards' white, and a white rim. */
+  --portal-welcome-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  --portal-choice-rim: color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent);
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-panel-action: var(--portal-raw-ink-2);
   --portal-panel-action-hover: var(--portal-raw-ink-5);

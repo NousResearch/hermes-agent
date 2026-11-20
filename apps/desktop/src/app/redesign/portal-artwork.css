@@ -174,6 +174,46 @@
   --artwork-repeat: repeat-x;
 }
 
+/* ── Thumbnails ("Make it yours" 18695:18095) ─────────────────────────────────────────────── */
+
+/* Each artwork's card in the first-time splash's picker (app/discovery/make-it-yours.tsx): the same
+   file the canvas paints, covering the card. Light draws its two the way its canvas does: the ghost
+   and the photo differenced from the light ground, the photo lightened with the brand blue. */
+:root[data-shell='portal'] .discovery-artwork[data-artwork='wing'] {
+  --discovery-artwork-image: url('../../assets/portal-wing.svg');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='angel'] {
+  --discovery-artwork-image: url('../../assets/artwork-angel.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='ascend'] {
+  --discovery-artwork-image: url('../../assets/artwork-ascend.avif');
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='karborn'] {
+  --discovery-artwork-image: url('../../assets/artwork-karborn.avif');
+  --discovery-artwork-blend: screen;
+}
+
+:root[data-shell='portal'] .discovery-artwork[data-artwork='vanilla'] {
+  --discovery-artwork-image: url('../../assets/portal-wing-ghost.svg');
+}
+
+:root[data-shell='portal']:not(.dark) .discovery-artwork[data-artwork='vanilla'] {
+  background-color: var(--portal-artwork-ground-light);
+  --discovery-artwork-blend: difference;
+}
+
+:root[data-shell='portal']:not(.dark) .discovery-artwork[data-artwork='ascend'] {
+  background:
+    linear-gradient(var(--portal-raw-blue), var(--portal-raw-blue)),
+    linear-gradient(var(--portal-raw-gray), var(--portal-raw-gray)),
+    var(--discovery-artwork-image) center / cover no-repeat;
+  background-color: var(--portal-artwork-ground-light);
+  background-blend-mode: lighten, saturation, difference;
+}
+
 /* ── Painters ─────────────────────────────────────────────────────────────────────────────── */
 
 /* The canvas: the shell root spans the window and never scrolls. The art is a picture on its own

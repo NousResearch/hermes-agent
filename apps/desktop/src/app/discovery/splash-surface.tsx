@@ -1,9 +1,7 @@
 import './discovery.css'
 
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 
 import { type NavSpot, NavSpotlight } from './nav-spotlight'
@@ -20,10 +18,6 @@ export interface SplashRow<Id extends string = string> {
   detail?: string
   /** The place in the nav the row lights up while active. */
   spot?: NavSpot
-  /** Controls the row holds instead of being one button ("Make it yours"): `name` names them as a
-   *  group. A pointer or focus reaching them is noted (`onRowActivated`), but the row is never the
-   *  active one. */
-  control?: ReactNode
 }
 
 export interface SplashSurfaceProps<Id extends string> {
@@ -43,52 +37,15 @@ export interface SplashSurfaceProps<Id extends string> {
   onRowActivated?: (id: Id) => void
   /** Take focus on mount: when the person opened it, or when nothing else has focus. */
   takeFocus: boolean
-  /** The first row starts active, so the splash shows what it does before anyone touches it. False:
-   *  nothing is active (no line, no spotlight) until a row is hovered, focused or tapped. */
-  startActive?: boolean
-  /** A × in the corner, named `label`. */
-  close?: { label: string; onClose: () => void }
 }
 
 /**
- * A splash that fills the chat area while the nav stays live: a heading, a list of rows that each
- * say one thing (and say more, and light up their place in the nav, while active), and a footer.
- * The rename splash is one; the first-time splash is another. A pointer or focus moves the
- * highlight, a click or tap leaves it on that row (touch has no hover).
+ * What every splash does as a whole: it takes focus when the person opened it (or when nothing else
+ * has focus, or focus sat in the chat it just made inert), so Tab starts inside it; and Escape closes
+ * it when nothing above it wants the key. Returns the ref for the splash's own element.
  */
-export function SplashSurface<Id extends string>({
-  close,
-  eyebrow,
-  footer,
-  kind,
-  listLabel,
-  onEscape,
-  onRowActivated,
-  rows,
-  startActive = true,
-  subtitle,
-  takeFocus,
-  title
-}: SplashSurfaceProps<Id>) {
-  const id = useId()
+export function useSplashFrame(takeFocus: boolean, onEscape: () => void): RefObject<HTMLElement | null> {
   const surfaceRef = useRef<HTMLElement>(null)
-  const activeRowRef = useRef<HTMLElement | null>(null)
-
-  // The active row's element, for the spotlight's connector: a button, or a control row's item.
-  const bindActiveRow = useCallback((node: HTMLElement | null) => {
-    activeRowRef.current = node
-  }, [])
-
-  const [picked, setPicked] = useState<Id | null>(startActive ? (rows[0]?.id ?? null) : null)
-  const [hovered, setHovered] = useState<Id | null>(null)
-  const [focused, setFocused] = useState<Id | null>(null)
-  const activeId = hovered ?? focused ?? picked
-  const active = rows.find(row => row.id === activeId)
-
-  const activate = (rowId: Id, set: (rowId: Id) => void) => {
-    set(rowId)
-    onRowActivated?.(rowId)
-  }
 
   useEffect(() => {
     const focus = document.activeElement
@@ -129,6 +86,48 @@ export function SplashSurface<Id extends string>({
     }
   }, [onEscape])
 
+  return surfaceRef
+}
+
+/**
+ * A splash that fills the chat area while the nav stays live: a heading, a list of rows that each
+ * say one thing (and say more, and light up their place in the nav, while active), and a footer.
+ * The rename splash is one. The first row starts active, so the splash shows what it does before
+ * anyone touches it; a pointer or focus moves the highlight, a click or tap leaves it on that row
+ * (touch has no hover).
+ */
+export function SplashSurface<Id extends string>({
+  eyebrow,
+  footer,
+  kind,
+  listLabel,
+  onEscape,
+  onRowActivated,
+  rows,
+  subtitle,
+  takeFocus,
+  title
+}: SplashSurfaceProps<Id>) {
+  const id = useId()
+  const surfaceRef = useSplashFrame(takeFocus, onEscape)
+  const activeRowRef = useRef<HTMLElement | null>(null)
+
+  // The active row's button, for the spotlight's connector.
+  const bindActiveRow = useCallback((node: HTMLElement | null) => {
+    activeRowRef.current = node
+  }, [])
+
+  const [picked, setPicked] = useState<Id | null>(rows[0]?.id ?? null)
+  const [hovered, setHovered] = useState<Id | null>(null)
+  const [focused, setFocused] = useState<Id | null>(null)
+  const activeId = hovered ?? focused ?? picked
+  const active = rows.find(row => row.id === activeId)
+
+  const activate = (rowId: Id, set: (rowId: Id) => void) => {
+    set(rowId)
+    onRowActivated?.(rowId)
+  }
+
   return (
     <section
       aria-describedby={`${id}-subtitle`}
@@ -140,17 +139,6 @@ export function SplashSurface<Id extends string>({
       tabIndex={-1}
     >
       <span aria-hidden className="discovery-splash-brackets" />
-      {close && (
-        <Button
-          aria-label={close.label}
-          className="discovery-splash-close"
-          onClick={close.onClose}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <Codicon name="close" />
-        </Button>
-      )}
       <div className="discovery-splash-content">
         <p className="discovery-splash-eyebrow">{eyebrow}</p>
         <h1 className="discovery-splash-title" id={`${id}-title`}>
@@ -163,32 +151,6 @@ export function SplashSurface<Id extends string>({
           {rows.map(row => {
             const isActive = row.id === active?.id
             const detailId = `${id}-${row.id}-detail`
-
-            // A control row is noted when the pointer or focus reaches it, but never becomes the active
-            // row: that would fold the row that is open above it and pull these controls out from under
-            // the pointer mid-click. Its controls draw their own focus.
-            if (row.control) {
-              return (
-                <li
-                  className="discovery-splash-row"
-                  data-control-row=""
-                  key={row.id}
-                  onFocus={() => onRowActivated?.(row.id)}
-                  onPointerEnter={event => {
-                    if (event.pointerType === 'mouse') {
-                      onRowActivated?.(row.id)
-                    }
-                  }}
-                >
-                  <div aria-label={row.name} className="discovery-splash-row-group" role="group">
-                    <span aria-hidden className="discovery-splash-row-label">
-                      {row.label}
-                    </span>
-                    {row.control}
-                  </div>
-                </li>
-              )
-            }
 
             return (
               <li className="discovery-splash-row" data-active={isActive || undefined} key={row.id}>

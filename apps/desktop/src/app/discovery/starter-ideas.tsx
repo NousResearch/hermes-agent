@@ -3,14 +3,17 @@ import { useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { FileText } from '@/lib/icons'
 import {
   $newcomerGreeting,
   $starterIdeas,
   hideStarterIdeas,
   noteStarterIdeaPicked,
   showStarterIdeas,
-  STARTER_IDEAS
+  STARTER_IDEAS,
+  type StarterIdea
 } from '@/store/starter-ideas'
+import { $signUpRequired } from '@/store/visitor-access'
 
 import {
   type ComposerTarget,
@@ -21,12 +24,37 @@ import {
 
 import { useFirstTimeCopy } from './first-time-copy'
 
-/** "Hi, I'm Hermes." over a newcomer's empty chat (1A' 479:4114), until their first tasks are done. */
+/** "Welcome to Hermes" over a newcomer's empty chat (Figma 18695:18388), until their first tasks are
+ *  done: the eyebrow names the hosted Portal where sign up is required, Hermes Agent elsewhere. */
 export function LandingGreeting() {
   const greet = useStore($newcomerGreeting)
-  const copy = useFirstTimeCopy().landing
+  const signUpRequired = useStore($signUpRequired)
+  const copy = useFirstTimeCopy()
 
-  return greet ? <h1 className="discovery-landing-greeting">{copy.greeting}</h1> : null
+  if (!greet) {
+    return null
+  }
+
+  return (
+    <div className="discovery-landing-greeting">
+      <p className="discovery-welcome-eyebrow">{signUpRequired ? copy.landing.eyebrowPortal : copy.splash.eyebrow}</p>
+      <div className="discovery-landing-heading">
+        <h1 className="discovery-welcome-title">{copy.landing.title}</h1>
+        <p className="discovery-landing-subtitle">{copy.landing.subtitle}</p>
+      </div>
+    </div>
+  )
+}
+
+/** Each idea's glyph (18695:18476–18486): what the task is about. */
+function IdeaGlyph({ idea }: { idea: StarterIdea }) {
+  if (idea === 'summarize_document') {
+    return <FileText aria-hidden className="discovery-idea-glyph" />
+  }
+
+  const name = { morning_briefing: 'clock', research_options: 'search', clean_inbox: 'inbox' }[idea]
+
+  return <Codicon aria-hidden className="discovery-idea-glyph" name={name} />
 }
 
 interface StarterIdeasProps {
@@ -72,8 +100,9 @@ export function StarterIdeas({ target }: StarterIdeasProps) {
                     requestComposerFocus(target)
                   }
                 }}
-                variant="outline"
+                variant="secondary"
               >
+                <IdeaGlyph idea={idea} />
                 {copy.ideas[idea]}
               </Button>
             </li>

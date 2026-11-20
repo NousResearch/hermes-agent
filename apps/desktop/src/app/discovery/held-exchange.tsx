@@ -8,7 +8,7 @@ import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-acc
 import { useFirstTimeCopy } from './first-time-copy'
 
 /**
- * A visitor's message held until sign up, and Hermes' answer to it (Figma 1C 462:3935): "I can do
+ * A visitor's message held until sign up, and Hermes' answer to it (Figma 18695:18570): "I can do
  * that. Sign up and I'll start on it right away." Nothing was sent anywhere; this is not a transcript
  * and holds no chat messages, only the held text (store/held-prompt.ts) laid out like the opening of
  * one. After a sign up that could not sign them in, the answer says so and offers to try again.
@@ -51,12 +51,15 @@ export function HeldExchange(where: HeldExchangeProps) {
     <div className="discovery-held" data-slot="held-exchange">
       <div className="discovery-held-column">
         <article aria-label={copy.you} className="discovery-held-you">
-          {text}
+          <p className="discovery-held-when">{copy.justNow}</p>
+          <p className="discovery-held-text">{text}</p>
         </article>
         <article aria-label={copy.hermes} aria-live="polite" className="discovery-held-reply">
-          <h2 className="discovery-held-title">{failed ? copy.failedTitle : copy.title}</h2>
-          <p className="discovery-held-body">{failed ? copy.failedBody : copy.body}</p>
-          <Button className="discovery-held-action" onClick={() => startSignUp('chat')}>
+          <div className="discovery-held-words">
+            <h2 className="discovery-held-title">{failed ? copy.failedTitle : copy.title}</h2>
+            <p className="discovery-held-body">{failed ? copy.failedBody : copy.body}</p>
+          </div>
+          <Button className="discovery-welcome-action discovery-held-action" onClick={() => startSignUp('chat')}>
             {failed ? copy.tryAgain : copy.signUp}
           </Button>
         </article>

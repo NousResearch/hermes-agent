@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
-import { $firstTimeSplash } from '@/store/first-time-splash'
+import { $firstTimeSplash, $firstTimeSplashHoldsSidebar } from '@/store/first-time-splash'
 import { $guidanceLedger } from '@/store/guidance-ledger'
 import { holdPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $newVersionReady } from '@/store/new-version'
@@ -17,6 +17,10 @@ import { $shellChoice } from '@/store/shell-variant'
 import { $signInFailed, $visitorAccess } from '@/store/visitor-access'
 import { ThemeProvider } from '@/themes/context'
 import type { SessionInfo } from '@/types/hermes'
+
+import { ComposerModelRow } from '../chat/composer/controls'
+import type { ChatBarState } from '../chat/composer/types'
+import { $artworkChoice, installArtworkAttributes } from '../redesign/artwork'
 
 import { discoveryCopy } from './discovery-copy'
 import { firstTimeCopy } from './first-time-copy'
@@ -58,6 +62,7 @@ function settle(sessions: SessionInfo[]) {
 }
 
 const splash = () => screen.queryByRole('region', { name: copy.splash.title })
+const firstTime = () => window.document.querySelector<HTMLElement>('[data-splash="first-time"]')
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -71,6 +76,7 @@ beforeEach(() => {
   $firstTimeSplash.set(null)
   $newVersionReady.set(false)
   $portalAccent.set('blue')
+  $artworkChoice.set(null)
   $visitorAccess.set({ kind: 'open' })
   $signInFailed.set(false)
   takeHeldPrompt()
@@ -105,63 +111,121 @@ describe('the first-time splash in the shell', () => {
     expect(screen.getByRole('region', { name: discoveryCopy('en').renameSplash.title })).toBeTruthy()
   })
 
-  it('shows each row as one line, and its example only while it is hovered or focused', () => {
+  it('says each place in one line, and its example, its lit place and its seen check once a row is reached', () => {
     renderShell()
     settle([])
 
-    // Named by the rail's own label for the place, then its line.
+    // Named by the rail's own label for the place, then its line; the example is its description.
     const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
-    const example = screen.getByText(copy.splash.lines.routines.example)
-    expect(example.hidden).toBe(true)
-    expect(screen.queryAllByRole('button', { expanded: true })).toHaveLength(0)
+    const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
+    expect(within(routines).queryAllByText(copy.splash.lines.routines.example)).toHaveLength(1)
+    expect(firstTime()?.dataset.place).toBeUndefined()
+    expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
+    expect($firstTimeSplashHoldsSidebar.get()).toBe(true)
 
     fireEvent.focus(routines)
-    expect(routines.getAttribute('aria-expanded')).toBe('true')
-    expect(example.hidden).toBe(false)
+    expect(within(routines).getAllByText(copy.splash.lines.routines.example)).toHaveLength(2)
+    expect(firstTime()?.dataset.place).toBe('routines')
+    expect(routines.getAttribute('aria-describedby')).toContain(' ')
+
+    fireEvent.click(agents)
+    expect(within(routines).getByText(copy.splash.lines.routines.line)).toBeTruthy()
+    expect(firstTime()?.dataset.place).toBe('agents')
+    // Both rows reached keep their check for the rest of the showing.
+    expect(routines.querySelector('[data-slot="seen-check"]')).not.toBeNull()
+    expect(agents.querySelector('[data-slot="seen-check"]')).not.toBeNull()
+    expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
   })
 
-  it('makes it yours: light or dark and five colours, as radio groups that change the app at once', () => {
+  it('hands the chat sidebar back while Chats is the place lit, and takes it again after', () => {
+    renderShell()
+    settle([])
+    const chats = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.chats.line}`) })
+    const library = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.library.line}`) })
+
+    fireEvent.pointerEnter(chats, { pointerType: 'mouse' })
+    expect($firstTimeSplashHoldsSidebar.get()).toBe(false)
+    fireEvent.pointerEnter(library, { pointerType: 'mouse' })
+    expect($firstTimeSplashHoldsSidebar.get()).toBe(true)
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect($firstTimeSplashHoldsSidebar.get()).toBe(false)
+  })
+
+  it('moves to Make it yours and back, with focus on each step', async () => {
     renderShell()
     settle([])
 
-    const theme = screen.getByRole('group', { name: copy.splash.theme.label })
-    fireEvent.click(within(theme).getByRole('radio', { name: copy.splash.theme.dark }))
-    expect(theme.ownerDocument.documentElement.classList.contains('dark')).toBe(true)
-    fireEvent.click(within(theme).getByRole('radio', { name: copy.splash.theme.light }))
-    expect(theme.ownerDocument.documentElement.classList.contains('dark')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.style.action }))
+    const title = screen.getByRole('heading', { level: 1, name: copy.splash.theme.title })
+    await vi.waitFor(() => expect(title.ownerDocument.activeElement).toBe(title))
+    expect(screen.getByRole('region', { name: copy.splash.theme.title })).toBeTruthy()
 
-    const colors = within(theme).getAllByRole('radio').filter(radio => radio.getAttribute('aria-label'))
-    expect(colors.map(radio => radio.getAttribute('aria-label'))).toEqual(Object.values(copy.splash.theme.colors))
-
-    fireEvent.click(within(theme).getByRole('radio', { name: copy.splash.theme.colors.green }))
-    expect($portalAccent.get()).toBe('green')
-    expect((within(theme).getByRole('radio', { name: copy.splash.theme.colors.green }) as HTMLInputElement).checked).toBe(
-      true
-    )
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.theme.back }))
+    const next = screen.getByRole('button', { name: copy.splash.style.action })
+    await vi.waitFor(() => expect(next.ownerDocument.activeElement).toBe(next))
   })
 
-  it('closes from its ×, from Escape, and from any nav click, and stays closed', () => {
+  it('makes it yours: eight colours, light or dark and the artworks, as radio groups that change the app at once', () => {
+    window.localStorage.setItem('hermes-boot-color-scheme', 'dark')
+    const disposeArtwork = installArtworkAttributes(window.document.createElement('html'))
     renderShell()
     settle([])
-    fireEvent.click(screen.getByRole('button', { name: copy.splash.close }))
-    expect(splash()).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.style.action }))
+
+    const colors = screen.getByRole('group', { name: copy.splash.theme.color })
+    expect(
+      within(colors)
+        .getAllByRole('radio')
+        .map(radio => radio.getAttribute('aria-label'))
+    ).toEqual(Object.values(copy.splash.theme.colors))
+    fireEvent.click(within(colors).getByRole('radio', { name: copy.splash.theme.colors.cyan }))
+    expect($portalAccent.get()).toBe('cyan')
+
+    const mode = screen.getByRole('group', { name: copy.splash.theme.mode })
+    fireEvent.click(within(mode).getByRole('radio', { name: copy.splash.theme.dark }))
+    expect(window.document.documentElement.classList.contains('dark')).toBe(true)
+
+    const artworks = screen.getByRole('group', { name: copy.splash.theme.artwork.title })
+    expect(within(artworks).getAllByRole('radio')).toHaveLength(5)
+    fireEvent.click(within(artworks).getByRole('radio', { name: copy.splash.theme.artwork.names.karborn }))
+    expect($artworkChoice.get()).toBe('karborn')
+    expect(
+      (within(artworks).getByRole('radio', { name: copy.splash.theme.artwork.names.karborn }) as HTMLInputElement)
+        .checked
+    ).toBe(true)
+    expect(within(artworks).getByText(copy.splash.theme.artwork.selected)).toBeTruthy()
+
+    // Light offers only what it draws.
+    fireEvent.click(within(mode).getByRole('radio', { name: copy.splash.theme.light }))
+    expect(
+      within(screen.getByRole('group', { name: copy.splash.theme.artwork.title })).getAllByRole('radio')
+    ).toHaveLength(2)
+    disposeArtwork()
+  })
+
+  it('has no ×: Escape and any nav click close it, and it stays closed', () => {
+    renderShell()
+    settle([])
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(firstTime()).toBeNull()
     expect($guidanceLedger.get().firstTimeSplash).toBe('seen')
 
     act(() => $firstTimeSplash.set('reopened'))
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect(splash()).toBeNull()
-
-    act(() => $firstTimeSplash.set('reopened'))
     fireEvent.click(screen.getByRole('button', { name: 'Routines' }))
-    expect(splash()).toBeNull()
+    expect(firstTime()).toBeNull()
     expect(screen.getByLabelText('Message').closest('[inert]')).toBeNull()
   })
 
-  it('ends with a plain way in where nothing needs a sign up, and with sign up where it does', () => {
+  it('ends with one way in where nothing needs a sign up, and with Sign up or Look around where it does', () => {
     renderShell()
     settle([])
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.style.action }))
     expect(screen.getByRole('button', { name: copy.splash.start })).toBeTruthy()
     expect(screen.queryByRole('button', { name: copy.splash.signUp })).toBeNull()
+    expect(screen.queryByRole('button', { name: copy.splash.lookAround })).toBeNull()
     cleanup()
 
     $guidanceLedger.set({})
@@ -172,9 +236,17 @@ describe('the first-time splash in the shell', () => {
     vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
     renderShell()
     settle([])
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.style.action }))
+    expect(screen.queryByRole('button', { name: copy.splash.start })).toBeNull()
 
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.lookAround }))
+    expect(firstTime()).toBeNull()
+    expect(assign).not.toHaveBeenCalled()
+
+    act(() => $firstTimeSplash.set('reopened'))
+    fireEvent.click(screen.getByRole('button', { name: copy.splash.style.action }))
     fireEvent.click(screen.getByRole('button', { name: copy.splash.signUp }))
-    expect(splash()).toBeNull()
+    expect(firstTime()).toBeNull()
     expect($guidanceLedger.get().firstTimeSplash).toBe('seen')
     expect(assign).toHaveBeenCalledTimes(1)
   })
@@ -188,7 +260,7 @@ describe('the tray for a first-timer', () => {
     expect(bell.getAttribute('aria-description')).toBe(tray.unseen)
 
     settle([])
-    fireEvent.click(screen.getByRole('button', { name: copy.splash.close }))
+    fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(bell)
 
     const panel = screen.getByRole('dialog', { name: tray.title })
@@ -199,6 +271,7 @@ describe('the tray for a first-timer', () => {
     expect(bell.getAttribute('aria-description')).toBeNull()
 
     const meet = cards.find(card => within(card).queryByText(copy.tray.meet.title))!
+    expect(within(meet).getByText(copy.tray.meet.description)).toBeTruthy()
     fireEvent.click(within(meet).getByRole('button', { name: copy.tray.meet.action }))
     expect($firstTimeSplash.get()).toBe('reopened')
   })
@@ -249,7 +322,11 @@ describe('the starter ideas', () => {
 
     const list = screen.getByRole('list', { name: copy.landing.ideasLabel })
     const ideas = Object.values(copy.landing.ideas)
-    expect(within(list).getAllByRole('button').map(button => button.textContent)).toEqual([...ideas, copy.landing.hide])
+    expect(
+      within(list)
+        .getAllByRole('button')
+        .map(button => button.textContent)
+    ).toEqual([...ideas, copy.landing.hide])
 
     fireEvent.click(screen.getByRole('button', { name: copy.landing.ideas.clean_inbox }))
     expect(sent).toHaveBeenCalledWith(copy.landing.ideas.clean_inbox)
@@ -281,6 +358,18 @@ describe('the starter ideas', () => {
   })
 })
 
+describe('the composer while sign up is required', () => {
+  it('offers sign up where the model row would be', () => {
+    $visitorAccess.set(SIGN_UP)
+    const assign = vi.fn()
+    vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
+    render(<ComposerModelRow disabled={false} model={{} as ChatBarState['model']} redesigned />)
+
+    fireEvent.click(screen.getByRole('button', { name: copy.landing.signUp }))
+    expect(assign).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('a message held until sign up', () => {
   it('shows the message and Hermes’ local answer, with sign up, and says so when sign in failed', () => {
     $visitorAccess.set(SIGN_UP)
@@ -289,7 +378,9 @@ describe('a message held until sign up', () => {
     vi.stubGlobal('location', { href: 'https://hermes.example/#/', assign })
     render(<HeldExchange primary routed={false} />)
 
-    expect(screen.getByRole('article', { name: copy.held.you }).textContent).toBe('Compare the top 5 standing desks')
+    const yours = screen.getByRole('article', { name: copy.held.you })
+    expect(within(yours).getByText('Compare the top 5 standing desks')).toBeTruthy()
+    expect(within(yours).getByText(copy.held.justNow)).toBeTruthy()
     const reply = screen.getByRole('article', { name: copy.held.hermes })
     expect(within(reply).getByText(copy.held.title)).toBeTruthy()
     expect(within(reply).getByText(copy.held.body)).toBeTruthy()

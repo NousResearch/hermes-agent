@@ -12,7 +12,13 @@ import { $newVersionReady } from '@/store/new-version'
 import { createNotificationTray, type TrayItemSource } from '@/store/notification-tray'
 import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
 import { $connection } from '@/store/session'
-import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus, startActiveUpdate } from '@/store/updates'
+import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
+  $updateApply,
+  $updateStatus,
+  startActiveUpdate
+} from '@/store/updates'
 import { $usageStatsOfferPlace, clearUsageStatsOffer, openUsageStatsDetails } from '@/store/usage-stats-offer'
 import { $signInFailed, $signUpRequired, startSignUp } from '@/store/visitor-access'
 
@@ -155,7 +161,7 @@ function RenameSplashCard({ close, unseen }: TrayCardProps) {
   )
 }
 
-/** Sign up (1A' 479:4114), for as long as it is required: news until the tray has been opened. A
+/** Sign up (Onboarding 18695:19432), for as long as it is required: news until the tray has been opened. A
  *  sign up that came back without signing the visitor in is news again, and the card says so (a held
  *  message says it in the chat instead, held-exchange.tsx). */
 const $signUpItem = computed([$signUpRequired, $signInFailed], (required, failed) =>
@@ -194,6 +200,7 @@ function FirstTimeSplashCard({ close, unseen }: TrayCardProps) {
           reopenFirstTimeSplash()
         }
       }}
+      description={copy.description}
       title={copy.title}
       unseen={unseen}
     />

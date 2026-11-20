@@ -1,0 +1,80 @@
+/* "Create an Account" (Figma 18695:18439) at the foot of the chat sidebar, in the usage-stats card's
+   slot: under the list on the sidebar's opaque fill, the brand fill in the accent with the on-brand
+   ink, the lattice art faded in from the leading edge (Figma's anime-hermes portrait has no asset
+   here). 84 tall, 9 corners, 16 padding; the words clear the art by 62. */
+.portal-sidebar .portal-account-offer {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.75rem;
+  overflow: hidden;
+  min-block-size: 5.25rem;
+  margin: 0 var(--portal-sidebar-gutter) var(--portal-sidebar-gutter);
+  /* token-exempt: Figma's 62px clear of the portrait */
+  padding: 1rem 1rem 1rem 3.875rem;
+  border: 0;
+  border-radius: var(--portal-radius-panel);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+.portal-sidebar .portal-account-offer::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  /* token-exempt: the usage-stats card's own art placement */
+  background: url('../../../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat;
+  mix-blend-mode: var(--portal-sidebar-offer-art-blend);
+  opacity: var(--portal-sidebar-offer-art-opacity);
+  mask-image: linear-gradient(to right, var(--portal-raw-black) 4%, transparent 22%);
+  pointer-events: none;
+}
+
+.portal-sidebar .portal-account-offer:dir(rtl)::before {
+  transform: scaleX(-1);
+}
+
+.portal-sidebar .portal-account-offer:hover {
+  background-color: var(--portal-surface-brand-hover);
+}
+
+.portal-sidebar .portal-account-offer:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-outset);
+}
+
+.portal-account-offer-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-inline-size: 0;
+}
+
+/* Nous/Compact Medium 14, then Nous/Metadata at .8 of the on-brand ink (the redesign's 14px body). */
+.portal-account-offer-title {
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  line-height: 1.43;
+}
+
+.portal-account-offer-body {
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.2;
+  opacity: 0.8;
+}
+
+.portal-account-offer-chevron {
+  flex: none;
+}
+
+.portal-account-offer-chevron:dir(rtl) {
+  transform: scaleX(-1);
+}

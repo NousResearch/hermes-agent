@@ -637,8 +637,11 @@ image carries bleed past every placement (Ascend repeats across), so no window s
 image edge. The panels carry Figma's NOISE effects as tiny tiling `feTurbulence` SVGs
 (`assets/portal-noise-*.svg`, `--artwork-panel-noise`/`--artwork-stage-noise`): the sidebar kind in
 both themes, the stage in light. Figma's
-"01 · Artwork" screens are the canvas layer on its own, not an app state; it shows no setting to
-turn the art off or choose one.
+"01 · Artwork" screens are the canvas layer on its own, not an app state. The one place to choose
+the art is the first-time splash's "Make it yours" (Onboarding 18695:18059): it offers the artworks
+the current mode draws, and a choice (`$artworkChoice`, a machine-level appearance preference like
+the accent) is painted on every later launch instead of the rotation; someone who never chooses keeps
+rotating. There is no setting to turn the art off.
 
 ### Tokens
 
@@ -733,6 +736,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 |---|---|---|---|
 | `--portal-surface-brand` | `var(--portal-raw-accent)` | ″ | Brand, in the accent (blue unless the person picked another). The fill is the same in every theme and mode, and so is the ink on it (white, or the navy on a bright accent); thin rings, underlines and small brand text use the brand ink, which lightens on dark canvases and darkens on light ones for contrast. |
 | `--portal-text-on-brand` | `var(--portal-raw-accent-on)` | ″ |  |
+| `--portal-surface-brand-hover` | `color-mix(in srgb, var(--portal-surface-brand) 86%, var(--ui-base))` | ″ | A brand-filled card under the pointer (the sidebar's Create an Account): a step toward the ink. |
 | `--portal-text-brand` | `var(--portal-raw-accent-ink-dark)` | `var(--portal-raw-accent-ink-light)` |  |
 | `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background))` | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). |
 | `--portal-composer-prompt-ink` | `var(--portal-text-primary)` | ″ |  |
@@ -744,6 +748,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-text-tertiary` | `color-mix(in srgb, var(--ui-base) 60%, transparent)` | `color-mix(in srgb, var(--ui-base) 72%, transparent)` |  |
 | `--portal-text-quaternary` | `color-mix(in srgb, var(--ui-base) 50%, transparent)` | `color-mix(in srgb, var(--ui-base) 64%, transparent)` |  |
 | `--portal-text-quiet-opacity` | `0.5` | `0.64` | The floor as a layer opacity, for a live line that dims as a whole: full-ink regular text quieted by opacity, not a pale ink stacked under a fade (the working row, design review 2026-11-17). |
+| `--portal-backdrop-opacity` | `0.2` | ″ | What the rest of the first-time splash fades to while one of its rows speaks (Onboarding 18695:17294): a backdrop, not text to read, so it may go under the floor. |
 | `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's artwork (portal-artwork.css) it is that artwork's ground instead. |
 | `--portal-artwork-ground-vanilla` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 94%, var(--portal-raw-blue)) )` | ″ | The artworks' grounds (Prod - Desktop › Brand 16291:10506, each row's Background fill): brand blue under black .94 and white .05 (Vanilla 16292:10768), black .90 (Wing 16292:13812), black .96 (Angel 16292:17116, Ascend 16292:20301); Karborn lays black .98 on the blue and lightens it with a blue .10 filter (16292:35757). Light paints #f2f2f2 under both of its artworks (16292:26683). |
 | `--portal-artwork-ground-wing` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 90%, var(--portal-raw-blue)) )` | ″ |  |
@@ -761,6 +766,9 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-surface-card` | `var(--portal-raw-ink-2)` | ″ | Cards of grouped rows (1036:7576, 1038:7803). |
 | `--portal-settings-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | Global Settings' cards lift off the page with no stroke (Card 16292:16456): white .02 / black .50 / blue .10 (#1A1A30 where solid); their dividers light/5. Section heads at .8 ink. |
 | `--portal-settings-divider` | `var(--portal-raw-ink-5)` | ″ |  |
+| `--portal-welcome-card` | `color-mix( in srgb, var(--portal-raw-pure-white) 2%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent)` | The first-time splash's cards (Onboarding 18695:17163 "Information", the artwork cards): white .02 / black .60 / blue .20 over the stage. |
+| `--portal-surface-brand-card` | `var(--portal-raw-brand-10)` | ″ | Hermes' answer to a message held until sign up (18695:18641): the accent at 10%. |
+| `--portal-choice-rim` | `color-mix(in srgb, var(--portal-raw-black) 80%, transparent)` | `color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent)` | The dark rim inside a colour swatch and a chosen artwork card (18695:18079): black .80. |
 | `--portal-settings-section-ink` | `color-mix(in srgb, var(--ui-base) 80%, transparent)` | ″ |  |
 | `--portal-settings-link` | `var(--portal-raw-ink-5)` | ″ | The column's Agent settings card (16292:16428): light/5. |
 | `--portal-surface-selected` | `var(--portal-raw-ink-5)` | ″ | Neutral selection: list rows, nav rows (1036:7409), with --portal-stroke-selected. |
@@ -895,6 +903,8 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
 | `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
+| `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyphs (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile, 20 on a starter idea. |
+| `--portal-idea-glyph` | `1.25rem` | ″ |  |
 | `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: a new version, the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
 | `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-conversation` | `40rem` | ″ |  |
@@ -1211,10 +1221,11 @@ only, and classic keeps `CronView`.
 ### Discovery: splashes and the notifications tray (`app/discovery/`)
 
 Onboarding and discovery (Figma "Hermes web app onboarding and discovery", Phase 1) live in the
-redesign only. A **splash** (`SplashSurface`) fills the chat area, never the window: it is the
-workspace pane's cover (`KeptChatRoutes`' `cover`), so whatever it covers is inert and gets its
-focus back, while the rail and the chat sidebar stay live and any click in them closes it (the
-click still goes where it was going). A splash is a heading, rows and a footer: each row is one
+redesign only. A **splash** fills the chat area, never the window: it is the workspace pane's cover
+(`KeptChatRoutes`' `cover`), so whatever it covers is inert and gets its focus back, while the rail
+and the chat sidebar stay live and any click in them closes it (the click still goes where it was
+going); it takes focus when opened from the tray and closes on Escape (`useSplashFrame`). The rename
+splash (`SplashSurface`) is a heading, rows and a footer: each row is one
 line, says more while it is hovered, focused or tapped, and rings its real place in the nav with a
 dashed elbow (`NavSpotlight`, `--portal-layer-spotlight`), following that place every frame and
 drawing nothing when it is not on screen. The active row is the brand selection. Figma paints
@@ -1247,25 +1258,40 @@ new chat while nothing is running, on the next visit, or from "Refresh now"
 (`store/new-version.ts`, `lib/deployed-build.ts`). While the strip shows, the status bar stands on
 it (`--portal-notice-strip-height`) rather than over its message.
 
-The **first-time splash** (1A) is the second splash, for a new install (the verdict the rename
-splash records as `not_applicable`): what Chats, Routines, Agents and Library are for, one line
-each, the example only while a row is hovered or focused (no row starts active), then "Make it
-yours" and the way in. "Make it yours" is a control row: its light / dark pair (the theme system's
-mode) and its five colours are native radio groups, and a pointer over them never moves the rows.
-The colours are the redesign's **accent** (`store/portal-accent.ts`, `<html data-portal-accent>`): the
-brand gesture's fill, its ink and its tints (`--portal-raw-accent*`, `--portal-raw-brand-*`) take the
-pick; the navy family (canvas, veils, panels, the composer card, the sidebar's agent slabs) and the
-skin's own primary (`--dt-primary`, which a shared component's default button outside pages and
-dialogs still paints) stay as they are. Every accent keeps the blue's AA duties in both modes
-(`tokens/portal-accent-contrast.test.ts`).
+The **first-time splash** ("Welcome to Hermes", Figma "Prod - Desktop" › Onboarding 18695:17147) is
+the second splash, for a new install (the verdict the rename splash records as `not_applicable`). It
+is not a card on the stage but the stage itself (its veil over the art, edge to edge), and while it is
+up the chat sidebar stands down (`$firstTimeSplashHoldsSidebar` feeds the same route collapse that
+hides it beside a page), so the stage is the splash's alone. Step 1 is a 640 column: eyebrow, display
+title, one line, then Chats, Agents, Routines and Library as rows in one card (`--portal-welcome-card`).
+A row that a pointer, focus or tap reaches says its example in place of its line, lights its place in
+the rail (the rail's own selected fill; the open destination's selection stands down while the splash
+is up), brings the real chat sidebar back for Chats (Agents, Routines and Library have their panels
+on their own pages, which the splash does not open), and fades everything else to
+`--portal-backdrop-opacity`; from then on it carries the seen check (the band's chrome tile) for the
+rest of the showing. "Make it yours" leads to step 2: the accent's eight swatches and Light / Dark in
+one card, "Make it beautiful" (the artworks the mode draws, as cards that run the stage's width and fade
+off both sides), and the way in: Sign up and Look around where sign up is required, one button
+elsewhere. A quiet Back on the eyebrow's line returns to step 1. Every control is a native button or
+radio group; there is no ×: a nav click, Escape or the step's buttons close it.
 
-A newcomer's empty chat greets them ("Hi, I'm Hermes.") and lays four fixed starter ideas and Hide
-under the composer (`app/discovery/starter-ideas.tsx`); after two chats in which a task finished, or
-Hide, they give way to Show ideas, and the composer asks for a task instead of rotating starters.
-Where the visitor must sign up before anything runs (`store/visitor-access.ts`; no page served today
-asks it), what they send is held, not sent: the chat shows their message and Hermes' local answer with
-the way to sign up (`held-exchange.tsx`), never as a transcript, and the held message runs first once
-they are signed in.
+The colours are the redesign's **accent** (`store/portal-accent.ts`, `<html data-portal-accent>`): the
+brand gesture's fill, the ink on it, its ink and its tints (`--portal-raw-accent*`, `--portal-raw-brand-*`)
+take the pick; the bright ones (yellow, green, cyan) carry the canvas navy as their on-brand ink and a
+darkened light-mode ink, so no component special-cases them. The navy family (canvas, veils, panels,
+the composer card, the sidebar's agent slabs) and the skin's own primary (`--dt-primary`, which a
+shared component's default button outside pages and dialogs still paints) stay as they are. Every
+accent keeps the blue's AA duties in both modes (`tokens/portal-accent-contrast.test.ts`).
+
+A newcomer's empty chat is headed like the splash ("Welcome to Hermes", Figma 18695:18388) and lays four
+fixed starter ideas, each with its glyph, in two rows under the composer, then Hide
+(`app/discovery/starter-ideas.tsx`); after two chats in which a task finished, or Hide, they give way to
+Show ideas, and the composer asks for a task instead of rotating starters. Where the visitor must sign
+up before anything runs (`store/visitor-access.ts`; no page served today asks it), the composer's model
+row is "Sign up to start", the chat sidebar's foot is "Create an Account" (before the usage-stats card,
+which waits for it), and what they send is held, not sent: the chat shows their message and Hermes'
+local answer with the way to sign up (`held-exchange.tsx`, 18695:18570), never as a transcript, and the
+held message runs first once they are signed in.
 
 ### The chat sidebar is a variant
 

@@ -69,6 +69,26 @@ def _spawn_env_for_profile_b(monkeypatch, tmp_path):
     return captured[0]
 
 
+def test_deferred_worker_strips_only_unmanaged_terminal_policy(profile_b, tmp_path, monkeypatch):
+    from hermes_cli import env_loader, profiles
+
+    def missing(_name):
+        raise FileNotFoundError("assignee disappeared")
+
+    monkeypatch.setattr(profiles, "resolve_profile_env", missing)
+    monkeypatch.setattr(env_loader, "managed_dotenv_keys", lambda: {"TERMINAL_DOCKER_IMAGE"})
+    monkeypatch.setenv("terminal_home_mode", "profile")
+    monkeypatch.setenv("TERMINAL_UNRELATED", "retained")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
+    assert env["TERMINAL_DOCKER_IMAGE"] == "launch-image"
+    assert env["TERMINAL_UNRELATED"] == "retained"
+    assert not any(k.upper() in {"TERMINAL_ENV", "TERMINAL_HOME_MODE"} for k in env)
+    assert env["TERMINAL_CWD"] == str(workspace)
+    assert env["HERMES_KANBAN_TASK"] == "t1"
+
+
 def test_worker_for_another_profile_never_inherits_the_dispatchers_credentials(
         profile_b, tmp_path, monkeypatch):
     """Single-profile host (multiplex OFF) — the case the gateway-wide flag left unprotected."""

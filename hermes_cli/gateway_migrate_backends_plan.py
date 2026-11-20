@@ -690,7 +690,10 @@ def _manual_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if plan.powershell and plan.running_turns:
         why += (f" {plan.running_turns} turn(s) are running on it now: stopping it interrupts them, "
                 f"so let them finish first.")
-        plan.unsupported[0] = (item, why, steps)
+    elif plan.running_turns is None and force_interrupt:
+        why += (" Its turn activity could not be read, so turns may be running on it now: stopping it "
+                "interrupts them.")
+    plan.unsupported[0] = (item, why, steps)
     _turns_blocker(plan, force_interrupt)
 
 

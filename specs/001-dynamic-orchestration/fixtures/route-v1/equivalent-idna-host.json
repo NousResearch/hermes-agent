@@ -1,0 +1,9 @@
+{
+  "fixture_version": "route-v1-fixture/1",
+  "inputs": [
+    {"provider":"openai","product":"chatgpt","surface":"api","account_id":"café","billing_pool_id":"team-a","quota_pool_id":"team-a","model":"gpt-5","endpoint":"https://café.example/v1","region":"us"},
+    {"provider":"openai","product":"chatgpt","surface":"api","account_id":"café","billing_pool_id":"team-a","quota_pool_id":"team-a","model":"gpt-5","endpoint":"https://xn--caf-dma.example/v1","region":"us"}
+  ],
+  "expected_canonical_json": "{\"canonicalization_version\":\"route-v1\",\"provider\":\"openai\",\"product\":\"chatgpt\",\"surface\":\"api\",\"account_id\":\"café\",\"entitlement_id\":null,\"billing_pool_id\":\"team-a\",\"quota_pool_id\":\"team-a\",\"model\":\"gpt-5\",\"endpoint\":\"https://xn--caf-dma.example/v1\",\"variant\":null,\"region\":\"us\"}",
+  "expected_route_id": "route-v1:62ecec1d11c2f641496807e25e4be3dd9a992b42661cabe90da92feadbbf2832"
+}

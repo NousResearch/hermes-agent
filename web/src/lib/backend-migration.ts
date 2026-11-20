@@ -212,6 +212,14 @@ export function reasonOf(status: BackendMigrationStatus): string {
   return (status.message.split("; rolled back")[0] ?? status.message).split("; rollback incomplete")[0].trim();
 }
 
+/** The engine's per-file manual-step notes (a file put back, kept for its edits, or whose backup is missing):
+ *  words to follow, not a command to copy. */
+export function isFileNote(step: string): boolean {
+  return / was restored from its backup \(nothing to do for it\)$/.test(step)
+    || /^keep \S.* as it is \(it was edited after the migration wrote it\): /.test(step)
+    || /^the backup \S.* of \S+ is missing: /.test(step);
+}
+
 /** The engine's account of an incomplete rollback (`<reason>; rollback incomplete: <detail>`), or "". */
 export function incompleteDetail(status: BackendMigrationStatus): string {
   return (status.message.split("; rollback incomplete: ")[1] ?? "").trim();
@@ -254,7 +262,8 @@ export function viewOf(st: BackendMigrationStatus): PollView {
       if (st.refused) {
         const steps = st.manual_steps ?? [];
         // The CLI's own advice, true for a refused apply too: the steps may replace config.yaml and .env.
-        const warning = steps.length
+        // Per-file notes already say what to do with each file; the general warning would then repeat them.
+        const warning = steps.length && !steps.some(isFileNote)
           ? ["Before running these steps, save a copy of your current config.yaml and .env: the steps may "
              + "replace or remove them. To keep changes you made to those files, merge them into any backup "
              + "copy a step copies back (before you run it), or re-apply them after the last step."]

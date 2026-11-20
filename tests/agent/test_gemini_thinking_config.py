@@ -122,6 +122,29 @@ def test_gemini_provider_sends_xhigh_only_to_the_models_that_take_it(model, effo
 @pytest.mark.parametrize(
     "model,effort,level",
     [
+        ("google/gemini-4-hydrogen", "high", "high"),
+        ("google/gemini-4-hydrogen", "xhigh", "xhigh"),
+        ("google/gemini-4-neon", "xhigh", "xhigh"),
+        ("google/gemini-4-neon", "max", "xhigh"),
+        ("google/gemini-4-neon", "ultra", "xhigh"),
+        ("google/gemini-4-carbon", "xhigh", "high"),  # Argon and Carbon answer 400 to xhigh
+        ("google/gemini-4-argon", "max", "high"),
+    ],
+)
+def test_vertex_provider_sends_xhigh_only_to_the_models_that_take_it(model, effort, level):
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("vertex")
+    base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+    body = profile.build_extra_body(model=model, reasoning_config={"enabled": True, "effort": effort}, base_url=base_url)
+    assert body == {"extra_body": {"google": {"thinking_config": {"include_thoughts": True, "thinking_level": level}}}}
+    hidden = profile.build_extra_body(model=model, reasoning_config={"enabled": False, "effort": effort}, base_url=base_url)
+    assert hidden["extra_body"]["google"]["thinking_config"] == {"include_thoughts": False, "thinking_level": "low"}
+
+
+@pytest.mark.parametrize(
+    "model,effort,level",
+    [
         # Argon documents low/medium/high and 400s on "minimal" — clamp, never forward it.
         ("gemini-4-argon", "minimal", "low"),
         ("gemini-4-argon", "low", "low"),

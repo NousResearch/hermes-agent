@@ -299,7 +299,8 @@ class WorkerControls:
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval
-        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
+        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit',
+                  'kind'}
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
 

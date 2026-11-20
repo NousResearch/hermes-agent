@@ -392,7 +392,8 @@ def _prompt_frame(authority, ref, row, worker, frame):
     if len(controls.remote_responders) >= 16:
         raise AuthorityRefusal('worker_control_backpressure')
     if kind == 'approval':
-        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
+        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit',
+                  'kind'}
         data = frame.get('data')
         if set(frame) != {'type', 'data'} or not isinstance(data, dict) or set(data) - fields:
             raise AuthorityRefusal('invalid_worker_frame')

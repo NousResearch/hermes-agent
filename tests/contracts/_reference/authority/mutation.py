@@ -139,6 +139,7 @@ class MutationMixin:
                 for sid in history.session_ids:
                     if sid not in self._tables().get("sessions", {}):
                         state.snapshot["meta"][_history_key(sid)] = [history.actor.profile_id, history.actor.subject]
+            deferred = self._deferred_global_request(session_id, principal_id, request_id, parsed.operation, payload)
             affected, projection = apply_command(self, session_id, parsed, prepared, media_root, owner)
             authority = state.snapshot
             gone = None
@@ -154,4 +155,5 @@ class MutationMixin:
                       "execution_generation": runtime.get("generation", 0) if updated else expected_generation, "operation": parsed.operation, **projection}
             state.failpoints.hit(RECEIPT_FAILPOINT)
             authority["meta"][key] = canonical_json({"digest": digest, "result": result})
+            self._record_deferred_global_publication(session_id, deferred, key, result["execution_generation"])
             return MutationOutcome(result=json.loads(canonical_json(result)), replayed=False, gone=gone)

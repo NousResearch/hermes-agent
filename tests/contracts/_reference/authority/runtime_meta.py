@@ -36,6 +36,7 @@ from . import mutation_guards as guards
 from .mutation_commands import DEFERRED_PICK_PREFIX, GLOBAL_MODEL_SELECTION_KEY, VIEWER_CLOSE_PREFIX
 
 _RECEIPT_PREFIX = "gateway.mutation.v1."
+_DEFERRED_GLOBAL_PUBLICATION_PREFIX = "gateway.deferred_global_publication.v1."
 
 
 def _derive(chain: GenerationChain, generation: int) -> str:
@@ -124,6 +125,41 @@ class RuntimeMetaMixin:
     def deferred_pick(self, session_id: str) -> StoredDeferredPick | None:
         stored = self._state().snapshot["meta"].get(DEFERRED_PICK_PREFIX + session_id)
         return None if stored is None else StoredDeferredPick(pick=json.loads(stored), stored=stored)
+
+    def _deferred_global_request(self, session_id, principal_id, request_id, operation, payload):
+        if operation != "model" or payload.get("scope") != "global":
+            return None
+        meta = self._state().snapshot["meta"]
+        stored = meta.get(DEFERRED_PICK_PREFIX + session_id)
+        pick = json.loads(stored) if stored else {}
+        if (pick.get("principal_id") == principal_id and pick.get("application_id") == request_id
+                and pick.get("payload") == payload):
+            return {"principal_id": principal_id, "request_id": pick["request_id"]}
+        return None
+
+    def _record_deferred_global_publication(self, session_id, request, receipt_key, generation):
+        if request is not None:
+            self._state().snapshot["meta"][_DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id] = canonical_json(
+                {**request, "receipt_key": receipt_key, "generation": generation})
+
+    def deferred_global_model_result(self, session_id: str, *, request: PinnedIdentity | None = None) -> dict[str, Any] | None:
+        meta = self._state().snapshot["meta"]
+        stored = meta.get(_DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id)
+        if stored is None:
+            return None
+        pending = json.loads(stored)
+        if request is not None and (pending["principal_id"], pending["request_id"]) != (request.principal_id, request.request_id):
+            return None
+        return json.loads(meta[pending["receipt_key"]])["result"]
+
+    def finish_deferred_global_model_publication(self, epoch: int, *, session_id: str, generation: int) -> None:
+        state = self._state()
+        with state.transaction() as staged:
+            state.require_epoch(staged.authority, epoch)
+            meta = staged.authority["meta"]
+            key = _DEFERRED_GLOBAL_PUBLICATION_PREFIX + session_id
+            if key in meta and json.loads(meta[key])["generation"] == generation:
+                del meta[key]
 
     def forget_deferred_pick(self, session_id: str, *, stored: str) -> None:
         with self._state().transaction() as staged:

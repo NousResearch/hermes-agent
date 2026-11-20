@@ -554,6 +554,10 @@ class SessionRuntimeRepository(Protocol):
         """Delete the deferred slot while it still holds exactly ``stored``; no epoch fence."""
         ...
 
+    def finish_deferred_global_model_publication(self, epoch: int, *, session_id: str, generation: int) -> None:
+        """Under the current epoch, remove only the unfinished publication at this execution generation. Receipts remain unchanged. Called after publication succeeds or the latest-global fence makes it obsolete; a failed publication stays recoverable across reopen."""
+        ...
+
     def mark_deferred_pick_asked(self, session_id: str, *, stored: str, confirm: str) -> None:
         """Store the slot with ``awaiting_confirm = confirm`` while it still holds exactly ``stored``; no epoch fence."""
         ...
@@ -598,6 +602,10 @@ class SessionRuntimeRepository(Protocol):
 
     def deferred_pick(self, session_id: str) -> StoredDeferredPick | None:
         """The session's deferred slot."""
+        ...
+
+    def deferred_global_model_result(self, session_id: str, *, request: PinnedIdentity | None = None) -> dict[str, Any] | None:
+        """The application receipt whose deferred global model publication is unfinished, optionally restricted to its original request identity. Applying the current slot's global model pick records that relationship in the same transaction as the application receipt and global-selection fence, independently of the slot it consumes. Superseding an uncommitted slot creates no relationship; later local picks cannot erase an unfinished publication. A newer deferred global application on this session may replace it, since the older selection no longer owns the profile fence. Reading never changes either immutable receipt or its digest."""
         ...
 
     def prepare_chat_pick(self, epoch: int, *, key: str, digest: str, session_id: str, params: ChatPickParams) -> dict[str, Any] | SessionRuntimeState:

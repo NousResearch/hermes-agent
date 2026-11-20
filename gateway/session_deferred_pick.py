@@ -44,10 +44,36 @@ async def reask_on_attach(authority, ref, live):
     the stream): a newly attached viewer gets the ask again, re-checked at the next boundary."""
     import asyncio
     from gateway.session_persistence import authority_persistence
-    stored = await asyncio.to_thread(authority_persistence(authority).runtime.deferred_pick, ref.session_id)
-    if stored is not None and 'awaiting_confirm' in stored.pick:
+    runtime = authority_persistence(authority).runtime
+    stored = await asyncio.to_thread(runtime.deferred_pick, ref.session_id)
+    guarded = stored is not None and 'awaiting_confirm' in stored.pick
+    if guarded:
         live.reask_pick = True
+    pending_global = await asyncio.to_thread(runtime.deferred_global_model_result, ref.session_id)
+    if guarded or pending_global is not None:
         authority._schedule(ref)
+
+
+async def repair_global_publication(authority, ref, *, request=None, locked=False):
+    """Repair only the committed application's profile config, never its generation or events."""
+    import asyncio
+    from contextlib import nullcontext
+    from gateway.session_mutations import global_model_selection_lock
+    from gateway.session_mutation_model import persist_global_selection
+    from gateway.session_persistence import authority_persistence
+    async with nullcontext() if locked else global_model_selection_lock(authority):
+        runtime = authority_persistence(authority).runtime
+        result = await asyncio.to_thread(runtime.deferred_global_model_result, ref.session_id, request=request)
+        if result is not None:
+            # The profile fence, not a later session-local generation, owns this publication.
+            await asyncio.to_thread(persist_global_selection, authority, ref, result)
+            await asyncio.to_thread(runtime.finish_deferred_global_model_publication, authority.epoch,
+                                    session_id=ref.session_id, generation=result['execution_generation'])
+
+
+def _publication_pending(ref):
+    return {'session_id': ref.session_id, 'operation': 'model', 'status': 'publication_pending',
+            'reason': 'global_model_publication_failed'}
 
 
 async def _commit(authority, ref, entry, operation):
@@ -74,6 +100,12 @@ async def _commit(authority, ref, entry, operation):
             return None
         return {'session_id': ref.session_id, 'operation': operation, 'status': 'refused', 'reason': exc.reason}
     except Exception:
+        if (operation == 'model' and entry['payload'].get('scope') == 'global'
+                and await asyncio.to_thread(store.runtime.has_mutation_receipt, entry['principal_id'],
+                                             ref.session_id, entry['application_id'])):
+            logger.exception('Deferred global model pick on %s committed, but publication failed; retained for retry',
+                             ref.session_id)
+            return _publication_pending(ref)
         # Resolving the pick failed (provider auth, catalog, resolver crash). This runs before the
         # claim, so letting it escape would kill or wedge the drain on the same pick forever.
         logger.exception('Deferred %s pick on %s failed to resolve', operation, ref.session_id)
@@ -104,6 +136,13 @@ async def apply_deferred_pick(authority, ref, live):
     import asyncio
     from gateway.session_persistence import authority_persistence
     store = authority_persistence(authority)
+    try:
+        await repair_global_publication(authority, ref)
+    except Exception:
+        # Keep draining under the already committed policy. A failed config write stays
+        # durable independently of any newer model/reasoning pick in the pending slot.
+        logger.exception('Deferred global model publication on %s still failed; retained for retry', ref.session_id)
+        live.event_stream.publish(ref.session_id, _publication_pending(ref), event_type='session.updated')
     stored = await asyncio.to_thread(store.runtime.deferred_pick, ref.session_id)
     if stored is None:
         return
@@ -137,6 +176,8 @@ async def apply_deferred_pick(authority, ref, live):
             **({'committed_provider': provider} if provider else {})}, event_type='session.updated')
         return
     await asyncio.to_thread(store.runtime.forget_deferred_pick, ref.session_id, stored=raw)
+    if result.get('status') == 'publication_pending':
+        live.event_stream.publish(ref.session_id, result, event_type='session.updated')
     if result.get('status') == 'refused':
         logger.warning('Deferred model pick on %s not applied: %s', ref.session_id, result.get('reason'))
         # Named for the viewers that showed "applies from your next message": the target that was

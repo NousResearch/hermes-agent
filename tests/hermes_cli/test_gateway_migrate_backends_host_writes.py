@@ -159,7 +159,7 @@ def test_a_detached_run_is_never_started_inside_the_callers_unit(tmp_path, monke
 def _located_systemd_run(monkeypatch, path="/opt/managed/bin/systemd-run"):
     from hermes_platform import resolver
     monkeypatch.setattr(resolver, "locate_command",
-                        lambda name, *a, **kw: SimpleNamespace(command=path if name == "systemd-run" else None))
+                        lambda name, *a, **kw: SimpleNamespace(command=(path,) if name == "systemd-run" else ()))
 
 
 def test_a_detached_run_uses_the_managed_systemd_run_and_the_shared_child_env(tmp_path, monkeypatch):
@@ -180,6 +180,31 @@ def test_a_detached_run_uses_the_managed_systemd_run_and_the_shared_child_env(tm
     assert ran[0][0] == "/opt/managed/bin/systemd-run"
     assert f"--setenv=HERMES_HOME={tmp_path}" in ran[0]
     assert built == [{"scrub_secrets": False, "inherit_profile_home": False, "extra": {"HERMES_HOME": str(tmp_path)}}]
+
+
+@pytest.mark.platforms("posix")
+def test_a_detached_run_starts_the_real_located_systemd_run_with_a_string_argv(tmp_path, monkeypatch):
+    """Through the real locate_command and a real systemd-run executable on PATH (it records its argv): every
+    element is a str and the unit runs the given command (the resolver's .command is a tuple to splice)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    record = tmp_path / "argv.txt"
+    fake = bindir / "systemd-run"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$0" "$@" > "{record}"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    out = _InsideUnitHost(home).spawn_detached(["/opt/h/hermes", "gateway", "migrate", "--backends", "--apply"],
+                                               home / "logs" / "run.log")
+
+    argv = record.read_text(encoding="utf-8").splitlines()
+    assert out["unit"].startswith("hermes-backend-migration-") and out["unit"].endswith(".service")
+    assert argv[0] == str(fake)
+    assert argv[1:3] == ["--user", "--collect"] and f"--unit={out['unit'].removesuffix('.service')}" in argv
+    assert f"--setenv=HERMES_HOME={home}" in argv
+    assert argv[-5:] == ["/opt/h/hermes", "gateway", "migrate", "--backends", "--apply"]
 
 
 def test_existing_env_is_private_before_the_first_secret_is_written(tmp_path, monkeypatch):

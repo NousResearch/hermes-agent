@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import time
@@ -218,6 +219,24 @@ def _disconnect(args) -> int:
     return 0
 
 
+def _call(args) -> int:
+    """Prints exactly one JSON document on stdout (the tool's response) or an error on stderr."""
+    from tools.connectors.script_call import CallExit, call_connector_tool
+
+    try:
+        arguments = json.loads(args.args) if args.args else {}
+    except ValueError as exc:
+        print(f"--args is not valid JSON: {exc}", file=sys.stderr)
+        return CallExit.bad_args
+    if not isinstance(arguments, dict):
+        print("--args must be a JSON object.", file=sys.stderr)
+        return CallExit.bad_args
+    outcome = call_connector_tool(args.tool, arguments, account=args.account, allow_write=args.allow_write)
+    stream = sys.stdout if outcome.exit == CallExit.ok else sys.stderr
+    print(json.dumps(outcome.document, ensure_ascii=False), file=stream)
+    return int(outcome.exit)
+
+
 _ACTIONS: dict[str, Callable[[Any], int]] = {
     "list": _list,
     "ls": _list,
@@ -225,26 +244,32 @@ _ACTIONS: dict[str, Callable[[Any], int]] = {
     "connect": _connect,
     "rename": _rename,
     "disconnect": _disconnect,
+    "call": _call,
 }
+# ``call`` is scripted: a signed-out or unavailable gateway is its own exit code (see ``CallExit``).
+_UNAVAILABLE_EXIT: dict[str, int] = {"call": 3}
 
 
 def cmd_connectors(args) -> int:
     from tools.connectors import connectors_available
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
 
-    handler = _ACTIONS.get(getattr(args, "connectors_action", None) or "list")
+    action = getattr(args, "connectors_action", None) or "list"
+    handler = _ACTIONS.get(action)
     if handler is None:
         print(f"Unknown connectors action: {args.connectors_action}", file=sys.stderr)
         return 2
+    unavailable = _UNAVAILABLE_EXIT.get(action, 1)
     if not connectors_available():
         print(f"Connectors are not available. {_SIGN_IN}", file=sys.stderr)
-        return 1
+        return unavailable
     try:
         return handler(args)
     except _CommandError as exc:
         print(str(exc), file=sys.stderr)
     except GatewayAuthError:
         print(_SIGN_IN, file=sys.stderr)
+        return unavailable
     except ToolGatewayError as exc:
         print(str(exc), file=sys.stderr)
     return 1

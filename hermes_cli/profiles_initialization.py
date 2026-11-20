@@ -1,9 +1,11 @@
 """Initial profile files, written on the staging tree before publication."""
 import contextlib
+import errno
 import os
 import shutil
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 def clone_staging_dir(profile_dir: Path) -> Path:
@@ -16,6 +18,21 @@ def clone_staging_dir(profile_dir: Path) -> Path:
     elif staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
     return staging
+
+
+def publish_staging(staging: Path, profile_dir: Path, exists_error: Callable[[], Exception]) -> None:
+    """Rename ``staging`` onto ``profile_dir``. A create in another process that also passed the exists
+    check and published first leaves a non-empty destination: the loser raises ``exists_error()`` (the
+    usual "already exists"), not a raw ENOTEMPTY (Windows: FileExistsError, or PermissionError while the
+    destination exists). Any other failure stays raw; the caller removes its own staging."""
+    try:
+        os.rename(staging, profile_dir)
+    except OSError as exc:
+        lost = isinstance(exc, FileExistsError) or exc.errno in (errno.ENOTEMPTY, errno.EEXIST) or (
+            isinstance(exc, PermissionError) and sys.platform == "win32" and profile_dir.exists())
+        if not lost:
+            raise
+        raise exists_error() from exc
 
 
 def discard_unpublished_vault_key(ref: Optional[dict]) -> None:

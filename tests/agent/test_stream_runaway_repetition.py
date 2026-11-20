@@ -48,8 +48,10 @@ _LOOP_BUDGET = 100_000
 class _FakeEndpoint:
     """Local endpoint streaming one reply per request, on the chat or the Anthropic wire."""
 
-    def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "") -> None:
+    def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "",
+                 finish_reason: str = "stop") -> None:
         self.channel, self.text, self.endless, self.prefix = channel, text, endless, prefix
+        self.finish_reason = finish_reason
         self.requests = 0
         self._stop = threading.Event()
         endpoint = self
@@ -118,7 +120,7 @@ class _FakeEndpoint:
                     {"type": "reasoning.text", "text": f"Step {n}: weighing option {n * 7919}. ", "index": 0}]})
             else:
                 yield chunk({field: piece})
-        yield chunk({}, "stop")
+        yield chunk({}, self.finish_reason)
         yield "data: [DONE]\n\n"
 
     def _anthropic_frames(self):
@@ -153,8 +155,8 @@ def endpoint(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     started = []
 
-    def start(channel: str, text: str, *, endless: bool, prefix: str = "") -> _FakeEndpoint:
-        started.append(_FakeEndpoint(channel, text, endless=endless, prefix=prefix))
+    def start(channel: str, text: str, *, endless: bool, prefix: str = "", finish_reason: str = "stop") -> _FakeEndpoint:
+        started.append(_FakeEndpoint(channel, text, endless=endless, prefix=prefix, finish_reason=finish_reason))
         return started[-1]
 
     yield start
@@ -221,3 +223,17 @@ def test_repetitive_but_legitimate_stream_is_delivered(endpoint, text):
 
     assert result["completed"] is True
     assert result["final_response"] == text.strip()
+
+
+@pytest.mark.parametrize("finish_reason", ["repetition", "repeat"])
+def test_provider_flagged_repetition_is_not_delivered(endpoint, finish_reason):
+    """A server-side loop detector (vLLM ``repetition``, Kimi ``repeat``) ends the request itself.
+    The reply is short enough to pass every client-side scale check, so only the flag says it looped."""
+    server = endpoint("content", _ASKED_FOR_REPEAT, endless=False, finish_reason=finish_reason)
+
+    result = _run_turn(server, "chat_completions")
+
+    assert (result["completed"], result["failure_reason"]) == (False, "truncated")
+    assert "Repetition Detected" in result["final_response"]
+    assert server.requests == 1
+    assert not any(_ASKED_FOR_REPEAT[:40] in json.dumps(m) for m in result["messages"])

@@ -91,3 +91,24 @@ def test_create_with_nobody_to_answer_never_asks(cron_store, monkeypatch):
     terminal_tool.set_approval_callback(lambda *a, **k: pytest.fail("asked with nobody present"))
     assert json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))["success"] is True
     assert len(cron_store.load_jobs()) == 1
+
+
+def test_denied_create_keeps_a_script_another_job_saved_meanwhile(cron_store, monkeypatch):
+    """Chat A waits on its card while chat B saves a job on the same script; A's deny must not delete it."""
+    from hermes_constants import get_hermes_home
+    from tools.cronjob_tools import cronjob
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(command, description, **_):
+        assert json.loads(cronjob(action="create", schedule="every 2h", name="B", prompt="p",
+                                  script="shared.py", script_content=_GATE))["success"]
+        return "deny"
+    terminal_tool.set_approval_callback(callback)
+    result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, "script": "shared.py", "script_content": _GATE}))
+    assert result.get("success") is False
+    assert [j["name"] for j in cron_store.load_jobs()] == ["B"]
+    assert (get_hermes_home() / "scripts" / "shared.py").read_text() == _GATE
+    # list never writes a script, even when handed script_content
+    registry.dispatch("cronjob_manage", {"action": "list", "script_content": _GATE, "script": "listed.py"})
+    assert not (get_hermes_home() / "scripts" / "listed.py").exists()

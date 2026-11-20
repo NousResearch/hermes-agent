@@ -38,15 +38,28 @@ def _asking(monkeypatch, answer):
     return asked
 
 
-@pytest.mark.parametrize("answer, saved", [("deny", 0), ("once", 1)])
-def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved):
+_GATE = 'import json\nprint(json.dumps({"wakeAgent": False}))\n'
+
+
+@pytest.mark.parametrize("answer, saved, extra", [
+    ("deny", 0, {}), ("once", 1, {}),
+    # A script the call saves is consent text: the card shows its whole body, and a denied
+    # create leaves no file behind.
+    ("once", 1, {"script_content": _GATE}), ("deny", 0, {"script_content": _GATE}),
+])
+def test_interactive_create_is_saved_only_after_approval(cron_store, monkeypatch, answer, saved, extra):
     asked = _asking(monkeypatch, answer)
-    result = json.loads(registry.dispatch("cronjob_manage", dict(_CREATE)))
+    result = json.loads(registry.dispatch("cronjob_manage", {**_CREATE, **extra}))
     # The schedule card, not the command card, on every surface that draws one.
     assert len(asked) == 1 and asked[0][0] == "schedule"
     assert "Water" in asked[0][1] and "3 runs" in asked[0][1]
     assert result.get("success") is (saved == 1)
     assert len(cron_store.load_jobs()) == saved
+    if extra:
+        from hermes_constants import get_hermes_home
+        assert "--- script cron_water_" in asked[0][1] and asked[0][1].endswith(_GATE)
+        scripts = list((get_hermes_home() / "scripts").glob("cron_water_*.py"))
+        assert len(scripts) == saved and all(p.read_text() == _GATE for p in scripts)
 
 
 def test_create_with_nobody_to_answer_never_asks(cron_store, monkeypatch):

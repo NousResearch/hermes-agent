@@ -10,6 +10,9 @@ const STORAGE_KEY = "dashboardMovingModalDismissed";
 const RETIREMENT_DATE = new Date(2027, 0, 15);
 /** Agent settings in the web app (a hash route, like every page there). */
 const WEBAPP_SETTINGS_HASH = "/#/settings";
+/** The design's action label (13/20 semibold sans, no tracking) over the DS button's wide mono caps. */
+const ACTION_TYPE =
+  "h-[36px] px-[12px] font-sans text-[13px] leading-[20px] font-semibold tracking-normal normal-case [&_*]:font-sans [&_*]:tracking-normal";
 
 /**
  * Hermes Cloud's "your dashboard is moving" notice. A modal, not a banner:
@@ -100,7 +103,7 @@ export function DashboardMovingModal({
         ref={panelRef}
         className="flex w-full max-w-[740px] flex-col gap-6 rounded-[6px] border border-border bg-card p-6 font-sans normal-case text-midground shadow-2xl sm:p-[50px]"
       >
-        <p className="text-[10px] leading-4 tracking-[0.6px] uppercase opacity-40 sm:px-8">
+        <p className="text-[10px] leading-[16px] tracking-[0.6px] uppercase opacity-40 sm:px-8">
           {t.app.dashboardMovingMeta ?? "Legacy dashboard / Retirement"}
         </p>
 
@@ -118,7 +121,7 @@ export function DashboardMovingModal({
 
         <p
           id="dashboard-moving-body"
-          className="text-base leading-[21px] opacity-80 sm:px-8"
+          className="text-[16px] leading-[21px] opacity-80 sm:px-8"
         >
           {t.app.dashboardMovingBody ??
             "Your agents, chats, skills and routines come with you. Use the same sign-in."}
@@ -162,11 +165,12 @@ export function DashboardMovingModal({
           <Button
             data-primary
             type="button"
+            className={ACTION_TYPE}
             onClick={() => window.open(webappUrl, "_self")}
           >
             {t.app.dashboardMovingOpen ?? "Open in web app"}
           </Button>
-          <Button type="button" outlined onClick={later}>
+          <Button type="button" outlined className={ACTION_TYPE} onClick={later}>
             {t.app.dashboardMovingLater ?? "Later"}
           </Button>
         </div>
@@ -179,7 +183,7 @@ export function DashboardMovingModal({
 function Row({ title, detail }: { title: string; detail: string }) {
   return (
     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <span className="text-base leading-[21px]">{title}</span>
+      <span className="text-[16px] leading-[21px]">{title}</span>
       <span className="text-[13px] leading-[17px] opacity-60">{detail}</span>
     </span>
   );

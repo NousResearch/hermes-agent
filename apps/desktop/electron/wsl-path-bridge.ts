@@ -27,6 +27,11 @@ const SHELL_DRIVE_RE = /^\/(?:(?:cygdrive\/|mnt\/)?([a-z])|([a-z]):)(?:\/+|$)/i
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
 let cachedWslAvailability: null | boolean = null
+let wslAvailabilityRecheckAt = 0
+
+// A registry read that timed out or failed to start is not an answer: ask again
+// after this long instead of keeping "no WSL" for the whole run.
+const WSL_AVAILABILITY_RETRY_MS = 30_000
 
 const LXSS_ROOTS = [
   ['HKCU', 'HKEY_CURRENT_USER'],
@@ -66,29 +71,40 @@ export function hasRegisteredWslDistribution(output: string, root: { long: strin
  * Whether this Windows host has WSL with at least one distribution. Reads the
  * registry only (HKCU first, HKLM fallback): launching the wsl.exe stub or
  * touching a \\\\wsl$ share on a WSL-less host pops the "install WSL" console
- * (#128770). Missing keys, access errors and timeouts count as unavailable.
+ * (#128770). A missing key or an access error is a definite "no" for the run;
+ * a timeout or a failed start counts as "no" until it is checked again.
  */
 function isWslAvailable(): boolean {
-  if (cachedWslAvailability !== null) {
+  if (cachedWslAvailability !== null && (!wslAvailabilityRecheckAt || Date.now() < wslAvailabilityRecheckAt)) {
     return cachedWslAvailability
   }
 
-  cachedWslAvailability =
-    !IS_WINDOWS ||
-    LXSS_ROOTS.some(root => {
-      try {
-        const output = execFileSync('reg.exe', ['query', root.short, '/s'], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 1000,
-          windowsHide: true
-        })
+  if (!IS_WINDOWS) {
+    cachedWslAvailability = true
 
-        return hasRegisteredWslDistribution(output, root)
-      } catch {
-        return false
-      }
-    })
+    return true
+  }
+
+  let uncertain = false
+
+  cachedWslAvailability = LXSS_ROOTS.some(root => {
+    try {
+      const output = execFileSync('reg.exe', ['query', root.short, '/s'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000,
+        windowsHide: true
+      })
+
+      return hasRegisteredWslDistribution(output, root)
+    } catch (error) {
+      // reg.exe ran and exited non-zero (missing key, access denied) only when an exit status is present.
+      uncertain ||= !(error instanceof Error && 'status' in error && typeof error.status === 'number')
+
+      return false
+    }
+  })
+  wslAvailabilityRecheckAt = !cachedWslAvailability && uncertain ? Date.now() + WSL_AVAILABILITY_RETRY_MS : 0
 
   return cachedWslAvailability
 }

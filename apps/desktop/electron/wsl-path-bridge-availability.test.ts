@@ -18,6 +18,10 @@ interface Call {
   options: Record<string, unknown>
 }
 
+// reg.exe exits 1 for a missing key; a timeout or spawn failure carries no exit status.
+const missingKey = () => Object.assign(new Error('missing key'), { status: 1 })
+const timedOut = () => Object.assign(new Error('spawnSync reg.exe ETIMEDOUT'), { code: 'ETIMEDOUT', status: null })
+
 const io = vi.hoisted(() => ({
   calls: [] as Call[],
   probes: [] as string[],
@@ -35,7 +39,7 @@ vi.mock('node:child_process', () => ({
     const result = io.registry[args[1]]
 
     if (result === undefined || result instanceof Error) {
-      throw result ?? new Error('missing key')
+      throw result ?? missingKey()
     }
 
     return result
@@ -69,6 +73,7 @@ beforeEach(() => {
 
 afterEach(() => {
   Object.defineProperty(process, 'platform', { value: originalPlatform })
+  vi.restoreAllMocks()
 })
 
 const cases: [string, Record<string, Error | string>, boolean][] = [
@@ -81,7 +86,7 @@ const cases: [string, Record<string, Error | string>, boolean][] = [
   ['empty user shell and stale default', { [HKCU]: `${HKCU}\n    DefaultDistribution    REG_SZ    {stale}\n` }, false],
   ['empty distribution name', { [HKCU]: `${HKCU}\\{guid}\n    DistributionName    REG_SZ    \n` }, false],
   ['value on root instead of a distribution subkey', { [HKCU]: `${HKCU}\n    DistributionName    REG_SZ    Ubuntu\n` }, false],
-  ['registry failure', { [HKCU]: new Error('timeout'), [HKLM]: new Error('access denied') }, false]
+  ['registry failure', { [HKCU]: timedOut(), [HKLM]: missingKey() }, false]
 ]
 
 for (const [name, registry, available] of cases) {
@@ -163,4 +168,32 @@ test('remote profiles keep a drive alias as written in the picker', async () => 
   bridge.setWslBridgeProfileState('remote', false)
   assert.equal(bridge.resolvePickerDefaultPath('/mnt/c/projects', undefined, 'remote'), '/mnt/c/projects')
   assert.deepEqual(io.calls, [])
+})
+
+test('a registry read that times out is checked again after 30 s', async () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+  const bridge = await loadBridge({ [HKCU]: timedOut() })
+  const registryCalls = () => io.calls.filter(call => call.exe === 'reg.exe').length
+
+  assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '/home/alex')
+  const firstCheck = registryCalls()
+
+  now.mockReturnValue(1_029_000)
+  assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '/home/alex')
+  assert.equal(registryCalls(), firstCheck, 'no new registry read inside the window')
+
+  io.registry = { [HKCU]: registration(HKCU) }
+  now.mockReturnValue(1_031_000)
+  assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
+})
+
+test('a missing registry key stays cached for the run', async () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+  const bridge = await loadBridge({})
+
+  assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '/home/alex')
+  io.registry = { [HKCU]: registration(HKCU) }
+  now.mockReturnValue(10_000_000)
+  assert.equal(bridge.resolveLocalReadPath('/home/alex', undefined, 'local'), '/home/alex')
+  assert.equal(io.calls.filter(call => call.exe === 'reg.exe').length, 2)
 })

@@ -132,6 +132,18 @@ describe("BackendMigrationCard", () => {
     expect(button("Move anyway")).toBeDefined();
   });
 
+  it("shows unknown turn activity as the engine's blocker, and Move anyway with the engine's warning", async () => {
+    const unknown = "Cannot tell whether turns are running on the old backend (its turn activity could not be read). "
+      + "Confirm it is idle, or re-run with --force-interrupt (any running turn is interrupted).";
+    await render(planWith({ running_turns: null, blockers: [unknown] }));
+    expect(moveButton()?.disabled).toBe(true);
+    expect(container.textContent).toContain("its turn activity could not be read). Confirm it is idle. Or move anyway");
+    expect(container.textContent).not.toContain("--force-interrupt");
+    await act(async () => button("Move anyway")!.click());
+    expect(document.body.textContent).toContain(
+      "The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted.");
+  });
+
   it("reports a rolled-back run with its reason even when nothing is left to move", async () => {
     await render(planWith({ nothing_to_do: true }, {
       ...none, state: "rolled_back", step: "verify", started_at: 10, finished_at: 20,

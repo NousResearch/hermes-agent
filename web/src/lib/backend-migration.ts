@@ -66,7 +66,8 @@ export interface BackendMigrationPlan {
   gateway: { installed?: boolean; active?: boolean };
   linger: boolean | null;
   webapp_bundle_missing: string | null;
-  running_turns: number;
+  /** null: the old backend's turn activity could not be read (never 0, never idle). */
+  running_turns: number | null;
   blockers: string[];
   unsupported: { supervisor: string | null; unit: string | null; instructions: string; steps?: string[] }[];
   notices: string[];
@@ -198,6 +199,8 @@ export function blockerAdvice(blocker: string): { text: string; canForce: boolea
   const canForce = blocker.includes("--force-interrupt");
   const text = blocker
     .replace(/,? ?or re-run with --force-interrupt \(they are interrupted\)\.?/, ". Or move anyway (those replies are cut off).")
+    .replace(/,? ?or re-run with --force-interrupt \(any running turn is interrupted\)\.?/,
+      ". Or move anyway (any reply being written is cut off).")
     .replace(/Re-run with --detach\.?/, "");
   return { text: text.trim(), canForce };
 }

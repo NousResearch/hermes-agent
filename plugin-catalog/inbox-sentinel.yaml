@@ -1,6 +1,6 @@
 name: inbox-sentinel
 repo: https://github.com/eddwithers/inbox-sentinel
-sha: f70d07a4629b6007250c545ce4acbb838bc3a365
+sha: 1320fa5198ad826aaca3468e723bc7d661b01aa5
 version: "0.1.0"
 title: Inbox Sentinel
 description: >-
@@ -12,9 +12,9 @@ description: >-
   password-protected-PDF and undisclosed-recipients lures as POSSIBLE SCAM
   warnings and never drafts replies to them; over-warning is intentional, so
   false positives (e.g. legitimate password-protected statements) are
-  expected. IS-ScamShield is the first toggleable module of a
-  modular platform; modules get namespaced state only — transport, model
-  budgets and delivery stay host-owned. Gate and drafts run in two plugin-owned
+  expected. IS-ScamShield, IS-NoiseFilter and IS-SenderLearning are
+  toggleable modules of a modular platform; modules get bounded state and
+  config access — transport, model budgets and delivery stay host-owned. Gate and drafts run in two plugin-owned
   auxiliary model slots that follow the main model until pinned; daily attempt
   caps bound model calls. Sends one "not watching your inbox" alert a day if
   the mailbox can't be reached. Disclosure — runs a long-lived background poll after a
@@ -24,12 +24,12 @@ description: >-
   configured model provider; alerts run `hermes send` as a child process with
   the text on argv and may be stored by the destination; sender rules and
   counters are kept in profile plugin state; no telemetry.
-image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/f70d07a4629b6007250c545ce4acbb838bc3a365/docs/media/icon.png
+image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/1320fa5198ad826aaca3468e723bc7d661b01aa5/docs/media/icon.png
 maintainer: eddwithers
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/eddwithers/inbox-sentinel/blob/f70d07a4629b6007250c545ce4acbb838bc3a365/README.md
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/1320fa5198ad826aaca3468e723bc7d661b01aa5/README.md
 platforms: []
 known_issues:
   - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."

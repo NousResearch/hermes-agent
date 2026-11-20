@@ -5,8 +5,7 @@ from hermes_cli.kanban_db_connect import worker_handoff_guard, write_txn
 from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 
 
-def _snapshot(conn, task_id, expected_run_id):
-    guard, params = worker_handoff_guard(expected_run_id)
+def _snapshot(conn, task_id, guard, params):
     row = conn.execute(
         "SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?" + guard,
         (task_id, *params),
@@ -15,7 +14,7 @@ def _snapshot(conn, task_id, expected_run_id):
 
 
 def prepare_acceptance(conn, task_id, expected_run_id, metadata):
-    snapshot = _snapshot(conn, task_id, expected_run_id)
+    snapshot = _snapshot(conn, task_id, *worker_handoff_guard(expected_run_id))
     if snapshot is None:
         return False
     run_id, status, contract = snapshot
@@ -44,11 +43,11 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     return snapshot, collect_acceptance(contract, published_pr, assignee=assignee)
 
 
-def record_acceptance(conn, task_id, acceptance, expected_run_id):
+def record_acceptance(conn, task_id, acceptance, guard, params):
     """Called under complete_task's write_txn, before its terminal UPDATE."""
     from hermes_cli.kanban_db import _append_event
     snapshot, receipt = acceptance
-    if _snapshot(conn, task_id, expected_run_id) != snapshot:
+    if _snapshot(conn, task_id, guard, params) != snapshot:
         return False
     _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
     if not receipt["ok"]:

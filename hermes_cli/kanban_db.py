@@ -2679,7 +2679,9 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, expected_run_id):
+        # The receipt and completion settle under one lease observation and write lock.
+        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance, run_guard, run_params):
             return False
         trow = conn.execute(
             "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
@@ -2704,7 +2706,6 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        run_guard, run_params = _worker_handoff_guard(expected_run_id)
         if conn.execute(sql + run_guard, (result, now, task_id, *run_params)).rowcount != 1:
             return False
         if isinstance(metadata, dict):

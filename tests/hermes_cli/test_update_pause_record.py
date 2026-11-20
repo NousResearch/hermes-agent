@@ -858,6 +858,72 @@ def test_a_moved_head_holds_gateways_for_dependencies_only_where_a_launch_syncs_
     assert not holds or "dependencies" in why
 
 
+def _fail_update_dependency_step(root: Path) -> None:
+    """The completion bootstrap's PM step, run as the update runs it after the tree moved."""
+    from hermes_cli import update_completion
+    request = {"source": str(root), "receipt": {"update_id": "u1"}, "bytecode_cache": str(root / "bc")}
+    update_completion._prepare(request, root / "request.json", root / "result.json")
+
+
+def _fail_launch_dependency_sync(root: Path) -> None:
+    """A later launch's own sync (``hermes_bootstrap`` runs ``prepare_launch`` before anything)."""
+    from hermes_cli import venv_sync
+    venv_sync.prepare_launch(root, ["status"])
+
+
+@pytest.mark.parametrize("fail_sync", [_fail_update_dependency_step, _fail_launch_dependency_sync],
+                         ids=["the update's dependency step", "a later launch's sync"])
+def test_a_failed_dependency_sync_does_not_keep_paused_gateways_stopped(tmp_path, monkeypatch, capsys, fail_sync):
+    """#145470: the update's dependency step failed after the code swap (a timed-out download, a
+    misdetected libc). The update exits 0 (C3) and the hold left the paused gateways stopped until
+    another `hermes` command; on a cron/messaging host none comes. Every launch whose sync fails
+    runs on the previous dependency generation (a failed sync commits nothing), so the paused set
+    resumes on it too instead of waiting for a retry that may fail the same way."""
+    import pm
+    from pm import client, receipt
+    from hermes_cli import gitlock
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    (root / ".gitignore").write_text("install-stamp.json\nbc/\n*.json\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "v2")  # the update moved HEAD
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)  # the failed sync committed nothing
+    monkeypatch.setattr(client, "ensure_tools_for_sync", lambda: None)
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("Failed to download `pydantic==2.14.1`: operation timed out")))
+    monkeypatch.setattr(gitlock, "convert_treeless_checkout_first", lambda root: None)
+    monkeypatch.setattr(receipt, "last_for_update", lambda update_id: None)
+    assert pause_record.tree_is_whole(token, root)[0] is False, "premise: stale dependencies hold the set"
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        fail_sync(root)
+    assert pause_record.tree_is_whole(token, root) == (True, "")
+    # The resume says which dependencies they run on and how to finish the sync.
+    from hermes_cli import update_cmd_windows
+    monkeypatch.setattr(pause_record, "install_root", lambda: root)
+    monkeypatch.setattr(update_cmd_windows, "_resume_paused_set", lambda token: token.update(resume_needed=False))
+    update_cmd_windows._resume_unless_torn(dict(token))
+    out = capsys.readouterr().out
+    assert "left stopped" not in out
+    assert "run on the previous dependencies" in out and "`hermes gateway restart`" in out
+    # The next update's sync succeeded and the tail has not cleared the record yet: no notice.
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    update_cmd_windows._resume_unless_torn(dict(token))
+    assert "previous dependencies" not in capsys.readouterr().out
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+
+    # A later update brings other dependency inputs: the old failure is no reason to skip their sync.
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '2'\n", encoding="utf-8")
+    _git(root, "commit", "-qam", "v3")
+    assert pause_record.tree_is_whole(token, root)[0] is False
+
+
 def test_an_unmoved_head_holds_gateways_only_for_paths_the_updates_move_could_write(tmp_path):
     """Review 5411136378 decision (same HEAD): a tracked file a build/sync step rewrote is not git's
     half-written checkout; holding the set for it kept gateways stopped on every later launch."""

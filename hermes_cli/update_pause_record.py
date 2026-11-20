@@ -341,7 +341,10 @@ def _deps_hold_resume(root: Path) -> bool:
     recovery runs, so a deferred set comes back on the next launch. Anywhere else nothing a launch
     does makes them current (a developer checkout owns its own venv): the set resumes now, as it
     did before the pause was durable, and a currency the probe cannot establish never holds it
-    either — the restarted gateway's own launch syncs or reports the remedy.
+    either — the restarted gateway's own launch syncs or reports the remedy. Nor once a sync of
+    these inputs has failed (the update's dependency step or a launch's): the next launch only
+    retries it, and every launch meanwhile runs on the previous dependency generation, so the set
+    resumes on that generation instead of staying stopped where no other command runs (#145470).
     """
     if (os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
             or not (root / ".git").exists() or not (root / "pyproject.toml").is_file()):
@@ -350,9 +353,26 @@ def _deps_hold_resume(root: Path) -> bool:
         from hermes_cli.steward import read_install_stamp
         if read_install_stamp(root).get("updateMechanism") != "self":
             return False
+        from hermes_cli.venv_sync import dependency_sync_failed
+        if dependency_sync_failed(root):
+            return False
         import pm
         return not pm.venv_is_current(project_root=root)
     except Exception:  # health: allow BLE001 -- unknown currency must not strand the set: resume, the gateway's own launch syncs or names the remedy
+        return False
+
+
+def runs_on_previous_dependencies(root: Path | None = None) -> bool:
+    """A gateway started now runs on the previous dependency generation: a sync of the checkout's
+    current inputs failed and nothing has made them current since (#145470)."""
+    root = root or install_root()
+    try:
+        from hermes_cli.venv_sync import dependency_sync_failed
+        if not dependency_sync_failed(root):
+            return False
+        import pm
+        return not pm.venv_is_current(project_root=root)
+    except Exception:  # health: allow BLE001 -- feeds a notice only: an unknown currency prints none
         return False
 
 

@@ -82,9 +82,16 @@ it. Receipts and the `update.log` tee resolve to the root home
 The completion bootstrap's dependency preparation (`ensure_tools_for_sync`, `pm.sync_venv`) also
 runs after the tree moved: its failure is a `dependencies` follow-up ("dependencies not installed
 yet — the next launch retries"), exit 0, with the tail obligation armed; a prepared child that
-dies without a result is a `completion` follow-up. A Ctrl-C after the commit point closes the run
-as `interrupted` (exit 130, never `failed`) and says the new code is in place with its remaining
-steps owed.
+dies without a result is a `completion` follow-up. The failure is also recorded against the
+tree's dependency inputs, as a launch's failed sync is (`venv_sync.record_failed_sync`): a failed
+sync commits nothing, so the previous dependency generation stays selected, and the gateways the
+update paused restart on it instead of waiting for a later launch whose retry may fail the same
+way (`update_pause_record._deps_hold_resume`); the resume says they run on the previous
+dependencies, and to run `hermes update` again and then `hermes gateway restart`. Nothing restarts
+them when a later sync succeeds: the fleet restart's skip compares code commits only
+(`update_cmd_fleet._fleet_restart_skip_reason`), and a launch that finishes the sync restarts no
+gateway. A Ctrl-C after the commit point closes the run as `interrupted` (exit 130, never
+`failed`) and says the new code is in place with its remaining steps owed.
 
 Two more post-commit channels follow the same rule. The gateway `/update` marker
 (`.update_exit_code`) keeps the committed result when a gateway restart fails (systemd unit,

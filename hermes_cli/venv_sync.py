@@ -251,6 +251,22 @@ def _record_completion_attempt(root: Path, *, failed: bool, inputs: str | None =
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
 
 
+def record_failed_sync(project_root: Path) -> None:
+    """A dependency sync of the tree's current inputs failed: count it against those inputs."""
+    root = Path(project_root)
+    _record_completion_attempt(root, failed=True, inputs=_sync_inputs_digest(root))
+
+
+def dependency_sync_failed(project_root: Path) -> bool:
+    """A sync of the tree's current dependency inputs failed and no completion succeeded since."""
+    root = Path(project_root)
+    try:
+        attempts, inputs = _read_completion_attempts(_completion_attempts_path(root))
+    except (OSError, ValueError):
+        return False
+    return attempts > 0 and inputs == _sync_inputs_digest(root)
+
+
 def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, int]:
     """``(may_retry_now, attempts, backoff_seconds)`` for the owed tail.
 
@@ -595,7 +611,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
             # it, every Desktop relaunch bypasses the retry backoff and starts
             # the same expensive repair again.
             if not completed:
-                _record_completion_attempt(root, failed=True, inputs=_sync_inputs_digest(root))
+                record_failed_sync(root)
             raise
         if completed:
             clear_completion(root)

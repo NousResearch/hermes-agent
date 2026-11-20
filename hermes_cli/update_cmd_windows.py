@@ -1585,9 +1585,11 @@ def _resume_unless_torn(token: dict) -> None:
     if token.get("pause_id"):
         whole, why = pause_record.tree_is_whole(token)
         if not whole:
-            # Starting gateways now would boot them on a half-written tree or the pre-sync
-            # dependencies. The durable record keeps the obligation for the next launch, which
-            # runs after the interrupted-pull restore and the dependency sync.
+            # Starting gateways now would boot them on a half-written tree, or on the previous
+            # dependencies while a sync that has not failed yet is still owed (once it failed they
+            # start on that generation, see _deps_hold_resume). The durable record keeps the
+            # obligation for the next launch, which runs after the interrupted-pull restore and
+            # the dependency sync.
             print(f"  ⚠ Paused gateway(s) left stopped: {why}.\n"
                   "    The next `hermes` command (or `hermes update`) restarts them.")
             token["resume_needed"] = False
@@ -1596,6 +1598,9 @@ def _resume_unless_torn(token: dict) -> None:
             return
     try:
         _resume_paused_set(token)
+        if pause_record.runs_on_previous_dependencies():
+            print("  ⚠ They run on the previous dependencies: the dependency sync for this code failed.\n"
+                  "    Run `hermes update` again to finish it, then `hermes gateway restart` to load them.")
     finally:
         pause_record.sync(token)
 

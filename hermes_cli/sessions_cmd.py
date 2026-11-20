@@ -6,6 +6,7 @@ import — must run without opening the session store, which a malformed schema 
 ``hermes_cli.main`` at call time so monkeypatches keep working. Picker: :mod:`hermes_cli.sessions_cmd_browse`.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -927,7 +928,16 @@ def _cmd_rename(args, *, persistence=None):
     except ValueError as e:
         print(f"Error: {e}")
         return 1
+    _propagate_title_to_telegram_topic(persistence, resolved_session_id, title)
     print(f"Session '{resolved_session_id}' renamed to: {title}")
+
+
+def _propagate_title_to_telegram_topic(persistence, session_id: str, title: str) -> None:
+    """Best-effort mirror of a CLI rename onto the bound Telegram DM topic; no binding
+    means nothing to do and a Telegram-side failure never fails the rename."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.session_title_telegram import propagate_session_title_to_telegram_topic
+        propagate_session_title_to_telegram_topic(persistence, session_id, title)
 
 
 def _cmd_pin(args, pinning, *, persistence=None):

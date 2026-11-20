@@ -356,6 +356,41 @@ class TestSlashCommandCompleter:
         texts = {item.text for item in completions}
         assert "help" in texts
 
+    # -- substring / description matching (parity with the TUI's slash_fuzzy) --
+
+    def test_command_token_matches_mid_name_words(self):
+        """Regression for #33822 / #54388: `/audit` must reach the skill `/artifact-audit`."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {"/artifact-audit": {"description": "Check artifacts"}},
+            plugin_commands_provider=lambda: {})
+
+        hit = next(c for c in _completions(completer, "/audit") if c.text == "artifact-audit")
+
+        assert hit.start_position == -len("audit")  # replaces the whole typed word
+
+    def test_builtin_substring_hit_respects_command_filter(self):
+        def texts(command_filter=None):
+            completer = SlashCommandCompleter(
+                command_filter=command_filter, plugin_commands_provider=lambda: {})
+            return {c.text for c in _completions(completer, "/mcp")}
+
+        assert "reload-mcp" in texts()
+        assert "reload-mcp" not in texts(lambda cmd: cmd != "/reload-mcp")
+
+    def test_ranks_prefix_then_word_then_substring_then_description(self):
+        skills = {  # dict order deliberately disagrees with the expected ranking
+            "/ledger": {"description": "Audit the books"},
+            "/preaudited": {"description": "Cached results"},
+            "/artifact-audit": {"description": "Check artifacts"},
+            "/audit-log": {"description": "Show the log"},
+        }
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: skills, command_filter=lambda _cmd: False,
+            plugin_commands_provider=lambda: {})
+
+        assert [c.text for c in _completions(completer, "/audit")] == [
+            "audit-log", "artifact-audit", "preaudited", "ledger"]
+
 
 # ── Stacked slash-skill completion ──────────────────────────────────────
 
@@ -465,6 +500,12 @@ class TestGhostText:
     def test_command_name_suggestion(self):
         """/he → 'lp'"""
         assert _suggestion("/he") == "lp"
+
+    def test_substring_hit_is_not_ghosted(self):
+        """Ghost text continues what was typed, so a mid-name match can't be ghosted."""
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {"/artifact-audit": {"description": "Check artifacts"}})
+        assert _suggestion("/audit", completer=completer) is None
 
 
     # -- stacked slash-skill ghost text -----------------------------------

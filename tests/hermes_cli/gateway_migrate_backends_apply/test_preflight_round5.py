@@ -119,3 +119,33 @@ def test_a_managed_webapp_block_that_agrees_with_the_move_does_not_block(home, m
     _folder, write = managed
     write("webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 9119\n")  # what the move writes
     assert engine.cmd_apply(FakeHost(home), _args()) == engine.EXIT_OK
+
+
+_TAIL = ["dashboard", "--no-open", "--host", "0.0.0.0", "--port", "9119"]
+
+
+@pytest.mark.parametrize("argv", [["python3", "hermes_cli/main.py", *_TAIL],   # a relative script after python
+                                  ["./venv/bin/hermes", *_TAIL],              # a relative launcher
+                                  ["/venv/bin/python", "-u", "-m", "hermes_cli.main", *_TAIL]])
+def test_a_launch_that_needs_its_working_directory_is_refused_when_it_cannot_be_read(home, capsys, argv):
+    """Started again without its working directory, a relative launcher or script (or `python -m`) would
+    not be found: refused (exit 3) before the hand-started backend is stopped."""
+    host = FakeHost(home, supervisor="manual")
+    host.argv = argv
+    host.process_cwd = lambda pid: None
+
+    code = engine.cmd_apply(host, _args())
+
+    out = capsys.readouterr().out
+    assert "old_stop" not in host.calls and host.old["active"] is True
+    assert code == engine.EXIT_BLOCKED, out
+    assert "working directory could not be read" in out
+
+
+def test_a_hermes_model_flag_is_not_python_module_mode(home):
+    """`hermes -m <model> dashboard` from an absolute entry point runs anywhere: not refused."""
+    host = FakeHost(home, supervisor="manual")
+    host.argv = ["/opt/hermes/bin/hermes", "-m", "local-model", *_TAIL]
+    host.process_cwd = lambda pid: None
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK

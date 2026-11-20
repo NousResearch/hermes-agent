@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pathlib import Path
 
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli.backend_migration_marker import backend_retired_by_migration
@@ -159,6 +160,40 @@ def test_a_hermes_model_flag_is_not_python_module_mode(home):
     host.process_cwd = lambda pid: None
 
     assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+
+def _installed_launcher_argv(tmp_path) -> list:
+    """The command line the INSTALLED POSIX launcher execs, from the launcher text _launchers.py generates."""
+    import shlex
+    import sys
+    from hermes_cli import _launchers
+    repo = Path(_launchers.__file__).resolve().parents[1]
+    script = _launchers._launcher_script("hermes", repo, None)
+    target = _launchers._mint_shell_launcher("hermes", tmp_path, Path(sys.executable), script)
+    words = shlex.split(target.read_text(encoding="utf-8").split("\n", 1)[1])  # after the shebang
+    assert words[0] == "exec" and words[-1] == "$@" and "-c" in words
+    return [*words[1:-1], *_TAIL]
+
+
+@pytest.mark.parametrize("extra", [[], ["-X", "dev"], ["-W", "error"]])
+def test_the_installed_launcher_and_value_options_are_not_a_relative_script(home, tmp_path, extra):
+    """`python -I -c <bootstrap> dashboard` (the installed launcher, whose bootstrap source holds paths) and
+    `python -X dev /abs/script` need no working directory: not refused when it cannot be read."""
+    host = FakeHost(home, supervisor="manual")
+    argv = _installed_launcher_argv(tmp_path) if not extra else ["/venv/bin/python", *extra, "/opt/h/hermes_cli/main.py", *_TAIL]
+    host.argv = argv
+    host.process_cwd = lambda pid: None
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+
+def test_a_relative_script_after_a_value_option_is_still_refused(home, capsys):
+    host = FakeHost(home, supervisor="manual")
+    host.argv = ["/venv/bin/python", "-X", "dev", "hermes_cli/main.py", *_TAIL]
+    host.process_cwd = lambda pid: None
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_BLOCKED
+    assert "runs a Python script by a relative path" in capsys.readouterr().out
 
 
 class _RestartsDuringPrompt(FakeHost):

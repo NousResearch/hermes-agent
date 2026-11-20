@@ -1567,3 +1567,16 @@ def test_the_health_probe_is_bounded_by_one_timeout(home, monkeypatch):
         finally:
             release.set()
         assert time.monotonic() - started < 5 and stub.seen == ["/api/health"]
+
+
+def test_a_forced_no_service_recipe_names_the_running_turns_once(home, capsys, monkeypatch):
+    """A hand-started backend on a host with no service manager: forced past two running turns, its
+    instructions say so (once), like every other by-hand recipe."""
+    host = _no_service_host(home, monkeypatch, supervisor="manual")
+    host.turns = 2
+
+    code, out = _plan(host, capsys, force_interrupt=True)
+
+    (entry,) = out["plan"]["unsupported"]
+    assert code == engine.EXIT_UNSUPPORTED and out["plan"]["running_turns"] == 2 and entry["steps"]
+    assert entry["instructions"].count(_RUNNING) == 1

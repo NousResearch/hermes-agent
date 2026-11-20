@@ -112,12 +112,14 @@ class InMemoryLineageRepository:
     def __init__(self, backend: InMemoryBackend) -> None:
         self._backend = backend
 
-    def _chain_step(self, scope: ProfileScope, table: Mapping[str, dict[str, Any]], current: str) -> Optional[str]:
+    def _chain_step(self, scope: ProfileScope, table: Mapping[str, dict[str, Any]], current: str, *, tool: bool = False) -> Optional[str]:
         """The preferred continuation of ``current``: a child of a compression-ended parent without a fork marker, reset or tool origin; one that compressed again first, then an open one, then the most recently active."""
         parent = table.get(current)
         if parent is None or parent["end_reason"] != END_REASON_COMPRESSION:
             return None
-        candidates = [row for row in table.values() if row["parent_session_id"] == current and _descent_child(table, row)]
+        candidates = [row for row in table.values() if row["parent_session_id"] == current and (
+            (parent["source"] == row["source"] == "tool" and _descent_child(table, {**row, "source": None}))
+            if tool else _descent_child(table, row))]
         if not candidates:
             return None
 
@@ -198,6 +200,17 @@ class InMemoryLineageRepository:
             seen.add(parent_id)
             row = parent
         return SessionId(row["session_id"]) if row is not None else session_id
+
+    def tool_rotation_tip(self, session_id: SessionId) -> SessionId:
+        scope = self._backend.scope
+        table = _sessions_table(self._backend, scope)
+        walked = [str(session_id)]
+        for _ in range(_CHAIN_CAP):
+            child = self._chain_step(scope, table, walked[-1], tool=True)
+            if child is None or child in walked:
+                break
+            walked.append(child)
+        return SessionId(walked[-1])
 
     def is_fork_child(self, session_id: SessionId) -> bool:
         scope = self._backend.scope

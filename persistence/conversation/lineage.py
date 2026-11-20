@@ -112,6 +112,10 @@ class LineageRepository(Protocol):
         """The root of a ``tool``-sourced run's compression chain: climb from the session while it and its parent are both ``tool``-sourced and it would be the parent's compression continuation were it not ``tool``-sourced (no branch, delegate or reset marker naming the parent, parent ended by compression). The input for any other session and for an unknown id."""
         ...
 
+    def tool_rotation_tip(self, session_id: SessionId) -> SessionId:
+        """Tip of a tool-sourced run, following only its unmarked tool compression continuations."""
+        ...
+
     def is_fork_child(self, session_id: SessionId) -> bool:
         """Whether the session is a branch or delegate child of its parent (its config marker names the parent) or ``tool``-sourced; False for a missing row."""
         ...

@@ -382,9 +382,11 @@ def _tmux_child_env(env: dict) -> dict:
     # execution paths build a fresh env; a shared LocalEnvironment must not retain it.
     if owner := _terminal_tmux_owner.get():
         from tools.session_tmux import session_directory
-        if (directory := session_directory(owner)) is not None:
-            env.pop("TMUX", None)
-            env["TMUX_TMPDIR"] = str(directory)
+        directory = session_directory(owner)
+        env.pop("TMUX", None)
+        # A transient ownership failure must not start a job on the ambient socket
+        # or create a competing namespace. Non-tmux commands run normally.
+        env["TMUX_TMPDIR"] = str(directory) if directory is not None else os.devnull
     return env
 
 

@@ -7,7 +7,9 @@ classification is heuristic: shell builtins and unusual shells can be missed.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
+import logging
 import os
 import re
 import stat
@@ -91,13 +93,52 @@ def _directory(session_id: str, *, create: bool = False) -> Path | None:
     return path
 
 
+def _compression_root(session_id: str) -> str:
+    """Resolve only a verified compression lineage, never a general parent chain.
+
+    The reader does not create or migrate a store. Missing/unavailable persistence
+    never creates a second namespace during a transient busy read.
+    """
+    if not isinstance(session_id, str) or not _VALID.fullmatch(session_id):
+        return session_id
+    home = Path(get_hermes_home())
+    if not (home / 'state.db').is_file():
+        return session_id
+    try:
+        from persistence_assembly import open_persistence_reader
+        with open_persistence_reader(home, patience_s=0.25) as db:
+            row = db.sessions.get(session_id)
+            # The common unsplit session needs one indexed read, not a lineage walk.
+            if row is None or not row.parent_session_id:
+                return session_id
+            if row.source == 'tool':
+                root = str(db.lineage.tool_rotation_root(session_id))
+                # A losing sibling is not the published continuation chosen by the chain.
+                if root != session_id and str(db.lineage.tool_rotation_tip(root)) != str(db.lineage.tool_rotation_tip(session_id)):
+                    return session_id
+            else:
+                root, seen = session_id, {session_id}
+                while row and db.lineage.is_compression_child(row):
+                    parent = str(row.parent_session_id)
+                    if parent in seen or len(seen) >= 1000:
+                        return session_id
+                    seen.add(parent)
+                    root, row = parent, db.sessions.get(parent)
+                if root != session_id and session_id not in db.lineage.chain(root):
+                    return session_id
+            return root if _VALID.fullmatch(root) else session_id
+    except Exception:  # health: allow BLE001 -- refuse namespace creation on a transient owner lookup failure
+        logging.getLogger(__name__).debug("Cannot resolve tmux session ownership", exc_info=True)
+        return ""
+
+
 def session_directory(session_id: str) -> Path | None:
-    """Prepare the private default-server namespace; None means unsupported."""
-    return _directory(session_id, create=True)
+    """Prepare the compression-lineage-owned default-server namespace."""
+    return _directory(_compression_root(session_id), create=True)
 
 
 def _socket(session_id: str) -> Path | None:
-    directory = _directory(session_id)
+    directory = _directory(_compression_root(session_id))
     if directory is None:
         return None
     socket = directory / f"tmux-{_uid()}" / "default"
@@ -133,7 +174,12 @@ def _children() -> set[int] | None:
 
 def _fingerprint(socket: Path) -> str:
     info = socket.lstat()
-    return hashlib.sha256(f"{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}".encode()).hexdigest()[:20]
+    # Attach/detach toggles the socket mode (and thus ctime) on a live server.
+    return f"{info.st_dev}:{info.st_ino}:{getattr(info, 'st_birthtime', 0)}"
+
+
+def _generation(socket_identity: str, server_pid: str | int) -> str:
+    return hashlib.sha256(f"{socket_identity}:{server_pid}".encode()).hexdigest()[:20]
 
 
 def list_session_panes(session_id: str, *, _child_pids: set[int] | None = None, _children_known: bool = False) -> list[dict]:
@@ -166,7 +212,7 @@ def list_session_panes(session_id: str, *, _child_pids: set[int] | None = None, 
             shell = executable in _SHELLS
             active = dead != "1" and (not shell or children is None or int(pid) in children)
             ts = int(started)
-            rows.append({"session_id": f"tmux:{generation}:{pane[1:]}",
+            rows.append({"session_id": f"tmux:{_generation(generation, server_pid)}:{pane[1:]}",
                          "command": label, "cwd": "", "pid": int(pid),
                          "owner_task_id": "", "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
                          "uptime_seconds": max(0, int(time.time()) - ts),
@@ -189,7 +235,7 @@ def stop_session_pane(session_id: str, process_id: str) -> dict:
         return {"status": "not_found"}
     try:
         _, generation, pane = process_id.split(":")
-        if _fingerprint(socket) != generation:
+        if _generation(_fingerprint(socket), row['tmux_server_pid']) != generation:
             return {"status": "not_found"}
         # Check the server identity *inside* tmux before acting: replacing the
         # socket between our lstat and connect must not kill a different server.
@@ -243,4 +289,15 @@ def running_pane_owners() -> list[tuple[str, int]]:
         rows = list_session_panes(owner, _child_pids=children, _children_known=True)
         return owner, sum(row['status'] == 'running' for row in rows)
     with ThreadPoolExecutor(max_workers=min(32, len(owners))) as pool:
-        return [(owner, n) for owner, n in pool.map(count, owners) if n]
+        futures = [pool.submit(contextvars.copy_context().run, count, owner) for owner in owners]
+        results = [future.result() for future in futures]
+        active = [(owner, n) for owner, n in results if n]
+    # Project durable namespace owners to the current conversation segment.
+    if active and (Path(get_hermes_home()) / 'state.db').is_file():
+        try:
+            from persistence_assembly import open_persistence_reader
+            with open_persistence_reader(Path(get_hermes_home()), patience_s=0.25) as db:
+                active = [(str(db.lineage.tool_rotation_tip(db.lineage.tip(owner))), n) for owner, n in active]
+        except Exception:  # health: allow BLE001 -- an unavailable store leaves the owner unprojected
+            logging.getLogger(__name__).debug("Cannot project live tmux owners", exc_info=True)
+    return active

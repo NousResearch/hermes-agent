@@ -25,6 +25,7 @@ _COOLDOWN_ROW_SQL = (
 )
 
 
+_CHAIN_SOURCE_FILTER = "COALESCE(child.source, '') != 'tool'"
 _CHAIN_STEP_SQL = f"""
                     SELECT child.id
                     FROM sessions parent
@@ -34,7 +35,7 @@ _CHAIN_STEP_SQL = f"""
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND {_CHAIN_SOURCE_FILTER}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -746,6 +747,15 @@ def get_compression_lineage(holder: StoreHolder, session_id: str) -> list[str]:
         current = next_child
     # Later tips are included only when the requested session itself was compacted.
     return lineage if session_id in lineage else [session_id]
+
+
+def get_tool_rotation_tip(holder: StoreHolder, session_id: str) -> str:
+    """Walk a tool-sourced chain without adopting tool children of other sources."""
+    sql = _CHAIN_STEP_SQL.replace(_CHAIN_SOURCE_FILTER, "parent.source = 'tool' AND child.source = 'tool'")
+    def step(current: str):
+        with holder._read_ctx() as conn:
+            return conn.execute(sql, (current,)).fetchone()
+    return _walk_compression_chain(session_id, step)[-1] if session_id else session_id
 
 
 def get_tool_rotation_root(holder: StoreHolder, session_id: str) -> str:

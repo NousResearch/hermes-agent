@@ -56,7 +56,7 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
-    language_code: "en"
+    language_code: "en"                 # Not supported by eleven_multilingual_v2; see below
     voice_settings:                     # Also used by streaming TTS
       stability: 0.5
       similarity_boost: 0.8
@@ -119,7 +119,7 @@ tts:
     # normalize_audio: true
 ```
 
-Eleven v4 examples use only its supported voice settings:
+Eleven v4 examples:
 
 ```yaml
 # Highest quality
@@ -140,10 +140,19 @@ tts:
     voice_settings: {stability: 0.5, similarity_boost: 0.8}
 ```
 
-Eleven v4 supports only `stability` and `similarity_boost`. Hermes rejects enabled
-`use_speaker_boost` and non-default `style` or `speed` values before making a request; neutral
-values are omitted. Older ElevenLabs models retain their existing behavior; their `speed` is clamped
-into the ElevenLabs 0.7–1.2 band, and non-numeric or non-finite values fail before the request.
+Hermes forwards the options you set (`language_code`, `voice_settings`, `convert_options`) to
+ElevenLabs unchanged for whichever model is selected; it does not allow or block settings by model
+name. Whether a model supports, ignores or rejects an option is ElevenLabs' decision, and a
+rejection is reported as ElevenLabs' own error. Hermes never retries, switches models or removes a
+configured setting on its own. Accepted requests are not evidence that a model audibly honors
+every setting.
+
+`language_code` is the one documented limit: the
+[ElevenLabs convert reference](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+says it is not supported for `eleven_multilingual_v2` (the default model) and is ignored by models
+that do not support the given language. Hermes still passes it, but do not rely on it for those
+models. `speed` is clamped into the ElevenLabs 0.7–1.2 band, and non-numeric or non-finite values
+fail before the request.
 
 KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
 

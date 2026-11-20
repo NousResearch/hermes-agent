@@ -32,6 +32,7 @@ from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("gateway.run")
 
@@ -214,7 +215,7 @@ class GatewaySlashCommandsMixin(
 
     @staticmethod
     def _session_db_unavailable_reply() -> str:
-        from hermes_state import format_session_db_unavailable
+        from storage_user_copy import format_session_db_unavailable
         return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
     def _reply_metadata(self, event: MessageEvent):
@@ -237,7 +238,7 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
         from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
-        from tools.checkpoint_manager import CheckpointManager
+        from agent.checkpoints.manager import CheckpointManager
         policy = policy_for_source(self, source) if source is not None else None
         cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
                                       else _load_gateway_config())
@@ -744,7 +745,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from agent.checkpoints.manager import format_checkpoint_list
         mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
@@ -766,7 +767,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.rollback.none_found", cwd=cwd)
 
         # Restore by number or hash (a short hash can be all digits)
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        from agent.checkpoints.refs import resolve_checkpoint_ref
         try:
             target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:
@@ -1295,12 +1296,13 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
-        info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the allowlisted public
+        summary (no log or message text); full logs go to private storage via
+        ``hermes debug share --nous`` from the CLI."""
         from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
-                                      collect_debug_report, upload_to_pastebin)
+                                      _is_dpaste_url, _schedule_auto_delete, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_cli.debug_summary import collect_public_summary
 
         words = {w.lower() for w in (event.get_command_args() or "").split()}
         wants_local = "local" in words
@@ -1331,7 +1333,7 @@ class GatewaySlashCommandsMixin(
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
-            report = collect_debug_report(log_lines=200, dump_text=_capture_dump())
+            report = collect_public_summary(log_lines=200)
             try:
                 urls = {t("gateway.debug.report_label"): upload_to_pastebin(report)}
             except Exception as exc:
@@ -1373,7 +1375,7 @@ class GatewaySlashCommandsMixin(
         if is_managed():
             return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
 
-        project_root = Path(__file__).parent.parent.resolve()
+        project_root = Path(project_root_str())
 
         # Not a git-managed install (docker/nix/desktop-app/source): refuse
         # with the steward's own update mechanism instead of git-pulling a

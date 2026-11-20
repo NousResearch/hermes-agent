@@ -26,7 +26,9 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
-from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import (
+    _CAMEL_ALIASES, ENDPOINT_ADDRESS_FIELDS, _canonical_api_mode, _custom_provider_entry_to_provider_config,
+)
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -118,6 +120,23 @@ async def get_egress_status(profile: Optional[str] = None):
     return {"text": await config_scoped_to_thread(profile, format_status_text)}
 
 
+def _drop_carried_route_state(existing: dict, merged: dict) -> None:
+    """The form never sends key_env/api_mode and re-sends base_url unchanged, so the merge keeps
+    the old route's under a new ``model``/``auxiliary.<task>``/``delegation`` provider (#141832)."""
+    from hermes_cli.config_route_guard import drop_carried_route_state
+    drop_carried_route_state(existing.get("model"), merged.get("model"), merged)
+    deleg = merged.get("delegation")
+    # A keyless delegation.base_url runs on the PARENT's key (_resolve_delegation_credentials), so a drop
+    # there sends the main model's key to the new URL; only a named provider resolves its own key.
+    if not (isinstance(deleg, dict) and deleg.get("base_url")
+            and str(deleg.get("provider") or "").strip().lower() in ("", "custom", "auto")):
+        drop_carried_route_state(existing.get("delegation"), deleg, merged)
+    old_aux, new_aux = existing.get("auxiliary"), merged.get("auxiliary")
+    if isinstance(old_aux, dict) and isinstance(new_aux, dict):
+        for task, block in new_aux.items():
+            drop_carried_route_state(old_aux.get(task), block, merged)
+
+
 @router.put("/api/config")
 async def update_config(
     body: ConfigUpdate, profile: Optional[str] = None, preserve_language: bool = False
@@ -135,6 +154,7 @@ async def update_config(
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)
+                _drop_carried_route_state(existing, merged)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page
                 # PUTs the defaulted GET record while disk holds sparse YAML (a
@@ -574,6 +594,65 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
+_SNAKE_ORIGIN_BOUND_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd", "extra_headers")
+# The readers accept camelCase aliases (``apiKey``/``keyEnv``/``apiKeyEnv``) for the same credentials.
+_ORIGIN_BOUND_FIELDS = (*_SNAKE_ORIGIN_BOUND_FIELDS,
+                        *(camel for camel, snake in _CAMEL_ALIASES.items() if snake in _SNAKE_ORIGIN_BOUND_FIELDS))
+
+
+def _pooled_keys_left_on(old_url: str, new_url: str, pool_keys: tuple[str, ...]) -> bool:
+    """Bind the entry's manual pool rows that recorded no address to *old_url* (they were entered
+    while the entry pointed there), then report whether any manual row stays bound to another
+    origin than *new_url*. Those rows never serve the new address (``entry_scoped_pool``)."""
+    from agent.credential_pool import _is_manual_source, load_pool
+    from agent.custom_entry_pool import bind_unrecorded_rows, recorded_address
+    from utils import same_base_url_origin
+
+    left = False
+    for key in dict.fromkeys(k for k in pool_keys if k):
+        pool = load_pool(key)
+        bind_unrecorded_rows(pool, old_url)
+        left |= any(_is_manual_source(str(row.source or "")) and not same_base_url_origin(recorded_address(row, key), new_url)
+                    for row in pool.entries())
+    return left
+
+
+def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, Any], new_url: str,
+                                     submitted_key: Optional[str], pool_keys: tuple[str, ...] = ()) -> None:
+    """Strip *entry*'s stored credentials when the edit changes the endpoint's origin.
+
+    Raises 400 when credentials exist (config fields, or ``hermes auth add`` / dashboard pool
+    rows for the entry) and the payload left the key untouched (``None``): reusing them would
+    authenticate to a host they were never entered for. Pool rows stay bound to the old origin.
+    """
+    from utils import same_base_url_origin
+
+    # Migrated, legacy and hand-written entries store the address under ``api``/``url``/``baseUrl`` too.
+    old_url = next((url for url in (str(existing.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
+                    if url and not same_base_url_origin(url, new_url)), "")
+    if not old_url:
+        return
+    stored = [field for field in _ORIGIN_BOUND_FIELDS if entry.get(field)]
+    # Always run: it binds unrecorded rows to old_url, which config credentials must not short-circuit.
+    pooled_left = _pooled_keys_left_on(old_url, new_url, pool_keys)
+    if (stored or pooled_left) and submitted_key is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"The saved API key is for {old_url}, not {new_url}. "
+                    "Enter the API key for the new address to save this change."),
+        )
+    for field in stored:
+        if field != "key_env":  # _apply_endpoint_key clears or rewrites it, and its .env value
+            entry.pop(field)
+
+
+def _drop_stale_addresses(entry: dict[str, Any]) -> None:
+    """``base_url`` is the address from now on; a stale ``api``/``url``/``baseUrl`` would outrank or shadow it."""
+    for field in ENDPOINT_ADDRESS_FIELDS:
+        if field != "base_url":
+            entry.pop(field, None)
+
+
 def _store_endpoint_key(entry: dict[str, Any], env_var: str, key: str, base_url: str, own_provider: Any) -> None:
     """Save the key to ``.env`` and point the row at it; refuse (400) a variable another endpoint
     reads, so a save never sends this endpoint's key to that host."""
@@ -669,6 +748,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
     entry: dict[str, Any] = dict(existing)
+    _drop_stale_addresses(entry)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -727,6 +807,15 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
+
+    # A stored credential (and hand-written headers, which may carry one) is
+    # bound to the origin it was entered for: an edit that moves the endpoint
+    # to another scheme/host/port must supply that host's key, or an explicit
+    # blank for none, rather than ship the old secret to the new address.
+    from agent.credential_pool import _pool_keys_for_custom_entry, _normalize_custom_pool_name
+    pool_keys = _pool_keys_for_custom_entry(_normalize_custom_pool_name(str(existing.get("name") or name)),
+                                            {"provider_key": endpoint_id})
+    _drop_credentials_on_origin_move(entry, existing, base_url, body.api_key, tuple(pool_keys))
 
     # API keys never belong in config.yaml: write to .env and reference it via
     # ``key_env`` — the indirection built-in providers use and that

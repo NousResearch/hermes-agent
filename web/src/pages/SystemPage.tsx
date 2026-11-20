@@ -219,13 +219,11 @@ const MEMORY_STATUS_TONE: Record<
  *  nothing leaves the machine until the user confirms what the public paste contains. */
 interface DebugShareButtonProps {
   sharing: boolean;
-  redact: boolean;
   onConfirm: () => void;
 }
 
 function DebugShareButton({
   sharing,
-  redact,
   onConfirm,
 }: DebugShareButtonProps) {
   const [open, setOpen] = useState(false);
@@ -248,11 +246,7 @@ function DebugShareButton({
       <ConfirmDialog
         open={open}
         title="Upload debug report to a public paste?"
-        description={`Uploads system info + full logs to a public paste service.${
-          redact
-            ? " Secrets are redacted, but your"
-            : " Redaction is OFF: secrets and your"
-        } recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.`}
+        description="Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early."
         destructive
         confirmLabel="Upload"
         cancelLabel="Cancel"
@@ -596,7 +590,6 @@ export default function SystemPage() {
   // Unlike the fire-and-forget ops above, `debug share` produces shareable
   // paste URLs that are the whole point — so we surface them as real,
   // copyable links rather than a log tail.
-  const [shareRedact, setShareRedact] = useState(true);
   const [sharing, setSharing] = useState(false);
   const [shareResult, setShareResult] = useState<DebugShareResponse | null>(
     null,
@@ -622,7 +615,7 @@ export default function SystemPage() {
     setSharing(true);
     setShareResult(null);
     try {
-      const res = await api.runDebugShare({ redact: shareRedact });
+      const res = await api.runDebugShare();
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
@@ -636,7 +629,7 @@ export default function SystemPage() {
     } finally {
       setSharing(false);
     }
-  }, [shareRedact, showToast]);
+  }, [showToast]);
 
 
   // ── Update check / apply ───────────────────────────────────────────
@@ -1451,7 +1444,7 @@ export default function SystemPage() {
           </CardContent>
         </Card>
 
-        {/* Debug share — uploads a redacted report + logs, returns shareable
+        {/* Debug share — uploads the allowlisted public summary, returns shareable
             links. Separated from the buttons above because its output is
             persistent, copyable URLs, not a fire-and-forget log tail. */}
         <Card>
@@ -1462,33 +1455,16 @@ export default function SystemPage() {
                 <div className="flex flex-col">
                   <span className="text-sm font-medium">Share debug report</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
-                    Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    Uploads a summary (versions, config key names, error counts; no log lines or message text)
+                    to a public paste and returns a link for the Hermes team. Pastes auto-delete after 6 hours.
+                    Full logs go only to private storage via <code>hermes debug share --nous</code>.
                   </span>
                 </div>
               </div>
               <DebugShareButton
                 sharing={sharing}
-                redact={shareRedact}
                 onConfirm={() => void runDebugShare()}
               />
-            </div>
-
-            <div className="flex items-center gap-2.5">
-              <Checkbox
-                checked={shareRedact}
-                disabled={sharing}
-                id="share-redact"
-                onCheckedChange={(checked) => setShareRedact(checked === true)}
-              />
-
-              <Label
-                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
-                htmlFor="share-redact"
-              >
-                Redact credential-shaped tokens before upload (recommended)
-              </Label>
             </div>
 
             {shareResult && (

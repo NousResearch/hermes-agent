@@ -33,8 +33,9 @@ def repo(tmp_path, monkeypatch):
     (repo / "a.txt").write_text("a")
     _git("add", "a.txt", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: True)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: True)
     monkeypatch.setattr("tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
+    monkeypatch.setattr("tools.delegate_tool_child_run._resolve_workspace_hint", lambda _p: str(repo))
     monkeypatch.setenv("TERMINAL_CWD", str(repo))
     return repo
 

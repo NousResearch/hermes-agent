@@ -1,0 +1,19 @@
+name: dosbox-mcp
+title: dosbox-mcp
+repo: https://github.com/dosbox-automation/dosbox-mcp
+sha: 2a3af7c9f4d7c859aad48937fac0a4ede180c08a
+subdir: hermes
+version: "0.2.4"
+description: "Drive a DOS machine from the agent through dosbox-automation's own MCP bridge: type and press keys, read the screen, take screenshots, record video and audio, run Lua scripts inside the emulator, read and write its memory. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: it starts the bridge with uvx dosbox-mcp==0.2.4 from PyPI and bundles one usage skill. Disclosure — runs `uvx dosbox-mcp==0.2.4` (dosbox-automation's own bridge from PyPI) as a local stdio MCP server that talks only to the separately installed dosbox-automation emulator on 127.0.0.1, using the API token the emulator writes to its own config folder (read-only); its tools type keys, read the screen, take screenshots and recordings into the emulator's capture folder, run Lua scripts inside the emulator and read/write the emulated machine's memory, CPU registers and I/O ports; a Lua script or a direct REST call (session_info hands the agent a curl example and the token file location) can write an audio recording to any non-system path and use API routes beyond the bridge's capability mode; `bridge_start` launches the emulator binary named in the bridge's human-edited config and `bridge_setup` changes only the headless and protocol settings; host folders reach DOS only through MOUNT below the emulator's `mount_allowed_bases`; no telemetry, no accounts."
+maintainer: dosbox-automation
+tier: community
+category: tools
+docs_url: https://github.com/dosbox-automation/dosbox-mcp/tree/2a3af7c9f4d7c859aad48937fac0a4ede180c08a/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: [linux, windows, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

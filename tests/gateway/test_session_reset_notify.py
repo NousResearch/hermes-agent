@@ -24,8 +24,8 @@ def test_internal_turn_does_not_advance_activity_clock(tmp_path):
     assert reused.session_id == entry.session_id
     assert reused.updated_at == prior_activity
     assert reused.last_prompt_tokens == 123
-    rows = store._db.load_gateway_routing_entries(
-        scope=store._routing_scope()
+    rows = store.persistence.routing.load_routing_entries(
+        routing_scope=store._routing_scope()
     )
     durable = json.loads(rows[reused.session_key])
     assert durable["updated_at"] == prior_activity.isoformat()

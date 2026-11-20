@@ -208,7 +208,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     """
     if not _scan_on_install_enabled():
         return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+    from hermes_cli.plugins_install_scan import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:
@@ -460,6 +460,13 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     try:
         target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError as e:
+        from pm.filesystem import is_junction
+        link = plugins_dir / name.strip("/")
+        if link.parent == plugins_dir and (link.is_symlink() or is_junction(link)):
+            from rich.markup import escape
+            _fail(console, f"[red]Error:[/red] Plugin '{escape(name)}' is a link to {escape(os.path.realpath(link))}, outside the "
+                           "plugins directory, and Hermes does not change files there. Pull updates in that "
+                           "checkout, or delete the link to remove the plugin.")
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
         target = _resolved_user_plugin_dir(name)
@@ -487,9 +494,9 @@ _get_enabled_set = functools.partial(_config_name_set, "plugins", "enabled")
 
 def _save_enabled_set(enabled: set) -> None:
     """Frozen old-updater import: never resurrect a raw plugin-selection write."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.plugins_cmd._save_enabled_set")
 
 
 def _plugin_selection_version() -> str:
@@ -1095,6 +1102,11 @@ def _catalog():
     return plugins_cmd_catalog
 
 
+def _settings_cli():
+    from hermes_cli.plugins_settings import cli
+    return cli
+
+
 def _action_update(args):
     if args.name:
         if getattr(args, "yes", False):
@@ -1124,6 +1136,11 @@ def _action_auto_update(args):
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
+
+
+def _action_idle_tasks(args):
+    from hermes_cli.plugins_idle_tasks import cmd_idle_tasks
+    cmd_idle_tasks(args.name, pause=args.pause, resume=args.resume)
 
 
 # Tri-state flags: neither --x nor --no-x given == None == interactive prompt.
@@ -1156,12 +1173,14 @@ _PLUGIN_ACTIONS = {
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
+    "idle-tasks": _action_idle_tasks,
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
+    **dict.fromkeys(("config", "configure", "settings"), lambda args: _settings_cli().cmd_config(args.name)),
     None: lambda args: cmd_toggle(),
 }
 

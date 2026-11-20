@@ -7,6 +7,7 @@ import { afterEach, expect, test } from 'vitest'
 import { codesignTeam, stampAssertions } from '../tests/install/e2e-assets/mac-bundled-manifest.cjs'
 import { materializeFeed } from '../tests/install/e2e-assets/mac-bundled-feed.mjs'
 import { safeJoin } from '../tests/install/e2e-assets/mac-bundled-serve.mjs'
+import { releaseVersion } from '../scripts/msix-shared.mjs'
 
 const directories = []
 afterEach(() => { for (const dir of directories.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -37,14 +38,14 @@ test('installed stamp independently binds payload, mechanism, commit and tag', (
 
 test.each([
   ['arm64', 'stable', 'v0.29.0', 'arm64-stable-mac.yml'],
-  ['x64', 'canary', 'v0.30.0+canary.20260907T000000Z', 'canary-mac.yml'],
+  ['x64', 'canary', 'canary.20260907T000000Z-v0.30.0', 'canary-mac.yml'],
 ])('%s %s feed binds parsed YAML to copied artifact bytes', async (arch, channel, tag, name) => {
   const outDir = scratch()
   const zip = path.join(outDir, 'payload.zip')
   const bytes = Buffer.from('transport fixture, not a signed native package')
   fs.writeFileSync(zip, bytes)
   const sha512 = createHash('sha512').update(bytes).digest('base64')
-  const version = tag.slice(1), releaseDate = '2026-09-07T00:00:00.000Z'
+  const version = releaseVersion(tag), releaseDate = '2026-09-07T00:00:00.000Z'
   const receipt = await materializeFeed({ outDir, zipPath: zip, version, tag, arch, releaseDate })
   const directory = `releases/darwin/${channel}`, url = `/releases/tag/${tag}/payload.zip`
   expect(receipt).toMatchObject({ channel, feedKey: `${directory}/${name}`, artifactUrlPath: url, sha512 })

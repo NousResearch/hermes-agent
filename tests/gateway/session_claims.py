@@ -7,8 +7,9 @@ the turn's scope is fenced by. A test that admits and then executes must claim i
 
 def claim(authority, ref, row):
     """Claim *row* (the head of *ref*'s FIFO) under *authority*'s epoch; return the claimed row."""
-    from hermes_state_runtime import claim_session_input
+    from gateway.session_authority import admission_row
 
-    claimed = claim_session_input(authority.db, epoch=authority.epoch, session_id=ref.session_id)
+    record = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=ref.session_id)
+    claimed = admission_row(record) if record else record
     assert claimed and claimed['admission_id'] == row['admission_id'], (claimed, row)
     return claimed

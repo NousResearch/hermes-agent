@@ -12,15 +12,16 @@ import pytest
 from gateway.hosted_room_execution_policy import current_room_execution_policy
 from gateway.hosted_room_peer import catalog_mapping
 from gateway.session_api_turn import admit_api_turn, api_execution, api_policy_scope, check_api_turn
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
 
 
 def test_admission_with_a_policy_but_no_dispatch_is_refused(api, owner):
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         admit_api_turn(api, session_id='policy-only', user_message='hello', conversation_history=[],
                        room_execution_policy=_policy())
-    assert list_session_admissions(owner.db, session_id='policy-only') == []
+    assert owner.persistence.admissions.list(session_id='policy-only') == []
 
 
 def test_queued_policy_only_admission_from_an_older_build_is_not_recovered(api, owner, monkeypatch):
@@ -29,7 +30,7 @@ def test_queued_policy_only_admission_from_an_older_build_is_not_recovered(api, 
                                  user_message='hello', conversation_history=[])
     stored = json.loads(json.dumps(row['payload']))
     stored['api_turn_v1']['settings']['room_execution_policy'] = _policy()
-    owner.db._execute_write(lambda conn: conn.execute(
+    raw_holder(owner.persistence)._execute_write(lambda conn: conn.execute(
         'UPDATE session_admissions SET payload_json=? WHERE admission_id=?', (json.dumps(stored), row['admission_id'])))
     owner.sessions.clear()
     scheduled = []
@@ -37,7 +38,7 @@ def test_queued_policy_only_admission_from_an_older_build_is_not_recovered(api, 
     recover_api_turns(api)
     assert scheduled == []
     # The drain runs the same check before it claims the row.
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         check_api_turn(owner, ref, stored)
 
 

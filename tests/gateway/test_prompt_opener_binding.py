@@ -113,7 +113,7 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
     (tmp_path / "checkout" / "gateway").mkdir(parents=True)
     (tmp_path / "checkout" / ".git").mkdir()
     runner._schedule_update_notification_watch = lambda: None
-    with patch("gateway.slash_commands.__file__", str(tmp_path / "checkout" / "gateway" / "slash_commands.py")), \
+    with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
             patch("gateway.slash_commands._spawn_detached_update"), \
             patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
             patch("hermes_cli.config.is_managed", return_value=False), \
@@ -156,7 +156,7 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
     (tmp_path / "checkout" / "gateway").mkdir(parents=True)
     (tmp_path / "checkout" / ".git").mkdir()
     runner._schedule_update_notification_watch = lambda: None
-    with patch("gateway.slash_commands.__file__", str(tmp_path / "checkout" / "gateway" / "slash_commands.py")), \
+    with patch("gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
             patch("gateway.slash_commands._spawn_detached_update") as spawn, \
             patch("gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
             patch("hermes_cli.config.is_managed", return_value=False), \

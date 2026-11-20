@@ -193,6 +193,28 @@ def test_creates_of_one_name_share_a_lock_others_do_not(root, monkeypatch):
         provision_profile(ProfileCreateRequest(name="twin", clone_config=True, alias=False))
 
 
+def test_a_create_another_process_published_first_gets_already_exists(root, monkeypatch):
+    """Another process passed the exists check too and published first: the loser's publish rename hits
+    a non-empty destination (ENOTEMPTY). It gets the usual "already exists" and leaves no staging."""
+    import os
+    real = os.rename
+
+    def rename(src, dst, *a, **k):
+        if Path(dst).name == "racer":
+            Path(dst).mkdir()
+            (Path(dst) / "config.yaml").write_text("model: {}\n")
+        return real(src, dst, *a, **k)
+    monkeypatch.setattr(profiles.os, "rename", rename)
+    with pytest.raises(FileExistsError, match="A profile named 'racer' already exists"):
+        provision_profile(ProfileCreateRequest(name="racer", alias=False))
+    assert sorted(p.name for p in (root / "profiles").iterdir()) == ["racer"]
+    monkeypatch.setattr(profiles.os, "rename", real)
+    with pytest.raises(OSError) as other:  # any other publish failure stays raw
+        from hermes_cli.profiles_initialization import publish_staging
+        publish_staging(root / "missing-staging", root / "profiles" / "fresh", lambda: profiles._profile_exists_error("fresh"))
+    assert type(other.value) is FileNotFoundError and "already exists" not in str(other.value)
+
+
 def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway

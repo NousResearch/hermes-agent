@@ -1,0 +1,23 @@
+name: z0live
+repo: https://github.com/kvnloo/hermes-z0live
+sha: f1f294bc330464117625968da9aef1e04653b508
+version: "0.1.0"
+description: >-
+  See and steer z0live from any Hermes chat. z0live is a self-hosted realtime voice stack that runs beside Hermes:
+  GPT-Live or Grok Voice as the voice, with fast/medium/slow model lanes that answer while Hermes works.
+  z0live_status reports the voice engine for the next call, the lane models per tier, lane server health and a
+  summary of the latest call's event trace (read only). z0live_configure sets the engine (gpt-live or grok) and
+  the tier models. Disclosure: the tools read z0live's local files (lanes config, tier override, call traces),
+  make one loopback GET to z0live's lane server and may run `bin/z0live engine` from the user's own checkout.
+  Nothing is sent off the machine, no credentials are read, and no telemetry is emitted.
+maintainer: kvnloo
+tier: community
+category: voice
+docs_url: https://github.com/kvnloo/hermes-z0live/blob/f1f294bc330464117625968da9aef1e04653b508/README.md
+requires_hermes: ">=0.21.5"
+platforms: []
+capabilities:
+  provides_tools: [z0live_status, z0live_configure]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

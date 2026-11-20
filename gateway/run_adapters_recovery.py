@@ -280,21 +280,16 @@ class GatewaySecondaryReconnectMixin:
                 self._mark_adapter_unavailable(
                     f"{profile_name}:{platform.value}", platform, retrying=False, needs_attention=True)
                 return None, None
-            if predecessor is None:
-                # Queued without an adapter, so it never passed the startup ownership check: run it before
-                # connect() against live and held owners (but this platform's own hold from an earlier tick),
-                # and hold the claim (no await between the check and the hold) so a second healing profile
-                # with the same bot is refused meanwhile.
-                claims = self._claim_secondary_platform(
-                    profile_name, profile_home, platform, adapter,
-                    self._current_claim_owners(exclude=(profile_name, platform)))
-                if claims is None:
-                    return None, None
-                self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
-            else:  # re-hold what the rebuilt adapter claims now (its token may have changed; as on main, a
-                # reconnect with a predecessor is not re-checked against other owners)
-                self._hold_secondary_claims(
-                    profile_name, platform, asyncio.current_task(), self._adapter_claims(platform, adapter))
+            # Run the ownership check before connect() against live and held owners (but this platform's own
+            # hold: the predecessor's, or an earlier tick's): a never-built platform never passed the startup
+            # check, and a rebuilt one may claim a bot another profile took meanwhile. Hold the claim (no await
+            # between the check and the hold) so a second healing profile with the same bot is refused meanwhile.
+            claims = self._claim_secondary_platform(
+                profile_name, profile_home, platform, adapter,
+                self._current_claim_owners(exclude=(profile_name, platform)))
+            if claims is None:
+                return None, None
+            self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
             carry_inbound_dedup(predecessor, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)

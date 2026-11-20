@@ -281,9 +281,13 @@ class TestSecondaryAdapterUnavailableRecovery:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("owned_elsewhere", [False, True])
-    async def test_healed_platform_passes_the_startup_ownership_check(self, monkeypatch, owned_elsewhere):
-        """A platform queued without an adapter never met the startup duplicate-credential check, so the
-        attempt that finally builds it runs that check before connect() and records the bot's owner."""
+    @pytest.mark.parametrize("with_predecessor", [False, True])
+    async def test_healed_platform_passes_the_startup_ownership_check(
+        self, monkeypatch, owned_elsewhere, with_predecessor
+    ):
+        """A platform queued without an adapter never met the startup duplicate-credential check, and a rebuilt one
+        (queued with its failed predecessor) may claim a bot another profile took meanwhile, so every attempt runs
+        that check before connect(), records the bot's owner, and a refusal parks it as duplicate_credential."""
         runner = _secondary_recovery_runner()
         healed = _PluginPlatformRecoveryAdapter()
         healed.token = "shared-bot-token"
@@ -294,14 +298,17 @@ class TestSecondaryAdapterUnavailableRecovery:
             runner._profile_adapters["owner"] = {Platform("irc"): owner}
         connect = AsyncMock(return_value=True)
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        writes = _record_status_writes(monkeypatch, runner)
+        predecessor = _PluginPlatformRecoveryAdapter() if with_predecessor else None
 
-        adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform("irc"))
+        adapter, success = await runner._secondary_reconnect_attempt("reviewer", Platform("irc"), predecessor)
 
         owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get("reviewer", set())
         if owned_elsewhere:
             assert (adapter, success) == (None, None)
             connect.assert_not_awaited()
             assert owned == set()
+            assert ("reviewer:irc", "duplicate_credential") in [(key, kw.get("error_code")) for key, kw in writes]
         else:
             assert (adapter, success) == (healed, True)
             assert owned == {Platform("irc")}

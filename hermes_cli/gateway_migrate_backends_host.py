@@ -984,9 +984,9 @@ class SystemHost:
         env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False,
                                    extra={"HERMES_HOME": str(self.home)})
         unit = f"{DETACHED_UNIT_PREFIX}{int(time.time())}"
-        systemd_run = locate_command("systemd-run").command
+        systemd_run = locate_command("systemd-run").command  # a tuple: () when missing, else (path,)
         if systemd_run and self.gateway_kind() == "systemd":
-            cmd = [systemd_run, "--user", "--collect", f"--unit={unit}", "--quiet",
+            cmd = [*systemd_run, "--user", "--collect", f"--unit={unit}", "--quiet",
                    f"--property=StandardOutput=append:{log}", f"--property=StandardError=append:{log}",
                    *(f"--setenv={k}={env[k]}" for k in ("HERMES_HOME", "PATH") if k in env),
                    *argv]

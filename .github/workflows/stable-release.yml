@@ -678,9 +678,12 @@ jobs:
         if: >-
           ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
           && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
-        run: python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
+        run: >-
+          python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
+          --repository "$GITHUB_REPOSITORY" --public-base "$CLOUDFLARE_R2_PUBLIC_URL"
         env:
           DOCKER_TAG: ${{ needs.admit.outputs.docker-tag }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}

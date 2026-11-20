@@ -74,3 +74,7 @@ export function useComposerSendGrace({ graceMs, onCommit, ownerKey }: Options) {
 
   return { cancel, hold, holding }
 }
+
+/** The window as its callers see it: put the send on hold, take it back, or ask
+ *  whether one is waiting. */
+export type ComposerSendGrace = ReturnType<typeof useComposerSendGrace>

@@ -70,12 +70,31 @@ def _run(profile, task, home):
         task.done.set()
 
 
-def lookup(profile, *, deadline=None):
+def _home(profile):
     from hermes_constants import get_hermes_home
+    return get_hermes_home() if _is_current_profile(profile) else _resolve_profile_dir(profile.strip())
+
+
+def discovery_required(profile):
+    """A stock-only scope never competes with provider discovery waiters."""
+    from hermes_cli.skill_catalog.projection import Projection
+    home = _home(profile)
+    if Service(home).entries() or not Projection(home)._absent():
+        # A foreign process's lease is authority too, even without local entries.
+        return True
+    try:
+        with _plugin_home_scope(Path(home)):
+            config = load_config_readonly()
+            return isolation_mode(config) == 'host' and _eligible(config)
+    except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- match cold bootstrap's stock fallback on loader/config failures
+        return False
+
+
+def lookup(profile, *, deadline=None):
     end = min(deadline, time.monotonic() + 5) if deadline is not None else time.monotonic() + 5
     # Resolve without hydration/global mutation locks. Potentially blocking profile
     # secret hydration belongs to the bounded worker, not the request or ASGI loop.
-    home = get_hermes_home() if _is_current_profile(profile) else _resolve_profile_dir(profile.strip())
+    home = _home(profile)
     service = Service(home)
     entries = service.entries()
     # A local registry miss is not proof of no provider: another serving process

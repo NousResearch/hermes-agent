@@ -47,6 +47,9 @@ _lookup_executor = None
 async def _lookup_service(profile, deadline):
     """Cold joins own bounded capacity, never the stock public-search executor."""
     global _lookup_executor
+    from hermes_cli.skill_catalog.bootstrap import discovery_required
+    if not discovery_required(profile):
+        return None
     if not _lookup_slots.acquire(blocking=False):
         raise CatalogError('busy', 'Catalog discovery is busy.')
     try:
@@ -169,6 +172,16 @@ async def delegate(request, stock):
             return await public
         try:
             return await _delegate(request, completed, deadline)
+        except CatalogError as exc:
+            if exc.code != 'busy':
+                raise
+            # Optional discovery cannot discard an independent public result.
+            response = await public
+            if response.status_code != 200:
+                return response
+            data = json.loads(response.body)
+            data['provider_errors'] = [dict(code=exc.code, message=exc.message)]
+            return JSONResponse(data)
         finally:
             if not public.done():
                 public.cancel()

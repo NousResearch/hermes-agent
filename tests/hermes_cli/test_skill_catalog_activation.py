@@ -202,7 +202,93 @@ def test_cold_search_public_work_starts_before_bootstrap_join(client, cold, monk
     assert manager._discovered
 
 
-def test_cold_waiter_saturation_does_not_delay_stock_search(monkeypatch):
+def test_lookup_capacity_preserves_stock_routes(client, monkeypatch, tmp_path):
+    import asyncio
+    import hashlib
+    import httpx
+    from starlette.requests import Request
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_cli.skill_catalog import bootstrap, http
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_cli.web_routers import skills
+    from tools import skills_hub_search
+    from tests.waiting import async_wait_until
+
+    discovery = tmp_path / 'discovery'
+    make_plugin(discovery)
+    config = read_user_config_raw(discovery / 'config.yaml')
+    config['plugins']['isolation'] = 'host'
+    atomic_config_write(discovery / 'config.yaml', config)
+    release = threading.Event()
+    waiting, tasks, public_calls = [], [], []
+    original = bootstrap.lookup
+
+    def parked(_profile, task, _home):
+        try:
+            assert release.wait(10)
+        finally:
+            task.done.set()
+
+    def lookup(*args, **kwargs):
+        waiting.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    def public(*args, **kwargs):
+        public_calls.append('completed')
+        return [], {}, []
+
+    monkeypatch.setattr(skills, '_installed_hub_identifiers', lambda profile: {})
+    monkeypatch.setattr(skills_hub_search, 'parallel_search_sources', public)
+    paths = ['/api/skills/hub/official', '/api/skills/hub/official?profile=missing',
+             '/api/skills/hub/search?q=hello']
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test',
+                                    headers={_SESSION_HEADER_NAME: _SESSION_TOKEN}) as http_client:
+            async def capture():
+                rows = []
+                for path in paths:
+                    response = await http_client.get(path)
+                    rows.append((response.status_code, response.content, dict(response.headers)))
+                return rows
+
+            before = await capture()
+            assert [row[0] for row in before] == [200, 404, 200]
+            monkeypatch.setattr(bootstrap, '_run', parked)
+            monkeypatch.setattr(bootstrap, 'lookup', lookup)
+            try:
+                with _plugin_home_scope(discovery):
+                    request = Request(dict(type='http', method='GET', path=paths[0],
+                                           query_string=b'', headers=[]))
+                    tasks.extend(asyncio.create_task(http._selected_service(request, None, time.monotonic() + 8))
+                                 for _ in range(4))
+                assert await async_wait_until(lambda: len(waiting) == 4, timeout=3)
+                assert not any(task.done() for task in tasks)
+                assert await capture() == before
+                assert len(waiting) == 4, 'stock-only requests must never join discovery'
+                with _plugin_home_scope(discovery):
+                    source = 'plugin.' + hashlib.sha256(b'fixture-catalog').hexdigest() + '.team'
+                    explicit = await http_client.get('/api/skills/hub/search', params={'source': source, 'q': 'hello'})
+                    assert explicit.status_code == 429
+                    assert explicit.json()['error']['code'] == 'busy'
+                    combined = await http_client.get('/api/skills/hub/search?q=hello')
+                    assert combined.status_code == 200, combined.text
+                    assert combined.json()['results'] == []
+                    assert combined.json()['provider_errors'][0]['code'] == 'busy'
+                assert public_calls == ['completed'] * 3
+                assert not any(task.done() for task in tasks)
+            finally:
+                release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for task in tuple(bootstrap._active.values()):
+                    if task.thread is not None:
+                        task.thread.join(3)
+            assert await capture() == before
+
+    asyncio.run(run())
+
+
+def test_cold_waiter_saturation_does_not_delay_stock_search(monkeypatch, cold):
     import asyncio
     from starlette.requests import Request
     from hermes_cli.skill_catalog import bootstrap, http
@@ -210,6 +296,7 @@ def test_cold_waiter_saturation_does_not_delay_stock_search(monkeypatch):
     from tools import skills_hub_search
     from tests.waiting import async_wait_until
 
+    cold()
     release = threading.Event()
     waiting = []
     tasks = []

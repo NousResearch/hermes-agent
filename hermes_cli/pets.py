@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from agent.pet.constants import PetState
 from utils import is_truthy_value
 
 
@@ -239,6 +240,13 @@ def _cmd_doctor(args) -> int:
     elif not enabled:
         print("  → pet display is disabled. Run: hermes pets select " + active.slug)
 
+    if active is not None:
+        from agent.pet.behaviors import pet_spec  # never raises
+
+        # pet.json mistakes are dropped at render time; say so here instead of silently.
+        for warning in pet_spec(active.spritesheet).warnings:
+            print(f"  ⚠ pet.json {warning}")
+
     try:
         import PIL
     except ImportError:
@@ -399,7 +407,7 @@ _SUBCOMMANDS = (
     )),
     ("show", "Animate the active pet in the terminal", _cmd_show, (
         (("slug",), dict(nargs="?", default="", help="Pet slug (default: active)")),
-        (("--state",), dict(default="", help="Single state: idle/run/review/failed/wave/jump")),
+        (("--state",), dict(default="", help=f"Single state: {'/'.join(PetState)} (opt-in ones show the row pet.json maps)")),
         (("--cycle",), dict(action="store_true", help="Cycle through all states")),
         (("--once",), dict(action="store_true", help="Play once instead of looping")),
         (("--mode",), dict(default=None, help="Override render mode (kitty/iterm/sixel/unicode/auto)")),

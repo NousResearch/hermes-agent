@@ -1,10 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $petActivity, $petState, setPetActivity } from '@/store/pet'
+import {
+  $petActivity,
+  $petSpriteTarget,
+  $petState,
+  petInteract,
+  setPetActivity,
+  setPetHandling,
+  setPetInfo
+} from '@/store/pet'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
-import { syncPetBusyFromSessions } from './use-pet-bridge'
+import { startPetNap, syncPetBusyFromSessions } from './use-pet-bridge'
 
 const busySession = (storedId: string) => ({ ...createClientSessionState(storedId), busy: true })
 
@@ -60,5 +68,47 @@ describe('syncPetBusyFromSessions', () => {
 
     expect($petActivity.get().busy).toBe(true)
     expect($petState.get()).toBe('run')
+  })
+})
+
+describe('startPetNap', () => {
+  let stop = () => {}
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setPetActivity({ busy: false, toolRunning: false, reasoning: false, awaitingInput: false })
+    setPetInfo({ enabled: true, behaviors: { sleepAfterSeconds: 10 } })
+    stop = startPetNap()
+  })
+
+  afterEach(() => {
+    stop()
+    setPetHandling(null)
+    setPetActivity({ busy: false, sleepy: false })
+    setPetInfo({ enabled: false })
+    vi.useRealTimers()
+  })
+
+  it('resizing a sleeping pet does not wake it; a new sleep delay re-arms', () => {
+    vi.advanceTimersByTime(10_000)
+    setPetInfo({ enabled: true, scale: 0.5, behaviors: { sleepAfterSeconds: 10 } })
+    expect($petState.get()).toBe('sleep')
+
+    setPetInfo({ enabled: true, scale: 0.5, behaviors: { sleepAfterSeconds: 20 } })
+    expect($petState.get()).toBe('idle')
+    vi.advanceTimersByTime(20_000)
+    expect($petState.get()).toBe('sleep')
+  })
+
+  // Each pass re-sleeps after the delay, so this also proves a touch re-arms the nap timer.
+  it('any interaction wakes it, even on a pet with no handling rows to play', () => {
+    for (const kind of ['poke', 'pickup', 'drop', 'land'] as const) {
+      vi.advanceTimersByTime(10_000)
+      expect($petState.get()).toBe('sleep')
+
+      petInteract(kind)
+      expect($petSpriteTarget.get().state).toBe('idle')
+      expect($petActivity.get().sleepy).toBe(false)
+    }
   })
 })

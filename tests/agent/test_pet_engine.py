@@ -37,6 +37,11 @@ def test_derive_priority_order():
     assert state.derive_pet_state(reasoning=True, busy=True) is PetState.REVIEW
     # bare busy runs
     assert state.derive_pet_state(busy=True) is PetState.RUN
+    # sleepy (opt-in, pet.json) is the lowest priority; nothing at all → idle
+    assert state.derive_pet_state(sleepy=True, busy=True) is PetState.RUN
+    assert state.derive_pet_state(sleepy=True, awaiting_input=True) is PetState.WAITING
+    assert state.derive_pet_state(sleepy=True) is PetState.SLEEP
+    assert state.derive_pet_state() is PetState.IDLE
 
 
 def test_todos_all_done():
@@ -177,11 +182,8 @@ def test_trims_trailing_blank_frames(tmp_path):
         "review": 5,
         "jump": 5,
         "waiting": 0,
+        **dict.fromkeys(("sleep", "poke", "wake", "held", "fall", "land"), 6),  # opt-in; no pet.json behavior → idle row
     }
-
-
-
-
 
 
 def test_cells_grid_shape(boba_like):

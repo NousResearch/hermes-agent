@@ -33,7 +33,7 @@ from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_
 from hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from tui_gateway.pet_sheet import _pet_rows, _pet_sheet_revision
 from utils import is_truthy_value
 from session_rules.session_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -1673,16 +1673,13 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     mascot) and ``pet.hatch`` (unadopted preview)."""
     import base64
     from agent.pet import constants
-    try:
-        stat = pet.spritesheet.stat()
-        cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
-    except Exception:
-        cache_key = None
-    if cache_key is not None:
-        with _pet_payload_cache_lock:
-            cached = _pet_payload_cache.get(cache_key)
-        if cached is not None:
-            return _clone_pet_payload(cached)
+    from agent.pet.behaviors import pet_spec  # never raises
+    revision = _pet_sheet_revision(pet.spritesheet)  # sheet + pet.json, so editing either rebuilds
+    cache_key = (str(pet.spritesheet), revision, pet.slug, pet.display_name, round(scale, 4))
+    with _pet_payload_cache_lock:
+        cached = _pet_payload_cache.get(cache_key)
+    if cached is not None:
+        return copy.deepcopy(cached)
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
         from agent.pet import render
         frames_by_state = render.state_frame_counts(str(pet.spritesheet))
@@ -1690,21 +1687,21 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
         frames_by_state = {}
     raw = pet.spritesheet.read_bytes()
     mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
+    spec = pet_spec(pet.spritesheet)
+    state_rows, frames_by_row = _pet_rows(pet.spritesheet, spec.rows)
     payload = {
         "slug": pet.slug, "displayName": pet.display_name, "mime": mime,
         "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
-        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "frameW": constants.FRAME_W,
+        "spritesheetRevision": revision, "frameW": constants.FRAME_W,
         "frameH": constants.FRAME_H, "framesPerState": constants.FRAMES_PER_STATE,
-        "framesByState": frames_by_state,
-        "framesByRow": _pet_row_frame_counts(pet.spritesheet), "loopMs": constants.LOOP_MS,
-        "scale": scale, "stateRows": _pet_state_rows(pet.spritesheet),
+        "framesByState": frames_by_state, "framesByRow": frames_by_row, "loopMs": constants.LOOP_MS,
+        "scale": scale, "stateRows": state_rows, "behaviors": spec.payload(),
     }
-    if cache_key is not None:
-        with _pet_payload_cache_lock:
-            _pet_payload_cache[cache_key] = payload
-            while len(_pet_payload_cache) > 8:
-                _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
-    return _clone_pet_payload(payload)
+    with _pet_payload_cache_lock:
+        _pet_payload_cache[cache_key] = payload
+        while len(_pet_payload_cache) > 8:
+            _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
+    return copy.deepcopy(payload)
 
 
 def _pet_active_selection():

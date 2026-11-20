@@ -2,7 +2,16 @@ import { atom } from 'nanostores'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import { $petActivity, $petInfo, $petUnread, clearPetUnread, type PetActivity, type PetInfo } from '@/store/pet'
+import {
+  $petActivity,
+  $petInfo,
+  $petPluginReaction,
+  $petUnread,
+  clearPetUnread,
+  type PetActivity,
+  type PetInfo,
+  type PetPluginReaction
+} from '@/store/pet'
 import { $petPluginMessages, type PetPluginMessage } from '@/store/pet-plugin-messages'
 
 /**
@@ -51,6 +60,8 @@ export interface PetOverlayStatePayload {
   reaction: PetReaction | null
   /** Live plugin bubble lines (`ctx.pet.say`); this renderer owns their expiry. */
   pluginMessages?: PetPluginMessage[]
+  /** The playing plugin reaction (`ctx.pet.react`); this renderer owns its expiry. */
+  pluginReaction?: PetPluginReaction | null
 }
 
 export type PetOverlayControl =
@@ -151,7 +162,8 @@ function currentPayload(): PetOverlayStatePayload {
     awaiting: PRIMARY_SESSION_VIEW.$awaitingResponse.get(),
     unread: $petUnread.get(),
     reaction: $petReaction.get(),
-    pluginMessages: $petPluginMessages.get()
+    pluginMessages: $petPluginMessages.get(),
+    pluginReaction: $petPluginReaction.get()
   }
 }
 
@@ -189,7 +201,8 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     PRIMARY_SESSION_VIEW.$awaitingResponse.subscribe(pushNow),
     $petUnread.subscribe(pushNow),
     $petReaction.subscribe(pushNow),
-    $petPluginMessages.subscribe(pushNow)
+    $petPluginMessages.subscribe(pushNow),
+    $petPluginReaction.subscribe(pushNow)
   ]
 }
 

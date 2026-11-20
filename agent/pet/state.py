@@ -29,6 +29,7 @@ def derive_pet_state(
     just_completed: bool = False,
     tool_running: bool = False,
     reasoning: bool = False,
+    sleepy: bool = False,
 ) -> PetState:
     """Resolve the animation state from coarse activity signals.
 
@@ -43,7 +44,8 @@ def derive_pet_state(
     5. ``tool_running``   → ``RUN``
     6. ``reasoning``      → ``REVIEW``
     7. ``busy``           → ``RUN``     (turn in flight, unspecified work)
-    8. otherwise          → ``IDLE``
+    8. ``sleepy``         → ``SLEEP``   (at rest past the pet's declared ``sleep`` delay)
+    9. otherwise          → ``IDLE``
     """
     ranked = (
         (error, PetState.FAILED),
@@ -53,5 +55,6 @@ def derive_pet_state(
         (tool_running, PetState.RUN),
         (reasoning, PetState.REVIEW),
         (busy, PetState.RUN),
+        (sleepy, PetState.SLEEP),
     )
     return next((state for flag, state in ranked if flag), PetState.IDLE)

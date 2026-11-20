@@ -660,12 +660,14 @@ class CLIStatusBarMixin:
         self._pet_kitty_cache.clear()
         self._pet_kitty_pending = ""
         self._pet_kitty_image_id = 0
+        self._pet_sleep_after = 0.0
 
     def _pet_resolve_config(self) -> None:
         """(Re)resolve the active pet from config so ``/pet`` / ``hermes pets`` changes apply
         without a restart (mirrors the TUI's steady poll). Fail-open: any problem disables."""
         try:
             from agent.pet import constants, store
+            from agent.pet.behaviors import pet_spec  # never raises
             from hermes_cli.config import load_config
             from utils import is_truthy_value
 
@@ -710,6 +712,7 @@ class CLIStatusBarMixin:
                     self._pet_kitty_pending = ""
                     self._pet_kitty_image_id = pet_render.kitty_image_id(pet.slug)
                     self._pet_frame_idx = 0
+                self._pet_sleep_after = pet_spec(pet.spritesheet).sleep_after  # re-read each poll: pet.json edits apply
                 self._pet_enabled = True
         except Exception:
             with self._pet_lock:
@@ -758,11 +761,20 @@ class CLIStatusBarMixin:
             or self._sudo_state
             or self._secret_state
             or getattr(self, "_slash_confirm_state", None))
+        running = getattr(self, "_agent_running", False)
         return derive_pet_state(
             awaiting_input=awaiting_input,
-            busy=getattr(self, "_agent_running", False),
+            busy=running,
             reasoning=self._pet_reasoning,
+            sleepy=self._pet_sleepy(running or awaiting_input),
         ).value
+
+    def _pet_sleepy(self, active: bool) -> bool:
+        """At rest longer than the pet's ``pet.json`` ``sleep.afterSeconds`` (never for pets without one)."""
+        now = time.monotonic()
+        if active:
+            self._pet_last_active = now
+        return not active and bool(self._pet_sleep_after) and now - self._pet_last_active > self._pet_sleep_after
 
     def _pet_frames_for(self, state: str) -> list:
         """Return (and cache) the half-block grids for one state."""

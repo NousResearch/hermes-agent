@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from datetime import datetime
 from hermes_cli.fallback_config import get_fallback_chain
 from pathlib import Path
@@ -557,6 +558,8 @@ class CLIInitMixin:
         self._pet_cfg_checked = self._pet_event_until = 0.0
         self._pet_event: str = ""
         self._pet_reasoning = self._pet_turn_error = False
+        self._pet_sleep_after = 0.0  # pet.json ``sleep.afterSeconds`` of the active pet (0 = never sleeps)
+        self._pet_last_active = time.monotonic()
         self._attached_images: list[Path] = []
         self._image_counter = 0
         # Ctrl+S prompt stash; in-memory only because drafts routinely contain secrets.

@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
+import { roamHopRow, roamWalkRow } from '@/components/pet/pet-rows'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -13,7 +14,31 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
  * `agent/pet/state.py` so the Python and TS surfaces never drift.
  */
 
-export type PetState = 'idle' | 'wave' | 'run' | 'failed' | 'review' | 'jump' | 'waiting'
+// The user handling the in-window pet: a click (`poke`, or `wake` on a sleeping
+// pet), carrying it (`held`), dropping from height (`fall`), touchdown (`land`).
+const HANDLING_STATES = ['poke', 'wake', 'held', 'fall', 'land'] as const
+export type PetHandlingState = (typeof HANDLING_STATES)[number]
+
+// Plugin code is untyped at runtime: `react()` only accepts these names.
+const PET_STATES = ['idle', 'wave', 'run', 'failed', 'review', 'jump', 'waiting', 'sleep', ...HANDLING_STATES] as const
+export type PetState = (typeof PET_STATES)[number]
+
+/** What a plugin hears through `ctx.pet.onInteract`. */
+export type PetInteraction = 'poke' | 'pickup' | 'drop' | 'land'
+
+/** Context passed with each `ctx.pet.onInteract` event. */
+export interface PetInteractInfo {
+  /** The pet was asleep when touched (any interaction wakes it). */
+  asleep: boolean
+}
+
+/** Per-pet behaviors from `pet.json` (mirrors `agent.pet.behaviors.PetSpec.payload`); absent when it declares none. */
+export interface PetBehaviors {
+  /** State → the rows it plays; several rotate, each held `holdSeconds[state]` (default 30). */
+  rows?: Partial<Record<PetState, string[]>>
+  sleepAfterSeconds?: number
+  holdSeconds?: Partial<Record<PetState, number>>
+}
 
 export interface PetInfo {
   enabled: boolean
@@ -37,6 +62,7 @@ export interface PetInfo {
   loopMs?: number
   scale?: number
   stateRows?: string[]
+  behaviors?: PetBehaviors
 }
 
 export interface PetInfoMeta {
@@ -94,6 +120,8 @@ export interface PetActivity {
   error?: boolean
   justCompleted?: boolean
   celebrate?: boolean
+  /** At rest past the pet's declared sleep delay (only pets whose pet.json opts in). */
+  sleepy?: boolean
 }
 
 /**
@@ -101,7 +129,7 @@ export interface PetActivity {
  *
  * Priority (highest first) mirrors `agent.pet.state.derive_pet_state`:
  * error → celebrate → justCompleted → awaitingInput → toolRunning → reasoning →
- * busy → idle. `awaitingInput` (a clarify/approval blocking on the user) outranks
+ * busy → sleepy → idle. `awaitingInput` (a clarify/approval blocking on the user) outranks
  * the in-flight signals because the turn is paused on you, not working.
  */
 export function derivePetState(activity: PetActivity): PetState {
@@ -133,7 +161,7 @@ export function derivePetState(activity: PetActivity): PetState {
     return 'run'
   }
 
-  return 'idle'
+  return activity.sleepy ? 'sleep' : 'idle'
 }
 
 export const $petInfo = atom<PetInfo>({ enabled: false })
@@ -205,7 +233,8 @@ function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
     reasoning: live && activity.reasoning,
     error: activity.error,
     justCompleted: activity.justCompleted,
-    celebrate: activity.celebrate
+    celebrate: activity.celebrate,
+    sleepy: activity.sleepy
   })
 }
 
@@ -251,6 +280,111 @@ export const $petAtRest = computed(
   (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
 )
 
+/** The live state with the nap ignored: what `startPetNap` arms on (notifies only when it changes). */
+export const $petAwakeState = computed([$petActivity, PRIMARY_SESSION_VIEW.$busy], (activity, busy) =>
+  deriveLivePetState({ ...activity, sleepy: false }, busy)
+)
+
+/** The handling phase the user has the floating pet in, or null. Purely visual: it never reaches `$petState`. */
+export const $petHandling = atom<PetHandlingState | null>(null)
+
+let handlingTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Play a handling state (`ms` makes it a one-shot), or clear it with null. */
+export const setPetHandling = (state: PetHandlingState | null, ms?: number) => {
+  clearTimeout(handlingTimer)
+  $petHandling.set(state)
+
+  if (state && ms) {
+    handlingTimer = setTimeout(() => $petHandling.set(null), ms)
+  }
+}
+
+type PetInteractListener = (kind: PetInteraction, info: PetInteractInfo) => void
+
+const interactListeners = new Set<PetInteractListener>()
+
+/** Hear the user handle the pet. Returns an unsubscribe. */
+export function onPetInteract(listener: PetInteractListener): () => void {
+  interactListeners.add(listener)
+
+  return () => void interactListeners.delete(listener)
+}
+
+/** The pet's pet.json maps `state` to a row its sheet has (the gateway drops the rest). */
+export const petMaps = (state: PetState, info = $petInfo.get()): boolean =>
+  Boolean(info.behaviors?.rows?.[state]?.length)
+
+const INTERACT_STATES: Record<PetInteraction, PetHandlingState | null> = {
+  poke: 'poke',
+  pickup: 'held',
+  drop: null,
+  land: 'land'
+}
+
+/**
+ * The user touched the floating pet: record the phase's handling state (`state`
+ * overrides the table, e.g. `fall` for a drop that falls; a poke on a sleeping
+ * pet that maps `wake` plays that) and tell plugins whether it was asleep. A
+ * throwing plugin listener can't break the drag.
+ */
+export function petInteract(kind: PetInteraction, state = INTERACT_STATES[kind]): void {
+  const asleep = $petState.get() === 'sleep'
+  const oneShot = kind === 'poke' || kind === 'land'
+
+  setPetHandling(
+    kind === 'poke' && asleep && petMaps('wake') ? 'wake' : state,
+    oneShot ? ($petInfo.get().loopMs ?? 1100) : undefined
+  )
+
+  for (const listener of [...interactListeners]) {
+    try {
+      listener(kind, { asleep })
+    } catch (error) {
+      console.error('[plugins] pet interaction listener failed', error)
+    }
+  }
+}
+
+/** A plugin's brief reaction (`ctx.pet.react`): the latest call wins. */
+export interface PetPluginReaction {
+  owner: string
+  state: PetState
+}
+
+export const $petPluginReaction = atom<PetPluginReaction | null>(null)
+const PET_REACT_MAX_MS = 10_000
+
+let reactionTimer: ReturnType<typeof setTimeout> | undefined
+
+const endReaction = (matches: (r: PetPluginReaction) => boolean) => {
+  const current = $petPluginReaction.get()
+
+  if (current && matches(current)) {
+    clearTimeout(reactionTimer)
+    $petPluginReaction.set(null)
+  }
+}
+
+/** Play `state`'s row for `ms` (default one animation loop, capped). Returns a cancel. */
+export function reactPet(owner: string, state: PetState, ms?: number): () => void {
+  if (!(PET_STATES as readonly string[]).includes(state)) {
+    return () => {}
+  }
+
+  const reaction = { owner, state }
+  const end = () => endReaction(r => r === reaction)
+
+  clearTimeout(reactionTimer)
+  $petPluginReaction.set(reaction)
+  reactionTimer = setTimeout(end, Math.min(PET_REACT_MAX_MS, ms ?? $petInfo.get().loopMs ?? 1100))
+
+  return end
+}
+
+/** Drop `owner`'s reaction if it's the one playing (plugin unload). */
+export const clearPetReaction = (owner: string) => endReaction(r => r.owner === owner)
+
 /**
  * The live pet state. Activity always wins; only when the agent is at rest does
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
@@ -262,5 +396,47 @@ export const $petState = computed(
     const base = deriveLivePetState(activity, busy)
 
     return base === 'idle' && motion ? motion : base
+  }
+)
+
+// Failed / waiting-on-you need the user, and a sleeping pet stays asleep until
+// something real wakes it: a plugin reaction never shows over them.
+const REACTION_BLOCKED: ReadonlySet<PetState> = new Set<PetState>(['failed', 'waiting', 'sleep'])
+
+const $petShownReaction = computed([$petState, $petPluginReaction], (state, reaction) =>
+  reaction && !REACTION_BLOCKED.has(state) ? reaction.state : null
+)
+
+/** The user is handling the pet or a reaction plays: the wander holds still, so it only moves on a walk / hop row. */
+export const $petPosing = computed(
+  [$petHandling, $petShownReaction],
+  (handling, reaction) => handling !== null || reaction !== null
+)
+
+/** What the canvas draws: a concrete `row` (else `state`'s), and the travel facing (`undefined` at rest). */
+export interface PetSpriteTarget {
+  mirror?: boolean
+  row?: string
+  state: PetState
+}
+
+/**
+ * The one resolved sprite target, highest first: a handling state the pet maps
+ * (the user is holding it), a plugin reaction, the roam's walk / hop row, the
+ * live state. A pose while travelling faces the travel direction (the art faces
+ * left, so rightward mirrors); a directional walk row brings its own mirror.
+ */
+export const $petSpriteTarget = computed(
+  [$petState, $petHandling, $petShownReaction, $petInfo, $petRoamDir, $petMotion],
+  (state, handling, reaction, info, dir, motion): PetSpriteTarget => {
+    const pose = (handling && petMaps(handling, info) ? handling : null) ?? reaction
+
+    if (pose) {
+      return { mirror: dir ? dir > 0 : undefined, state: pose }
+    }
+
+    const walk = roamWalkRow(dir, info.stateRows)
+
+    return { mirror: dir ? walk.mirror : undefined, row: walk.row ?? roamHopRow(motion, info.stateRows), state }
   }
 )

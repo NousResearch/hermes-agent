@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 
@@ -6,12 +6,17 @@ import {
   $petActivity,
   $petAtRest,
   $petMotion,
+  $petSpriteTarget,
   $petState,
+  clearPetReaction,
   derivePetState,
   flashPetActivity,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  setPetActivity
+  reactPet,
+  setPetActivity,
+  setPetHandling,
+  setPetInfo
 } from './pet'
 import { $activeSessionId, $busy } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
@@ -150,5 +155,90 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     publishSessionState(runtimeId, slice(false))
     expect($petState.get()).toBe('idle')
     expect($petAtRest.get()).toBe(true)
+  })
+})
+
+describe('sleepy (pet.json behaviors.sleep)', () => {
+  it('naps only at rest; a napping pet neither wanders nor shows the roam pose', () => {
+    expect(derivePetState({ sleepy: true, busy: true })).toBe('run')
+    expect(derivePetState({ sleepy: true, awaitingInput: true })).toBe('waiting')
+
+    $petActivity.set({ sleepy: true })
+    $petMotion.set('jump')
+
+    expect($petAtRest.get()).toBe(false)
+    expect($petState.get()).toBe('sleep')
+
+    $petActivity.set({})
+    $petMotion.set(null)
+  })
+})
+
+describe('$petSpriteTarget: handling states and plugin reactions over the live state', () => {
+  const pose = () => $petSpriteTarget.get().state
+
+  afterEach(() => {
+    vi.useRealTimers()
+    setPetHandling(null)
+    clearPetReaction('a')
+    clearPetReaction('b')
+    $petActivity.set({})
+    setPetInfo({ enabled: false })
+  })
+
+  it('plays a reaction over idle / working for one loop, never over failed, waiting or sleep', () => {
+    vi.useFakeTimers()
+    setPetInfo({ enabled: true, loopMs: 1000 })
+
+    reactPet('a', 'wave')
+    expect(pose()).toBe('wave')
+    vi.advanceTimersByTime(999)
+    expect(pose()).toBe('wave')
+    vi.advanceTimersByTime(1)
+    expect(pose()).toBe('idle')
+
+    $petActivity.set({ busy: true })
+    reactPet('a', 'jump', 500)
+    expect(pose()).toBe('jump')
+
+    for (const [activity, state] of [
+      [{ error: true }, 'failed'],
+      [{ awaitingInput: true }, 'waiting'],
+      [{ sleepy: true }, 'sleep']
+    ] as const) {
+      $petActivity.set(activity)
+      reactPet('a', 'jump', 500)
+      expect(pose()).toBe(state)
+    }
+  })
+
+  it("cancels early, and an unload clears only that plugin's reaction", () => {
+    const cancel = reactPet('a', 'wave', 5000)
+    cancel()
+    expect(pose()).toBe('idle')
+
+    reactPet('a', 'wave', 5000)
+    reactPet('b', 'jump', 5000)
+    clearPetReaction('a')
+    expect(pose()).toBe('jump')
+    clearPetReaction('b')
+    expect(pose()).toBe('idle')
+  })
+
+  it('a mapped handling state outranks everything visually but never reaches $petState', () => {
+    setPetHandling('poke')
+    expect(pose()).toBe('idle') // unmapped: recorded, not drawn
+
+    setPetInfo({ enabled: true, behaviors: { rows: { held: ['dangle'] } } })
+    $petActivity.set({ awaitingInput: true })
+    reactPet('a', 'wave', 5000)
+    setPetHandling('held')
+
+    expect(pose()).toBe('held')
+    // The bubble and the approval flow keep reading the real state.
+    expect($petState.get()).toBe('waiting')
+
+    setPetHandling(null)
+    expect(pose()).toBe('waiting')
   })
 })

@@ -17,7 +17,8 @@ from functools import lru_cache
 from itertools import takewhile
 from pathlib import Path
 
-from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState, state_row_index
+from agent.pet.behaviors import pet_revision, pet_spec
+from agent.pet.constants import DEFAULT_SCALE, FRAME_H, FRAME_W, FRAMES_PER_STATE, PetState
 from agent.terminal_image import (
     CELL_H,
     CELL_W,
@@ -61,27 +62,28 @@ def _frame_is_blank(frame) -> bool:
     return frame.getchannel("A").getextrema()[1] <= _BLANK_ALPHA
 
 
-@lru_cache(maxsize=16)
-def _raw_frames(sheet_path: str, state_value: str, frame_w: int, frame_h: int, frames_per_state: int) -> tuple:
-    """Cropped RGBA frames for one state row, stopping at the first blank column; ``()`` on any decode failure."""
+@lru_cache(maxsize=32)
+def _raw_frames(sheet_path: str, revision: str, row: int, frame_w: int, frame_h: int, frames_per_state: int) -> tuple:
+    """Cropped RGBA frames for sheet *row*, stopping at the first blank column; ``()`` on any decode failure.
+
+    Keyed by row (states sharing one decode once) and :func:`pet_revision` (sheet or pet.json edits re-crop)."""
     try:
         from PIL import Image
 
         sheet = Image.open(Path(sheet_path)).convert("RGBA")
-        cols, rows = max(1, sheet.width // frame_w), max(1, sheet.height // frame_h)
-        # Clamp to the sheet: some pets ship fewer rows than the taxonomy reserves.
-        top = min(state_row_index(state_value, rows) * frame_h, max(0, sheet.height - frame_h))
+        cols = max(1, sheet.width // frame_w)
+        top = min(row * frame_h, max(0, sheet.height - frame_h))  # some pets ship fewer rows than the taxonomy reserves
         crops = (sheet.crop((i * frame_w, top, (i + 1) * frame_w, top + frame_h)) for i in range(min(frames_per_state, cols)))
         return tuple(takewhile(lambda f: not _frame_is_blank(f), crops))
     except Exception as exc:
-        logger.debug("pet frame decode failed (%s, %s): %s", sheet_path, state_value, exc)
+        logger.debug("pet frame decode failed (%s, row %s): %s", sheet_path, row, exc)
         return ()
 
 
 @lru_cache(maxsize=8)
-def _frames_for(sheet_path: str, state_value: str, frame_w: int, frame_h: int, frames_per_state: int, scale_w: int, scale_h: int):
+def _frames_for(sheet_path: str, revision: str, row: int, frame_w: int, frame_h: int, frames_per_state: int, scale_w: int, scale_h: int):
     """Scaled :func:`_raw_frames` (both cached, so animation-time requests are free)."""
-    raw = _raw_frames(sheet_path, state_value, frame_w, frame_h, frames_per_state)
+    raw = _raw_frames(sheet_path, revision, row, frame_w, frame_h, frames_per_state)
     if not raw or (scale_w, scale_h) == (frame_w, frame_h):
         return list(raw)
     from PIL import Image
@@ -93,7 +95,9 @@ def state_frame_counts(
     sheet_path: str | Path, *, frame_w: int = FRAME_W, frame_h: int = FRAME_H, frames_per_state: int = FRAMES_PER_STATE
 ) -> dict[str, int]:
     """Each driven :class:`PetState` → its real (padding-trimmed) frame count (shipped to the desktop canvas)."""
-    return {s.value: len(_raw_frames(str(sheet_path), s.value, frame_w, frame_h, frames_per_state)) for s in PetState}
+    path = str(sheet_path)
+    spec, revision = pet_spec(path), pet_revision(path)  # pet.json may name extra rows / remap states
+    return {s.value: len(_raw_frames(path, revision, spec.row_index(s), frame_w, frame_h, frames_per_state)) for s in PetState}
 
 
 def _fit_frames_to_cell_grid(frames):
@@ -145,9 +149,9 @@ class PetRenderer:
         return len(self._frames(state))
 
     def _frames(self, state: PetState | str):
-        name = state.value if isinstance(state, PetState) else str(state)
-        scaled = max(1, int(self.frame_w * self.scale)), max(1, int(self.frame_h * self.scale))
-        return _frames_for(self.spritesheet, name, self.frame_w, self.frame_h, self.frames_per_state, *scaled)
+        sheet, scaled = self.spritesheet, (max(1, int(self.frame_w * self.scale)), max(1, int(self.frame_h * self.scale)))
+        row = pet_spec(sheet).row_index(state)
+        return _frames_for(sheet, pet_revision(sheet), row, self.frame_w, self.frame_h, self.frames_per_state, *scaled)
 
     def cells(self, state: PetState | str, index: int, *, cols: int | None = None) -> list[list[Cell]]:
         """One frame as a half-block cell grid for Ink's native color props; ``[]`` when unavailable."""

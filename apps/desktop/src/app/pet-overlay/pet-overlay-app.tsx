@@ -7,7 +7,7 @@ import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import { $petActivity, $petInfo, $petPluginReaction, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { mirrorPetPluginMessages } from '@/store/pet-plugin-messages'
 import { setAwaitingResponse, setBusy } from '@/store/session'
@@ -98,6 +98,7 @@ export function PetOverlayApp() {
       setAwaitingResponse(Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
       mirrorPetPluginMessages(payload.pluginMessages)
+      $petPluginReaction.set(payload.pluginReaction ?? null)
 
       // Play a reaction on a new id (ignore the first sync, which just primes it).
       const reaction = payload.reaction ?? null

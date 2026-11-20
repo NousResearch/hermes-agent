@@ -5,13 +5,14 @@ import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
 import {
+  GRAVITY_PX_S2,
   GROUND_EPS,
   groundTop,
   type Ledge,
+  MAX_DT_S,
   overlapsX,
-  overlayLedge,
   resolveLedge,
-  snapshotLedges
+  walkableLedges
 } from './roam-geometry'
 
 interface Point {
@@ -23,8 +24,6 @@ interface Point {
 // as steps, not a glide. Actual px/s is derived from the sprite's loop duration
 // and on-screen size (see `walkSpeedPxS`).
 const STRIDE_PER_LOOP = 0.8
-// Downward acceleration for falls between ledges — fast enough to read as a drop.
-const GRAVITY_PX_S2 = 5200
 // Time to spring up onto a higher ledge.
 const JUMP_DUR_MS = 460
 // Tiny settle after a drag release before the pet re-plans (and usually falls),
@@ -32,8 +31,6 @@ const JUMP_DUR_MS = 460
 const DROP_SETTLE_MS = 90
 // Arrived at a walk target.
 const ARRIVE_EPS = 1.5
-// Cap dt so a backgrounded/throttled tab can't teleport the pet on resume.
-const MAX_DT_S = 0.05
 // While paused, wake rarely to notice drags/replans without burning a 60Hz RAF.
 const PAUSE_POLL_MS = 250
 
@@ -237,7 +234,7 @@ export function usePetRoam({
       // An open overlay swaps the surface set to just its bottom edge, so the pet
       // patrols along it; closing it restores the normal surfaces (and the pet
       // drops to whatever's below).
-      const ledges = overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)
+      const ledges = walkableLedges(petW, petH, overlayOpen)
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
       if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {

@@ -1,6 +1,7 @@
+import { computed } from 'nanostores'
 import { useEffect, useRef } from 'react'
 
-import { setPetActivity } from '@/store/pet'
+import { $petActivity, $petAwakeState, $petInfo, onPetInteract, setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
 import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
@@ -25,6 +26,37 @@ import type { GatewayRequester } from '../types'
  */
 export function syncPetBusyFromSessions(): void {
   setPetActivity({ busy: $workingSessionIds.get().length > 0 })
+}
+
+/**
+ * Opt-in nap: pets whose pet.json declares `behaviors.sleep` doze off after
+ * `sleepAfterSeconds` idle. Leaving idle, a new delay, or the user touching the
+ * pet wakes it and re-arms, so a sleeping pet never acts without waking first.
+ * Returns a stop.
+ */
+export function startPetNap(): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const $after = computed($petInfo, info => info.behaviors?.sleepAfterSeconds ?? 0)
+
+  const arm = () => {
+    clearTimeout(timer)
+
+    if ($petActivity.get().sleepy) {
+      setPetActivity({ sleepy: false })
+    }
+
+    if ($petAwakeState.get() === 'idle' && $after.get() > 0) {
+      timer = setTimeout(() => setPetActivity({ sleepy: true }), $after.get() * 1000)
+    }
+  }
+
+  arm()
+  const offs = [$petAwakeState.listen(arm), $after.listen(arm), onPetInteract(arm)]
+
+  return () => {
+    clearTimeout(timer)
+    offs.forEach(off => off())
+  }
 }
 
 interface PetBridgeParams {
@@ -91,4 +123,6 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
 
     return $workingSessionIds.listen(syncPetBusyFromSessions)
   }, [])
+
+  useEffect(startPetNap, [])
 }

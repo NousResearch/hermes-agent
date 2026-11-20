@@ -8,6 +8,7 @@ the real engine decode + half-block fragment building.
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -62,6 +63,8 @@ def _make_cli():
     cli_obj._pet_event = ""
     cli_obj._pet_event_until = 0.0
     cli_obj._pet_reasoning = False
+    cli_obj._pet_sleep_after = 0.0
+    cli_obj._pet_last_active = time.monotonic()
     # Blocking-modal state — a live one maps the pet to `waiting`.
     cli_obj._approval_state = None
     cli_obj._clarify_state = None
@@ -85,6 +88,18 @@ def test_pet_state_waits_on_a_blocking_modal():
     cli_obj._agent_running = True
     cli_obj._clarify_state = {"question": "?"}
     assert cli_obj._derive_pet_state() == "waiting"
+
+
+def test_pet_sleeps_only_past_the_pet_json_delay():
+    cli_obj = _make_cli()
+    cli_obj._pet_last_active -= 60
+    assert cli_obj._derive_pet_state() == "idle"  # no sleep behavior → never sleeps
+    cli_obj._pet_sleep_after = 30.0
+    assert cli_obj._derive_pet_state() == "sleep"
+    cli_obj._agent_running = True
+    assert cli_obj._derive_pet_state() == "run"
+    cli_obj._agent_running = False
+    assert cli_obj._derive_pet_state() == "idle"  # activity reset the rest timer
 
 
 def test_pet_pane_collapsed_when_disabled():

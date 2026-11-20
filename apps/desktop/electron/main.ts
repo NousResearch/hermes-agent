@@ -17181,7 +17181,7 @@ function handleDeepLink(url) {
   }
 
   if (handleLaunchDeepLink(url, DEEPLINK_SCHEMES, launchTarget())) {
-    return rememberLog('[deeplink] launch: app brought forward')
+    return rememberLog('[deeplink] launch link handled (content ignored)')
   }
 
   let parsed

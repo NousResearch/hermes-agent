@@ -2893,9 +2893,9 @@ def _compose_run_delivery(
     says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
     agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
     err = str(error) if error else ""
-    # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
-    blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
-    blocked_config = blocked_config_silent or BLOCKED_CONFIG_MARKER in err
+    runtime_error = "" if agent_declared else err  # An agent may quote a previous preflight error.
+    blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in runtime_error
+    blocked_config = blocked_config_silent or BLOCKED_CONFIG_MARKER in runtime_error
     incident_acked = False
     failure_incident_id = None
     if blocked_config and not success:

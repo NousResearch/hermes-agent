@@ -856,6 +856,7 @@ DEFAULT_CONFIG = {
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,
+        "json_output": False,  # --json default for CLI verbs that declare the flag
         "persistent_output_max_lines": 200,
         # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
         # terminal/tmux stack stamps stale prompt chrome into scrollback.

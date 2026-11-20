@@ -398,7 +398,6 @@ def build_top_level_parser():
     subparsers = parser.add_subparsers(dest="command", help="Command to run", metavar="<command>")
     return parser, subparsers, _build_chat_parser(subparsers)
 
-
 # Pre-parse of `-p`/`--profile` (main._apply_profile_override); shared with the container boot
 # reconciler, which reads the container CMD without importing the side-effectful CLI entry point.
 _PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
@@ -527,3 +526,21 @@ def gateway_run_no_supervise(argv) -> bool:
         return False
     return (parsed.command == "gateway" and getattr(parsed, "gateway_command", None) == "run"
             and bool(getattr(parsed, "no_supervise", False)))
+
+
+def apply_json_output_default(args) -> None:
+    """Honour ``display.json_output`` for subcommands that declare ``--json``.
+
+    Each verb opts in by declaring the flag, so this only flips the ones that have it and
+    were not given it on the command line: an explicit ``--json`` wins, and verbs without the
+    flag are untouched. Config is read lazily here (after profile resolution, before dispatch)
+    so the setting follows the profile being invoked.
+    """
+    if not hasattr(args, "json") or getattr(args, "json", False):
+        return
+
+    from hermes_cli.config import load_config
+
+    display = load_config().get("display")
+    if isinstance(display, dict) and display.get("json_output"):
+        args.json = True

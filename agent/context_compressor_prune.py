@@ -10,6 +10,7 @@ module, and every origin-module symbol is read through ``_cc()`` at call time so
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger("agent.context_compressor")
@@ -22,6 +23,45 @@ def _cc():
     ``agent.context_compressor.X`` effective (attributes are read at call time)."""
     from agent import context_compressor
     return context_compressor
+
+
+def terminal_stub(args: dict, content: str, line_count: int) -> str:
+    """One-line terminal stub. Lines are counted on the decoded ``output`` (the JSON envelope has no
+    literal newlines), and a failed command keeps its last non-empty output line. The whole stub stays
+    under ``_PRUNE_MIN_CHARS``, so a later pass never takes it for a result to summarise again."""
+    cmd = " ".join(_cc()._str_arg(args, "command").splitlines())
+    cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+    exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
+    output = _cc()._json_dict(content).get("output")
+    lines = output.splitlines() if isinstance(output, str) else []
+    if isinstance(output, str):
+        line_count = len(lines)
+    stub = f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} {'line' if line_count == 1 else 'lines'} output"
+    last = next((line.strip() for line in reversed(lines) if line.strip()), "")
+    room = min(120, _cc()._PRUNE_MIN_CHARS - 1 - len(stub) - len(" | last: "))
+    if exit_code not in ("?", "0") and last and room >= 20:
+        stub += f" | last: {last[:room]}"
+    return stub
+
+
+def delegate_stub(args: dict, content: str, content_len: int) -> str:
+    tasks = args.get("tasks")
+    batch = isinstance(tasks, list) and bool(tasks)  # the tool runs the batch whenever tasks is non-empty
+    first = tasks[0] if batch and isinstance(tasks[0], dict) else {}
+    goal = " ".join(_cc()._str_arg(first if batch else args, "goal").splitlines())
+    goal = goal if len(goal) <= 60 else goal[:57] + "..."
+    detail = f"{len(tasks)} tasks, first: '{goal}'" if batch else f"'{goal}'"
+    return f"[delegate_task] {detail} ({content_len:,} chars result)" + _cc()._result_failure_suffix(content)
+
+
+def stub_arguments(args: dict) -> str:
+    result = ""
+    for key, value in args.items():
+        preview = " ".join(str(value).splitlines())[:40]
+        result += f" {key}={preview}"
+        if len(result) >= 120:
+            return result[:120]
+    return result
 
 
 def _changed_rows(messages: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> int:
@@ -152,7 +192,7 @@ class ProactivePruneMixin:
         reclaimed = max(0, before - after)
         if not pruned_count or reclaimed < min_reclaim:
             discard_archives(archives)
-            self._warn_reclamation_no_op("prune:archive_write_failed", current_tokens, before=before)
+            self._warn_reclamation_no_op("prune:archive_write_failed" if unarchived else "prune:reclaim_below_minimum", current_tokens, before=before)
             return messages, 0
         if cold_cache:  # Nothing to protect: keep the warm runway and credit the reclaim to the next warm gate.
             next_rearm_tokens, cold_credit = self._proactive_prune_rearm_tokens, self._proactive_prune_cold_credit + reclaimed

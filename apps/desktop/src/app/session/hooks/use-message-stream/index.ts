@@ -819,7 +819,7 @@ export function useMessageStream({
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
-        const completionError = failure?.error ?? completionErrorText(finalText)
+        const completionError = failure?.error ?? completionErrorText(finalText, status)
         // A partial failure's `text` is streamed output the user should keep,
         // not the error string — settle it like a normal reply AND mark the
         // bubble failed, instead of stripping the text.

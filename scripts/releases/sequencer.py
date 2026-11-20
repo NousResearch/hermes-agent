@@ -384,15 +384,31 @@ def channel_head(desktop_head: str | None, records: list[dict],
 STABLE_POINTER = "releases/stable/release-candidates.json"
 
 
-def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None,
-                             read_alias_digest) -> str | None:
+def _aliases_behind(record: dict, records: list[dict]) -> bool:
+    """Whether the Docker aliases provably miss ``record``, the desktop and channel head.
+
+    A digest a newer published release carries means that release owns the aliases, and an
+    alias that cannot be read proves nothing: either way the aliases are left alone, so a
+    registry error between two probes can never roll them back.
+    """
+    from scripts.releases import docker
+
+    alias = docker.stable_alias_digest()
+    newer = {row["docker_manifest_digest"] for row in records if row["state"] == "published"
+             and _key(row["version"]) > _key(record["version"])}
+    if alias is None or alias in newer:
+        return False
+    return alias != record["docker_manifest_digest"] or docker.stable_desktop_alias_behind(record["claim_tag"])
+
+
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None) -> str | None:
     """The protected desktop head's version when its advance did not finish.
 
     publish_release writes the candidate pointer last, after the head moves, and the Docker
-    aliases move after that, so a failure there leaves the head on a release that plan() would
-    otherwise count as done. The pointer is the source channel's update target and the next
-    release's upgrade baseline. The Docker aliases count only while this release is the head:
-    a newer release owns them otherwise.
+    aliases move after that, slim before desktop, so a failure there leaves the head on a
+    release that plan() would otherwise count as done. The pointer is the source channel's
+    update target and the next release's upgrade baseline. The Docker aliases count only while
+    this release is the head: a newer release owns them otherwise.
     """
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
@@ -407,9 +423,9 @@ def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head:
         pointer = json.loads(read_archive(STABLE_POINTER))
     except ChannelError:
         pointer = None  # the head's own pointer write never landed
-    aliases_behind = (desktop == head and "docker" in record["lanes"]
-                      and read_alias_digest() != record["docker_manifest_digest"])
-    return desktop if pointer != candidate or aliases_behind else None
+    if pointer != candidate:
+        return desktop
+    return desktop if desktop == head and "docker" in record["lanes"] and _aliases_behind(record, records) else None
 
 
 def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
@@ -494,8 +510,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     with group("Read the stable channel head"):
         head = read_head()
         log(f"Channel head: {head or '(none)'}")
-        unfinished = (_unfinished_desktop_head(env, records, read_archive, head, docker.stable_alias_digest)
-                      if advance_head is None else None)
+        unfinished = _unfinished_desktop_head(env, records, read_archive, head) if advance_head is None else None
     with group("Plan"):
         steps = plan(records, head=head, requested_version=requested, unfinished=unfinished)
         log("Steps: " + (", ".join(f"{kind} {version}" for step in steps

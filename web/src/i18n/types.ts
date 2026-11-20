@@ -138,6 +138,18 @@ export interface Translations {
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;
+    /** Hermes Cloud "dashboard is moving" modal — optional, English fallback. */
+    dashboardMovingMeta?: string;
+    dashboardMovingNotice?: string;
+    dashboardMovingTitle?: string;
+    dashboardMovingBody?: string;
+    dashboardMovingMachineTitle?: string;
+    dashboardMovingMachineDetail?: string;
+    dashboardMovingMachineReady?: string;
+    dashboardMovingSettingsTitle?: string;
+    dashboardMovingSettingsDetail?: string;
+    dashboardMovingOpen?: string;
+    dashboardMovingLater?: string;
   };
 
   // ── System page: Memory section ──

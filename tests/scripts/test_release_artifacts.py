@@ -64,6 +64,60 @@ def test_windows_metadata_is_read_from_package_and_stale_stamp_is_rejected(tmp_p
         stamp_matches({}, tag, commit)
 
 
+def test_windows_executable_version_is_read_from_msix_not_clobbered_unpacked_dir(tmp_path):
+    """Canary win32 jobs build --variant bundled then --variant store into the same release dir;
+    the Store build overwrites win-unpacked/ with the Store quad, so record() must probe the
+    executable extracted from the bundled MSIX itself."""
+    tag, commit = 'canary.20261120T173138Z-v0.23.3', 'a' * 40
+    root = tmp_path / 'release'
+    root.mkdir()
+    package = root / 'HermesBundled-0.23.3+canary.20261120T173138Z-win-x64.msix'
+    manifest = (
+        '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
+        '<Identity Name="NousResearch.HermesBundledCanary" Publisher="CN=Test" '
+        'Version="26.1120.17.3138" ProcessorArchitecture="x64"/>'
+        '<Applications><Application Id="HermesBundledCanary" '
+        'Executable="app\\Hermes Agent Canary.exe"/></Applications></Package>'
+    )
+    stamp = {
+        'tag': tag, 'commit': commit, 'baseVersion': '0.23.3+canary.20261120T173138Z',
+        'receiverProtocol': 1,
+    }
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('AppxManifest.xml', manifest)
+        archive.writestr('app/resources/install-stamp.json', json.dumps(stamp))
+        archive.writestr('app/Hermes Agent Canary.exe', b'bundled-canary-exe-bytes')
+
+    # Simulate the subsequent --variant store build overwriting win-unpacked/.
+    unpacked = root / 'win-unpacked'
+    unpacked.mkdir()
+    (unpacked / 'Hermes Agent Canary.exe').write_bytes(b'store-overwrite-exe-bytes')
+
+    probed_paths = []
+
+    def probe(executable: Path) -> str:
+        probed_paths.append(executable)
+        assert not executable.is_relative_to(root), f'must not read mutable {executable}'
+        assert executable.name == 'Hermes Agent Canary.exe'
+        data = executable.read_bytes()
+        return '26.1120.17.3138' if data == b'bundled-canary-exe-bytes' else '2026.7769.1898.0'
+
+    out = root / 'metadata-windows-x64.json'
+    record('windows', 'x64', root, tag, commit, out, executable_version_probe=probe)
+    metadata = json.loads(out.read_text(encoding='utf-8-sig'))
+    assert metadata['version'] == '26.1120.17.3138'
+    assert metadata['executableVersion'] == '26.1120.17.3138'
+    assert len(probed_paths) == 1
+    assert not probed_paths[0].exists()  # temporary extracted executable is cleaned up
+
+    # Missing declared executable in the MSIX must fail closed rather than reading win-unpacked/.
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('AppxManifest.xml', manifest)
+        archive.writestr('app/resources/install-stamp.json', json.dumps(stamp))
+    with pytest.raises(ValueError, match='Expected exactly one'):
+        record('windows', 'x64', root, tag, commit, out, executable_version_probe=probe)
+
+
 @pytest.fixture
 def staged_candidate(tmp_path, r2_server, https_origin):
     from scripts.bundles.release_artifacts import assemble

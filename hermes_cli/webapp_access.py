@@ -103,9 +103,9 @@ def _registration_client(record: dict) -> Optional[tuple[str, str]]:
     return (client_id, portal) if isinstance(client_id, str) and client_id.startswith("agent:") else None
 
 
-def _registered_callback(record: dict) -> Optional[tuple[Optional[str], int]]:
+def _registered_callback(record: dict) -> Optional[tuple[Optional[str], Optional[int]]]:
     """``(hostname, port)`` of the ``http://…/auth/callback`` Web Access last registered Nous sign-in
-    at for the Webapp on the LAN (port 80 when the URL names none), or None."""
+    at for the Webapp on the LAN, or None."""
     try:
         parts = urlsplit(record["callback"])
         recorded_port = parts.port
@@ -113,7 +113,7 @@ def _registered_callback(record: dict) -> Optional[tuple[Optional[str], int]]:
         return None
     if (parts.scheme, parts.path, parts.query, parts.fragment) != ("http", "/auth/callback", "", ""):
         return None
-    return None if parts.username is not None else (parts.hostname, 80 if recorded_port is None else recorded_port)
+    return None if parts.username is not None else (parts.hostname, recorded_port)
 
 
 def registered_lan_origin(home: Path, port: int) -> Optional[str]:
@@ -145,11 +145,16 @@ def sign_in_address(home: Path, bound_host: str, port: int, public_url: str) -> 
         return own, ("The saved Web Access registration for Nous sign-in names the previous HTTPS URL, not this IP. "
                      "Use a password provider, or restore webapp.public_url and its proxy and restart the gateway.")
     callback = _registered_callback(record)
-    if callback is None or callback == (bound_host, port):
+    if callback is None:
         return own, None
-    registered = bind_origin(callback[0] or "", callback[1]) or f"http://{callback[0]}:{callback[1]}"
-    changed = " and ".join(key for key, same in (("webapp.host", callback[0] == bound_host),
-                                                  ("webapp.port", callback[1] == port)) if not same)
+    # An http:// callback with no port is on port 80; only this comparison reads it so.
+    registered_host, registered_port = callback[0], 80 if callback[1] is None else callback[1]
+    if (registered_host, registered_port) == (bound_host, port):
+        return own, None
+    registered = (bind_origin(registered_host or "", registered_port)
+                  or f"http://{registered_host}:{registered_port}")
+    changed = " and ".join(key for key, same in (("webapp.host", registered_host == bound_host),
+                                                  ("webapp.port", registered_port == port)) if not same)
     return own, (f"Nous sign-in that Settings → Web Access registered returns to {registered}, but the Webapp "
                  f"now listens on {own}, so Nous sign-in cannot finish there. Sign in with a password provider, "
                  f"or set {changed} back to that address and restart the gateway.")

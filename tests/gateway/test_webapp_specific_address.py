@@ -314,6 +314,22 @@ def test_a_registered_callback_with_no_port_is_port_80(tmp_path, registered, not
     assert sign_in_address(home, BOUND, 80, "") == (f"http://{BOUND}:80", note)
 
 
+def test_a_wildcard_bind_on_port_80_ignores_a_registered_callback_with_no_port(tmp_path, monkeypatch):
+    """Control, as on main: a wildcard bind opens a registered LAN address only for a callback that
+    names its port, so a hand-edited callback with none leaves ``hermes webapp`` on loopback."""
+    import json
+    from hermes_cli import webapp_access
+
+    monkeypatch.setattr(webapp_access, "lan_address", lambda: "192.168.1.20")
+    home = _home(tmp_path, "webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 80\n")
+    record = home / "webapp" / "sign-in-registration.json"
+    record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x",
+                                  "callback": "http://192.168.1.20/auth/callback"}))
+    assert webapp_access.registered_lan_origin(home, 80) is None
+    assert webapp_access.sign_in_address(home, "0.0.0.0", 80, "") == (None, None)
+
+
 def test_a_specific_binds_own_public_url_still_wins(monkeypatch, tmp_path):
     runner = _specific_webapp(monkeypatch, tmp_path, registered="http://192.168.1.20:9555/auth/callback",
                               public_url="https://webapp.example.net")

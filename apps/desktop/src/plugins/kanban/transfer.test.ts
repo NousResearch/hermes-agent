@@ -36,26 +36,33 @@ function osWith(overrides: Record<string, unknown>) {
 }
 
 describe('runImportBoardFlow', () => {
-  it('imports the path the native dialog named, without asking the browser door', async () => {
-    const pickBrowserFile = vi.fn()
+  it('imports the path the native dialog named', async () => {
+    // The browser door answers null in the native app — there is no upload to
+    // describe — so the OS dialog is what names the file. Asking the browser
+    // door first costs one call and keeps the native case on the user's own
+    // path rather than a staged copy.
+    const pickBrowserFile = vi.fn().mockResolvedValue(null)
     const os = osWith({ pickBrowserFile, pickOpenPath: vi.fn().mockResolvedValue('/Users/u/Downloads/ops.tar.gz') })
     boardApi.importBoard.mockResolvedValue(imported)
 
     await expect(runImportBoardFlow(os, k)).resolves.toBe('ops')
 
     expect(boardApi.importBoard).toHaveBeenCalledWith('/Users/u/Downloads/ops.tar.gz')
-    expect(pickBrowserFile).not.toHaveBeenCalled()
+    expect(pickBrowserFile).toHaveBeenCalled()
   })
 
   it('imports the staged copy a browser pick produced', async () => {
-    // A browser-hosted Desktop has no OS dialog, so pickOpenPath answers null.
-    // Before the ladder, that left board import unreachable in the browser even
-    // though the staged archive is a path this backend reads fine (#156470).
+    // A browser-hosted Desktop has no OS dialog. The browser door answers the
+    // copy the app staged, which is a path this backend reads fine, and it is
+    // the door that says what the path is (#156470).
+    const pickOpenPath = vi.fn()
+
     const os = osWith({
       pickBrowserFile: vi.fn().mockResolvedValue({
         name: 'ops.tar.gz',
         path: '/home/u/.hermes/uploads/web-5c1f0a9b2d3e4f60-ops.tar.gz'
-      })
+      }),
+      pickOpenPath
     })
 
     boardApi.importBoard.mockResolvedValue(imported)
@@ -63,6 +70,7 @@ describe('runImportBoardFlow', () => {
     await expect(runImportBoardFlow(os, k)).resolves.toBe('ops')
 
     expect(boardApi.importBoard).toHaveBeenCalledWith('/home/u/.hermes/uploads/web-5c1f0a9b2d3e4f60-ops.tar.gz')
+    expect(pickOpenPath).not.toHaveBeenCalled()
   })
 
   it('reports a failed browser upload instead of doing nothing', async () => {

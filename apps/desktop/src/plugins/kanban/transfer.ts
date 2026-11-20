@@ -46,19 +46,18 @@ export async function runExportBoardFlow(os: PluginOs, k: KanbanText, slug: stri
 export async function runImportBoardFlow(os: PluginOs, k: KanbanText): Promise<null | string> {
   const options = { title: k.importBoardTitle, filters: ARCHIVE_FILTERS }
 
-  // The native dialog names the user's own file. A browser-hosted Desktop has
-  // no OS dialog, so it answers null and the page's own picker takes over: the
-  // app uploads the archive and hands back the copy it staged, which is a path
-  // this backend can read. Asking the first door first keeps the native case
-  // on the user's file and never opens two dialogs.
+  // The browser door answers the copy the app staged, which is a path this
+  // backend reads, and it is the only door that says so. In the native app it
+  // answers null and the OS dialog names the user's own file, so asking it
+  // first costs nothing and never opens two dialogs.
   //
-  // The browser pick rejects when the upload fails — a board archive over the
-  // browser's size cap, or a gateway that refused it — and that has to reach
-  // the user as an error, not as the silence a cancel produces.
+  // It rejects when the upload fails — a board archive over the browser's size
+  // cap, or a gateway that refused it — and that has to reach the user as an
+  // error, not as the silence a cancel produces.
   let picked: null | string
 
   try {
-    picked = (await os.pickOpenPath(options)) ?? (await os.pickBrowserFile?.(options))?.path ?? null
+    picked = (await os.pickBrowserFile?.(options))?.path ?? (await os.pickOpenPath(options))
   } catch (error) {
     host.notify({ kind: 'error', message: errText(error) })
 

@@ -83,19 +83,22 @@ export interface PluginOs {
    *  to a `rest` call rather than trying to write it from the renderer. */
   pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Native open dialog, single file. Resolves the chosen path, or null on
-   *  cancel / when unavailable. A browser-hosted Desktop has no OS dialog —
-   *  its picker stages the file on the server instead — so it resolves null
-   *  there too; fall back to your own UI (paste, drop) rather than treating a
-   *  staged copy as the file the user picked. */
+   *  cancel / when unavailable.
+   *
+   *  A browser-hosted Desktop has no OS dialog: its picker uploads the file
+   *  and resolves the copy the app staged inside the Hermes home, which is
+   *  not the path the user picked (#156470). Prefer `pickBrowserFile` there,
+   *  which says that outright — this door keeps its current answer until the
+   *  gate that fixes it can land without stranding plugins that already read
+   *  the staged copy. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
-  /** The other half of the ladder, for a browser-hosted Desktop: pick a file
-   *  in the page, which the app uploads to the backend and answers with the
-   *  copy it staged plus the name the file had. Resolves null in the native
-   *  app, where `pickOpenPath` is the door, and null on cancel. Rejects when
-   *  the upload itself fails (over the browser's size cap, or refused by the
-   *  gateway) so a plugin can tell that from a cancel. Reach for
-   *  `pickOpenPath` first and this second; feature-detect on older hosts:
-   *  `ctx.os.pickBrowserFile?.(…)`. */
+  /** Pick a file in a browser-hosted Desktop: the page opens its picker, the
+   *  app uploads what it chose, and this answers the copy it staged plus the
+   *  name the file had. Resolves null in the native app (there is no upload to
+   *  describe, and `pickOpenPath` is the door) and null on cancel. Rejects when
+   *  the upload itself fails — over the browser's size cap, or refused by the
+   *  gateway — so a plugin can tell that from a cancel. Feature-detect on older
+   *  hosts: `ctx.os.pickBrowserFile?.(…)`. */
   pickBrowserFile?: (options?: PluginFileDialogOptions) => Promise<null | PluginPickedUpload>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
@@ -302,17 +305,6 @@ function createPluginOs(pluginId: string): PluginOs {
       }),
     pickOpenPath: options =>
       attemptPath(async bridge => {
-        // A browser-hosted renderer has no OS dialog. Its bridge's selectPaths
-        // stages the picked bytes at <hermes home>/uploads/web-<hex>-<name> and
-        // answers with that copy, which is not the path the user chose: plugin
-        // backends refuse a path inside the home, and every attempt left
-        // another staged copy behind (#156470). The capability is unavailable
-        // here, so it answers the documented null — the same answer
-        // pickSavePath gives without selectSavePath — and stages nothing.
-        if (!hostHas('pluginNativeFileDialog')) {
-          return null
-        }
-
         const picked = await bridge.selectPaths?.({ ...options, multiple: false })
 
         return picked?.[0] ?? null

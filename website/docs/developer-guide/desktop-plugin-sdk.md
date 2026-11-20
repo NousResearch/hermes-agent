@@ -1610,30 +1610,30 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
-`ctx.os.pickOpenPath` and `ctx.os.pickSavePath` are native dialogs, so they
-answer `null` where there is no native shell: a browser-hosted Desktop has no
-OS file dialog, and its own picker stages the file on the server instead of
-naming the path the user chose. A plugin gets `null` there — never a staged
-copy presented as the picked path — so fall back to your own UI (paste, drop,
-a text field) instead of handing a path your backend will refuse. The two
-answers a `null` covers, cancelled and unavailable, are indistinguishable to
-the caller.
+`ctx.os.pickOpenPath` and `ctx.os.pickSavePath` are native dialogs. In a
+browser-hosted Desktop there is no OS file dialog, and `pickSavePath` answers
+`null` there.
 
-To reach a picked file in **both** renderers, ask the two doors in order:
+`pickOpenPath` is the one door that does not: the page's picker uploads the
+file and the door answers the copy the app staged inside the Hermes home,
+which is **not** the path the user picked ([#156470]). It is left that way
+for now because plugins already read that copy deliberately, and gating it
+before they move would turn a working import into a button that does nothing.
+Prefer `pickBrowserFile` in a browser, which says what the path is.
+
+To reach a picked file in **both** renderers, ask the browser door first:
 
 ```ts
 const options = { filters: [{ extensions: ['csv'], name: 'CSV' }], title: 'Open a sheet' }
 
 try {
-  // Native: the user's own path. Browser-hosted: null, no dialog, nothing staged.
-  const native = await ctx.os.pickOpenPath(options)
-
   // Browser-hosted: the page picks, the app uploads, and you get the copy the
-  // backend holds plus the name the file had. Native: null (there is nothing
-  // staged to describe).
-  const upload = native ? null : await ctx.os.pickBrowserFile?.(options)
+  // backend holds plus the name the file had. Native: null, nothing staged.
+  const upload = await ctx.os.pickBrowserFile?.(options)
 
-  const path = native ?? upload?.path ?? null
+  // Native: the OS dialog names the user's own file. Browser-hosted: only
+  // reached if the browser door was absent, and then it is a staged copy.
+  const path = upload?.path ?? (await ctx.os.pickOpenPath(options))
 
   if (path) {
     // Read it through your own rest backend.
@@ -1658,8 +1658,10 @@ refused it, a dropped connection. Catch it: a rejected pick is not a cancel,
 and treating the two alike is how an import button ends up doing nothing.
 
 Feature-detect it on older hosts (`ctx.os.pickBrowserFile?.(…)` — the member is
-optional for exactly that reason), and prefer `pickOpenPath` first so the
-native case keeps the user's own file and never opens two dialogs.
+optional for exactly that reason). Asking it first costs one call in the native
+app and never opens two dialogs.
+
+[#156470]: https://github.com/NousResearch/hermes-agent/issues/156470
 
 ### Files — `ctx.files` {#plugin-files}
 

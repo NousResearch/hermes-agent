@@ -15,6 +15,36 @@ export function getInAppOffer(refresh = false): Promise<{ in_app_offer: InAppOff
   return fetchJSON(refresh ? "/api/in-app-offer?refresh=1" : "/api/in-app-offer");
 }
 
+/** Offer events this browser already reported (`<id>:shown`, `<id>:clicked`). */
+export const REPORTED_STORAGE_KEY = "hermes.dashboard.in-app-offer.reported-v1";
+
+/**
+ * Tell the Portal the offer was shown or clicked, once per offer per event in this browser (its
+ * campaign counts). Recorded before the call so another tab or a retry never double-counts; a
+ * failure is silent and not retried.
+ */
+export function reportInAppOfferEvent(
+  storage: OfferStorage,
+  offerId: string,
+  event: "shown" | "clicked",
+): void {
+  const key = `${offerId}:${event}`;
+  let reported: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(storage.getItem(REPORTED_STORAGE_KEY) ?? "[]");
+    reported = Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    reported = [];
+  }
+  if (reported.includes(key)) return;
+  storage.setItem(REPORTED_STORAGE_KEY, JSON.stringify([...reported, key].slice(-100)));
+  void fetchJSON("/api/in-app-offer/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ offer_id: offerId, event }),
+  }).catch(() => undefined);
+}
+
 /**
  * The dashboard's in-app offer, presentation rules (no React). The same rules as Hermes
  * Desktop's dialog (apps/desktop/src/store/in-app-offer.ts), restated for a browser tab: once per

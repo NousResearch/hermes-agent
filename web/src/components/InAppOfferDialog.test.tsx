@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { I18nProvider } from "@/i18n";
+import * as api from "@/lib/api";
 import * as offers from "@/lib/in-app-offer";
 import { DISMISSED_STORAGE_KEY, FIRST_REFRESH_DELAY_MS, IDLE_SETTLE_MS } from "@/lib/in-app-offer";
 import { InAppOfferDialog } from "./InAppOfferDialog";
@@ -149,5 +150,22 @@ describe("InAppOfferDialog", () => {
     expect(dialog()).toBeNull();
     // Withdrawn is not dismissed: a later campaign with the same id could still show.
     expect(localStorage.getItem(DISMISSED_STORAGE_KEY)).toBeNull();
+  });
+
+  it("reports shown on open and clicked on the CTA, once each", async () => {
+    vi.spyOn(offers, "getInAppOffer").mockResolvedValue({ in_app_offer: OFFER });
+    const post = vi.spyOn(api, "fetchJSON").mockResolvedValue({ reported: true } as never);
+    vi.stubGlobal("open", vi.fn());
+    await mount();
+    await act(async () => vi.advanceTimersByTimeAsync(IDLE_SETTLE_MS));
+
+    const cta = [...document.querySelectorAll("button")].find((b) => b.textContent === "Claim the offer");
+    await act(async () => cta?.click());
+
+    const reports = post.mock.calls.filter(([url]) => url === "/api/in-app-offer/event");
+    expect(reports.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { offer_id: "offer_1", event: "shown" },
+      { offer_id: "offer_1", event: "clicked" },
+    ]);
   });
 });

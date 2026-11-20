@@ -74,3 +74,26 @@ def test_the_route_is_mounted_on_the_dashboard_app():
     from hermes_cli.web_server import app
 
     assert any(getattr(r, "path", None) == "/api/in-app-offer" for r in app.routes)
+
+
+def test_event_route_forwards_to_report_event(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(in_app_offer, "report_event", lambda offer_id, event: calls.append((offer_id, event)) or True)
+
+    res = client.post("/api/in-app-offer/event", json={"offer_id": "offer_1", "event": "clicked"})
+
+    assert res.status_code == 200
+    assert res.json() == {"reported": True}
+    assert calls == [("offer_1", "clicked")]
+
+
+def test_event_route_never_errors(client, monkeypatch):
+    def boom(offer_id, event):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(in_app_offer, "report_event", boom)
+
+    res = client.post("/api/in-app-offer/event", json={"offer_id": "offer_1", "event": "shown"})
+
+    assert res.status_code == 200
+    assert res.json() == {"reported": False}

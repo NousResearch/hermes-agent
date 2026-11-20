@@ -15,6 +15,7 @@ import {
   recordDismissal,
   recordShown,
   REFRESH_EVERY_MS,
+  reportInAppOfferEvent,
 } from "@/lib/in-app-offer";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -79,6 +80,7 @@ export function InAppOfferDialog() {
         // Another tab may have shown or dismissed one meanwhile.
         if (!offerIsEligible(window.localStorage, offerId, Date.now())) return;
         recordShown(window.localStorage, Date.now());
+        reportInAppOfferEvent(window.localStorage, offerId, "shown");
         setOpenFor(offerId);
       }, IDLE_SETTLE_MS);
     };
@@ -171,6 +173,7 @@ export function InAppOfferDialog() {
           <Button
             onClick={() => {
               window.open(offer.cta_url, "_blank", "noopener,noreferrer");
+              reportInAppOfferEvent(window.localStorage, offer.id, "clicked");
               close();
             }}
             type="button"

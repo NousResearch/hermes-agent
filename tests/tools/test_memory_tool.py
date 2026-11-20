@@ -1050,3 +1050,40 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestMemoryStoreCharLimits:
+    """Configured char limits reach the store as whatever the config file held: an int in
+    plain YAML, but a string when the value is quoted or came from a ``${VAR}`` expansion
+    (``hermes_cli.config._expand_env_vars`` rewrites string values in place). A string
+    limit breaks every comparison against a char count, so the store coerces once at
+    the boundary instead of failing later in an unrelated comparison (#53834)."""
+
+    def test_char_limits_cast_to_int(self):
+        s = MemoryStore(memory_char_limit="20000", user_char_limit="30000")  # type: ignore[arg-type]
+        assert s.memory_char_limit == 20000
+        assert s.user_char_limit == 30000
+
+    def test_char_limits_int_passthrough(self):
+        s = MemoryStore(memory_char_limit=20000, user_char_limit=30000)
+        assert s.memory_char_limit == 20000
+        assert s.user_char_limit == 30000
+
+    def test_char_limit_target_resolution(self):
+        s = MemoryStore(memory_char_limit=999, user_char_limit=444)
+        assert s._char_limit("memory") == 999
+        assert s._char_limit("user") == 444
+
+    def test_string_limit_supports_usage_reporting(self):
+        """The usage string formats the limit with a thousands separator, which a str
+        rejects outright — the crash a string limit caused before the cast."""
+        s = MemoryStore(memory_char_limit="20000", user_char_limit="30000")  # type: ignore[arg-type]
+        assert s._usage("memory") == "0/20,000"
+        assert s._usage_pct("memory", 5000) == "25% — 5,000/20,000 chars"
+
+    def test_string_limit_compares_against_char_count(self):
+        """A limit is compared against a char count on every write and on load; a str
+        limit raises TypeError there instead of enforcing the cap."""
+        s = MemoryStore(memory_char_limit="10", user_char_limit="10")  # type: ignore[arg-type]
+        assert s._char_count("memory") == 0
+        assert s._char_count("memory") <= s._char_limit("memory")

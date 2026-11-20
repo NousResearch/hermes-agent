@@ -166,7 +166,9 @@ def _inline_bootstrap_argv_cached(tokens: tuple[str, ...]) -> list[str] | None:
         return None
     for end in range(index + 1, len(tokens)):
         if tokens[end].rstrip().endswith(")"):
-            entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), tokens[end + 1 :])
+            # The suffix must be a LIST: _bootstrap_entry's --run-module switch compares
+            # argv[:1] == ["--run-module"], which a tuple slice never equals (#141871 review).
+            entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), list(tokens[end + 1 :]))
             if entry is not None:
                 result = [tokens[0], *entry]
                 with _POSITIVE_BOOTSTRAP_LOCK:

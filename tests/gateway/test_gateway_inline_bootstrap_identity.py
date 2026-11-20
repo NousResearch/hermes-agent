@@ -251,3 +251,88 @@ class TestInlineBootstrapArgvCache:
 
         monkeypatch.setattr(status_inline_source, "_bootstrap_entry", refuse_reparse)
         assert inline_bootstrap_argv(tokens) == expected
+
+
+class TestRunModuleSuffixAtCacheBoundary:
+    """Regression reported by reidblock in PR #141871 review: the memoized parser walks a token
+    TUPLE, so the suffix handed to ``_bootstrap_entry`` must be materialized as a LIST. The
+    launcher's own ``--run-module <module>`` switch compares ``argv[:1] == ["--run-module"]``,
+    which a tuple slice never equals -- ``--run-module other_module gateway run`` then maps to
+    ``hermes_cli.main`` and an unrelated process looks like a gateway. The venv-reentry forms are
+    unaffected: their assigned-argv read rebuilds a list before the entry branch."""
+
+    def setup_method(self):
+        clear_inline_bootstrap_cache()
+
+    def teardown_method(self):
+        clear_inline_bootstrap_cache()
+
+    @pytest.mark.parametrize("split", [list, lambda argv: " ".join(argv).split(" ")], ids=["argv", "space-split"])
+    @pytest.mark.parametrize("form", ["launcher-script", "cmd-launcher"])
+    @pytest.mark.parametrize("module", ["other_module", "hermes_cli.main"])
+    def test_run_module_maps_to_the_requested_module_cold_and_warm(self, form, module, split) -> None:
+        tokens = split(_forms(["--run-module", module, "gateway", "run"])[form])
+        expected = [PY, "-m", module, "gateway", "run"]
+        cold = inline_bootstrap_argv(tokens)
+        info1 = _inline_bootstrap_argv_cached.cache_info()
+        warm = inline_bootstrap_argv(tokens)
+        info2 = _inline_bootstrap_argv_cached.cache_info()
+        assert cold == expected
+        assert warm == expected
+        assert info2.hits == info1.hits + 1  # the second call hits the cache, not the regexes
+        assert info2.misses == info1.misses
+
+    @pytest.mark.parametrize("join", _JOINS)
+    @pytest.mark.parametrize("form", ["launcher-script", "cmd-launcher"])
+    def test_run_module_other_module_gateway_run_is_not_a_gateway(self, form, join) -> None:
+        tokens = [str(t) for t in _forms(["--run-module", "other_module", "gateway", "run"])[form]]
+        command_line = _JOINS[join](tokens)
+        assert inline_bootstrap_argv(tokens) == [PY, "-m", "other_module", "gateway", "run"]
+        assert not looks_like_gateway_command_line(command_line)
+        assert not looks_like_gateway_runtime_command_line(command_line)
+        assert _hermes_holder_subcommand(command_line) is None
+        info1 = _inline_bootstrap_argv_cached.cache_info()
+        assert not looks_like_gateway_command_line(command_line)  # warm re-read, same verdict
+        info2 = _inline_bootstrap_argv_cached.cache_info()
+        assert info2.hits > info1.hits
+
+    @pytest.mark.parametrize("join", _JOINS)
+    @pytest.mark.parametrize("form", ["launcher-script", "cmd-launcher"])
+    def test_run_module_hermes_main_gateway_run_is_still_a_gateway(self, form, join) -> None:
+        tokens = [str(t) for t in _forms(["--run-module", "hermes_cli.main", "gateway", "run"])[form]]
+        command_line = _JOINS[join](tokens)
+        assert inline_bootstrap_argv(tokens) == [PY, "-m", "hermes_cli.main", "gateway", "run"]
+        assert looks_like_gateway_command_line(command_line)
+        assert looks_like_gateway_runtime_command_line(command_line)
+        assert _hermes_holder_subcommand(command_line) == "gateway"
+        info1 = _inline_bootstrap_argv_cached.cache_info()
+        assert looks_like_gateway_command_line(command_line)  # warm re-read, same verdict
+        info2 = _inline_bootstrap_argv_cached.cache_info()
+        assert info2.hits > info1.hits
+
+    @pytest.mark.parametrize("form", ["launcher-script", "cmd-launcher"])
+    def test_bootstrap_entry_receives_a_list_suffix(self, form, monkeypatch) -> None:
+        """The cache boundary must hand _bootstrap_entry a list, not the token-tuple slice."""
+        from gateway import status_inline_source
+
+        seen: list[type] = []
+        real = status_inline_source._bootstrap_entry
+
+        def spy(source: str, argv: list[str]) -> list[str] | None:
+            seen.append(type(argv))
+            return real(source, argv)
+
+        monkeypatch.setattr(status_inline_source, "_bootstrap_entry", spy)
+        tokens = _forms(["--run-module", "other_module", "gateway", "run"])[form]
+        assert inline_bootstrap_argv(tokens) == [PY, "-m", "other_module", "gateway", "run"]
+        assert seen and all(t is list for t in seen)
+
+    def test_clear_cache_resets_run_module_entries(self) -> None:
+        tokens = _forms(["--run-module", "other_module", "gateway", "run"])["launcher-script"]
+        assert inline_bootstrap_argv(tokens) == [PY, "-m", "other_module", "gateway", "run"]
+        assert _inline_bootstrap_argv_cached.cache_info().currsize > 0
+        clear_inline_bootstrap_cache()
+        info = _inline_bootstrap_argv_cached.cache_info()
+        assert info.currsize == 0
+        assert info.hits == 0
+        assert inline_bootstrap_argv(tokens) == [PY, "-m", "other_module", "gateway", "run"]

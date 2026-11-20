@@ -3,8 +3,10 @@ import json
 import os
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -179,6 +181,46 @@ def test_goal_pr_acceptance_writes_require_live_lease(github, monkeypatch, expir
             assert task.status == "running" and task.current_run_id == run_id and run.outcome is None
         else:
             assert task.status == "done" and run.outcome == "completed"
+
+
+@pytest.mark.platforms("linux")
+def test_goal_pr_receipt_and_completion_settle_together(github, monkeypatch):
+    from hermes_cli import kanban_db_connect as db_connect
+
+    append_event = kb._append_event
+    deadline = int(time.time())
+    clock = deadline
+
+    def cross_deadline_after_receipt(conn, task_id, kind, *args, **kwargs):
+        nonlocal clock
+        event = append_event(conn, task_id, kind, *args, **kwargs)
+        if kind == "pr_acceptance":
+            clock = deadline + 1
+        return event
+
+    monkeypatch.setattr(db_connect, "time", SimpleNamespace(
+        time=lambda: clock, monotonic=time.monotonic, sleep=time.sleep,
+    ))
+    monkeypatch.setattr(kb, "_append_event", cross_deadline_after_receipt)
+    repo = "acme/repo"
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract=repo, goal_mode=True)
+        owner = kb.claim_task(conn, tid)
+        assert owner is not None and owner.current_run_id is not None
+        run_id = owner.current_run_id
+        conn.execute("UPDATE tasks SET claim_expires=? WHERE id=?", (deadline, tid))
+        conn.execute("UPDATE task_runs SET claim_expires=? WHERE id=?", (deadline, run_id))
+        ok = kb.complete_task(conn, tid, result="Published", expected_run_id=run_id,
+                              metadata={"published_pr": f"https://github.com/{repo}/pull/7"})
+    with connect() as reader:
+        task, run = kb.get_task(reader, tid), kb.latest_run(reader, tid)
+        assert task is not None and run is not None
+        receipts = reader.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'",
+                                  (tid,)).fetchall()
+        assert clock == deadline + 1
+        assert (ok, task.status, len(receipts)) == (True, "done", 1)
+        assert json.loads(receipts[0][0])["ok"]
+        assert run.id == run_id and run.outcome == "completed"
 
 
 # --- #122689: acceptance must read the repo as the ASSIGNEE profile's gh login ---

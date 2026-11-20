@@ -22,6 +22,8 @@ import sys
 import types
 from typing import Any
 
+from gateway.windows_proactor_accept import install_proactor_accept_guard
+
 logger = logging.getLogger(__name__)
 
 # One listener per process: the dashboard routers share one process-local app.
@@ -137,8 +139,10 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+            # import_module, not a sys.modules lookup: the module is listed there while another
+            # thread still runs its body. It returns a loaded module at once and waits for one
+            # that is still importing.
+            web = await asyncio.to_thread(importlib.import_module, "hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
@@ -222,8 +226,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     # Existing routers/auth helpers share one process-local app. Never rebind it
     # underneath another listener. Each authority is bound to its own profile DB.
     loaded_web = sys.modules.get("hermes_cli.web_server")
+    # Another thread may still be importing this module, before its app has been assigned.
+    loaded_app = getattr(loaded_web, "app", None)
     if _ACTIVE_RUNNER is not None or (
-            loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
+            loaded_app is not None and getattr(loaded_app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
     public_url = _listener_public_url(webapp)
     if public_url is None:
@@ -266,6 +272,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         if state.auth_required or loaded_web is not None or webapp is not None:
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
+        install_proactor_accept_guard(asyncio.get_running_loop())
         await server.startup(sockets=[listener])
         if not server.started or server.should_exit:
             raise RuntimeError("gateway API lifespan startup failed")
@@ -315,6 +322,47 @@ def warm_gateway_dashboard(runner) -> None:
 
     runner._gateway_dashboard_warmup = asyncio.get_running_loop().create_task(
         _warm(), name="gateway-dashboard-warmup")
+
+
+_SESSION_SOCKET_MODULE = "tui_gateway.ws"
+
+
+def preload_session_socket() -> "asyncio.Task | None":
+    """Start importing the ``/api/ws`` handler (``tui_gateway.ws``, ~0.7 s of CPU) off the loop.
+
+    Unloaded, the first upgrade imports it on the event loop while the client's 10 s open timeout
+    runs, and a CPU-starved host turns that into a failed attach right after READY. Only a client's
+    own idle-exit gateway preloads: a supervised one may never get a native client, and the module
+    swaps ``sys.stdout``/excepthooks and starts an update check at import."""
+    if _SESSION_SOCKET_MODULE in sys.modules:
+        return None
+    import importlib
+    task = asyncio.create_task(asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE),
+                               name="gateway-ws-preload")
+    # A startup that raises before awaiting it must not add "Task exception was never retrieved".
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return task
+
+
+async def await_session_socket_preload(task: "asyncio.Task | None", *, timeout: float = 30.0) -> None:
+    """Let the preload finish before READY, for at most ``timeout`` seconds. Never raises: a failed or
+    still-running import is finished (or retried) by the first attach (:func:`session_socket_handler`)."""
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout)
+    except TimeoutError:
+        logger.warning("Session WebSocket handler preload still running after %.0fs; publishing READY", timeout)
+    except Exception:
+        logger.warning("Session WebSocket handler preload failed; it loads on first attach", exc_info=True)
+
+
+async def session_socket_handler():
+    """``tui_gateway.ws.handle_ws``, fetched on a worker thread: an attach that arrives while the
+    module is still loading (a preload that outlived its READY bound) would otherwise block the
+    event loop, and every connection on it, on the import lock the preload thread holds."""
+    import importlib
+    return (await asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE)).handle_ws
 
 
 async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
@@ -467,8 +515,10 @@ class GatewayRuntimeAPI:
         admitted_in_wait = restart_wait_open(self.runner) and not grant.get('refuse_restart_wait')
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
-        if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
-                and not admitted_in_wait):
+        def refused() -> bool:
+            return ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+                    and not admitted_in_wait)
+        if refused():
             await ws.close(code=1013)
             return
         from gateway.session_authorities import authority_for_profile_id
@@ -479,12 +529,18 @@ class GatewayRuntimeAPI:
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-        from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
-        with owner_scope(authority), attached_client(self.runner):
-            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                              'profile_id': grant['profile_id'],
-                                              'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
-                                              'profile_scope': grant.get('scope', 'profile')},
-                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+        # Counted before the handler fetch yields: the ticket is already redeemed, so an idle check
+        # in between would otherwise see no client and exit under this first connection.
+        with attached_client(self.runner):
+            handle_ws = await session_socket_handler()
+            if refused():  # a drain or stop that began while the handler loaded
+                await ws.close(code=1013)
+                return
+            with owner_scope(authority):
+                await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
+                                                  'profile_id': grant['profile_id'],
+                                                  'instance_id': grant['instance_id'],
+                                                  'capabilities': grant['capabilities'], 'native_bootstrap': True,
+                                                  'profile_scope': grant.get('scope', 'profile')},
+                                subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

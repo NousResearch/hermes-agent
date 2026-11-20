@@ -16,7 +16,8 @@ name: Desktop Bundled Release
 #     signed bundled one.
 #   build-darwin (darwin-arm64 only; there is no Intel macOS build)
 #     → sign + notarize + stage dmg/zip/blockmap + the feed input to the R2 tag archive
-#   build-linux                              → DISABLED for now (dummy skips)
+#   build-linux (linux-x64 + linux-arm64)   → tag builds only, diagnostic: AppImage
+#     staged to the tag archive; gates nothing and writes no Linux feed
 #   assemble-win32-bundle                   → native universal bundles
 #     (needs build-win32): all downloadable builds stage without touching feeds.
 #   smoke-darwin / smoke-win32 (per arch) → native install + chat
@@ -221,10 +222,12 @@ jobs:
     # secret is injected into admission; downstream jobs consume its outputs.
     environment: release-signing
     # The archive step re-downloads every pinned input from R2 to verify its
-    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~20 s on a normal
+    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~3 min on a normal
     # day; v0.22.4 rc.1 hit slow R2 reads and the old 5-minute cap cancelled
-    # both Windows chains. The standalone archive job it replaced had 60.
-    timeout-minutes: 30
+    # both Windows chains, and v0.23.1 rc.1 took 28 min on x64 and was
+    # cancelled at 30 on arm64 (single files stalling 5-8 min). 60 matches the
+    # standalone archive job it replaced.
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
@@ -255,6 +258,12 @@ jobs:
       termux: ${{ steps.admission.outputs.termux }}
       # Every group selected: the joins that render or summarize a whole build.
       all-jobs: ${{ steps.admission.outputs.all-jobs }}
+      canary-table-selected: >-
+        ${{ contains(inputs.tag, '+canary.') && inputs.release-phase == ''
+            && inputs.channel == '' && inputs.disposable_channel == ''
+            && steps.admission.outputs.darwin-arm64 == 'true' && steps.admission.outputs.win32-arm64 == 'true'
+            && steps.admission.outputs.win32-x64 == 'true' && steps.admission.outputs.win32-bundle == 'true'
+            && steps.admission.outputs.termux == 'true' }}
       channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
@@ -489,8 +498,7 @@ jobs:
         run: |
           $paths = @(
             $env:GITHUB_WORKSPACE,
-            $env:RUNNER_TEMP,
-            (npm config get cache)
+            $env:RUNNER_TEMP
           )
           foreach ($p in $paths) {
             try {
@@ -571,7 +579,7 @@ jobs:
       # Universal-bundle assembly reuses two small slices of this leg's preparation
       # rather than the multi-GB dependency snapshot: electron-builder's toolset
       # downloads (winCodeSign kit, ATS dlib, dotnet runtime; preparation points
-      # ELECTRON_BUILDER_CACHE at packager/builder) and npm's content cache.
+      # ELECTRON_BUILDER_CACHE at packager/builder) and pnpm's store.
       # Commit builds hold a read-only cache token, so their save is skipped here.
       - name: Save the bundle-assembly caches
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target.label == 'win32-x64' && inputs.build_commit == '' && inputs.channel == '' }}
@@ -579,8 +587,8 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
-          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+            ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
 
       - name: Restore verified payload signatures
         id: payload-signatures
@@ -670,7 +678,7 @@ jobs:
         if: inputs.skip-tests != true
         shell: bash
         working-directory: apps/desktop
-        run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
+        run: node node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
 
       # Commit jobs share these steps but have read-only cache tokens.
       - name: Save verified payload signatures
@@ -1201,28 +1209,210 @@ jobs:
           || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-arm64-commit.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
-  # ── Linux builders (DISABLED for now) ─────────────────────────────────────
+  # ── Linux builders (diagnostic) ────────────────────────────────────────────
+  # One AppImage per arch, on tag builds only (canary tags, and stable
+  # candidates that select a linux group); commit and channel builds skip
+  # them. The container image is the oldest userland the arch supports, so
+  # source-built extensions link against that glibc: x64 builds on Ubuntu
+  # 22.04, arm64 on 24.04, and glibc_floor.py fails the build if anything
+  # packaged needs more (except the x64 CUDA and ROCm llama.cpp engines,
+  # which glibc_floor.EXCEPTIONS allows up to GLIBC 2.38 / GLIBCXX 3.4.32).
+  # Nothing gates on these jobs
+  # (scripts.releases.job_groups.DIAGNOSTIC_JOBS) and no Linux feed is
+  # written: the AppImage and electron-builder's feed yml stage to the tag
+  # archive only.
   build-linux-x64:
-    name: bundled linux-x64 (disabled for now)
-    if: needs.validate.outputs.linux-x64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
+    name: bundled linux-x64
+    if: >-
+      needs.validate.outputs.linux-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    # Stage GPU engines and bootstrap Python in 24.04; build the desktop in 22.04.
+    environment: release-signing
+    cache-mode: write
+    # A failed Linux build stays visible on its job without failing the run.
+    continue-on-error: true
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x64
+            runner: blacksmith-32vcpu-ubuntu-2404
+            image: ubuntu:22.04
+            python: python3.11
+            alsa: libasound2
+    env: &linux-env
+      LINUX_BUNDLE_TARGET: ${{ matrix.target.label }}
+      DEBIAN_FRONTEND: noninteractive
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+    steps: &linux-steps
+      - name: Provision Git in the arm64 job container
+        if: matrix.target.label == 'linux-arm64'
         shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+          filter: blob:none
+          fetch-tags: true
+          persist-credentials: false
+
+      # The bootstrap scripts need Python >= 3.11; PM probes run node (libatomic)
+      # and cua-driver (X11, xkbcommon) while staging the payload. Preparation's
+      # native probe starts the downloaded Electron, which loads GTK, NSS, GBM
+      # and ALSA even as node; 24.04 renamed ALSA's package libasound2t64.
+      - name: Install the build userland
+        shell: bash scripts/ci/linux_bundle_shell.sh setup {0}
+        env:
+          BOOTSTRAP_PYTHON: ${{ matrix.target.python }}
+          ALSA_PACKAGE: ${{ matrix.target.alsa }}
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates git build-essential rustc cmake file xz-utils zstd \
+            libatomic1 libx11-dev libxi-dev libxkbcommon0 \
+            libgtk-3-0 libnss3 libgbm1 "$ALSA_PACKAGE" "$BOOTSTRAP_PYTHON"
+          ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python3
+          ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python
+          # The checkout belongs to the runner's uid, not the container's root.
+          # System scope: preparation runs git there under its own HOME.
+          git config --system --add safe.directory '*'
+
+      # Workspace-relative: in a job container github.workspace and runner.temp name host paths.
+      - name: Restore desktop dependency inputs
+        id: build-cache
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: restore
+          source: .
+          work: .build/desktop-job
+          cache: .cache/desktop-inputs
+          producer: desktop
+
+      - name: Stage the x64 bootstrap Python and probe pinned GPU engines on Ubuntu 24.04
+        if: matrix.target.label == 'linux-x64'
+        shell: bash
+        run: bash scripts/ci/linux_x64_userland.sh stage-gpu
+
+      - name: Prepare the complete desktop build
+        id: prepare
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
+        run: |
+          args=(--tag "$HERMES_PAYLOAD_TAG")
+          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
+          python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
+            --work "$GITHUB_WORKSPACE/.build/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
+          python3 -m scripts.ci.desktop_commands "$GITHUB_WORKSPACE/.build/desktop-job/prepared.json"
+
+      - name: Save dependency inputs before building
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
+        uses: ./.github/actions/desktop-build-cache
+        with:
+          phase: save
+          source: .
+          work: .build/desktop-job
+          cache: .cache/desktop-inputs
+          producer: desktop
+          key: ${{ steps.build-cache.outputs.cache-key }}
+
+      - name: Build and package
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
+        timeout-minutes: 200
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python scripts/bundles/desktop.py --prepared "$GITHUB_WORKSPACE/.build/desktop-job/prepared.json" --variant bundled
+          shopt -s nullglob
+          apps=(apps/desktop/release/linux*-unpacked)
+          if [ ${#apps[@]} -ne 1 ]; then
+            echo "::error::expected one unpacked Linux app under apps/desktop/release, found ${#apps[@]}"
+            exit 1
+          fi
+          echo "LINUX_APP=${apps[0]}" >> "$GITHUB_ENV"
+
+      - name: Audit bundle architecture
+        # The pinned Node needs libatomic1, installed in the builder, not the runner host.
+        shell: bash scripts/ci/linux_bundle_shell.sh build {0}
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Audit the glibc floor
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          python -m scripts.bundles.glibc_floor --arch "${MATRIX_LABEL##*-}" "$LINUX_APP"
+
+      - name: Smoke test the packaged payload (network disabled)
+        if: matrix.target.label == 'linux-arm64'
+        shell: bash
+        run: unshare --net bash scripts/smoke-payload.sh "$LINUX_APP/resources/agent-payload"
+
+      - name: Test the same x64 AppImage offline on Ubuntu 22.04 and 24.04
+        if: matrix.target.label == 'linux-x64'
+        shell: bash
+        run: bash scripts/ci/linux_x64_userland.sh accept
+
+      - name: Stage the AppImage to the tag archive
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        shell: bash
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          TARGET: ${{ matrix.target.label }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # electron-builder embeds the AppImage's block map, and writes the feed
+        # yml only when a publish channel is configured. Neither is a feed here.
+        run: |
+          shopt -s nullglob
+          args=(--include '*.AppImage')
+          feeds=(apps/desktop/release/*-linux*.yml)
+          if [ ${#feeds[@]} -gt 0 ]; then args+=(--include '*-linux*.yml'); fi
+          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            --name "$TARGET" --root apps/desktop/release "${args[@]}"
 
   build-linux-arm64:
-    name: bundled linux-arm64 (disabled for now)
-    if: needs.validate.outputs.linux-arm64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
-        shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+    name: bundled linux-arm64
+    if: >-
+      needs.validate.outputs.linux-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    container:
+      image: ${{ matrix.target.image }}
+      options: --cap-add SYS_ADMIN
+    environment: release-signing
+    cache-mode: write
+    continue-on-error: true
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-arm64
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            image: ubuntu:24.04
+            python: python3.12
+            alsa: libasound2t64
+    env: *linux-env
+    steps: *linux-steps
 
   stage-receipt-darwin-arm64:
     name: Stage the darwin-arm64 stable receipt
@@ -1394,7 +1584,6 @@ jobs:
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # The paths build-win32-x64 saves its bundle-assembly caches from.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-      npm_config_cache: ${{ github.workspace }}/.cache/desktop-inputs/npm
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1434,8 +1623,8 @@ jobs:
           archive-inputs: ${{ inputs.disposable_run == '' && inputs.disposable_channel == '' }}
           cache-python: false
           save-tools-cache: false
-          # npm's cache comes from build-win32-x64 below; nothing ever saves
-          # setup-pm's per-job npm key for this read-only job.
+          # pnpm's store comes from build-win32-x64 below; nothing ever saves
+          # setup-pm's per-job node key for this read-only job.
           cache-node: false
 
       - name: Restore the bundle-assembly caches
@@ -1443,15 +1632,19 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
-          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+            ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
           restore-keys: win32-assembly-v1-${{ runner.arch }}-
 
       - name: Install the locked Windows bundle tooling
         uses: ./.github/actions/retry
+        env:
+          # The store restored above. A step env, because setup-pm's
+          # GITHUB_ENV export would override a job-level one.
+          pnpm_config_store_dir: ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
         with:
           # No Electron/native postinstalls: only the builder's SDK downloader.
-          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+          command: pnpm install --frozen-lockfile --filter "{./apps/desktop}..." --ignore-scripts
 
       - name: Retrieve Windows packages from R2
         shell: bash
@@ -1792,6 +1985,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: python
+          # scripts/termux/build.py installs and builds the TUI on this host with pnpm.
+          packages: pnpm
           archive-inputs: true
           cache-python: false
 
@@ -2130,7 +2325,9 @@ jobs:
     name: Mark the builds table as in progress
     needs: validate
     # Pairs with builds-table: a pending page nothing finalizes must not be written.
-    if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.all-jobs == 'true'
+    if: >-
+      inputs.build_commit == '' && inputs.upload_release == true
+      && (needs.validate.outputs.all-jobs == 'true' || needs.validate.outputs.canary-table-selected == 'true')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -2158,8 +2355,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         assemble-win32-bundle,
         smoke-darwin-arm64,
         smoke-win32-arm64,
@@ -2173,7 +2368,7 @@ jobs:
     if: |
       always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.all-jobs == 'true'
+      && (needs.validate.outputs.all-jobs == 'true' || needs.validate.outputs.canary-table-selected == 'true')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     steps:
@@ -2197,8 +2392,7 @@ jobs:
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
-      # publish-canary consumes this job's result. Publish diagnostics first,
-      # then retain the original all-needs-success release gate.
+      # publish-canary consumes this job's result even when rendering succeeds for a failed build.
       - name: Preserve release success gate
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
@@ -2218,8 +2412,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         assemble-win32-bundle,
         smoke-darwin-arm64,
         smoke-win32-arm64,
@@ -2424,8 +2616,6 @@ jobs:
         build-win32-x64,
         build-win32-arm64,
         build-darwin-arm64,
-        build-linux-x64,
-        build-linux-arm64,
         builds-table,
         assemble-win32-bundle,
         smoke-darwin-arm64,
@@ -2434,6 +2624,7 @@ jobs:
         publish-win32-updater,
         publish-darwin-updater
       ]
+    # The Linux builds are diagnostic (scripts.releases.job_groups.DIAGNOSTIC_JOBS).
     if: |
       always()
       && inputs.build_commit == '' && inputs.channel == ''
@@ -2442,10 +2633,8 @@ jobs:
       && needs.validate.outputs.darwin-arm64 == 'true'
       && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
       && needs.validate.outputs.win32-bundle == 'true'
-      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
       && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
       && needs.build-darwin-arm64.result == 'success'
-      && needs.build-linux-x64.result == 'success' && needs.build-linux-arm64.result == 'success'
       && needs.builds-table.result == 'success'
       && needs.assemble-win32-bundle.result == 'success'
       && needs.smoke-darwin-arm64.result == 'success'

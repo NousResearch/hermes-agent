@@ -3,7 +3,7 @@
 import queue
 import sqlite3
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -13,6 +13,9 @@ from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from persistence_assembly import store_location
 
 
 @pytest.mark.asyncio
@@ -37,28 +40,28 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             entry = store.get_or_create_session(SessionSource(
                 platform=Platform.TELEGRAM, chat_id="ownership-retry", chat_type="dm",
             ))
-            db = cast(Any, store._db)
+            db = store.persistence
             owner = entry.session_id
-            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
-            db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
-            before = {sid: db.get_session(sid) for sid in (owner, "worker", "nested-worker")}
+            seed_session(db, "worker", "subagent", model_config={"_delegate_from": owner})
+            seed_session(db, "nested-worker", "subagent", model_config={"_delegate_from": "worker"})
+            before = {sid: session_row(db, sid) for sid in (owner, "worker", "nested-worker")}
             ancestor = owner if failed_ancestor == "owner" else "worker"
-            async_db = runner._session_db
-            get_session = async_db.get_session
+            sessions = runner.persistence.sessions
+            get_session = sessions.get
             walk_count = 0
             failures = []
             fault_enabled = True
 
-            async def lookup_session(sid):
+            def lookup_session(sid):
                 nonlocal walk_count
                 if sid == "nested-worker":
                     walk_count += 1
                 if fault_enabled and sid == ancestor and (phase == "readiness" or walk_count >= 2):
                     failures.append(sid)
                     raise RuntimeError("temporary ownership ancestor lookup failure")
-                return await get_session(sid)
+                return get_session(sid)
 
-            monkeypatch.setattr(async_db, "get_session", lookup_session)
+            monkeypatch.setattr(sessions, "get", lookup_session)
             admitted = []
 
             async def accept(event):
@@ -90,7 +93,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             pending = ad.get_durable_delegation(event["delegation_id"])
             assert pending is not None
             assert (pending["delivery_state"], pending["delivery_attempts"]) == ("pending", 0)
-            with sqlite3.connect(ad._db_path()) as conn:
+            with sqlite3.connect(store_location(ad._scope())) as conn:
                 assert conn.execute(
                     "SELECT delivery_claim FROM async_delegations WHERE delegation_id=?",
                     (event["delegation_id"],),
@@ -98,7 +101,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             assert admitted == []
             current = store.lookup_by_session_key(entry.session_key)
             assert current is not None and current.session_id == owner
-            assert {sid: db.get_session(sid) for sid in before} == before
+            assert {sid: get_session(sid).as_session_row() for sid in before} == before
 
             fault_enabled = False
             assert await runner._deliver_completion_notification("completed result", event) is True
@@ -118,7 +121,7 @@ async def test_transient_ownership_ancestor_failure_retries_durable_delivery_onc
             replay_current = replay_runner.session_store.lookup_by_session_key(entry.session_key)
             assert current is not None and current.session_id == owner
             assert replay_current is not None and replay_current.session_id == owner
-            assert {sid: db.get_session(sid) for sid in before} == before
+            assert {sid: get_session(sid).as_session_row() for sid in before} == before
         finally:
             if replay_runner is not None:
                 replay_runner.session_store.close_all_db_handles()
@@ -140,22 +143,22 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
                 platform=Platform.TELEGRAM, chat_id="ownership-budget", chat_type="dm",
             ))
             owner = entry.session_id
-            cast(Any, store._db).create_session("worker", source="subagent", model_config={"_delegate_from": owner})
-            async_db = runner._session_db
-            get_session = async_db.get_session
+            seed_session(store.persistence, "worker", "subagent", model_config={"_delegate_from": owner})
+            sessions = runner.persistence.sessions
+            get_session = sessions.get
             walks = 0
             failing = True
 
-            async def lookup_session(sid):
+            def lookup_session(sid):
                 nonlocal walks
                 if sid == "worker":
                     walks += 1
                 # Each delivery walks twice, readiness then the claimed preflight; only the second fails.
                 if failing and sid == owner and walks % 2 == 0:
                     raise RuntimeError("temporary owner lookup failure")
-                return await get_session(sid)
+                return get_session(sid)
 
-            monkeypatch.setattr(async_db, "get_session", lookup_session)
+            monkeypatch.setattr(sessions, "get", lookup_session)
             admitted = []
 
             async def accept(event):
@@ -190,16 +193,16 @@ async def test_claimed_ownership_retries_do_not_spend_the_delivery_budget(
 
 async def _admit_with_session_rows_unreadable(runner, store, entry, monkeypatch, delegation_id, pinned):
     """Deliver one completion; every session-row read raises once the adapter has accepted it."""
-    async_db = runner._session_db
-    get_session = async_db.get_session
+    sessions = runner.persistence.sessions
+    get_session = sessions.get
     admitted_phase = False
 
-    async def lookup_session(sid):
+    def lookup_session(sid):
         if admitted_phase:
             raise RuntimeError("session rows unreadable after admission")
-        return await get_session(sid)
+        return get_session(sid)
 
-    monkeypatch.setattr(async_db, "get_session", lookup_session)
+    monkeypatch.setattr(sessions, "get", lookup_session)
     resolved = []
 
     async def accept(event):
@@ -241,10 +244,10 @@ async def test_admitted_delegate_completion_reaches_owner_without_reading_owners
             entry = store.get_or_create_session(SessionSource(
                 platform=Platform.TELEGRAM, chat_id="ownership-admitted", chat_type="dm",
             ))
-            db = cast(Any, store._db)
+            db = store.persistence
             owner = entry.session_id
-            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
-            db.create_session("nested-worker", source="subagent", model_config={"_delegate_from": "worker"})
+            seed_session(db, "worker", "subagent", model_config={"_delegate_from": owner})
+            seed_session(db, "nested-worker", "subagent", model_config={"_delegate_from": "worker"})
 
             resolved = await _admit_with_session_rows_unreadable(
                 runner, store, entry, monkeypatch, "owner-admitted", "nested-worker")
@@ -269,11 +272,11 @@ async def test_admitted_completion_reaches_compressed_owners_tip_without_reading
             entry = store.get_or_create_session(SessionSource(
                 platform=Platform.TELEGRAM, chat_id="ownership-compressed", chat_type="dm",
             ))
-            db = cast(Any, store._db)
+            db = store.persistence
             owner = entry.session_id
-            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
-            db.create_session("owner-tip", source="telegram", parent_session_id=owner)
-            db.end_session(owner, end_reason="compression")
+            seed_session(db, "worker", "subagent", model_config={"_delegate_from": owner})
+            seed_session(db, "owner-tip", "telegram", parent_session_id=owner)
+            db.sessions.end(owner, "compression")
             assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
 
             resolved = await _admit_with_session_rows_unreadable(
@@ -302,18 +305,19 @@ async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
             entry = store.get_or_create_session(SessionSource(
                 platform=Platform.TELEGRAM, chat_id="ownership-requeue", chat_type="dm",
             ))
-            db = cast(Any, store._db)
+            db = store.persistence
             owner = entry.session_id
-            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
-            get_session = runner._session_db.get_session
+            seed_session(db, "worker", "subagent", model_config={"_delegate_from": owner})
+            sessions = runner.persistence.sessions
+            get_session = sessions.get
             owner_read_fails = False
 
-            async def lookup_session(sid):
+            def lookup_session(sid):
                 if owner_read_fails and sid == owner:
                     raise RuntimeError("transient read failure")
-                return await get_session(sid)
+                return get_session(sid)
 
-            monkeypatch.setattr(runner._session_db, "get_session", lookup_session)
+            monkeypatch.setattr(sessions, "get", lookup_session)
             admitted = []
 
             async def accept(event):
@@ -331,8 +335,8 @@ async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
 
             # The turn runs after admission settled the row, as the adapter's background task does.
             assert await runner._deliver_completion_notification("completed result", event) is True
-            db.create_session("owner-tip", source="telegram", parent_session_id=owner)
-            db.end_session(owner, end_reason="compression")
+            seed_session(db, "owner-tip", "telegram", parent_session_id=owner)
+            db.sessions.end(owner, "compression")
             assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
             owner_read_fails = True
             assert await runner._hmwa_resolve_session(admitted[0], admitted[0].source) is None

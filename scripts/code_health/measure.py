@@ -11,6 +11,7 @@ import tempfile
 import warnings
 from pathlib import Path
 
+from hermes_agent.compat.paths import original_path
 from scripts.code_health import py_rules, py_structure
 from scripts.code_health.config import RULES, RULES_BY_ID, in_scope, rule_applies
 from scripts.code_health.gitio import read_file
@@ -174,7 +175,7 @@ class Measurer:
         for rule_id, pattern, path_re in self.regex_rules:
             if not rule_applies(RULES_BY_ID[rule_id], fm.path):
                 continue
-            if path_re and not path_re.search(fm.path):
+            if path_re and not path_re.search(original_path(fm.path)):
                 continue
             if code_lines is None:
                 code_lines = _executable_lines(text, tree)

@@ -4,6 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 @pytest.mark.asyncio
 async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path, monkeypatch):
@@ -13,13 +18,13 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway import run
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     config = {'platform_toolsets': {'cli': []}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        return SimpleNamespace(session_store=store, _session_db=store._db,
+        return SimpleNamespace(session_store=store, _session_db=store.persistence,
                                adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
@@ -33,37 +38,36 @@ async def test_local_create_receipt_survives_cold_authority_atomically(tmp_path,
     config['platform_toolsets']['cli'] = ['terminal']
     assert create_local_session(cold, actor, params) == ref
     assert second.adapters[Platform.LOCAL].policies[cold.sessions[ref.session_id].source.chat_id] == policy
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
         create_local_session(cold, actor, {**params, 'source': 'tui'})
     foreign = SessionActor('other', 'fixture', actor.capabilities, 'other-socket')
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await cold.resolve(foreign, ref)
 
-    db = cold.db
-    write = db._execute_write
+    db, holder = cold.persistence, raw_holder(cold.persistence)
+    write = holder._execute_write
     def abort(callback, **kwargs):
         def fail(conn):
             callback(conn)
             raise RuntimeError('injected transaction abort')
         return write(fail, **kwargs)
-    before = db.session_count()
-    monkeypatch.setattr(db, '_execute_write', abort)
+    before = db.sessions.count_sessions()
+    monkeypatch.setattr(holder, '_execute_write', abort)
     with pytest.raises(RuntimeError, match='injected transaction abort'):
         create_local_session(cold, actor, {**params, 'request_id': 'aborted'})
-    monkeypatch.setattr(db, '_execute_write', write)
-    assert db.session_count() == before
+    monkeypatch.setattr(holder, '_execute_write', write)
+    assert db.sessions.count_sessions() == before
     assert set(cold.sessions) == {ref.session_id}
-    with db._read_ctx() as conn:
-        policies = conn.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
+    with raw_holder(db)._read_ctx() as conn:
+        policies = conn.execute('SELECT value FROM state_meta WHERE key LIKE ?', (policy_key() + '%',)).fetchall()
     assert len(policies) == 1
     assert json.loads(policies[0][0])['principal_id'] == actor.subject
-    from hermes_state_runtime import admit_session_input, list_session_admissions
-    admit_session_input(db, epoch=cold.epoch, principal_id=actor.subject,
+    db.admissions.admit(epoch=cold.epoch, principal_id=actor.subject,
                         session_id=ref.session_id, request_id='preclaim', payload={'text': 'never run'})
-    db._write_sql('UPDATE state_meta SET value=? WHERE key=?',
-                  ('{}', 'gateway.local_policy.v1:' + ref.session_id))
+    raw_holder(db)._execute_write(lambda conn: conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                                                            ('{}', policy_key(ref.session_id))))
     await cold._drain(ref)
-    assert list_session_admissions(db, session_id=ref.session_id, pending_only=False)[0]['status'] == 'queued'
+    assert db.admissions.list(session_id=ref.session_id, pending_only=False)[0].status == 'queued'
 
 
 @pytest.mark.platforms("linux")
@@ -79,19 +83,21 @@ def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeyp
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef
     from gateway.session_local_recovery import local_history
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('root', source='telegram', session_key='agent:telegram:dm:1')
-        db.append_message('root', 'user', 'BEFORE_COMPRESSION')
-        assert db.try_acquire_compression_lock('root', 'holder')
-        db.publish_compression_child(parent_session_id='root', child_session_id='child', source='telegram',
-                                     messages=[{'role': 'user', 'content': 'SUMMARY'}], compression_lock_holder='holder')
-        db.append_message('child', 'user', 'AFTER_COMPRESSION')
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 'root', 'telegram', session_key='agent:telegram:dm:1')
+        seed_messages(db, 'root', {'role': 'user', 'content': 'BEFORE_COMPRESSION'})
+        assert db.coordination.try_acquire_compression_lock(session_id='root', holder='holder')
+        db.lineage.publish_compression_child('root', CompressionChild(session_id='child', source='telegram'),
+                                             [NewMessage.from_live({'role': 'user', 'content': 'SUMMARY'})],
+                                             compression_lock_holder='holder')
+        seed_messages(db, 'child', {'role': 'user', 'content': 'AFTER_COMPRESSION'})
         authority = SessionAuthority(SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False)),
-                                     profile_id='owned', instance_id='current', db=db,
-                                     epoch=begin_runtime_epoch(db, instance_id='current'))
+                                     profile_id='owned', instance_id='current',
+                                     epoch=db.runtime.begin_epoch(instance_id='current'), persistence=storage_handle(tmp_path))
         source = SimpleNamespace(platform=Platform.TELEGRAM, user_id='human')
         authority.sessions['root'] = LiveSession(source, 'agent:telegram:dm:1')
         history = local_history(authority, SessionRef('owned', 'root'))
@@ -101,7 +107,7 @@ def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeyp
         assert [m['content'] for m in history if m.get('archived')] == ['BEFORE_COMPRESSION']
         # Snapshot rows carry their durable row id (a session.mutate rewind's target_message_id),
         # under the public TranscriptMessage name, never the internal ``_row_id``.
-        assert [m['row_id'] for m in history if not m.get('archived')] == [m['id'] for m in db.get_messages('child')]
+        assert [m['row_id'] for m in history if not m.get('archived')] == [m['id'] for m in transcript_rows(db, 'child')]
         assert not any('_row_id' in m for m in history)
 
 
@@ -122,7 +128,7 @@ async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
@@ -155,11 +161,11 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from gateway import run
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     params = {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
@@ -168,13 +174,13 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
     for ref in (local, api):
         await mutate_session(authority, actor, ref, dict(session_id=ref.session_id, request_id='delete',
             expected_revision=0, expected_generation=0, operation='delete', payload={}))
-    with authority.db._read_ctx() as conn:
-        left = [k for (k,) in conn.execute("SELECT key FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%' "
-                                           "OR key LIKE 'gateway.api.%'")]
+    with raw_holder(authority.persistence)._read_ctx() as conn:
+        left = [k for (k,) in conn.execute('SELECT key FROM state_meta WHERE key LIKE ? OR key LIKE ?',
+                                           (policy_key() + '%', 'gateway.api.%'))]
     assert left == []
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         create_local_session(authority, actor, params)
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         bind_api_session(authority, 'api-owner')
-    assert authority.db.get_session(local.session_id) is None
-    assert authority.db.get_session('api-owner') is None
+    assert authority.persistence.sessions.get(local.session_id) is None
+    assert authority.persistence.sessions.get('api-owner') is None

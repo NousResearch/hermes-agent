@@ -81,6 +81,7 @@ import {
   $sessionResumeRequest,
   $sessions,
   forgetSessionOwnerHintsForSession,
+  ownerLookupSessionRows,
   requestSessionResume,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
@@ -170,6 +171,7 @@ import {
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
+import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
@@ -987,7 +989,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const session = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
+    const session = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -1075,16 +1077,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const nextActions: WiringActions = {
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
-    // The sidebar row menu reuses this verb in the Archived view too, where the
-    // row is already archived — dispatch by state so the verb restores there
-    // instead of re-archiving (#98813).
-    onArchiveSession: sessionId => {
-      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+    // The row menu reuses this verb on archived rows, so it restores there
+    // (#98813). The clicked row's flag is what the menu showed, so it decides;
+    // the caches are only a fallback for callers that pass no row.
+    onArchiveSession: (sessionId, session) => {
+      const isArchived = session
+        ? session.archived === true
+        : ownerLookupSessionRows().some(row => row.archived === true && sessionMatchesStoredId(row, sessionId)) ||
+          $archivedSessions.get().some(row => sessionMatchesStoredId(row, sessionId))
 
-      const isArchived =
-        listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
-
-      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+      void (isArchived ? unarchiveSession(sessionId, session) : archiveSession(sessionId))
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
@@ -1409,7 +1411,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <NotificationStack />
 
       {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
-      <ConfirmHost />
+      <ConfirmHost /><PreviewSigninsBoot />
 
       {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}

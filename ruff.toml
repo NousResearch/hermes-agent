@@ -20,6 +20,9 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [lint]
+# Preview is on only for the preview rules this file selects by exact code (PLW1514 below).
+preview = true
+explicit-preview-rules = true
 exclude = [
     ".bzr",
     ".git",
@@ -353,6 +356,7 @@ select = [
   #  "PLW1508",
   "PLW1509",
   "PLW1510",
+  "PLW1514",
   "PLW2101",
   "UP001",
   "UP003",
@@ -467,8 +471,14 @@ select = [
 
 [lint.per-file-ignores]
 "apps/desktop/electron/fixtures/**" = ["TID251"]
-"pm/**" = ["TID251"]
 "tests/pm/**" = ["TID251"]
+# PLW1514: a text-mode open() without an encoding uses the locale codec on Windows (cp1252 on
+# US installs) and corrupts non-ASCII content. Tests exercise locale edge cases on purpose, and
+# skills and plugins follow their authors' conventions.
+"tests/**" = ["PLW1514"]
+"skills/**" = ["PLW1514"]
+"optional-skills/**" = ["PLW1514"]
+"plugins/**" = ["PLW1514"]
 
 [lint.mccabe]
 max-complexity = 20

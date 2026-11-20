@@ -1,0 +1,27 @@
+name: triage
+repo: https://github.com/Saderius/hermes-triage
+sha: abb38200d755354accf21444627f9f44d4d58182
+description: "Keeps the list of every skill out of your context. Triage suggests skills in the composer as you type and as the chat goes on, ranked locally with no model call; a skill loads only when you pick it or clearly ask for it. Disclosure — rewrites outgoing model requests (removes Hermes' skills index from system messages and adds the bodies of skills you or the model pick, which changes the cached prompt prefix on those turns) and blocks skill_view for skills not approved in the chat; with 'Hide Hermes' own skills' (on by default) it adds the skills it serves to skills.disabled in your Hermes config.yaml, undone with `hermes triage restore`, which you must run before uninstalling; the model's skill_manage edits to skills it serves from other tools' skill folders you connect are written into those folders (edits to Hermes' own skills go through Hermes' skill_manage, and with skills.guard_agent_created on it makes no skill edits itself); it watches the skill folders you configure from a background thread, reads Hermes' session database (state.db) read-only and the current project's AGENTS.md/README and `.hermes/triage.yaml` to rank skills; `hermes triage migrate --apply-config` / `--empty-roots --yes` rewrite your skills config and move your Hermes skills folder aside (with backups) only when you run them; the optional `embedder` setting imports a Python class you name; it makes no network calls and sends no telemetry."
+maintainer: Saderius
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Saderius/hermes-triage#readme
+version: "0.1.3"
+platforms: []
+title: Triage
+known_issues:
+  - Hides Hermes' own skills from Hermes while installed; run `python run.py restore` in the plugin folder before uninstalling.
+capabilities:
+  provides_tools:
+    - skill_search
+    - skill_load
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - transform_tool_result
+    - post_compaction
+  provides_middleware:
+    - llm_request
+    - tool_execution
+  requires_env: []

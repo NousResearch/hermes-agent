@@ -80,7 +80,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `video` | `video_analyze` | 视频分析与理解工具（需手动启用，不在默认工具集中——通过 `--toolsets` 显式添加）。 |
 | `web` | `web_extract`, `web_search` | 网页搜索和页面内容提取。 |
 | `x_search` | `x_search` | 通过 xAI 内置的 `x_search` Responses 工具搜索 X（Twitter）帖子和话题。默认关闭；通过 `hermes tools` 启用。仅在配置了 xAI 凭据（SuperGrok OAuth 或 `XAI_API_KEY`）时注册 schema。 |
-| `yuanbao` | `yb_query_group_info`, `yb_query_group_members`, `yb_search_sticker`, `yb_send_dm`, `yb_send_sticker` | 元宝私信/群组操作和表情包搜索。仅在 `hermes-yuanbao` 上注册。 |
 
 ## 平台工具集
 
@@ -108,7 +107,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `hermes-wecom` | 与 `hermes-cli` 相同。 |
 | `hermes-wecom-callback` | 与 `hermes-cli` 相同。 |
 | `hermes-weixin` | 与 `hermes-cli` 相同。 |
-| `hermes-yuanbao` | 在 `hermes-cli` 基础上添加了五个 `yb_*` 工具（私信/群组/表情包）。 |
 | `hermes-webhook` | 与 `hermes-cli` 相同。 |
 | `hermes-gateway` | 内部 gateway 编排器工具集——所有 `hermes-<platform>` 工具集的并集；当 gateway 需要接受任意消息来源时使用。 |
 

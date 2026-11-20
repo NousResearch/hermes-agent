@@ -1,0 +1,21 @@
+name: autorag
+title: AutoRAG
+repo: https://github.com/Marker-Inc-Korea/AutoRAG
+sha: 40ef977a1262fb1090b2be04556739994eb29225
+subdir: plugins/hermes
+version: "1.0.0"
+description: "Search your own files and configured chat/mail archives from Hermes with AutoRAG Lite. Local hybrid retrieval, file-name search, cited evidence and duplicate detection without editing original documents. Supports PDF, DOCX, PPTX, XLSX, Markdown and Korean HWP/HWPX; existing integrations include Slack, Discord, Telegram, WhatsApp, KakaoTalk, email, Notion and Obsidian. Bundles four skills and a Hermes Desktop Finder pane. Requires Node.js 24+; runs pinned @autorag/librarian@2.13.12 through npx stdio. The Desktop backend installs that same pinned package once in plugin data, with npm lifecycle scripts disabled. First refresh can provision minsync and jikji and download local embedding models (roughly 1.5 GB). Reads only configured folders and archives; writes its own index/report state. User-requested automation also writes rule/scripts and creates Hermes cron jobs. No telemetry, self-update or stored-login discovery. Search snippets read by Hermes reach its selected model provider; configured remote connectors or embedders use their selected services. Disclosure — runs the pinned @autorag/librarian@2.13.12 MCP server through npx (Node.js 24+); the Desktop pane installs the same package once under $HERMES_HOME/plugin-data/autorag with lifecycle scripts disabled, but its own dependencies are version ranges (plus an xlsx tarball from cdn.sheetjs.com, allowed via npm_config_allow_remote=all) resolved at install time; the first refresh downloads local embedding models (~1.5 GB) and helper tools; it reads only the folders and crawler archives you configure and writes its own index under the workspace's .autorag/ and plugin data; on request the schedule/automate skills write scripts under $HERMES_HOME/scripts/ and create Hermes cron jobs (remove deletes them); search snippets Hermes reads go to your model provider, and configured remote embedders/connectors get your content; no telemetry."
+maintainer: Marker-Inc-Korea
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/Marker-Inc-Korea/AutoRAG/tree/main/plugins/hermes
+platforms: [macos]
+known_issues:
+  - "Verified on macOS only; Linux and Windows have not been verified for this plugin."
+  - "Local chat/mail search requires existing configured crawler archives; installation does not sign into those services."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,37 @@
+name: faultline
+repo: https://github.com/bigmantech001/Faultline
+sha: "d0c2b43c2b6aa7c4fed4295a47bf9c8ad87f0616"
+version: "0.1.1"
+title: Faultline
+description: "Local API flight recorder for debugging HTTP services with Hermes. The agent starts a loopback reverse proxy in front of your service, captures every request and response (auth headers and secret JSON fields redacted before storage), learns an OpenAPI 3.1 contract from healthy traffic and flags drift (type changes, missing fields, 5xx, latency regressions), injects chaos faults (429/5xx, latency, truncated JSON), and after a fix replays the exact failing request to prove 500 -> 200. Ships six tools, a tool_execution middleware, /faultline and `hermes faultline` commands, a bundled skill, a Faultline tab in the web dashboard, and a Hermes Desktop studio page, waterfall pane, status chip and inline ::faultline-trace card. Disclosure — the proxy listens on 127.0.0.1 only and forwards to the target_url you give it (normally local; any http(s) host is accepted except literal link-local, cloud-metadata and reserved addresses and the cloud-metadata hostnames, and the URL may not carry a query, fragment or credentials); replay re-sends captured requests to the upstream they were recorded from only (the agent cannot choose another host), resolves it first and refuses link-local and cloud-metadata addresses, reaches loopback/private targets only when the owner enables the allow_local_replay setting (off by default), and replaying a POST repeats its side effects; captured traffic, contracts and chaos rules are stored in SQLite under $HERMES_HOME/plugin-data/faultline/; each running proxy is a daemon thread in the Hermes process; no telemetry, no other network calls, no credentials read, no shell commands, no Python dependencies."
+maintainer: bigmantech001
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: ""
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/bigmantech001/Faultline/d0c2b43c2b6aa7c4fed4295a47bf9c8ad87f0616/docs/screenshots/dashboard-replay.png
+  - https://raw.githubusercontent.com/bigmantech001/Faultline/d0c2b43c2b6aa7c4fed4295a47bf9c8ad87f0616/docs/screenshots/dashboard-inspector.png
+  - https://raw.githubusercontent.com/bigmantech001/Faultline/d0c2b43c2b6aa7c4fed4295a47bf9c8ad87f0616/docs/screenshots/dashboard-drift.png
+capabilities:
+  provides_tools:
+    - faultline_proxy
+    - faultline_traces
+    - faultline_replay
+    - faultline_contract
+    - faultline_chaos
+    - faultline_simulate
+  provides_hooks:
+    - post_tool_call
+    - on_session_start
+  provides_middleware:
+    - tool_execution
+  requires_env: []
+known_issues:
+  - "Replay against a local service needs the owner setting allow_local_replay: true (off by default). faultline_simulate's built-in service is exempt because the plugin starts it itself."
+  - "Redacted auth headers are not replayed; pass fresh ones with faultline_replay(override_headers=...) for authenticated endpoints."
+  - "Compressed (gzip/br) response bodies are proxied untouched but stored as a placeholder, so schema drift is only learned from uncompressed JSON."
+  - "Chaos rules persist in the database and apply to every running proxy until removed."
+  - "Both halves ship opt-in: enable the agent half (hermes plugins enable faultline, then restart the gateway) and flip the Desktop switch in Capabilities -> Plugins."

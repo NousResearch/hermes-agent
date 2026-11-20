@@ -780,7 +780,7 @@ interface UnionAgentRow {
   /** Credential-free metadata Electron enumerates alongside the name — the
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
-  profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  profileMetadata?: Pick<RosterRow, 'description' | 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
   /** False when the source lists the profile but does not serve it. */
   reachable?: boolean
   targetProfile?: string
@@ -1393,7 +1393,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return
@@ -1405,7 +1405,7 @@ export function newBotChat(bot: RosterRow) {
     host.notify?.({
       kind: 'error',
       message:
-        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another Bot chat.'
+        getPluginCtx()?.i18n?.t('bot.openAnotherChatUnsupported') ?? 'Update Hermes Desktop to open another bot chat.'
     })
 
     return

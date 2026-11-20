@@ -108,7 +108,7 @@ def runtime_facts_path(project_root: Path) -> Path:
 
 # The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
-ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
+ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "setup.py", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:

@@ -1,14 +1,14 @@
-"""Profile-wide ``gateway.allow_silence``: the fallback below a room's own setting, never for DMs."""
+"""Profile-wide ``gateway.allow_silence``: the fallback below room and platform settings, never for DMs."""
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from gateway.config import GatewayConfig, load_gateway_config
 from gateway.session_identity import RoutingIdentity
-from tests.gateway.test_active_turn_recovery import _close_store_db, _db_runner, _entry_for
+from tests.gateway.test_active_turn_recovery import _close_store_handles, _db_runner, _entry_for
 from tests.gateway.test_gateway_silence_tokens import _event, _runner, _source
 
 _HEALTHY = {"final_response": "NO_REPLY", "failed": False, "api_calls": 1}
@@ -47,6 +47,13 @@ _ON = {"gateway": {"allow_silence": True}}
     # A room's explicit false wins over the profile's true.
     ({**_ON, "platforms": {"telegram": {"channel_overrides": {"-1001": {"allow_silence": False}}}}},
      "group", None, True, _HEALTHY, False),
+    ({**_ON, "platforms": {"telegram": {"allow_silence": False}}}, "group", None, None, _HEALTHY, False),
+    ({"platforms": {"telegram": {"allow_silence": True}}}, "dm", None, True, _HEALTHY, True),
+    ({**_ON, "platforms": {"telegram": {"allow_silence": False, "channel_overrides": {
+        "-1001": {"allow_silence": True}}}}}, "group", None, True, _HEALTHY, True),
+    (_ON, "private", None, True, _HEALTHY, False),
+    (_ON, "direct", None, True, _HEALTHY, False),
+    (_ON, "", None, True, _HEALTHY, False),
     # A room entry that sets only other keys inherits the profile value.
     ({**_ON, "platforms": {"telegram": {"channel_overrides": {"-1001": {"model": "m"}}}}},
      "group", None, True, _HEALTHY, True),
@@ -59,7 +66,8 @@ _ON = {"gateway": {"allow_silence": True}}
     (_ON, "dm", "internal_notification", True, {**_HEALTHY, "interrupted": True}, True),
 ], ids=[
     "addressed-group", "unknown-channel", "top-level-form", "top-level-wins", "dm-excluded", "off", "absent",
-    "non-bool", "room-false-wins", "model-only-room-inherits", "partial-addressed",
+    "non-bool", "room-false-wins", "platform-false-wins", "dm-platform-opt-in", "room-beats-platform",
+    "private-excluded", "direct-excluded", "unclassified-excluded", "model-only-room-inherits", "partial-addressed",
     "incomplete-addressed", "partial-unaddressed", "incomplete-unaddressed", "internal-unhealthy",
 ])
 def test_profile_opt_in_truth_table(monkeypatch, tmp_path, raw, chat_type, display_kind,
@@ -99,21 +107,26 @@ def test_primary_profile_uses_the_supplied_config(monkeypatch, tmp_path, runtime
 @pytest.mark.asyncio
 @pytest.mark.parametrize("final,silent", [("An ordinary reply.", False), ("NO_REPLY", True)])
 async def test_profile_setting_is_read_only_for_a_marker(monkeypatch, tmp_path, final, silent):
-    """An ordinary reply never opens the routed profile's config.yaml (no per-turn lookup)."""
-    import gateway.run as gateway_run
+    """Ordinary replies skip the silence-policy lookup for the routed profile."""
     runner = _runner(monkeypatch, tmp_path)
     source = _served(runner, tmp_path, _ON)
-    real_load = gateway_run._load_gateway_config
-    loads = []
-    monkeypatch.setattr(gateway_run, "_load_gateway_config",
-                        lambda path=None: loads.append(path) or real_load(path))
+    lookup = Mock(wraps=runner._room_allow_silence)
+    monkeypatch.setattr(runner, "_room_allow_silence", lookup)
     runner._run_agent = AsyncMock(return_value={**_HEALTHY, "final_response": final, "messages": []})
 
     response = await runner._handle_message_with_agent(_event(reply_expected=True), source, "lane", 1)
 
-    served_reads = [p for p in loads if p == tmp_path / "served" / "config.yaml"]
     assert (not response) if silent else (final in response)
-    assert bool(served_reads) is silent
+    assert lookup.called is silent
+
+
+def test_profile_off_preserves_warning_suppression(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    source = _served(runner, tmp_path, {
+        "gateway": {"allow_silence": False},
+        "display": {"suppress_warning_notifications": True},
+    })
+    assert runner._silence_allowed_for_source(source, None, True, _HEALTHY) is True
 
 
 def test_failed_profile_lookup_keeps_the_reply_rule(monkeypatch, tmp_path):
@@ -127,7 +140,6 @@ def test_failed_profile_lookup_keeps_the_reply_rule(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "_resolve_profile_home_for_source", _reject)
 
-    assert runner._profile_allow_silence(source) is None
     assert runner._silence_allowed_for_source(source, None, True, _HEALTHY) is False
 
 
@@ -170,13 +182,13 @@ async def test_profile_opt_in_reaches_every_delivery_lane(monkeypatch, tmp_path,
         try:
             # Finish the real turn, then crash before the adapter sends or clears its token.
             await runner._handle_message_with_agent(event, source, store._generate_session_key(source), 1)
-            _close_store_db(store)
+            _close_store_handles(store)
             recovered, store = _db_runner(tmp_path)
             assert await recovered._recover_unclean_sessions() == (0, 0 if silent else 1)
             assert bool(sweep_recoverable(deliverable_platforms={"telegram"})) is not silent
             assert _entry_for(store, source).active_turn_token is None
         finally:
-            _close_store_db(store)
+            _close_store_handles(store)
 
 
 @pytest.mark.parametrize("yaml_text,expected", [
@@ -184,8 +196,9 @@ async def test_profile_opt_in_reaches_every_delivery_lane(monkeypatch, tmp_path,
     ("allow_silence: true\n", True),
     ("allow_silence: false\ngateway:\n  allow_silence: true\n", False),
     ("gateway:\n  allow_silence: 'off'\n", False),
+    ("gateway:\n  allow_silence: 'true'\n", False),
     ("{}\n", False),
-], ids=["nested", "top-level", "top-level-wins", "string-off", "absent"])
+], ids=["nested", "top-level", "top-level-wins", "string-off", "quoted-true", "absent"])
 def test_load_gateway_config_reads_the_profile_setting(tmp_path, monkeypatch, yaml_text, expected):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

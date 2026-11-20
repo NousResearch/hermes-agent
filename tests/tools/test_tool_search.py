@@ -243,6 +243,22 @@ class TestRetrieval:
         names = [h.name for h in hits]
         assert names[0] == "github_create_issue"
 
+    def test_cjk_query_matches_only_cjk_described_tool(self):
+        """A CJK query used to tokenize to nothing and find no tool at all (#78985)."""
+        from tools.tool_search import search_catalog
+        from tools.tool_search_catalog import build_catalog
+        catalog = build_catalog([
+            _td("wechat_publish", "发布文章到微信公众号 (publish articles to WeChat)"),
+            _td("slack_send", "Post a message into a Slack channel"),
+        ])
+        assert [h.name for h in search_catalog(catalog, "公众号", limit=3)] == ["wechat_publish"]
+
+    def test_mixed_language_query_still_finds_english_described_tool(self):
+        """CJK characters no tool carries must not veto the English words of the same query."""
+        from tools.tool_search import search_catalog
+        assert [h.name for h in search_catalog(self._fake_catalog(), "创建 github issue", limit=3)][:1] == [
+            "github_create_issue"]
+
 
     def test_search_respects_limit(self):
         from tools.tool_search import search_catalog

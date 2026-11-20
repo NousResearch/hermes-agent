@@ -57,6 +57,8 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    situations:                         # Optional — phrases a user in this situation types; read only by
+      - "my pull request has merge conflicts"  #   the opt-in skills.selection shortlist, never shown in the index
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
